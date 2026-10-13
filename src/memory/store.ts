@@ -39,10 +39,10 @@ export interface NoteEntry {
   expires?: string;
 }
 export interface OpEntry {
-  schema: typeof MEMORY_SCHEMA; op: "forget" | "supersede" | "demote" | "settle" | "goal_state" | "goal_link" | "lease" | "lease_force"; id: string; at: string; machine: string;
+  schema: typeof MEMORY_SCHEMA; op: "forget" | "supersede" | "demote" | "settle" | "goal_state" | "goal_link" | "lease" | "lease_force" | "suggest" | "confirm" | "reject"; id: string; at: string; machine: string;
   /** An entry id, a goal id, or for `settle` a task key. */
   target: string;
-  /** `supersede`: the newer entry; `goal_state`: the state; `goal_link`: the task key; `lease`, `lease_force`: until (ISO); `settle`, `demote`: when the short-term entries leave the index (ISO), fixed when written. */
+  /** `supersede`: the newer entry; `goal_state`: the state; `goal_link`: the task key; `lease`, `lease_force`: until (ISO); `settle`, `demote`: when the short-term entries leave the index (ISO), fixed when written; `suggest`: `<rel>:<entry id>`. */
   by?: string;
   actor: string;
 }
@@ -56,7 +56,10 @@ export const GOAL_STATES = ["open", "active", "blocked", "done", "dropped"] as c
 export type GoalState = (typeof GOAL_STATES)[number];
 export const DEFAULT_LEASE_MS = 4 * 3600_000;
 /** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3; // 3: suggest, confirm and reject ops (an older index skipped them)
+export const SUGGESTED = ["contradicts", "same_topic"] as const;
+export type Suggested = (typeof SUGGESTED)[number];
+export interface Suggestion { id: string; at: string; from: string; to: string; rel: Suggested; status: "suggested" | "confirmed" | "rejected" }
 export type NoteInput = Omit<NoteEntry, "schema" | "id" | "at" | "machine">;
 export type OpInput = Omit<OpEntry, "schema" | "id" | "at" | "machine">;
 export type GoalInput = Omit<GoalEntry, "schema" | "id" | "at" | "machine">;
@@ -232,6 +235,21 @@ export class MemoryStore {
   // A short-term note on a task that was settled already gets its own deadline: the task's has passed or is close.
   // `ownClock`: a note asked for short-term on purpose expires on its own clock, open task or not, and is never promoted.
   note(n: NoteInput, ownClock = false): string { return this.append(n.tier === "short" && !n.expires && (ownClock || !n.task || this.settled(n.task)) ? { ...n, expires: this.until() } : n, n.tier === "short"); }
+
+  /**
+   * An entry from another store with its own time (`ahub memory import claude-mem`): the same source row always gives
+   * the same id, so a second import writes nothing. Returns the id and whether it was new.
+   */
+  importNote(n: NoteInput, at: string): { id: string; added: boolean } {
+    // A fixed machine: the same observation imported on two machines is one entry once they sync.
+    const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
+    const id = entryId(body);
+    // The observation, not the nodes derived from it (they follow the repository's files), says whether it is here already.
+    const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
+    if (known) return { id: known.id, added: false };
+    appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
+    return { id, added: true };
+  }
 
   /** A person's or the hub's op on an entry; it goes where the entry lives, so forgetting a long-term entry syncs. */
   private op(op: OpEntry["op"], target: View, actor: string, by?: string): string {
@@ -411,7 +429,7 @@ export class MemoryStore {
       if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO goals (id, at, machine, project, scope, title, milestones, depends, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.title, JSON.stringify(e.milestones.map(String)), JSON.stringify(e.dependsOn.map(String)), e.actor ?? "");
-    } else if (["forget", "supersede", "demote", "settle", "goal_state", "goal_link", "lease", "lease_force"].includes(e.op)) {
+    } else if (["forget", "supersede", "demote", "settle", "goal_state", "goal_link", "lease", "lease_force", "suggest", "confirm", "reject"].includes(e.op)) {
       // A deadline is a date: a reader's own TTL must never stand in for an unreadable one.
       const dated = !["demote", "settle", "lease", "lease_force"].includes(e.op) || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
       if (!str(e.target, 400) || !opt(e.by) || !opt(e.actor) || !dated) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
@@ -570,6 +588,11 @@ export class MemoryStore {
     const first = about(nodes);
     for (const id of first) near.set(id, 1);
     for (const id of about(new Set([...first].flatMap((id) => live.get(id)!.about)))) if (!near.has(id)) near.set(id, 2);
+    // Only a person-confirmed suggestion links two entries for retrieval; an unconfirmed one is never evidence.
+    for (const s of this.suggestions().filter((x) => x.status === "confirmed")) {
+      if (first.has(s.from) && live.has(s.to) && !near.has(s.to)) near.set(s.to, 2);
+      if (first.has(s.to) && live.has(s.from) && !near.has(s.from)) near.set(s.from, 2);
+    }
     return [...near].map(([id, hops]) => ({ ...live.get(id)!, hops }))
       .sort((a, b) => Number(b.kind === "fail") - Number(a.kind === "fail") || a.hops - b.hops || b.at.localeCompare(a.at)).slice(0, limit);
   }
@@ -579,6 +602,7 @@ export class MemoryStore {
     const live = new Map(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => [`mem:${v.id}`, v]));
     const nodes = new Map<Node, Graph["nodes"][number]>(), edges = new Map<string, Graph["edges"][number]>();
     const goals = new Map(this.goals(project).map((g) => [`goal:${g.id}`, g]));
+    const suggestions = this.suggestions().filter((x) => x.status !== "rejected");
     const taskNode = (key: string) => `task:${key}`; // a link's task key is the task node's own (id and proposal time)
     const node = (id: Node) => {
       if (nodes.has(id) || nodes.size >= cap) return nodes.has(id);
@@ -593,6 +617,11 @@ export class MemoryStore {
       if (v) {
         const out: Node[] = [];
         for (const n of v.about) { link(id, n, v.kind === "fail" ? "rules_out" : "about"); out.push(n); }
+        for (const s of suggestions) {
+          const other = s.from === v.id ? s.to : s.to === v.id ? s.from : undefined;
+          if (!other || !live.has(`mem:${other}`)) continue;
+          link(`mem:${s.from}`, `mem:${s.to}`, s.status === "confirmed" ? s.rel : `suggested ${s.rel}`); out.push(`mem:${other}`);
+        }
         link(id, `peer:${v.peer}`, "by"); link(id, `machine:${v.machine}`, "by"); link(id, `project:${v.project}`, "in");
         out.push(`peer:${v.peer}`, `machine:${v.machine}`, `project:${v.project}`); // a second hop reaches their other entries
         if (v.supersededBy && live.has(`mem:${v.supersededBy}`)) { link(`mem:${v.supersededBy}`, id, "supersedes"); out.push(`mem:${v.supersededBy}`); }
@@ -681,6 +710,32 @@ export class MemoryStore {
   }
   /** The goals a board task is part of. */
   goalsOfTask(task: string): GoalView[] { return this.goals().filter((g) => g.links.some((l) => l.task === task)); }
+
+  /**
+   * A model-suggested edge between two entries (#258 phase 3): stored as the hub model's suggestion, drawn dashed, and
+   * never evidence (briefs, recall, `ahub ask`) until a person confirms it.
+   */
+  suggest(from: string, to: string, rel: Suggested): string | undefined {
+    if (from === to || !SUGGESTED.includes(rel) || this.suggestions().some((x) => x.from === from && x.to === to && x.rel === rel)) return undefined;
+    return this.append({ op: "suggest", target: from, by: `${rel}:${to}`, actor: "hub-model" }, false);
+  }
+  /** A person's verdict on a suggestion; with `project`, only one whose two entries that project may read. */
+  judge(id: string, verdict: "confirm" | "reject", actor: string, project?: string): Suggestion | undefined {
+    const s = this.suggestions(project).find((x) => x.id === id || (id.length >= 6 && x.id.startsWith(id)));
+    if (s) this.append({ op: verdict, target: s.id, actor }, false);
+    return s;
+  }
+  suggestions(project?: string): Suggestion[] {
+    const visible = project ? new Set(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => v.id)) : undefined;
+    const ops = this.db.query("SELECT id, op, at, target, by FROM ops WHERE op IN ('suggest', 'confirm', 'reject') ORDER BY at, id").all() as { id: string; op: string; at: string; target: string; by: string | null }[];
+    const verdict = new Map<string, "confirmed" | "rejected">();
+    for (const o of ops) if (o.op !== "suggest") verdict.set(o.target, o.op === "confirm" ? "confirmed" : "rejected");
+    return ops.filter((o) => o.op === "suggest" && o.by).flatMap((o) => {
+      const [rel, to] = [o.by!.slice(0, o.by!.indexOf(":")), o.by!.slice(o.by!.indexOf(":") + 1)];
+      if (visible && (!visible.has(o.target) || !visible.has(to))) return [];
+      return SUGGESTED.includes(rel as Suggested) ? [{ id: o.id, at: o.at, from: o.target, to, rel: rel as Suggested, status: verdict.get(o.id) ?? "suggested" as const }] : [];
+    });
+  }
 
   /** What the segments hold, for `ahub memory` and the dashboard header. */
   counts(project?: string): { short: number; long: number; segments: number; machine: Machine } {
