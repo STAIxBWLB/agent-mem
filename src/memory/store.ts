@@ -23,8 +23,6 @@ export type Scope = "project" | "shared";
 export const DEFAULT_TTL_MS = 14 * 24 * 3600_000;
 /** A note on a task that is never approved (abandoned, or lost to `ahub reset --all`) leaves after this, the same for every reader. */
 export const UNSETTLED_MS = 180 * 24 * 3600_000;
-/** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
-const INDEX_VERSION = 1;
 const MAX_TEXT = 4000, MAX_TITLE = 200, MAX_TARGETS = 64;
 
 /** A graph node another entry can be about: `path:src/a.ts`, `symbol:parse@src/a.ts`, `issue:owner/repo#12`, `task:<project>#3`. */
@@ -41,16 +39,27 @@ export interface NoteEntry {
   expires?: string;
 }
 export interface OpEntry {
-  schema: typeof MEMORY_SCHEMA; op: "forget" | "supersede" | "demote" | "settle"; id: string; at: string; machine: string;
-  /** An entry id, or for `settle` a task key. */
+  schema: typeof MEMORY_SCHEMA; op: "forget" | "supersede" | "demote" | "settle" | "goal_state" | "goal_link" | "lease" | "lease_force"; id: string; at: string; machine: string;
+  /** An entry id, a goal id, or for `settle` a task key. */
   target: string;
-  /** `supersede`: the newer entry; `settle`, `demote`: when the short-term entries leave the index (ISO), fixed when written. */
+  /** `supersede`: the newer entry; `goal_state`: the state; `goal_link`: the task key; `lease`, `lease_force`: until (ISO); `settle`, `demote`: when the short-term entries leave the index (ISO), fixed when written. */
   by?: string;
   actor: string;
 }
-export type Entry = NoteEntry | OpEntry;
+/** #258 phase 2: a long-term task, a goal that spans sessions, board tasks, projects and machines. */
+export interface GoalEntry {
+  schema: typeof MEMORY_SCHEMA; op: "goal"; id: string; at: string; machine: string;
+  project: string; scope: Scope; title: string; milestones: string[]; dependsOn: string[]; actor: string;
+}
+export type Entry = NoteEntry | OpEntry | GoalEntry;
+export const GOAL_STATES = ["open", "active", "blocked", "done", "dropped"] as const;
+export type GoalState = (typeof GOAL_STATES)[number];
+export const DEFAULT_LEASE_MS = 4 * 3600_000;
+/** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
+const INDEX_VERSION = 2;
 export type NoteInput = Omit<NoteEntry, "schema" | "id" | "at" | "machine">;
 export type OpInput = Omit<OpEntry, "schema" | "id" | "at" | "machine">;
+export type GoalInput = Omit<GoalEntry, "schema" | "id" | "at" | "machine">;
 
 /** Key order fixed, so the same content always hashes to the same id. */
 function canonical(value: unknown): string {
@@ -95,6 +104,12 @@ export function extractNodes(text: string, x: Extract): Node[] {
   return [...out].sort().slice(0, MAX_TARGETS);
 }
 
+/** Text that is rendered as one line: whitespace runs (newlines included) collapse, and it is capped. */
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE);
+
+/** A board task's key in hub memory: unique across `ahub reset --all`, which restarts the ids. */
+export const taskKey = (project: string, task: { id: number; created: number }): string => `${project}#${task.id}@${task.created}`;
+
 export interface Machine { id: string; label: string }
 /** Random per `~/.agenthub`, with a person-given label; created on first use. */
 export function machineId(dir: string): Machine {
@@ -122,11 +137,26 @@ export function machineId(dir: string): Machine {
   return won;
 }
 
+/** A person's name for this machine, shown beside its id. */
+export function setMachineLabel(dir: string, label: string): Machine {
+  const m = machineId(dir);
+  const clean = label.trim().replace(/[^\w .@-]/g, "").slice(0, 40) || m.id;
+  writeFileSync(join(dir, "machine.json.tmp"), JSON.stringify({ id: m.id, label: clean }) + "\n", { mode: 0o600 });
+  renameSync(join(dir, "machine.json.tmp"), join(dir, "machine.json"));
+  return { id: m.id, label: clean };
+}
+
 export interface View {
   id: string; at: string; machine: string; project: string; scope: Scope; tier: Tier; kind: Kind; peer: string; title: string | null; text: string;
   task: string | null; about: Node[]; source: string; supersededBy: string | null; supersedes: string[]; promotedFrom: string | null; expiresAt: string | null;
   /** Written as short-term, so it lives in this machine's local segment and never syncs. */
   local: boolean;
+}
+export interface GoalView {
+  id: string; at: string; machine: string; project: string; scope: Scope; title: string; milestones: string[]; dependsOn: string[];
+  state: GoalState; links: { task: string; at: string; machine: string }[];
+  /** The machine holding it now; other active claims are a conflict. Without an active claim: the last one, expired. */
+  lease: { holder: string | null; until: string | null; conflict: string[]; expired: boolean; lastHolder?: string | null };
 }
 export interface Filter { project?: string; tier?: Tier; kind?: Kind; peer?: string; machine?: string; since?: string; q?: string; limit?: number; includeSuperseded?: boolean }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
@@ -164,12 +194,13 @@ export class MemoryStore {
     db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
     db.run("PRAGMA journal_mode = WAL");
     if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
-      for (const t of ["segments", "entries", "ops", "edges"]) db.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) db.run(`DROP TABLE IF EXISTS ${t}`);
       db.run(`PRAGMA user_version = ${INDEX_VERSION}`);
     }
     db.run("CREATE TABLE IF NOT EXISTS segments (file TEXT PRIMARY KEY, offset INTEGER NOT NULL)");
     // The hash of each segment's whole indexed prefix: a segment rewritten in place (same size or larger) is caught.
     db.run("CREATE TABLE IF NOT EXISTS heads (file TEXT PRIMARY KEY, hash TEXT NOT NULL)");
+    db.run("CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, title TEXT NOT NULL, milestones TEXT NOT NULL, depends TEXT NOT NULL, actor TEXT NOT NULL)");
     db.run(`CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, tier TEXT NOT NULL,
       kind TEXT NOT NULL, peer TEXT NOT NULL, title TEXT, text TEXT NOT NULL, task TEXT, about TEXT NOT NULL, supersedes TEXT, promoted_from TEXT, source TEXT NOT NULL, expires TEXT)`);
     db.run("CREATE TABLE IF NOT EXISTS ops (id TEXT PRIMARY KEY, op TEXT NOT NULL, at TEXT NOT NULL, machine TEXT NOT NULL, target TEXT NOT NULL, by TEXT, actor TEXT NOT NULL)");
@@ -186,7 +217,7 @@ export class MemoryStore {
   private until(): string { return new Date(this.now() + this.ttl).toISOString(); }
 
   /** Append one entry to this machine's long-term (synced) or local segment and index it. Returns its id. */
-  private append(entry: NoteInput | OpInput, local: boolean, at = new Date(this.now()).toISOString(), machine = this.machine.id): string {
+  private append(entry: NoteInput | OpInput | GoalInput, local: boolean, at = new Date(this.now()).toISOString(), machine = this.machine.id): string {
     const capped = entry.op === "note" ? { ...entry, text: entry.text.slice(0, MAX_TEXT), ...(entry.title ? { title: entry.title.slice(0, MAX_TITLE) } : {}) } : entry;
     const body = { schema: MEMORY_SCHEMA, at, machine, ...capped } as Omit<Entry, "id">;
     const id = entryId(body);
@@ -348,7 +379,7 @@ export class MemoryStore {
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
-    this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+    this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
   }
 
   private segments(sub: "log" | "local"): string[] {
@@ -376,9 +407,13 @@ export class MemoryStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.tier === "long" ? "long" : "short",
         e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null);
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
-    } else if (["forget", "supersede", "demote", "settle"].includes(e.op)) {
+    } else if (e.op === "goal") {
+      if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
+      this.db.query("INSERT OR IGNORE INTO goals (id, at, machine, project, scope, title, milestones, depends, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.title, JSON.stringify(e.milestones.map(String)), JSON.stringify(e.dependsOn.map(String)), e.actor ?? "");
+    } else if (["forget", "supersede", "demote", "settle", "goal_state", "goal_link", "lease", "lease_force"].includes(e.op)) {
       // A deadline is a date: a reader's own TTL must never stand in for an unreadable one.
-      const dated = e.op !== "demote" && e.op !== "settle" || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
+      const dated = !["demote", "settle", "lease", "lease_force"].includes(e.op) || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
       if (!str(e.target, 400) || !opt(e.by) || !opt(e.actor) || !dated) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO ops (id, op, at, machine, target, by, actor) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, e.op, e.at, e.machine, e.target, e.by ?? null, e.actor ?? "");
     }
@@ -521,6 +556,10 @@ export class MemoryStore {
    */
   related(project: string, nodes: Node[], limit: number): (View & { hops: 1 | 2 })[] {
     if (!nodes.length) return [];
+    // A task that is part of a long-term task brings the goal's other tasks along, so its decisions and fails are near.
+    const taskNode = (key: string) => `task:${key}`; // a link's task key is the task node's own (id and proposal time)
+    const goals = this.goals(project).filter((g) => g.links.some((l) => nodes.includes(taskNode(l.task))));
+    nodes = [...new Set([...nodes, ...goals.flatMap((g) => g.links.map((l) => taskNode(l.task)))])];
     const live = new Map(this.list({ project, limit: Number.MAX_SAFE_INTEGER }).map((v) => [v.id, v]));
     const near = new Map<string, 1 | 2>();
     const about = (ns: Iterable<Node>) => {
@@ -539,10 +578,12 @@ export class MemoryStore {
   graph(project: string, start: Node, hops = 1, cap = 200): Graph {
     const live = new Map(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => [`mem:${v.id}`, v]));
     const nodes = new Map<Node, Graph["nodes"][number]>(), edges = new Map<string, Graph["edges"][number]>();
+    const goals = new Map(this.goals(project).map((g) => [`goal:${g.id}`, g]));
+    const taskNode = (key: string) => `task:${key}`; // a link's task key is the task node's own (id and proposal time)
     const node = (id: Node) => {
       if (nodes.has(id) || nodes.size >= cap) return nodes.has(id);
-      const v = live.get(id);
-      nodes.set(id, v ? { id, type: "memory", label: (v.title ?? v.text).slice(0, 60), kind: v.kind, tier: v.tier } : { id, type: id.slice(0, id.indexOf(":")), label: id.slice(id.indexOf(":") + 1) });
+      const v = live.get(id), g = goals.get(id);
+      nodes.set(id, v ? { id, type: "memory", label: (v.title ?? v.text).slice(0, 60), kind: v.kind, tier: v.tier } : g ? { id, type: "goal", label: g.title.slice(0, 60), kind: g.state } : { id, type: id.slice(0, id.indexOf(":")), label: id.slice(id.indexOf(":") + 1) });
       return true;
     };
     const link = (from: Node, to: Node, rel: string) => { if (node(from) && node(to)) edges.set(`${from}\0${to}\0${rel}`, { from, to, rel }); };
@@ -558,6 +599,15 @@ export class MemoryStore {
         for (const old of v.supersedes) if (live.has(`mem:${old}`)) { link(id, `mem:${old}`, "supersedes"); out.push(`mem:${old}`); }
         return out;
       }
+      const g = goals.get(id);
+      if (g) {
+        const out = g.links.map((l) => taskNode(l.task));
+        for (const t of out) link(t, id, "part_of");
+        for (const d of g.dependsOn) if (goals.has(`goal:${d}`)) { link(id, `goal:${d}`, "depends_on"); out.push(`goal:${d}`); }
+        return out;
+      }
+      const parts = id.startsWith("task:") ? [...goals.values()].filter((x) => x.links.some((l) => taskNode(l.task) === id)).map((x) => `goal:${x.id}`) : [];
+      for (const p of parts) link(id, p, "part_of");
       // Provenance nodes keep their own relation: who wrote it and on which machine (`by`), in which project (`in`).
       const field = id.startsWith("peer:") ? (x: View) => `peer:${x.peer}` : id.startsWith("machine:") ? (x: View) => `machine:${x.machine}` : id.startsWith("project:") ? (x: View) => `project:${x.project}` : undefined;
       if (field) {
@@ -567,13 +617,70 @@ export class MemoryStore {
       }
       const ids = (this.db.query("SELECT src FROM edges WHERE dst = ?").all(id) as { src: string }[]).map((r) => `mem:${r.src}`).filter((m) => live.has(m));
       for (const m of ids) { const v2 = live.get(m)!; link(m, id, v2.kind === "fail" ? "rules_out" : "about"); }
-      return ids;
+      return [...ids, ...parts];
     };
     node(start);
     let frontier: Node[] = [start];
     for (let h = 0; h < Math.min(2, Math.max(1, hops)); h++) frontier = [...new Set(frontier.flatMap(expand))].filter((n) => n !== start);
     return { nodes: [...nodes.values()], edges: [...edges.values()] };
   }
+
+  /** A new long-term task; it lives in the synced log. Returns its id. */
+  goal(g: Omit<GoalInput, "op">): string { return this.append({ op: "goal", ...g, title: oneLine(g.title), milestones: g.milestones.map(oneLine).slice(0, 32) }, false); }
+  goalState(id: string, state: GoalState, actor: string): void { this.append({ op: "goal_state", target: id, by: state, actor }, false); }
+  /** A board task (`<project>#<id>@<created>`) becomes part of the goal. */
+  goalLink(id: string, task: string, actor: string): void { if (!this.goals().find((g) => g.id === id)?.links.some((l) => l.task === task)) this.append({ op: "goal_link", target: id, by: task, actor }, false); }
+
+  /**
+   * Claim the goal's lease for this machine until now + `ms`. Refused while another machine's lease is active, unless
+   * `force` (a person's takeover), which voids every earlier claim. ponytail: advisory, eventually consistent through
+   * sync, no consensus: two claims inside one sync window both stand and show as a conflict, the earlier one holding
+   * until a person settles it; a broker would make it a real lock if concurrent cross-machine work needs one.
+   */
+  take(id: string, actor: string, opts: { force?: boolean; ms?: number } = {}): { ok: true; until: string } | { ok: false; holder: string; until: string } {
+    const g = this.goals().find((x) => x.id === id);
+    if (!g) throw new Error(`no long-term task ${id}`);
+    if (!opts.force && g.lease.holder && g.lease.holder !== this.machine.id) return { ok: false, holder: g.lease.holder, until: g.lease.until! };
+    const until = new Date(this.now() + (opts.ms ?? DEFAULT_LEASE_MS)).toISOString();
+    this.append({ op: opts.force ? "lease_force" : "lease", target: g.id, by: until, actor }, false);
+    return { ok: true, until };
+  }
+
+  /** Every long-term task with its derived state, links and lease, newest first; `project` keeps its own and shared ones. */
+  goals(project?: string): GoalView[] {
+    const now = this.now();
+    const rows = this.db.query("SELECT * FROM goals").all() as { id: string; at: string; machine: string; project: string; scope: string; title: string; milestones: string; depends: string }[];
+    const ops = this.db.query("SELECT op, at, machine, target, by FROM ops WHERE op IN ('goal_state', 'goal_link', 'lease', 'lease_force') ORDER BY at, id").all() as { op: string; at: string; machine: string; target: string; by: string | null }[];
+    return rows.filter((r) => !project || r.project === project || r.scope === "shared").map((r): GoalView => {
+      const mine = ops.filter((o) => o.target === r.id);
+      const states = mine.filter((o) => o.op === "goal_state" && (GOAL_STATES as readonly string[]).includes(o.by ?? ""));
+      const links = mine.filter((o) => o.op === "goal_link" && o.by).map((o) => ({ task: o.by!, at: o.at, machine: o.machine }));
+      // Claims after the last forced one, latest per machine; active ones hold.
+      const claims = mine.filter((o) => o.op === "lease" || o.op === "lease_force");
+      const fresh = claims.slice(Math.max(0, claims.map((o) => o.op).lastIndexOf("lease_force")));
+      // Precedence goes by when each machine's current lease began: a claim made after its own previous one expired
+      // starts a new lease, so an old, lapsed claim never puts a machine ahead of one that took the task over since.
+      const first = new Map<string, string>(), latest = new Map<string, string>();
+      for (const o of fresh) {
+        const until = latest.get(o.machine);
+        if (until === undefined || Date.parse(until) <= Date.parse(o.at)) first.set(o.machine, o.at);
+        latest.set(o.machine, o.by ?? o.at);
+      }
+      const active = [...latest].filter(([, until]) => Date.parse(until) > now).sort((a, b) => first.get(a[0])!.localeCompare(first.get(b[0])!) || a[0].localeCompare(b[0]));
+      const last = fresh.at(-1);
+      // One line whatever another machine wrote: titles are rendered into agents' context.
+      return { id: r.id, at: r.at, machine: r.machine, project: r.project, scope: r.scope as Scope, title: oneLine(r.title), milestones: (JSON.parse(r.milestones) as string[]).map(oneLine), dependsOn: JSON.parse(r.depends),
+        state: (states.at(-1)?.by as GoalState | undefined) ?? "open", links,
+        lease: active.length ? { holder: active[0]![0], until: active[0]![1], conflict: active.slice(1).map(([m]) => m), expired: false }
+          : { holder: null, until: last?.by ?? null, conflict: [], expired: !!last, lastHolder: last?.machine ?? null } };
+    }).sort((a, b) => b.at.localeCompare(a.at));
+  }
+  goalOf(id: string, project?: string): GoalView | undefined {
+    const all = this.goals(project);
+    return all.find((g) => g.id === id) ?? (id.length >= 6 ? (() => { const m = all.filter((g) => g.id.startsWith(id)); return m.length === 1 ? m[0] : undefined; })() : undefined);
+  }
+  /** The goals a board task is part of. */
+  goalsOfTask(task: string): GoalView[] { return this.goals().filter((g) => g.links.some((l) => l.task === task)); }
 
   /** What the segments hold, for `ahub memory` and the dashboard header. */
   counts(project?: string): { short: number; long: number; segments: number; machine: Machine } {
@@ -583,6 +690,6 @@ export class MemoryStore {
 
   /** The index's rows in a fixed order: what a rebuild must reproduce. */
   dump(): string {
-    return JSON.stringify(["entries", "ops", "edges"].map((t) => this.db.query(`SELECT * FROM ${t} ORDER BY 1, 2`).all()));
+    return JSON.stringify(["entries", "ops", "edges", "goals"].map((t) => this.db.query(`SELECT * FROM ${t} ORDER BY 1, 2`).all()));
   }
 }
