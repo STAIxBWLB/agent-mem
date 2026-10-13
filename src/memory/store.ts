@@ -533,13 +533,18 @@ export class MemoryStore {
     return gone.size;
   }
 
+  /** Index deferred writes before any note, goal or suggestion read. */
+  private ensureFresh(): void {
+    // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
+    if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
+  }
+
   /**
    * What a read sees: rows that expired and promotions that became due while the store sat idle are settled first, so a
    * read, and the index after it, never differ from a rebuild.
    */
   private live(): View[] {
-    // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
-    if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
+    this.ensureFresh();
     this.prune(); this.promoteHeld(); return this.views();
   }
   /** A write whose index update failed: the next read refreshes first. */
@@ -677,6 +682,7 @@ export class MemoryStore {
 
   /** Every long-term task with its derived state, links and lease, newest first; `project` keeps its own and shared ones. */
   goals(project?: string): GoalView[] {
+    this.ensureFresh();
     const now = this.now();
     const rows = this.db.query("SELECT * FROM goals").all() as { id: string; at: string; machine: string; project: string; scope: string; title: string; milestones: string; depends: string }[];
     const ops = this.db.query("SELECT op, at, machine, target, by FROM ops WHERE op IN ('goal_state', 'goal_link', 'lease', 'lease_force') ORDER BY at, id").all() as { op: string; at: string; machine: string; target: string; by: string | null }[];
@@ -726,6 +732,7 @@ export class MemoryStore {
     return s;
   }
   suggestions(project?: string): Suggestion[] {
+    this.ensureFresh();
     const visible = project ? new Set(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => v.id)) : undefined;
     const ops = this.db.query("SELECT id, op, at, target, by FROM ops WHERE op IN ('suggest', 'confirm', 'reject') ORDER BY at, id").all() as { id: string; op: string; at: string; target: string; by: string | null }[];
     const verdict = new Map<string, "confirmed" | "rejected">();
