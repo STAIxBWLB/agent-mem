@@ -78,10 +78,10 @@ const SECRETS = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAKIA[0-9A-Z]{16}\b/, /
 export const looksSecret = (text: string): boolean => SECRETS.some((re) => re.test(text));
 
 /** `task`: the board task's id and proposal time; its node carries both, so a task id reused after `ahub reset --all` is another node. */
-export interface Extract { cwd: string; project: string; repo: string; deny?: string[]; paths?: string[]; symbols?: string[]; task?: { id: number; created: number } }
+export interface Extract { cwd: string; project: string; repo: string; deny?: string[]; paths?: string[]; symbols?: string[]; task?: { id: number; created: number }; checkExists?: boolean }
 /**
  * Deterministic edges, fixed at write time so a rebuild never depends on the file system: the task's refs and plan
- * paths, plan symbols (with the path when the plan names exactly one), paths in the text that exist in the project then,
+ * paths, plan symbols (with the path when the plan names exactly one), paths in the text that exist in the project then (or text-only paths when checkExists is false),
  * `#N` as an issue of `repo`, and `task #N` as a board task. Paths stay relative to the project root; denylisted ones
  * are left out.
  */
@@ -99,7 +99,7 @@ export function extractNodes(text: string, x: Extract): Node[] {
   for (const m of text.matchAll(/(?:^|[\s(`'"])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]{1,8})(?=$|[\s)`'",:;])/g)) {
     const p = m[1]!;
     if (!p.includes("/") && !/\.(ts|js|tsx|jsx|py|rs|go|md|json|toml|yaml|yml|sh|html|css)$/.test(p)) continue;
-    try { if (!isAbsolute(p) && !p.startsWith("..") && existsSync(join(x.cwd, p))) path(p); } catch { /* unreadable: not an edge */ }
+    try { if (!isAbsolute(p) && !p.startsWith("..") && (x.checkExists === false || existsSync(join(x.cwd, p)))) path(p); } catch { /* unreadable: not an edge */ }
   }
   for (const m of text.matchAll(/\btask #(\d{1,9})\b/gi)) out.add(`task:${x.project}#${m[1]}`);
   for (const m of text.matchAll(/(?<![\w/]|task )#(\d{1,9})\b/gi)) out.add(`issue:${x.repo}#${m[1]}`);
@@ -244,7 +244,7 @@ export class MemoryStore {
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
-    // The observation, not the nodes derived from it (they follow the repository's files), says whether it is here already.
+    // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
     const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
     if (known) return { id: known.id, added: false };
     appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
@@ -255,7 +255,55 @@ export class MemoryStore {
   private op(op: OpEntry["op"], target: View, actor: string, by?: string): string {
     return this.append({ op, target: target.id, actor, ...(by ? { by } : {}) }, target.local);
   }
-  forget(id: string, actor: string, project?: string): View | undefined { const v = this.get(id, project); if (v) this.op("forget", v, actor); return v; }
+  forget(id: string, actor: string, project?: string): View | undefined {
+    const v = this.get(id, project);
+    if (!v) return undefined;
+    // Legacy imports may have different node-derived ids. Forget every known copy, including hidden ones.
+    const group = v.source === "claude-mem" ? this.live().filter(x => x.source === v.source && x.project === v.project && x.at === v.at && x.text === v.text) : [v];
+    for (const member of group) this.op("forget", member, actor);
+    return v;
+  }
+
+  /** Plan or append reconciliation of legacy imports, preserving every existing replacement relation. */
+  dedupe(project: string, apply = false): { groups: { members: View[]; heads: string[]; target: string }[]; applied: number } {
+    const rows = this.live(), byId = new Map(rows.map(v => [v.id, v]));
+    const tuples = new Map<string, View[]>();
+    for (const v of rows) {
+      if (v.project !== project || v.source !== "claude-mem") continue;
+      const key = JSON.stringify([v.at, v.text]);
+      const group = tuples.get(key) ?? []; group.push(v); tuples.set(key, group);
+    }
+    const groups: { members: View[]; heads: string[]; target: string }[] = [];
+    for (const members of tuples.values()) {
+      if (members.length < 2) continue;
+      members.sort((a, b) => a.id.localeCompare(b.id));
+      const heads = members.filter(v => !v.supersededBy);
+      if (!heads.length) continue;
+      const ids = new Set(members.map(v => v.id));
+      const terminals = new Map<string, View>();
+      for (const v of members) {
+        let terminal = v;
+        const seen = new Set<string>();
+        while (terminal.supersededBy && !seen.has(terminal.id)) {
+          seen.add(terminal.id);
+          const next = byId.get(terminal.supersededBy);
+          if (!next) break;
+          terminal = next;
+        }
+        if (!terminal.supersededBy && !ids.has(terminal.id) && !terminal.local && (terminal.project === project || terminal.scope === "shared") && heads.every(h => h.scope !== "shared" || terminal.scope === "shared")) terminals.set(terminal.id, terminal);
+      }
+      const outside = [...terminals.values()].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+      if (!outside && heads.length === 1) continue;
+      groups.push({ members, heads: heads.map(v => v.id), target: outside?.id ?? heads[0]!.id });
+    }
+    let applied = 0;
+    if (apply) for (const group of groups) for (const head of group.heads) {
+      if (head === group.target) continue;
+      if (!this.supersede(head, group.target, "user", project)) throw new Error("memory dedupe replacement refused; rerun to inspect current relations");
+      applied++;
+    }
+    return { groups, applied };
+  }
   /** A short-term note kept short-term: it expires like any other and is never promoted (its demote entry stays local). */
   keepShort(id: string, actor: string): void { const v = this.get(id); if (v?.tier === "short" && v.local && v.expiresAt === null) this.op("demote", v, actor, this.until()); } // once: a deadline is never pushed out
   demote(id: string, actor: string, project?: string): View | undefined { const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, this.until()); return v; }
