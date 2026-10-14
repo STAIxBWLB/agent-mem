@@ -49,7 +49,7 @@ export function importClaudeMem(store: MemoryStore, opts: { project: string; cha
   db.run(`PRAGMA busy_timeout = ${CLAUDE_MEM_BUSY_TIMEOUT_MS}`);
   const result: ImportResult = { read: 0, added: 0, skipped: { model: 0, pii: 0, secret: 0 }, more: false, cursor };
   try {
-    const max = db.query("SELECT MAX(id) AS id FROM observations").get() as { id: number | null };
+    const max = db.query("SELECT MAX(id) AS id FROM observations WHERE project = ? AND metadata LIKE '%\"peer\"%'").get(name) as { id: number | null };
     if ((max.id ?? 0) < cursor) cursor = 0;
     const rows = db.query("SELECT id, project, title, text, narrative, created_at_epoch, metadata FROM observations WHERE project = ? AND id > ? AND metadata LIKE '%\"peer\"%' ORDER BY id LIMIT ?")
       .all(name, cursor, limit) as { id: number; project: string | null; title: string | null; text: string | null; narrative: string | null; created_at_epoch: number | null; metadata: string | null }[];
