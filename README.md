@@ -46,6 +46,29 @@ amem sync --remote <private-git-url> --policy-free
 
 Use `ahub memory` for the policy-applying path. `--policy-free` does not bypass the secret screen or the sync remote's privacy checks. Forgetting a shared note appends an operation; its previous content remains in the remote's git history.
 
+## Candidate review
+
+`amem review` lists this project's pending machine-local candidates. They are proposals, not memory notes and not evidence. Use JSON to inspect the complete candidate payload before accepting or rejecting its full 64-character ID:
+
+```sh
+amem review --json
+amem review list --kind correction --status all --limit 50 --json
+amem review accept <full-candidate-id> --policy-free --json
+amem review reject <full-candidate-id> --json
+```
+
+All review commands remain person-only; acceptance and rejection require a terminal on stdin. Acceptance additionally requires `--policy-free`, acknowledging that the standalone CLI cannot apply a host's privacy policy; use `ahub memory` for the host policy path. The CLI refuses secret-looking candidate input or proposed note content. Listing does not open the ordinary memory index, and acceptance defers unrelated held-note promotions.
+
+Candidates live in `candidates.db` beside the memory logs. This sidecar is machine-local: it is never synced, imported, or read by recall, briefs, ask or graph evidence. Hosts must supply an explicit public privacy verdict before putting candidates or counters; private, PII and unknown verdicts are refused. Library APIs are available, but this phase adds no automatic candidate producer or telemetry consumer. Candidate retention is 500 per project and 30 days; counters retain 10,000 per project and 90 days. Candidate payloads are capped at 16 KiB.
+
+Acceptance creates ordinary v1 memory data. A correction retains its target's scope, project and storage reach, writes the corrected note and applies the existing `supersede` operation; its exact current target revision must match. A local target stays short-term; a synced target stays synced, including a demoted target whose effective tier is short. A fail becomes a long-term project note. The accepted text binds the candidate ID, target revision and target ID; a fail proposal without a target records `none` for both target fields. Both paths require the actual MemoryStore promotion screen to return `promote` at acceptance time; `keep`, `skip` or an absent screen refuses acceptance without falling back to short-term storage. Accepted v1 notes and operations follow the existing storage and sync rules; the candidate/counter sidecar remains local and outside evidence. No new v1 operation is introduced. Decay candidates are listing-only and cannot be accepted; a person may separately choose `ahub memory demote` or `forget`. The sidecar receipt, note append and correction's supersede append are separate durable writes. An interrupted acceptance can leave a note without its supersede; it is held for explicit inspection and never replayed automatically.
+
+The library entry exports `CandidateStore({ home?, now? })`, `put(input, verdict)`, `recordCounter(key, values, verdict)`, and `accept(id, { project, actor, verdict, store, policy })`. `home` retains the parent-home convention (`<home>/memory`); the default uses `memoryHome()`. The host must authenticate person intent, bind the current project and privacy verdict, and supply a current acceptance policy plus the ordinary store's actual promotion screen. An `actor` string or caller-supplied public verdict alone is not authentication. Counter writes are idempotent snapshots for the same contextual key, not increments: observed `0` stays zero, while `null` means unknown (a later unknown value does not erase an observed value).
+
+Open a review-only `MemoryStore` with `deferPromotions: true` to prevent unrelated automatic promotions during construction and reads. Explicit candidate acceptance still runs its promotion screen. This package registers no capture observer or host candidate tools; capture exclusion and authenticated producers must be established by the host before those integrations are enabled.
+
+Acceptance normalizes its note once, including timestamp, content ID and short-term expiry, then screens and appends that exact body. The final target-revision check and correction appends hold the same machine-local `mutation-lock.db` writer transaction used by this version's ordinary memory, import and sync writers. This lock is independent of the derived index, so an ordinary write still persists when SQLite is busy. External or older writers that edit segments without this lock do not participate in serialization. The logs remain authoritative after an interrupted acceptance; the next read refreshes the derived index.
+
 ## Shell completion
 
 Generate completion for `zsh`, `bash`, or `fish` with `amem completion <shell>`. Generation prints a script to stdout; it does not install files or edit shell configuration. The following commands are for a person's terminal.

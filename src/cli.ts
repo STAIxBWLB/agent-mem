@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { MemoryStore, looksSecret } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
+import { memoryProjectKey } from "./memory/project.ts";
+import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
 
 import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
@@ -31,12 +33,39 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     throw error;
   }
   const { definition, options, rawArgs: args } = parsed;
-  const goal = parsed.path[0] === "goal", sub = goal ? parsed.path[1]! : parsed.path[0]!;
+  const goal = parsed.path[0] === "goal", review = parsed.path[0] === "review", sub = goal || review ? parsed.path[1]! : parsed.path[0]!;
   const policyFree = options["--policy-free"] === true;
   const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined;
   if (mutating && !(context.stdinTTY ?? process.stdin.isTTY)) throw new Error("mutating commands require a terminal on stdin");
   if (definition.policyFree && !policyFree) {
-    throw new Error(`${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
+    throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
+  }
+  if (review) {
+    const id = parsed.positionals[0];
+    if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
+    const project = memoryProjectKey(context.cwd ?? process.cwd()), candidates = new CandidateStore();
+    try {
+      if (sub === "list") {
+        const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),
+          ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+        return options["--json"] ? JSON.stringify(rows, null, 2) : rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
+      }
+      if (sub === "reject") {
+        candidates.reject(id!, { project, actor: "person", verdict: "public" });
+        return options["--json"] ? JSON.stringify({ candidateId: id, status: "rejected" }, null, 2) : `rejected candidate ${id}`;
+      }
+      const candidate = candidates.get(id!, project);
+      if (!candidate) throw new Error("candidate unavailable");
+      if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use ahub memory demote or forget after review");
+      // Candidate acceptance uses the actual secret screen; the core defers unrelated automatic promotions.
+      const store = new MemoryStore({ deferPromotions: true, screen: note => looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
+      try {
+        const result = candidates.accept(id!, { project, actor: "person", verdict: "public", store,
+          policy: (proposal, _target, note) => !looksSecret(JSON.stringify(proposal.input)) && !looksSecret(JSON.stringify(note)),
+        });
+        return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ordinary v1 note ${result.noteId}`;
+      } finally { store.close(); }
+    } finally { candidates.close(); }
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");

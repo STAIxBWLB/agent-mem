@@ -5,3 +5,4 @@ export * from "./memory/project.ts";
 export * from "./memory/home.ts";
 export * from "./memory/platform.ts";
 export * from "./memory/commands.ts";
+export * from "./memory/candidates.ts";
