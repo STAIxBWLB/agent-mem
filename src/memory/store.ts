@@ -173,7 +173,7 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * `screen`: applied to every promotion. Without one, automatic promotions (a settlement, a held note whose replacement
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
-export interface StoreOptions { home?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen }
+export interface StoreOptions { home?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean }
 
 export class MemoryStore {
   readonly dir: string;
@@ -182,6 +182,7 @@ export class MemoryStore {
   private readonly ttl: number;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
+  private readonly deferPromotions: boolean;
 
   constructor(opts: StoreOptions = {}) {
     this.dir = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
@@ -193,6 +194,7 @@ export class MemoryStore {
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? (() => {});
     this.screen = opts.screen;
+    this.deferPromotions = opts.deferPromotions ?? false;
     const db = new Database(join(this.dir, "index.db"), { create: true });
     db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
     db.run("PRAGMA journal_mode = WAL");
@@ -215,6 +217,23 @@ export class MemoryStore {
   }
 
   close(): void { this.db.close(); }
+
+  /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
+  withDeferredPromotions<T>(work: () => T): T {
+    const previous = this.promoting;
+    this.promoting = true;
+    try { return work(); } finally { this.promoting = previous; }
+  }
+
+  /** Screen a proposed accepted note before any append. No configured policy means no acceptance. */
+  screenAcceptedNote(note: NoteInput): boolean {
+    const body = { schema: MEMORY_SCHEMA, at: new Date(this.now()).toISOString(), machine: this.machine.id, ...note } as const;
+    const view: View = { ...note, id: entryId(body), at: body.at, machine: body.machine, title: note.title ?? null,
+      task: note.task ?? null, source: note.source, about: [...note.about], supersededBy: null,
+      supersedes: note.supersedes ? [note.supersedes] : [], promotedFrom: note.promotedFrom ?? null,
+      expiresAt: note.expires ?? null, local: note.tier === "short" };
+    return this.screen?.(view) === "promote";
+  }
 
   /** When a short-term entry written now leaves the index. */
   private until(): string { return new Date(this.now() + this.ttl).toISOString(); }
@@ -368,7 +387,7 @@ export class MemoryStore {
    * settlement a crash cut short, or a replacement that was forgotten or expired).
    */
   private promoteHeld(): void {
-    if (this.promoting) return;
+    if (this.promoting || this.deferPromotions) return;
     this.promoting = true;
     try {
       const settled = new Set((this.db.query("SELECT target FROM ops WHERE op = 'settle'").all() as { target: string }[]).map((r) => r.target));

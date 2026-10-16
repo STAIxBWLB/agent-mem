@@ -47,6 +47,14 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     done: { description: "Complete a goal", args: [{ name: "id" }], mutates: true },
     take: { description: "Take a goal lease", options: { "--force": flag("Override the prior lease") }, args: [{ name: "id" }], mutates: true },
   } },
+  review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
+    list: { description: "List review candidates", options: {
+      "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
+      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay"] }, "--limit": text("Maximum candidates (1..500)"),
+    } },
+    accept: { description: "Accept one candidate through the current memory policy", options: policy, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
+    reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
+  } },
   completion: { description: "Print static shell completion", args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
   help: { description: "Show help" }, version: { description: "Show version" },
 };
