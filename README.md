@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.1.0. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.1.1. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Install
 
@@ -122,6 +122,8 @@ try {
 }
 ```
 
+The root entry needs Bun (it loads `bun:sqlite`). Node hosts that need only the deny list, hardened git invocation, `realPath` or process identity import `@staix/agent-mem/platform`, which uses `node:` built-ins only.
+
 The entry point exports the store, types and identity helpers, sync and claude-mem import, project/home helpers, raw memory/goal command handlers, and platform helpers. Hosts inject their own privacy policy through `StoreOptions.screen`; CLI wrappers can supply screened reads and import policy through the raw command options.
 
 ## Development
@@ -138,8 +140,8 @@ CI runs the typecheck, boundary check and tests on Ubuntu and macOS with Bun 1.4
 
 ## Publishing
 
-The first publication is the person's responsibility. npm trusted publishing requires an existing package: first publish `@staix/agent-mem` manually, then configure its GitHub Actions trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml`. No publication is performed by this extraction task.
+0.1.0 was published once by hand, because npm trusted publishing requires an existing package; the trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml` was configured after it. Every later release goes through the tag workflow.
 
-After setup, a `v*` tag triggers both operating-system gates. The tag must equal `v` plus `package.json`'s version. Only after both gates pass does the release job run `npm publish --provenance --access public`, authenticated through GitHub OIDC with `id-token: write`. The workflow uses no `NPM_TOKEN`.
+After setup, a `v*` tag triggers both operating-system gates. The tag must equal `v` plus `package.json`'s version. Only after both gates pass does the release job install npm 11.20.0 (trusted publishing needs 11.5.1 or later) and run `npm publish --access public`, authenticated through GitHub OIDC with `id-token: write`; npm adds provenance itself. The workflow uses no `NPM_TOKEN`.
 
 License: MIT.
