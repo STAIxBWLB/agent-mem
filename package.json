@@ -1,0 +1,13 @@
+{
+  "name": "@staix/agent-mem",
+  "version": "0.0.0",
+  "description": "Curated, shared memory for coding agents: append-only logs, a derived index, tiers and a typed graph.",
+  "license": "MIT",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/STAIxBWLB/agent-mem.git" },
+  "engines": { "bun": ">=1.4.2" },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.8.0"
+  }
+}
