@@ -487,11 +487,15 @@ export class MemoryStore {
 
   /**
    * Every live note with its derived state; an expired one is left out as soon as its deadline passes, before any
-   * prune. ponytail: computed in memory over all rows; push the filters into SQL when the store grows.
+   * prune. Lifecycle relations still fold globally; SQL selects full rows before View/JSON materialization.
+   * ponytail: lifecycle metadata is still scanned on every read; measure before adding a revision cache.
    */
-  private views(expired = false): View[] {
-    const now = this.now();
-    const rows = this.db.query("SELECT * FROM entries").all() as Record<string, string | null>[];
+  private views(expired = false, selection?: Filter, expiredOnly = false): View[] {
+    const now = this.now(), selecting = selection !== undefined || expiredOnly;
+    // Relations may cross projects and promoted copies: fold their small metadata globally, never filtered bodies.
+    const rows = this.db.query(selecting
+      ? "SELECT id, at, tier, kind, task, expires, supersedes, promoted_from FROM entries"
+      : "SELECT * FROM entries").all() as Record<string, string | null>[];
     const ops = this.db.query("SELECT op, at, target, by FROM ops ORDER BY at, id").all() as { op: string; at: string; target: string; by: string | null }[];
     const forgotten = new Set(ops.filter((o) => o.op === "forget").map((o) => o.target));
     // Deadlines were fixed when the entries were written, so every process (whatever its own TTL) prunes the same rows.
@@ -550,8 +554,37 @@ export class MemoryStore {
     }
     const supersedes = new Map<string, string[]>(); // the reverse: what each newer entry replaced
     for (const [old, newer] of superseded) supersedes.set(newer, [...(supersedes.get(newer) ?? []), old]);
+    let candidates = rows;
+    if (selecting) {
+      const hidden: string[] = [], expiredIds: string[] = [];
+      for (const r of rows) {
+        const id = r.id!;
+        if (forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) { hidden.push(id); continue; }
+        const at = expiry(r);
+        if (at !== null && Date.parse(at) <= now) expiredIds.push(id);
+      }
+      const where: string[] = [], bind: string[] = [];
+      const ids = (values: Iterable<string>, exclude: boolean) => {
+        const entries = [...values];
+        if (entries.length || !exclude) { where.push(`id ${exclude ? "NOT IN" : "IN"} (SELECT value FROM json_each(?))`); bind.push(JSON.stringify(entries)); }
+      };
+      ids(hidden, true);
+      if (expiredOnly) ids(expiredIds, false); else if (!expired) ids(expiredIds, true);
+      if (selection) {
+        if (selection.project) { where.push("(project = ? OR scope = 'shared')"); bind.push(selection.project); }
+        if (selection.tier) {
+          if (demoted.size) { where.push("CASE WHEN id IN (SELECT value FROM json_each(?)) THEN 'short' ELSE tier END = ?"); bind.push(JSON.stringify([...demoted.keys()]), selection.tier); }
+          else { where.push("tier = ?"); bind.push(selection.tier); }
+        }
+        for (const key of ["kind", "peer", "machine"] as const) if (selection[key]) { where.push(`${key} = ?`); bind.push(selection[key]!); }
+        if (!selection.includeSuperseded) ids(superseded.keys(), true);
+      }
+      // No SQL LIMIT: a host may screen the complete matching set before its own caps or visible counts.
+      // Date parsing, Unicode query matching, locale order and slice semantics stay in JavaScript.
+      candidates = this.db.query(`SELECT * FROM entries${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`).all(...bind) as Record<string, string | null>[];
+    }
     const out: View[] = [];
-    for (const r of rows) {
+    for (const r of candidates) {
       const id = r.id!;
       // A forgotten entry is gone, and so is its promoted copy's source or copy: forgetting either forgets both.
       if (forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) continue;
@@ -571,7 +604,7 @@ export class MemoryStore {
    */
   prune(): number {
     const now = this.now();
-    const expired = this.views(true).filter((v) => v.expiresAt !== null && Date.parse(v.expiresAt) <= now);
+    const expired = this.views(true, undefined, true).filter((v) => v.expiresAt !== null && Date.parse(v.expiresAt) <= now);
     // A copy that expires (it was demoted) takes its whole hidden promotion ancestry with it, or an ancestor would reappear.
     const parent = new Map((this.db.query("SELECT id, promoted_from FROM entries WHERE promoted_from IS NOT NULL").all() as { id: string; promoted_from: string }[]).map((r) => [r.id, r.promoted_from]));
     const gone = new Set<string>();
@@ -591,9 +624,9 @@ export class MemoryStore {
    * What a read sees: rows that expired and promotions that became due while the store sat idle are settled first, so a
    * read, and the index after it, never differ from a rebuild.
    */
-  private live(): View[] {
+  private live(selection?: Filter): View[] {
     this.ensureFresh();
-    this.prune(); this.promoteHeld(); return this.views();
+    this.prune(); this.promoteHeld(); return this.views(false, selection);
   }
   /** A write whose index update failed: the next read refreshes first. */
   private stale = false;
@@ -601,7 +634,7 @@ export class MemoryStore {
   /** Entries visible from `project` (its own, and `shared` ones of any project), newest first, filtered. */
   list(f: Filter = {}): View[] {
     const q = f.q?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
-    return this.live().filter((v) => (!f.project || v.project === f.project || v.scope === "shared") && (!f.tier || v.tier === f.tier) && (!f.kind || v.kind === f.kind)
+    return this.live(f).filter((v) => (!f.project || v.project === f.project || v.scope === "shared") && (!f.tier || v.tier === f.tier) && (!f.kind || v.kind === f.kind)
       && (!f.peer || v.peer === f.peer) && (!f.machine || v.machine === f.machine) && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)
       && q.every((w) => `${v.title ?? ""}\n${v.text}\n${v.about.join(" ")}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
