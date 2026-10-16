@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { legacyEntries, legacyHead, readLegacySnapshot, type LegacyCheckpoint } from "./bridge.ts";
 import { acquireMutation } from "./mutation.ts";
@@ -32,6 +32,7 @@ export interface MigrationResult {
   alreadyActive?: boolean;
   consequence: string;
 }
+export type MigrationCheckpoint = "after-seal" | "before-selector" | "after-selector";
 export interface MigrateOptions {
   /** Direct M, with no historical parent-home conversion. */
   memoryDir: string;
@@ -42,6 +43,8 @@ export interface MigrateOptions {
   /** Trusted builder must verify complete incremental/rebuild table equality. Injection is for crash fixtures. */
   buildIndex?: (profile: BoundProfile, sources: readonly SourcePrefix[], legacyCommit?: string) => void | Promise<void>;
   now?: () => number;
+  /** Trusted fault-injection callback for crash recovery fixtures; no protocol data or authority. */
+  checkpoint?: (stage: MigrationCheckpoint) => void | Promise<void>;
 }
 const changed = (): never => { throw new Error("migration source or selector changed; inspect local migration state before continuing"); };
 const consequence = "Generation writes never enter shared v1; legacy writers may continue. Deactivation omits generation-only notes and prune decisions.";
@@ -76,11 +79,11 @@ async function defaultBuild(profile: BoundProfile, sources: readonly SourcePrefi
   const core = await import("./store.ts");
   await core.buildGenerationIndex(profile, sources, legacyCommit);
 }
-async function counts(memoryDir: string, generation: string | undefined, now: number): Promise<MigrationCounts> {
+async function counts(memoryDir: string, generation: string | undefined, now: number, limits?: readonly SourcePrefix[], capturedCommit?: string): Promise<MigrationCounts> {
   const core = await import("./store.ts");
   let skippedRows = 0;
-  const commit = generation ? legacyHead(memoryDir, generation) : undefined;
-  const segments = readLegacySnapshot(memoryDir, { generation, commit, onMalformed: () => skippedRows++ });
+  const commit = capturedCommit ?? (generation ? legacyHead(memoryDir, generation) : undefined);
+  const segments = readLegacySnapshot(memoryDir, { generation, commit, ...(limits ? { limits } : {}), onMalformed: () => skippedRows++ });
   const rows = legacyEntries(segments, { onMalformed: () => {} });
   const result = core.summarizeRawExpiry(rows.map(row => canonicalJSON(row)), now, segments.reduce((sum, source) => sum + source.tailBytes, 0));
   return { ...result, skippedRows };
@@ -98,26 +101,38 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
   if (options.authorizedPerson !== true || options.tty !== true) throw new Error("migration requires an authorized person in a terminal");
   if (!["dry-run", "apply", "resume", "deactivate"].includes(options.mode) || options.generation !== undefined && !validGeneration(options.generation)) throw new Error("invalid migration request");
   const memoryDir = existsSync(options.memoryDir) ? realPath(options.memoryDir) : canonicalPath(options.memoryDir);
-  const initial = resolveProfile(memoryDir);
+  const selection = readSelector(memoryDir);
+  // Explicit undo reads only the selector: broken/missing G must not make the escape back to v1 impossible.
+  const selectedG = selection.selector?.kind === "generation" ? selection.selector.generation : undefined;
+  const initial: BoundProfile = options.mode === "deactivate"
+    ? { kind: selectedG ? "generation" : "shared-v1", home: memoryDir, dir: selectedG ? join(memoryDir, "generations", selectedG) : memoryDir, generation: selectedG, selectorRevision: selection.revision }
+    : resolveProfile(memoryDir);
   if (options.mode === "dry-run") {
     return { mode: options.mode, profile: initial, counts: await counts(memoryDir, options.generation ?? initial.generation, (options.now ?? Date.now)()), consequence };
   }
-  // No directory/identity is silently initialized by migration itself.
-  const machine = identity(memoryDir);
   return withProfileLock(memoryDir, async () => {
     const selected = readSelector(memoryDir);
     if (selected.revision !== initial.selectorRevision) return changed();
     if (options.mode === "deactivate") {
-      if (initial.kind === "generation") {
-        const releaseGeneration = acquireMutation(initial.dir);
-        if (!releaseGeneration) throw new Error("generation mutation lock is busy");
-        try {
+      let releaseGeneration: (() => void) | undefined;
+      try {
+        if (initial.kind === "generation") {
+          // Use an existing safe fence when available; never create, repair or validate corrupt generation state.
+          const parent = join(memoryDir, "generations"), file = join(initial.dir, "mutation-lock.db");
+          const safeDirectory = (path: string) => existsSync(path) && lstatSync(path).isDirectory() && !lstatSync(path).isSymbolicLink();
+          if (safeDirectory(parent) && safeDirectory(initial.dir) && existsSync(file) && lstatSync(file).isFile() && !lstatSync(file).isSymbolicLink()) {
+            let unavailable = false;
+            try { releaseGeneration = acquireMutation(initial.dir); } catch { unavailable = true; }
+            if (!unavailable && !releaseGeneration) throw new Error("generation mutation lock is busy");
+          }
           if (readSelector(memoryDir).revision !== initial.selectorRevision) return changed();
           writeProfileJSON(join(memoryDir, "profile.json"), { schema: "agent-mem.profile/v1", kind: "shared-v1" });
-        } finally { releaseGeneration(); }
-      }
-      return { mode: options.mode, profile: resolveProfile(memoryDir), consequence };
+        }
+        return { mode: options.mode, profile: resolveProfile(memoryDir), consequence };
+      } finally { releaseGeneration?.(); }
     }
+    // Migration apply/resume never initialize an absent or invalid legacy identity.
+    const machine = identity(memoryDir);
     let journal: MigrationJournal;
     if (options.mode === "resume") {
       journal = readJournal(memoryDir);
@@ -125,7 +140,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
     } else {
       if (initial.kind === "generation") {
         if (options.generation !== undefined && options.generation !== initial.generation) throw new Error("deactivate the current generation before selecting another");
-        return { mode: options.mode, profile: initial, alreadyActive: true, consequence };
+        return { mode: options.mode, profile: initial, alreadyActive: true, counts: await counts(memoryDir, initial.generation, (options.now ?? Date.now)()), consequence };
       }
       if (existsSync(journalAt(memoryDir))) {
         const previous = readJournal(memoryDir);
@@ -167,7 +182,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
     if (selected.selector?.kind === "generation" && selected.selector.generation === journal.generation) {
       const profile = resolveProfile(memoryDir);
       journal.phase = "active"; rememberJournal(memoryDir, journal);
-      return { mode: options.mode, profile, alreadyActive: true, consequence };
+      return { mode: options.mode, profile, alreadyActive: true, counts: await counts(memoryDir, journal.generation, (options.now ?? Date.now)(), journal.sources, journal.legacyCommit), consequence };
     }
     if (selected.revision !== journal.selectorRevision) return changed();
     if (canonicalJSON(readProfileJSON(join(dir, "generation.json"))) !== canonicalJSON(generationDescriptor(journal.generation))
@@ -185,13 +200,17 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
         writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation: journal.generation,
           descriptorHash: hashJSON(generationDescriptor(journal.generation)), sourceDigest: hashJSON({ sources: journal.sources, legacyCommit: journal.legacyCommit }) });
         journal.phase = "sealed"; rememberJournal(memoryDir, journal);
+        if (options.checkpoint) await options.checkpoint("after-seal");
       }
       verifySources(memoryDir, journal.generation, journal.sources, journal.legacyCommit);
       resolveProfile(memoryDir, { generation: journal.generation });
+      if (options.checkpoint) await options.checkpoint("before-selector");
       if (readSelector(memoryDir).revision !== journal.selectorRevision) return changed();
+      verifySources(memoryDir, journal.generation, journal.sources, journal.legacyCommit);
       writeProfileJSON(join(memoryDir, "profile.json"), { schema: "agent-mem.profile/v1", kind: "generation", generation: journal.generation });
+      if (options.checkpoint) await options.checkpoint("after-selector");
       journal.phase = "active"; rememberJournal(memoryDir, journal);
-      return { mode: options.mode, profile: resolveProfile(memoryDir), consequence };
+      return { mode: options.mode, profile: resolveProfile(memoryDir), counts: await counts(memoryDir, journal.generation, (options.now ?? Date.now)(), journal.sources, journal.legacyCommit), consequence };
     } finally { releaseGeneration(); }
   });
 }

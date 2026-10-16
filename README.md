@@ -164,6 +164,10 @@ This section describes the generation-capable development build, not the publish
 
 Shared v1 remains the default until a person explicitly migrates the memory home. A generation uses `M/generations/G/` and a separate Git repository/ref (`refs/heads/amem/gen/G`); legacy directories and `main` are unchanged. The one-way readonly bridge consumes complete validated legacy prefixes without using the old index or writing legacy notes. Old programs continue using their legacy view, and generation-created notes never flow back to it.
 
+Complete malformed legacy lines (invalid JSON, unknown operations or mismatched content IDs) are skipped and counted, matching shared-v1 handling. Migration dry-run/apply and the person's human CLI status report the skipped count without printing the bodies; JSON list output stays an array of notes. Prefix rewrites, truncation and non-fast-forward legacy history still refuse access. A generation never promotes a bridged note or applies its own settlement to one; only generation-born notes receive generation settlements and promotions.
+
+Generation bridge reads use plain-file snapshots captured during explicit legacy sync and never invoke Git. Unchanged segments use metadata checkpoints without reading or hashing the data, including after reopen. A seeded live handle hashes only the appended suffix, while comparing existing prefix bytes on changed input; the first changed read by a cold handle and an explicit rebuild verify the full prefix. These are read-path bounds, not a latency or speedup promise.
+
 The following interfaces are for a person's terminal and an already initialized synthetic memory home. They do not authorize real-data migration. Use the same current project directory throughout planning and apply:
 
 ```sh
@@ -179,6 +183,8 @@ AMEM_HOME=/path/to/synthetic-memory amem migrate --deactivate
 ```
 
 All migrate/prune modes, including dry-run, refuse agent markers and require stdin TTY. `--generation <32-hex-G>` selects an explicitly named generation during migration/join; it is never discovered and activated from a remote automatically. Invalid active metadata blocks access rather than silently opening shared v1. Existing handles remain bound to the profile they opened; a selector change does not restart or rebind a running hub.
+
+Explicit `--deactivate` is the recovery path even when the selected generation is corrupt or missing. It reads the selector under the home-wide profile lock, selects shared v1 and retains all generation and legacy data. Normal reads still refuse corrupt active state. Shared-v1 sync keeps its pre-generation Git invocation and caller environment; generation-only sync adds repository-environment isolation and a private child-process umask.
 
 A prune plan is a person-local JSON receipt containing exact target/basis hashes, selector/project/policy revisions, fixed row bytes, local counts and a seal. Apply commits that same receipt after revalidation; it is not an authorization token. Maximums are 256 KiB per plan, 16 rows, 256 targets, and 32 targets/16 KiB per row. Larger automatic selections report `hasMore`; another plan handles remaining targets. Keep redirected plans private and out of source control, model context and sync.
 

@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { readLegacySnapshot, legacyEntries, legacyHead, type LegacyCheckpoint } from "../src/memory/bridge.ts";
+import { readLegacySnapshot, legacyEntries, legacyHead, captureLegacyMain, SegmentReader, type LegacyCheckpoint } from "../src/memory/bridge.ts";
 import { entryId, type Entry } from "../src/memory/store.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
 
@@ -25,7 +25,7 @@ function note(text = "legacy contract", local = false): Entry {
 }
 const line = (row: Entry) => JSON.stringify(row) + "\n";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-const receipt = (rows: ReturnType<typeof readLegacySnapshot>): LegacyCheckpoint[] => rows.map(({ source, path, offset, hash, commit, tailBytes }) => ({ source, path, offset, hash, tailBytes, ...(commit ? { commit } : {}) }));
+const receipt = (rows: ReturnType<typeof readLegacySnapshot>): LegacyCheckpoint[] => rows.map(({ source, path, offset, hash, commit, tailBytes, stamp }) => ({ source, path, offset, hash, tailBytes, ...(stamp ? { stamp } : {}), ...(commit ? { commit } : {}) }));
 function treeBytes(root: string, path = ""): Record<string, string> {
   return Object.fromEntries(readdirSync(join(root, path), { withFileTypes: true }).flatMap(entry => {
     const relative = path ? `${path}/${entry.name}` : entry.name;
@@ -37,18 +37,22 @@ function git(dir: string, ...args: string[]): string {
   if (result.status !== 0) throw new Error(`fixture git failed: ${result.stderr}`);
   return result.stdout.trim();
 }
-function cache(root: string) {
+function cache(root: string, empty = false) {
   const remote = temp(), dir = join(root, "generations", generation, "bridge.git");
   git(remote, "init", "-b", "main");
   mkdirSync(join(remote, "log")); mkdirSync(join(remote, "local"));
   const row = note("cached legacy contract");
-  writeFileSync(join(remote, "log", `${other}.jsonl`), line(row));
-  writeFileSync(join(remote, "local", `${other}.jsonl`), line(note("remote local must be excluded", true)));
-  git(remote, "add", "."); git(remote, "commit", "-m", "fixture legacy main");
+  if (!empty) {
+    writeFileSync(join(remote, "log", `${other}.jsonl`), line(row));
+    writeFileSync(join(remote, "local", `${other}.jsonl`), line(note("remote local must be excluded", true)));
+  }
+  git(remote, "add", "."); git(remote, "commit", ...(empty ? ["--allow-empty"] : []), "-m", "fixture legacy main");
   mkdirSync(join(root, "generations", generation), { recursive: true });
   git(root, "init", "--bare", dir);
   git(dir, "fetch", remote, "+refs/heads/main:refs/remotes/legacy/main");
-  return { remote, dir, row, commit: git(remote, "rev-parse", "HEAD") };
+  const commit = git(remote, "rev-parse", "HEAD");
+  captureLegacyMain(root, generation, commit);
+  return { remote, dir, row, commit };
 }
 
 test("bridge reads raw root segments and only this machine's local rows without any legacy writes", () => {
@@ -100,7 +104,9 @@ test("bridge validates schema and full content IDs and deduplicates canonically 
   expect(legacyEntries(readLegacySnapshot(root))).toEqual([row]);
   for (const bad of [{ ...row, text: "changed under existing ID" }, { ...row, schema: "future-schema" }, { ...row, op: "prune" }, { ...row, about: "not an array" }]) {
     writeFileSync(join(root, "log", `${other}.jsonl`), JSON.stringify(bad) + "\n");
-    expect(() => readLegacySnapshot(root)).toThrow("person inspection required");
+    let skipped = 0;
+    expect(legacyEntries(readLegacySnapshot(root, { onMalformed: () => skipped++ }))).toEqual([row]);
+    expect(skipped).toBe(1);
   }
 });
 
@@ -120,6 +126,7 @@ test("bridge uses only pinned cached legacy main blobs, ignores remote locals an
   expect(readLegacySnapshot(root, { generation })).toEqual(snapshot);
   git(cached.dir, "fetch", cached.remote, "+refs/heads/main:refs/remotes/legacy/main");
   expect(readLegacySnapshot(root, { generation, commit: cached.commit })).toEqual(snapshot);
+  captureLegacyMain(root, generation, git(cached.remote, "rev-parse", "HEAD"), cached.commit);
   expect(legacyEntries(readLegacySnapshot(root, { generation, checkpoints: receipt(snapshot) }))).toEqual([cached.row, late]);
 });
 
@@ -128,7 +135,9 @@ test("bridge rejects cached non-fast-forward legacy histories even with unchange
   git(cached.remote, "checkout", "--orphan", "rewritten");
   git(cached.remote, "add", "."); git(cached.remote, "commit", "-m", "fixture rewritten ancestry");
   git(cached.dir, "fetch", cached.remote, "+refs/heads/rewritten:refs/remotes/legacy/main");
-  expect(() => readLegacySnapshot(root, { generation, checkpoints })).toThrow("person inspection required");
+  expect(() => captureLegacyMain(root, generation, git(cached.remote, "rev-parse", "HEAD"), cached.commit)).toThrow("person inspection required");
+  expect(legacyHead(root, generation)).toBe(cached.commit);
+  expect(readLegacySnapshot(root, { generation, checkpoints })).toBeDefined();
 });
 
 test("bridge rejects source file, source directory and generation cache symlinks", () => {
@@ -140,15 +149,16 @@ test("bridge rejects source file, source directory and generation cache symlinks
       mkdirSync(join(root, "generations", generation), { recursive: true });
       symlinkSync(outside, join(root, "generations", generation, "bridge.git"), "dir");
     } else { rmSync(join(root, target), { recursive: true }); symlinkSync(outside, join(root, target), "dir"); }
-    expect(() => readLegacySnapshot(root, target === "cache" ? { generation } : {})).toThrow();
+    if (target === "cache") expect(() => captureLegacyMain(root, generation, "a".repeat(40))).toThrow();
+    else expect(() => readLegacySnapshot(root)).toThrow();
   }
 });
 
 
-test("bridge dry-run malformed inspection is opt-in and never skips unsupported ops or conflicting content IDs", () => {
+test("bridge skips and counts malformed legacy rows consistently while strict generation validation remains available", () => {
   const root = fixture(), row = note(), path = join(root, "log", `${own}.jsonl`);
   writeFileSync(path, line(row) + "malformed JSON\n" + JSON.stringify({ schema: "agent-hub.memory/v1" }) + "\n");
-  expect(() => readLegacySnapshot(root)).toThrow("person inspection required");
+  expect(legacyEntries(readLegacySnapshot(root))).toEqual([row]);
   let skipped = 0;
   const before = treeBytes(root), snapshot = readLegacySnapshot(root, { onMalformed: () => skipped++ });
   expect(skipped).toBe(2);
@@ -158,20 +168,21 @@ test("bridge dry-run malformed inspection is opt-in and never skips unsupported 
   expect(treeBytes(root)).toEqual(before);
   for (const bad of [{ ...row, text: "different content under original ID" }, { ...row, op: "future_operation" }, { ...row, op: "prune" }]) {
     writeFileSync(path, JSON.stringify(bad) + "\n");
-    expect(() => readLegacySnapshot(root, { onMalformed: () => skipped++ })).toThrow("person inspection required");
+    const invalid = readLegacySnapshot(root, { onMalformed: () => skipped++ });
+    expect(legacyEntries(invalid)).toEqual([]);
+    expect(() => legacyEntries(invalid, { strict: true })).toThrow("person inspection required");
   }
 });
 
 test("bridge previousCommit detects rewritten cached history even when the prior tree contained no segments", () => {
-  const root = fixture(), cached = cache(root);
-  git(cached.remote, "rm", "-r", "log", "local"); git(cached.remote, "commit", "-m", "fixture empty legacy tree");
-  git(cached.dir, "fetch", cached.remote, "+refs/heads/main:refs/remotes/legacy/main");
-  const previousCommit = legacyHead(root, generation)!;
+  const root = fixture(), cached = cache(root, true);
+  const previousCommit = cached.commit;
   expect(readLegacySnapshot(root, { generation })).toEqual([]);
   git(cached.remote, "checkout", "--orphan", "different-empty-root");
   git(cached.remote, "commit", "--allow-empty", "-m", "fixture unrelated empty history");
   git(cached.dir, "fetch", cached.remote, "+refs/heads/different-empty-root:refs/remotes/legacy/main");
-  expect(() => readLegacySnapshot(root, { generation, previousCommit })).toThrow("person inspection required");
+  expect(() => captureLegacyMain(root, generation, git(cached.remote, "rev-parse", "HEAD"), previousCommit)).toThrow("person inspection required");
+  expect(legacyHead(root, generation)).toBe(previousCommit);
 });
 
 
@@ -188,4 +199,62 @@ test("bridge cache reads ignore inherited common-dir object-dir and namespace ro
     }
   } finally { for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } }
   expect(treeBytes(root)).toEqual(before);
+});
+
+
+test("explicit cache capture rejects a rewritten prefix even when legacy main fast-forwards and grows", () => {
+  const root = fixture(), cached = cache(root), prior = legacyHead(root, generation);
+  writeFileSync(join(cached.remote, "log", `${other}.jsonl`), line(note("rewritten prefix")) + line(note("new suffix")));
+  git(cached.remote, "add", "."); git(cached.remote, "commit", "-m", "fixture rewrite plus append");
+  git(cached.dir, "fetch", cached.remote, "+refs/heads/main:refs/remotes/legacy/main");
+  expect(() => captureLegacyMain(root, generation, git(cached.remote, "rev-parse", "HEAD"), cached.commit)).toThrow("person inspection required");
+  expect(legacyHead(root, generation)).toBe(prior);
+});
+
+
+test("explicit cache capture resumes past interrupted private temp files without replacing mismatched immutable finals", () => {
+  const root = fixture(), cached = cache(root);
+  appendFileSync(join(cached.remote, "log", `${other}.jsonl`), line(note("captured after interrupted temp")));
+  git(cached.remote, "add", "."); git(cached.remote, "commit", "-m", "fixture capture retry");
+  git(cached.dir, "fetch", cached.remote, "+refs/heads/main:refs/remotes/legacy/main");
+  const next = git(cached.remote, "rev-parse", "HEAD"), dir = join(root, "generations", generation, "bridge-snapshots", next, "log");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const orphan = join(dir, `.${other}.jsonl.interrupted.tmp`); writeFileSync(orphan, "partial private temporary data", { mode: 0o600 });
+  expect(legacyHead(root, generation)).toBe(cached.commit);
+  captureLegacyMain(root, generation, next, cached.commit);
+  expect(legacyHead(root, generation)).toBe(next);
+  expect(readFileSync(join(dir, `${other}.jsonl`), "utf8")).toBe(readFileSync(join(cached.remote, "log", `${other}.jsonl`), "utf8"));
+  expect(readFileSync(orphan, "utf8")).toBe("partial private temporary data");
+  captureLegacyMain(root, generation, next, next); // Matching immutable files cross the durability fence on retry.
+  expect(legacyHead(root, generation)).toBe(next);
+  writeFileSync(join(dir, `${other}.jsonl`), "mismatched final bytes");
+  expect(() => captureLegacyMain(root, generation, next, next)).toThrow("person inspection required");
+});
+
+
+test("ordinary immutable archive reads retain no historical corpus in the live-prefix heap cache", () => {
+  const root = fixture(), cached = cache(root), reader = new SegmentReader();
+  let checkpoints: LegacyCheckpoint[] = [];
+  for (let phase = 0; phase < 3; phase++) {
+    const snapshot = readLegacySnapshot(root, { generation, reader, incremental: true, checkpoints });
+    checkpoints = receipt(snapshot);
+    expect((reader as unknown as { prefixes: Map<string, unknown> }).prefixes.size).toBe(0);
+    if (phase < 2) {
+      const previous = legacyHead(root, generation)!;
+      appendFileSync(join(cached.remote, "log", `${other}.jsonl`), line(note(`later archived row ${phase}`)));
+      git(cached.remote, "add", "."); git(cached.remote, "commit", "-m", `fixture archive ${phase}`);
+      git(cached.dir, "fetch", cached.remote, "+refs/heads/main:refs/remotes/legacy/main");
+      captureLegacyMain(root, generation, git(cached.remote, "rev-parse", "HEAD"), previous);
+    }
+  }
+});
+
+
+test("ordinary archived blob reads reject a symlinked log parent even when outside bytes match the captured hash", () => {
+  const root = fixture(), cached = cache(root), outside = temp();
+  const log = join(root, "generations", generation, "bridge-snapshots", cached.commit, "log");
+  writeFileSync(join(outside, `${other}.jsonl`), line(cached.row));
+  renameSync(log, `${log}-retained`);
+  symlinkSync(outside, log, "dir");
+  expect(() => readLegacySnapshot(root, { generation })).toThrow("person inspection required");
 });

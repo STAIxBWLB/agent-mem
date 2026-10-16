@@ -18,6 +18,23 @@ const STEP_MS = 60_000;
 
 async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
+  const p = Bun.spawn(memoryGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv() });
+  // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
+  let hard: ReturnType<typeof setTimeout> | undefined;
+  const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };
+  const timer = setTimeout(kill, ms);
+  signal?.addEventListener("abort", kill, { once: true });
+  try {
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out: out.trim(), err: err.trim() };
+  } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
+}
+
+export { git as syncGit };
+
+/** Generation-only process isolation; shared-v1 above retains its pre-P9 spawn and environment contract. */
+export async function generationSyncGit(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
+  if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
   // A fixed child-only umask keeps Git-created metadata private without changing the daemon's process umask.
   // Args are positional shell parameters, never interpolated or evaluated as shell code.
   const p = Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
@@ -32,7 +49,6 @@ async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_
   } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
 }
 
-export { git as syncGit };
 
 /** GitHub remotes are asked through `gh`; any other host, or a `gh` that cannot answer, is unknown. */
 export async function remoteVisibility(url: string): Promise<Visibility> {

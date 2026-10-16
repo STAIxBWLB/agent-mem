@@ -8,6 +8,7 @@ import { MemoryStore as LegacyV02 } from "@staix/agent-mem-v02";
 import { MemoryStore, entryId, type NoteInput } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { canonicalJSON } from "../src/memory/generation.ts";
 import { planPrune, applyPrune, type PruneAuthorization } from "../src/memory/prune.ts";
 import { derivedTables } from "./contract/replay.ts";
 
@@ -149,16 +150,27 @@ for (const reader of readers) {
 
 test("C05 real generation prune survives backward clock and every derived-table rebuild without legacy changes", async () => {
   const f = await fixture(), legacyBefore = rootBytes(f.memoryDir);
+  const authoredBefore = { log: segmentBytes(f.store.dir, "log"), local: segmentBytes(f.store.dir, "local") };
   expect(f.store.get(f.seed, PROJECT)).toBeDefined();
   f.clock(DEADLINE + 1);
   const plan = prune(f.store, f.seed, f.now());
+  const authoredAfter = { log: segmentBytes(f.store.dir, "log"), local: segmentBytes(f.store.dir, "local") };
+  const expectedAuthored = structuredClone(authoredBefore);
+  for (const { payload, placement } of plan.rows) {
+    const folder = placement === "local" ? "local" : "log", file = `${payload.machine}.jsonl`;
+    expectedAuthored[folder][file] = (expectedAuthored[folder][file] ?? "") + canonicalJSON(payload) + "\n";
+  }
+  expect(authoredAfter).toEqual(expectedAuthored); // Every authored byte, not only prune row count.
   expect(plan.rows[0]?.payload.targets.map(target => target.id)).toEqual([f.seed]);
   expect(f.store.list({ project: PROJECT, q: "legacy finite" })).toEqual([]);
+  expect(f.store.counts(PROJECT)).toMatchObject({ short: 0, long: 1 });
   const beforeRollback = derivedTables(f.store.dir);
   expect(Object.keys(beforeRollback)).toEqual(expect.arrayContaining(["entries", "ops", "edges", "goals", "heads", "segments", "generation_rows", "generation_prunes", "generation_targets", "generation_segments", "generation_state"]));
   f.clock(START - 1000);
   expect(f.store.get(f.seed, PROJECT)).toBeUndefined();
   expect(f.store.get(f.seed.slice(0, 8), PROJECT)).toBeUndefined();
+  expect(f.store.list({ project: PROJECT, q: "legacy finite" })).toEqual([]);
+  expect(f.store.counts(PROJECT)).toMatchObject({ short: 0, long: 1 });
   expect(f.store.related(PROJECT, ["path:src/public.ts"], 100).some(row => row.id === f.seed)).toBe(false);
   expect(f.store.graph(PROJECT, `mem:${f.seed}`, 2)).toEqual({ nodes: [], edges: [] });
   const graph = f.store.graph(PROJECT, "path:src/public.ts", 2);
@@ -169,6 +181,7 @@ test("C05 real generation prune survives backward clock and every derived-table 
   f.store.rebuild(); expect(derivedTables(f.store.dir)).toEqual(beforeRollback);
   expect(f.store.get(f.seed, PROJECT)).toBeUndefined();
   expect(rootBytes(f.memoryDir)).toEqual(legacyBefore);
+  expect({ log: segmentBytes(f.store.dir, "log"), local: segmentBytes(f.store.dir, "local") }).toEqual(authoredAfter);
   expect(allRows(f.store.dir, "local").filter(row => row.op === "prune")).toHaveLength(1);
 });
 

@@ -9,6 +9,8 @@ export interface MemoryCommandOptions {
   open: () => MemoryStore;
   readable: (notes: View[]) => View[];
   importPolicy: () => (text: string) => boolean;
+  /** Explicit person-status receipt; model-facing hosts omit this callback. */
+  onBridgeStatus?: (status: { skippedRows: number } | undefined) => void;
 }
 export interface GoalCommandOptions {
   store?: MemoryStore;
@@ -129,7 +131,10 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       case "rebuild": { store.rebuild(); const c = store.counts(); return `rebuilt the index from ${c.segments} segment${c.segments === 1 ? "" : "s"}: ${c.long} long-term, ${c.short} short-term entries`; }
       default: return fail(MEMORY_USAGE);
     }
-  } finally { if (!opts.store) store.close(); }
+  } finally {
+    try { opts.onBridgeStatus?.(store.bridgeStatus()); }
+    finally { if (!opts.store) store.close(); }
+  }
 }
 
 const goalOne = (g: GoalView, me: string) => `${g.id.slice(0, 8)}  ${g.state.padEnd(7)} ${g.title}${g.scope === "shared" ? "  [shared]" : ""}  ${leaseText(g, me)}`;

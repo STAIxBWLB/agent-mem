@@ -419,6 +419,7 @@ export class MemoryStore {
    */
   promote(id: string, actor: string, project?: string, auto = false): string | undefined {
     const v = this.get(id, project);
+    if (v && this.generationIndex && !this.generationIndex.own(v.id)) return undefined;
     if (!v || v.tier !== "short") return v?.id;
     if (v.supersededBy) return undefined;
     // Screened here, whatever asked: a note saved under an older policy must not reach the synced log under a newer one.
@@ -447,11 +448,15 @@ export class MemoryStore {
   }
   private promoteSettled(task: string, actor: string): number {
     // Only the notes held for promotion (no deadline): one saved short-term after the settlement stays short-term.
-    const moving = this.views().filter((v) => v.task === task && v.tier === "short" && v.local && !v.supersededBy && v.expiresAt === null && PROMOTED_KINDS.includes(v.kind));
+    const moving = this.views().filter((v) => (!this.generationIndex || this.generationIndex.own(v.id)) && v.task === task && v.tier === "short" && v.local && !v.supersededBy && v.expiresAt === null && PROMOTED_KINDS.includes(v.kind));
     return moving.filter((v) => this.promote(v.id, actor, undefined, true) !== undefined).length;
   }
   /** Whether a task was ever settled, for the hub's reconciliation of approvals a crash cut off before their settle entry. */
-  settled(task: string): boolean { return !!this.db.query("SELECT 1 FROM ops WHERE op = 'settle' AND target = ?").get(task); }
+  settled(task: string): boolean {
+    return !!this.db.query(this.generationIndex
+      ? "SELECT 1 FROM ops JOIN generation_rows ON generation_rows.id=ops.id WHERE op='settle' AND target=? AND own=1"
+      : "SELECT 1 FROM ops WHERE op = 'settle' AND target = ?").get(task);
+  }
   /** Whether any entry was saved against the task. */
   hasTask(task: string): boolean { return !!this.db.query("SELECT 1 FROM entries WHERE task = ?").get(task); }
   private promoting = false;
@@ -464,7 +469,9 @@ export class MemoryStore {
     if (this.promoting || this.deferPromotions) return;
     this.promoting = true;
     try {
-      const settled = new Set((this.db.query("SELECT target FROM ops WHERE op = 'settle'").all() as { target: string }[]).map((r) => r.target));
+      const settled = new Set((this.db.query(this.generationIndex
+        ? "SELECT target FROM ops JOIN generation_rows ON generation_rows.id=ops.id WHERE op='settle' AND own=1"
+        : "SELECT target FROM ops WHERE op = 'settle'").all() as { target: string }[]).map((r) => r.target));
       if (!settled.size) return;
       for (const v of this.views()) {
         if (this.generationIndex && !this.generationIndex.own(v.id)) continue; // The bridge never auto-promotes legacy inputs.
@@ -599,13 +606,23 @@ export class MemoryStore {
     const rows = this.db.query(selecting
       ? "SELECT id, at, tier, kind, task, expires, supersedes, promoted_from FROM entries"
       : "SELECT * FROM entries").all() as Record<string, string | null>[];
-    const ops = this.db.query("SELECT op, at, target, by FROM ops ORDER BY at, id").all() as { op: string; at: string; target: string; by: string | null }[];
+    const ops = this.db.query("SELECT id, op, at, target, by FROM ops ORDER BY at, id").all() as { id: string; op: string; at: string; target: string; by: string | null }[];
+    const realms = this.generationIndex ? new Map((this.db.query("SELECT id,own,legacy FROM generation_rows").all() as { id: string; own: number; legacy: number }[]).map(row => [row.id, row])) : undefined;
+    const born = realms ? new Set([...realms.values()].filter(row => row.own).map(row => row.id)) : undefined;
     const forgotten = new Set(ops.filter((o) => o.op === "forget").map((o) => o.target));
     // Deadlines were fixed when the entries were written, so every process (whatever its own TTL) prunes the same rows.
     const deadline = (o: { at: string; by: string | null }) => o.by && !Number.isNaN(Date.parse(o.by)) ? o.by : new Date(Date.parse(o.at) + this.ttl).toISOString();
     const demoted = new Map(ops.filter((o) => o.op === "demote").map((o) => [o.target, deadline(o)]));
     const settled = new Map<string, string>();
-    for (const o of ops) if (o.op === "settle" && !settled.has(o.target)) settled.set(o.target, deadline(o));
+    const settlementKey = (id: string, task: string) => born ? `${born.has(id)}:${task}` : task;
+    for (const o of ops) if (o.op === "settle") {
+      const source = realms?.get(o.id);
+      const keys = !realms ? [o.target] : [
+        ...(source?.own ? [`true:${o.target}`] : []),
+        ...(source?.legacy || !source?.own ? [`false:${o.target}`] : []),
+      ];
+      for (const key of keys) if (!settled.has(key)) settled.set(key, deadline(o));
+    }
     const superseded = new Map<string, string>(), supersededAt = new Map<string, string>();
     // Relations from ops and from notes' own `supersedes` fold together by write time (then id): the latest intent wins.
     const relate = (old: string, newer: string, when: string) => { if (!(when < (supersededAt.get(old) ?? ""))) { superseded.set(old, newer); supersededAt.set(old, when); } };
@@ -618,9 +635,10 @@ export class MemoryStore {
       // A decision, contract or fail of a settled task not yet copied to long-term waits for its promotion, never expires
       // first; a note saved short-term after the settlement carries its own deadline and stays short-term.
       // A superseded one is held too: if its replacement goes, it shows again, and a rebuild must find it the same way.
-      if (r.tier === "short" && !demoted.has(id) && !r.expires && r.task && settled.has(r.task) && PROMOTED_KINDS.includes(r.kind as Kind)) return null;
+      const taskDeadline = r.task ? settled.get(settlementKey(id, r.task)) : undefined;
+      if (r.tier === "short" && !demoted.has(id) && !r.expires && taskDeadline && PROMOTED_KINDS.includes(r.kind as Kind)) return null;
       // A deadline written into the note (no task, a late note, an explicit short horizon) is its own, whatever the task does.
-      return demoted.get(id) ?? r.expires ?? (r.task ? settled.get(r.task) ?? new Date(Date.parse(r.at!) + UNSETTLED_MS).toISOString() : new Date(Date.parse(r.at!) + this.ttl).toISOString());
+      return demoted.get(id) ?? r.expires ?? (r.task ? taskDeadline ?? new Date(Date.parse(r.at!) + UNSETTLED_MS).toISOString() : new Date(Date.parse(r.at!) + this.ttl).toISOString());
     };
     // A newer entry that was forgotten, expired or pruned no longer replaces anything: the older one shows again. A
     // promoted source lives on as its copy.
@@ -935,10 +953,18 @@ export class MemoryStore {
     });
   }
 
+  /** Person-local diagnostic receipt; malformed legacy bodies are never included. */
+  bridgeStatus(): { skippedRows: number } | undefined {
+    return this.generationIndex ? { skippedRows: this.generationIndex.skippedRows() } : undefined;
+  }
+
   /** What the segments hold, for `ahub memory` and the dashboard header. */
   counts(project?: string): { short: number; long: number; segments: number; machine: Machine } {
     const all = this.list({ ...(project ? { project } : {}), limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true });
-    return { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length, segments: this.segments("log").length + this.segments("local").length, machine: this.machine };
+    const segments = this.generationIndex
+      ? (this.db.query("SELECT COUNT(*) AS n FROM generation_segments").get() as { n: number }).n
+      : this.segments("log").length + this.segments("local").length;
+    return { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length, segments, machine: this.machine };
   }
 
   /** The index's rows in a fixed order: what a rebuild must reproduce. */

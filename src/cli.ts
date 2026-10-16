@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { MemoryStore, looksSecret } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -14,6 +14,41 @@ import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
 export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 export interface CliContext { cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean }
+
+/** Narrow descriptor seam for deterministic race fixtures; the CLI always uses the native implementation. */
+export interface PrunePlanFileIO {
+  open(path: string, flags: number): number;
+  stat(fd: number): { size: number; isFile(): boolean };
+  read(fd: number, buffer: Buffer, offset: number, length: number, position: number): number;
+  close(fd: number): void;
+}
+const planFileIO: PrunePlanFileIO = {
+  open: (path, flags) => openSync(path, flags), stat: fd => fstatSync(fd),
+  read: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position), close: fd => closeSync(fd),
+};
+
+/** Open once: pathname replacement cannot redirect the read and growth cannot exceed the fixed byte budget. */
+export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO): string {
+  try {
+    const fd = io.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = io.stat(fd);
+      if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size < 0 || before.size > PRUNE_PLAN_MAX_BYTES) throw new Error();
+      const data = Buffer.alloc(PRUNE_PLAN_MAX_BYTES + 1);
+      let length = 0;
+      while (length < data.length) {
+        const n = io.read(fd, data, length, data.length - length, length);
+        if (!Number.isSafeInteger(n) || n < 0 || n > data.length - length) throw new Error();
+        if (n === 0) break;
+        length += n;
+      }
+      if (length > PRUNE_PLAN_MAX_BYTES) throw new Error();
+      const after = io.stat(fd);
+      if (!after.isFile() || after.size !== before.size || length !== before.size) throw new Error();
+      return new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, length));
+    } finally { io.close(fd); }
+  } catch { throw new Error("prune plan unavailable or oversized"); }
+}
 
 /** Honest native-shell defaults, matching every marker detectCliIdentity treats as non-console (invalid included). */
 export function agentMarked(env: Readonly<Record<string, string | undefined>>): boolean {
@@ -55,9 +90,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune --cutoff <UTC> --dry-run | --apply --plan <file>");
     let input: string | undefined;
     if (applying) {
-      const file = String(options["--plan"]), stat = lstatSync(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > PRUNE_PLAN_MAX_BYTES) throw new Error("prune plan unavailable or oversized");
-      input = readFileSync(file, "utf8");
+      input = readPrunePlanFile(String(options["--plan"]));
     }
     const store = new MemoryStore({ deferPromotions: true });
     try {
@@ -100,9 +133,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const open = () => new MemoryStore({ screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
   const cwd = context.cwd ?? process.cwd();
   // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
-  return goal
-    ? rawGoalCommand(args, cwd, { open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) })
-    : rawMemoryCommand(args, cwd, { open, readable: notes => notes, importPolicy: () => () => false });
+  if (goal) return rawGoalCommand(args, cwd, { open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
+  const receipt: { bridgeStatus?: { skippedRows: number } } = {};
+  const output = await rawMemoryCommand(args, cwd, { open, readable: notes => notes, importPolicy: () => () => false,
+    onBridgeStatus: status => { receipt.bridgeStatus = status; } });
+  return !options["--json"] && receipt.bridgeStatus
+    ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {

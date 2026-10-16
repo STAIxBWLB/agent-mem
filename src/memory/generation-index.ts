@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile } from "./generation.ts";
-import { legacyEntries, legacyHead, readLegacySnapshot, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
+import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
-import type { Entry } from "./store.ts";
+import { PROMOTED_KINDS, type Entry } from "./store.ts";
 
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const fail = (): never => { throw new Error("generation input unavailable or changed; person inspection required"); };
@@ -18,20 +18,24 @@ export interface GenerationIndexOptions {
 }
 /** Pure deadline summary shared by migration and prune: no live index or host TTL is a proof. */
 export function explicitExpirySnapshot(rows: readonly PruneSourceRow[]): PruneSnapshot["expiries"] {
-  const ops = rows.map(x => x.row).filter(e => e.op !== "note" && e.op !== "goal").sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+  const ops = rows.filter(source => source.row.op !== "note" && source.row.op !== "goal").sort((a, b) => a.row.at.localeCompare(b.row.at) || a.row.id.localeCompare(b.row.id));
   const demotes = new Map<string, Entry>(), settles = new Map<string, Entry>();
-  const forgotten = new Set(ops.filter(e => e.op === "forget").map(e => e.target));
-  for (const op of ops) {
+  const forgotten = new Set(ops.flatMap(({ row }) => row.op === "forget" ? [row.target] : []));
+  for (const source of ops) {
+    const op = source.row;
     if (op.op === "demote") demotes.set(op.target, op);
-    if (op.op === "settle" && !settles.has(op.target)) settles.set(op.target, op);
+    if (op.op === "settle") {
+      const realms = [...(source.own === true ? [true] : []), ...((source.legacy ?? source.own !== true) ? [false] : [])];
+      for (const own of realms) { const task = `${own}:${op.target}`; if (!settles.has(task)) settles.set(task, op); }
+    }
   }
-  return rows.flatMap(({ row }) => {
+  return rows.flatMap(({ row, own }) => {
     if (row.op !== "note" || forgotten.has(row.id)) return [];
     const demote = demotes.get(row.id);
     if (row.tier !== "short" && !demote) return [];
-    const settled = row.task ? settles.get(row.task) : undefined;
+    const settled = row.task ? settles.get(`${own === true}:${row.task}`) : undefined;
     // A held decision/contract/fail waits for promotion, not expiry, unless explicitly demoted or dated.
-    if (row.tier === "short" && !demote && !row.expires && settled && ["decision", "contract", "fail"].includes(row.kind)) return [];
+    if (row.tier === "short" && !demote && !row.expires && settled && PROMOTED_KINDS.includes(row.kind)) return [];
     const basis = demote ?? (row.expires ? row : settled);
     const expiredAt = basis?.op === "note" ? basis.expires : basis && "by" in basis ? basis.by : undefined;
     if (!basis || !expiredAt || !Number.isFinite(Date.parse(expiredAt)) || new Date(expiredAt).toISOString() !== expiredAt) return [];
@@ -43,45 +47,49 @@ export function explicitExpirySnapshot(rows: readonly PruneSourceRow[]): PruneSn
 export class GenerationIndex {
   readonly profile: BoundProfile;
   pruned = new Set<string>();
+  private readonly reader = new SegmentReader();
+  private fullCapture = false;
+  private replayProvenance = false;
   constructor(private readonly options: GenerationIndexOptions) {
     this.profile = options.profile;
     const db = options.db;
-    db.run("CREATE TABLE IF NOT EXISTS generation_rows (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL, public INTEGER NOT NULL, own INTEGER NOT NULL)");
+    db.run("CREATE TABLE IF NOT EXISTS generation_rows (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL, public INTEGER NOT NULL, own INTEGER NOT NULL, legacy INTEGER NOT NULL)");
+    if (!(db.query("PRAGMA table_info(generation_rows)").all() as { name: string }[]).some(row => row.name === "legacy")) { db.run("ALTER TABLE generation_rows ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"); this.replayProvenance = true; }
     db.run("CREATE TABLE IF NOT EXISTS generation_prunes (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL)");
     db.run("CREATE TABLE IF NOT EXISTS generation_targets (id TEXT PRIMARY KEY)");
-    db.run("CREATE TABLE IF NOT EXISTS generation_segments (source TEXT NOT NULL, path TEXT NOT NULL, offset INTEGER NOT NULL, hash TEXT NOT NULL, commit_id TEXT, PRIMARY KEY(source,path))");
+    db.run("CREATE TABLE IF NOT EXISTS generation_segments (source TEXT NOT NULL, path TEXT NOT NULL, offset INTEGER NOT NULL, hash TEXT NOT NULL, commit_id TEXT, stamp TEXT, PRIMARY KEY(source,path))");
+    if (!(db.query("PRAGMA table_info(generation_segments)").all() as { name: string }[]).some(row => row.name === "stamp")) db.run("ALTER TABLE generation_segments ADD COLUMN stamp TEXT");
     db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
   private ownSegments(): LegacySegment[] {
+    const prior = this.options.db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'").all() as (LegacyCheckpoint & { stamp: string | null })[];
     return ["log", "local"].flatMap(folder => {
       const dir = join(this.profile.dir, folder);
       if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) return fail();
       return readdirSync(dir).sort().filter(name => name.endsWith(".jsonl")).map(name => {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) return fail();
-        const file = join(dir, name), stat = lstatSync(file);
-        if (!stat.isFile() || stat.isSymbolicLink()) return fail();
-        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-        let all: Buffer;
-        try { all = readFileSync(fd); } finally { closeSync(fd); }
-        const end = all.lastIndexOf(10) + 1, bytes = all.subarray(0, end);
-        return { source: "generation", path: `${folder}/${name}`, bytes, offset: end, hash: digest(bytes), local: folder === "local", tailBytes: all.length - end };
+        const path = `${folder}/${name}`, checkpoint = prior.find(row => row.path === path);
+        const data = this.reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, this.fullCapture);
+        return { ...data, source: "generation", path, local: folder === "local" };
       });
     });
   }
   private capture(): { segments: LegacySegment[]; commit?: string } {
     const db = this.options.db;
-    const previous = db.query("SELECT source,path,offset,hash,commit_id FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null })[];
+    const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
     const initial = readProfileJSON(join(this.profile.dir, "migration-sources.json")) as { sources?: LegacyCheckpoint[]; legacyCommit?: string } | undefined;
     const bySource = new Map((initial?.sources ?? []).map(row => [`${row.source}:${row.path}`, row]));
-    for (const { commit_id, ...row } of previous) bySource.set(`${row.source}:${row.path}`, { ...row, ...(commit_id ? { commit: commit_id } : {}) });
+    for (const { commit_id, stamp, ...row } of previous) bySource.set(`${row.source}:${row.path}`, { ...row, ...(stamp ? { stamp } : {}), ...(commit_id ? { commit: commit_id } : {}) });
     const checkpoints = [...bySource.values()];
+    const persisted = new Set(previous.map(row => `${row.source}:${row.path}`));
+    const completeFrontier = checkpoints.every(row => persisted.has(`${row.source}:${row.path}`));
     const prior = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value ?? initial?.legacyCommit;
     const commit = this.options.commit ?? legacyHead(this.profile.home, this.profile.generation!);
-    const legacy = readLegacySnapshot(this.profile.home, { generation: this.profile.generation, ...(commit ? { commit } : {}), checkpoints, ...(prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}) });
+    const legacy = readLegacySnapshot(this.profile.home, { generation: this.profile.generation, ...(commit ? { commit } : {}), checkpoints, ...(prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
     const own = this.ownSegments();
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
-      if (!segment || segment.offset < old.offset || digest(segment.bytes.subarray(0, old.offset)) !== old.hash) fail();
+      if (!segment || segment.offset < old.offset) fail();
     }
     return { segments: [...legacy, ...own], ...(commit ? { commit } : {}) };
   }
@@ -89,29 +97,32 @@ export class GenerationIndex {
     const db = this.options.db;
     for (const segment of captured.segments) {
       const consumed = (db.query("SELECT offset FROM generation_segments WHERE source=? AND path=?").get(segment.source, segment.path) as { offset: number } | null)?.offset ?? 0;
-      for (const line of segment.bytes.subarray(consumed).toString("utf8").split("\n").filter(Boolean)) {
+      if ((segment.start ?? 0) > consumed) return fail();
+      for (const line of segment.bytes.subarray(Math.max(0, consumed - (segment.start ?? 0))).toString("utf8").split("\n").filter(Boolean)) {
         let parsed: unknown;
-        try { parsed = JSON.parse(line); } catch { fail(); }
-        if ((parsed as { op?: string }).op === "prune") {
-          if (segment.source !== "generation") fail();
+        try { parsed = JSON.parse(line); } catch { if (segment.source === "generation") return fail(); this.recordSkipped(segment); continue; }
+        if (segment.source === "generation" && parsed && typeof parsed === "object" && (parsed as { op?: string }).op === "prune") {
           const row = validatePruneRow(parsed, this.profile.generation, segment.local ? "local" : "synced");
           if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
           db.query("INSERT OR IGNORE INTO generation_prunes VALUES (?,?,?)").run(row.id, canonicalJSON(row), Number(segment.local));
           continue;
         }
         const bytes = Buffer.from(line + "\n");
-        const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: digest(bytes) }])[0];
+        const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: digest(bytes) }], { strict: segment.source === "generation", onMalformed: () => this.recordSkipped(segment) })[0];
         if (!row) continue;
-        const canonical = canonicalJSON(row), old = db.query("SELECT line FROM generation_rows WHERE id=?").get(row.id) as { line: string } | null;
+        const canonical = canonicalJSON(row), old = db.query("SELECT line,own,legacy FROM generation_rows WHERE id=?").get(row.id) as { line: string; own: number; legacy: number } | null;
         if (old && old.line !== canonical) fail();
         this.options.apply(line, segment.path);
         const local = segment.local || row.op === "settle" || row.op === "note" && row.tier === "short";
         const publicWitness = !local && segment.source !== "legacy-local";
-        db.query("INSERT INTO generation_rows VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local=MIN(local,excluded.local), public=MAX(public,excluded.public), own=MAX(own,excluded.own)")
-          .run(row.id, canonical, Number(local), Number(publicWitness), Number(segment.source === "generation"));
+        const own = segment.source === "generation", legacy = !own;
+        // Notes retain legacy birth when duplicated; ops can independently occur in both birth realms.
+        const ownPresence = old ? row.op === "note" ? !!old.own && own : !!old.own || own : own;
+        db.query("INSERT INTO generation_rows VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local=MIN(local,excluded.local), public=MAX(public,excluded.public), own=excluded.own, legacy=excluded.legacy")
+          .run(row.id, canonical, Number(local), Number(publicWitness), Number(ownPresence), Number(!!old?.legacy || legacy));
       }
-      db.query("INSERT INTO generation_segments VALUES (?,?,?,?,?) ON CONFLICT(source,path) DO UPDATE SET offset=excluded.offset,hash=excluded.hash,commit_id=excluded.commit_id")
-        .run(segment.source, segment.path, segment.offset, segment.hash, segment.commit ?? null);
+      db.query("INSERT INTO generation_segments VALUES (?,?,?,?,?,?) ON CONFLICT(source,path) DO UPDATE SET offset=excluded.offset,hash=excluded.hash,commit_id=excluded.commit_id,stamp=excluded.stamp")
+        .run(segment.source, segment.path, segment.offset, segment.hash, segment.commit ?? null, segment.stamp ?? null);
     }
     if (captured.commit) db.query("INSERT INTO generation_state VALUES ('legacyCommit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(captured.commit);
     const snapshot = this.snapshot(false);
@@ -121,6 +132,12 @@ export class GenerationIndex {
     for (const id of [...reduced.targets].sort()) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
     this.pruned = reduced.targets;
   }
+  private recordSkipped(segment: LegacySegment): void {
+    this.options.db.query("INSERT INTO generation_state VALUES (?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(`skipped:${segment.source}:${segment.path}`);
+  }
+  skippedRows(): number {
+    return (this.options.db.query("SELECT COALESCE(SUM(CAST(value AS INTEGER)),0) AS n FROM generation_state WHERE key LIKE 'skipped:%'").get() as { n: number }).n;
+  }
   private frontier(): string {
     const db = this.options.db;
     return db.transaction(() => canonicalJSON({
@@ -129,14 +146,15 @@ export class GenerationIndex {
     })).deferred();
   }
   refresh(attempt = 0): void {
+    if (this.replayProvenance) { this.rebuild(); return; }
     const before = this.frontier(), db = this.options.db;
     let input: ReturnType<GenerationIndex["capture"]>;
     try { input = this.capture(); }
     catch (error) { if (attempt < 5 && this.frontier() !== before) return this.refresh(attempt + 1); throw error; }
     if (this.frontier() !== before) { if (attempt < 5) return this.refresh(attempt + 1); return fail(); }
-    const known = db.query("SELECT source,path,offset,hash,commit_id FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null }[];
+    const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
-    const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null)));
+    const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null) && row.stamp === (segment.stamp ?? null)));
     if (unchanged) { this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
     const committed = db.transaction(() => { if (this.frontier() !== before) return false; this.index(input); return true; }).immediate();
     if (!committed) { if (attempt < 5) return this.refresh(attempt + 1); return fail(); }
@@ -144,20 +162,22 @@ export class GenerationIndex {
   rebuild(attempt = 0): void {
     const before = this.frontier();
     let input: ReturnType<GenerationIndex["capture"]>;
-    try { input = this.capture(); }
-    catch (error) { if (attempt < 5 && this.frontier() !== before) return this.rebuild(attempt + 1); throw error; }
+    try { this.fullCapture = true; input = this.capture(); }
+    catch (error) { this.fullCapture = false; if (attempt < 5 && this.frontier() !== before) return this.rebuild(attempt + 1); throw error; }
+    finally { this.fullCapture = false; }
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;
       for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES]) this.options.db.run(`DELETE FROM ${table}`);
       this.index(input); return true;
     }).immediate();
     if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1); return fail(); }
+    this.replayProvenance = false;
   }
   own(id: string): boolean { return !!(this.options.db.query("SELECT own FROM generation_rows WHERE id=?").get(id) as { own: number } | null)?.own; }
   snapshot(refresh = true): PruneSnapshot {
     if (refresh) this.refresh();
     return this.options.db.transaction(() => {
-      const rows = (this.options.db.query("SELECT line,local,public FROM generation_rows ORDER BY id").all() as { line: string; local: number; public: number }[]).map(r => ({ row: JSON.parse(r.line) as Entry, placement: r.local ? "local" as const : "synced" as const, publicWitness: !!r.public }));
+      const rows = (this.options.db.query("SELECT line,local,public,own,legacy FROM generation_rows ORDER BY id").all() as { line: string; local: number; public: number; own: number; legacy: number }[]).map(r => ({ row: JSON.parse(r.line) as Entry, placement: r.local ? "local" as const : "synced" as const, publicWitness: !!r.public, own: !!r.own, legacy: !!r.legacy }));
       const pruned = (this.options.db.query("SELECT id FROM generation_targets ORDER BY id").all() as { id: string }[]).map(row => row.id);
       return { rows, expiries: explicitExpirySnapshot(rows), pruned, durablePruneIds: (this.options.db.query("SELECT id FROM generation_prunes ORDER BY id").all() as { id: string }[]).map(r => r.id) };
     }).deferred();

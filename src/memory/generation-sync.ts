@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { legacyEntries, legacyHead, readLegacySnapshot } from "./bridge.ts";
+import { legacyEntries, legacyHead, readLegacyGitSnapshot, captureLegacyMain } from "./bridge.ts";
 import { canonicalJSON, generationDescriptor, generationDir, readProfileJSON, validateGeneration } from "./generation.ts";
 import { acquireMutation } from "./mutation.ts";
 import { processLiveness, processSignature, realPath } from "./platform.ts";
 import { validatePruneRow, pruneRowHash, type PruneRow } from "./prune.ts";
-import { remoteVisibility, syncGit, type SyncOptions, type SyncResult } from "./sync.ts";
+import { remoteVisibility, generationSyncGit as syncGit, type SyncOptions, type SyncResult } from "./sync.ts";
 import type { MemoryStore } from "./store.ts";
 import { createHash } from "node:crypto";
 
@@ -66,7 +66,7 @@ function validatePublic(bytes: string, generation: string, path: string, checkPr
     }
   }
   const body = Buffer.from(legacy.join("\n") + (legacy.length ? "\n" : ""));
-  legacyEntries([{ source: "legacy-main", path, bytes: body, offset: body.length, hash: createHash("sha256").update(body).digest("hex"), local: false, tailBytes: 0 }]);
+  legacyEntries([{ source: "legacy-main", path, bytes: body, offset: body.length, hash: createHash("sha256").update(body).digest("hex"), local: false, tailBytes: 0 }], { strict: true });
 }
 
 /** Separate generation repository, fixed refs and a one-way legacy cache; failures are bounded result receipts. */
@@ -202,21 +202,33 @@ export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions
     else if (dirty.code !== 0) fail("generation staged comparison failed");
     await pull();
     // Fetch legacy main into a separate bare cache; publish its fixed read ref only after FF and CAS validation.
-    const main = await remoteTip("refs/heads/main"), prior = legacyHead(profile.home, generation);
-    if (!main && prior) fail("legacy main disappeared; person inspection required");
-    if (main) {
-      const cache = join(dir, "bridge.git");
-      if (existsSync(cache) && (lstatSync(cache).isSymbolicLink() || !lstatSync(cache).isDirectory())) fail("legacy cache is not a separate directory");
-      if (!existsSync(cache)) await required(["init", "-q", "--bare", cache], "legacy cache initialization failed");
-      if (existsSync(join(cache, "commondir")) || existsSync(join(cache, "objects", "info", "alternates"))
+    const main = await remoteTip("refs/heads/main"), manifestHead = legacyHead(profile.home, generation);
+    const cache = join(dir, "bridge.git");
+    let prior: string | undefined;
+    const validateCache = async () => {
+      if (lstatSync(cache).isSymbolicLink() || !lstatSync(cache).isDirectory() || existsSync(join(cache, "commondir")) || existsSync(join(cache, "objects", "info", "alternates"))
         || await required(["--git-dir", cache, "rev-parse", "--is-bare-repository"], "legacy cache identity unavailable") !== "true") fail("legacy cache must be an independent bare repository");
+    };
+    if (existsSync(cache)) {
+      await validateCache();
+      const pinned = await git(["--git-dir", cache, "rev-parse", "--verify", "--quiet", "refs/remotes/legacy/main"]);
+      if (pinned.code === 0 && oid(pinned.out)) prior = pinned.out;
+      else if (pinned.code !== 1) fail("legacy cache read ref unavailable");
+    }
+    if (!main && (prior || manifestHead)) fail("legacy main disappeared; person inspection required");
+    if (main) {
+      if (!existsSync(cache)) await required(["init", "-q", "--bare", cache], "legacy cache initialization failed");
+      await validateCache();
       const temp = `refs/amem/legacy-fetch/${randomBytes(16).toString("hex")}`; transientRefs.push({ cache, ref: temp });
       await required(["--git-dir", cache, "fetch", "-q", "--no-tags", "--", url, `refs/heads/main:${temp}`], "legacy cache fetch failed");
       const head = await required(["--git-dir", cache, "rev-parse", "--verify", temp], "legacy cache fetched ref unavailable");
       if (!oid(head)) fail("legacy cache commit identity invalid");
-      if (prior) await required(["--git-dir", cache, "merge-base", "--is-ancestor", prior, head], "legacy main history is not fast-forward");
-      readLegacySnapshot(profile.home, { generation, commit: head, previousCommit: prior });
+      for (const previous of new Set([prior, manifestHead].filter((value): value is string => value !== undefined)))
+        await required(["--git-dir", cache, "merge-base", "--is-ancestor", previous, head], "legacy main history is not fast-forward");
+      readLegacyGitSnapshot(profile.home, generation, head, manifestHead ?? prior);
       await required(["--git-dir", cache, "update-ref", "refs/remotes/legacy/main", head, prior ?? zero], "legacy cache ref changed concurrently");
+      // Publish plain-file captured blobs only here, after the Git CAS. Reads keep the prior manifest across a crash.
+      captureLegacyMain(profile.home, generation, head, manifestHead);
     }
     if (opts.signal?.aborted) return result("stopped");
     await history(await required(["rev-parse", "--verify", "HEAD"], "generation final HEAD unavailable"));

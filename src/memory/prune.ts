@@ -17,7 +17,7 @@ export interface PrunePlan {
   rows: { placement: PrunePlacement; payload: PruneRow }[];
   counts: { eligible: number; selected: number; local: number; synced: number }; hasMore: boolean; seal: string;
 }
-export interface PruneSourceRow { row: Entry; placement: PrunePlacement; publicWitness: boolean }
+export interface PruneSourceRow { row: Entry; placement: PrunePlacement; publicWitness: boolean; own?: boolean; legacy?: boolean }
 export interface PruneExpiry { targetId: string; basisId: string; expiredAt: string }
 export interface PruneSnapshot {
   rows: readonly PruneSourceRow[];

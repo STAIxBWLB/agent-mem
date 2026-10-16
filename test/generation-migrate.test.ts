@@ -234,3 +234,76 @@ test("deactivation cannot switch the selector while its generation mutation fenc
   } finally { release?.(); }
   expect((await migrate(options(memoryDir, { mode: "deactivate" }))).profile.kind).toBe("shared-v1");
 }, 7000);
+
+test("explicit deactivate recovers a missing or corrupt selected generation without validating or rewriting it", async () => {
+  for (const fault of ["missing", "descriptor", "seal"] as const) {
+    const { memoryDir } = fixture();
+    const selected = await migrate(options(memoryDir)), dir = selected.profile.dir;
+    if (fault === "missing") rmSync(dir, { recursive: true, force: true });
+    else writeFileSync(join(dir, fault === "descriptor" ? "generation.json" : "generation-seal.json"), "{corrupt metadata");
+    const before = existsSync(dir) ? files(dir) : undefined;
+    expect(() => resolveProfile(memoryDir)).toThrow();
+    const recovered = await migrate(options(memoryDir, { mode: "deactivate" }));
+    expect(recovered.profile.kind).toBe("shared-v1");
+    expect(resolveProfile(memoryDir).kind).toBe("shared-v1");
+    if (before) expect(files(dir)).toEqual(before);
+    else expect(existsSync(dir)).toBe(false);
+  }
+});
+
+for (const boundary of ["after-seal", "before-selector", "after-selector"] as const) test(`migration resumes the same G after a crash at ${boundary}`, async () => {
+  const { memoryDir } = fixture(), before = legacyBytes(memoryDir);
+  await expect(migrate(options(memoryDir, { checkpoint: stage => {
+    if (stage === boundary) throw new Error(`synthetic crash at ${stage}`);
+  } }))).rejects.toThrow(`synthetic crash at ${boundary}`);
+  const journal = readProfileJSON(join(memoryDir, "migration.json")) as { generation: string; phase: string };
+  expect(journal.generation).toBe(G); expect(journal.phase).toBe("sealed");
+  expect(resolveProfile(memoryDir).kind).toBe(boundary === "after-selector" ? "generation" : "shared-v1");
+  expect(existsSync(join(generationDir(memoryDir, G), "generation-seal.json"))).toBe(true);
+  const resumed = await migrate(options(memoryDir, { mode: "resume" }));
+  expect(resumed.profile.generation).toBe(G);
+  expect((await migrate(options(memoryDir, { mode: "resume" }))).alreadyActive).toBe(true);
+  expect(readdirSync(join(memoryDir, "generations"))).toEqual([G]);
+  expect(legacyBytes(memoryDir)).toEqual(before);
+});
+
+test("a process exiting after the first generation append reopens the same G without touching v1", async () => {
+  const { memoryDir, home } = fixture();
+  await migrate(options(memoryDir));
+  const before = legacyBytes(memoryDir), receipt = join(home, "first-generation-id.txt"), wrapper = join(home, "first-generation-append.ts");
+  const module = join(import.meta.dir, "../src/memory/store.ts");
+  writeFileSync(wrapper, `import {writeFileSync} from "node:fs";
+const {MemoryStore}=await import(${JSON.stringify(module)});
+const store=new MemoryStore({home:${JSON.stringify(home)},deferPromotions:true});
+const id=store.note({op:"note",project:"agent-hub",scope:"project",tier:"long",kind:"decision",peer:"person",source:"person",text:"first generation write before process exit",about:[]});
+writeFileSync(${JSON.stringify(receipt)},id);
+process.exit(73);
+`);
+  const child = Bun.spawn([process.execPath, wrapper], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill(), 5000);
+  try {
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(73);
+  } finally { clearTimeout(timer); }
+  const id = readFileSync(receipt, "utf8"), reopened = new MemoryStore({ home, deferPromotions: true });
+  try {
+    expect(reopened.profile.generation).toBe(G);
+    expect(reopened.get(id, "agent-hub")?.text).toBe("first generation write before process exit");
+    const incremental = reopened.derivedTables(); reopened.rebuild(); expect(reopened.derivedTables()).toEqual(incremental);
+  } finally { reopened.close(); }
+  expect((await migrate(options(memoryDir, { mode: "resume" }))).profile.generation).toBe(G);
+  expect(readdirSync(join(memoryDir, "generations"))).toEqual([G]);
+  expect(legacyBytes(memoryDir)).toEqual(before);
+});
+
+test("dry-run and apply skip the same complete malformed legacy lines without changing their bytes", async () => {
+  const { memoryDir, segment } = fixture();
+  appendFileSync(segment, '{not JSON}\n{"op":"unknown-legacy-op","id":"bad"}\n');
+  const before = legacyBytes(memoryDir);
+  const planned = await migrate(options(memoryDir, { mode: "dry-run" }));
+  expect(planned.counts).toMatchObject({ validRows: 1, skippedRows: 2 });
+  const applied = await migrate(options(memoryDir));
+  expect(applied.counts).toMatchObject({ validRows: 1, skippedRows: 2 });
+  expect(legacyBytes(memoryDir)).toEqual(before);
+  expect(applied.profile.generation).toBe(G);
+});
