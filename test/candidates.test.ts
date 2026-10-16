@@ -71,7 +71,7 @@ test("sync of a fresh private bare remote carries v1 log rows, never the candida
   expect(other.list({ q: "candidate-only" })).toEqual([]); expect(other.dump()).not.toContain(candidate);
   expect(existsSync(join(other.dir, "candidates.db"))).toBe(false);
   const tree = memoryGitSync(["-C", remote, "ls-tree", "-r", "--name-only", "main"], { encoding: "utf8" });
-  expect(tree.status).toBe(0); expect(tree.stdout).not.toContain("candidates"); expect(tree.stdout).not.toContain("counter");
+  expect(tree.status).toBe(0); expect(tree.stdout).not.toContain("candidates"); expect(tree.stdout).not.toContain("counter"); expect(tree.stdout).not.toContain("mutation-lock");
   expect(bytes(f.memory)).toEqual(before);
 }, 20_000);
 
@@ -268,10 +268,10 @@ test("an explicit correction note kind is preserved and supersedes its target", 
 
 test("interrupted accepting state refuses automatic replay and appends no v1 rows", () => {
   const f = fixture(), id = f.candidates.put(correction(f.view), "public"), before = bytes(f.memory);
-  const note = f.memory.note;
-  f.memory.note = () => { throw new Error("fixture append interrupted before effect"); };
+  const acceptedNote = f.memory.withAcceptedNote.bind(f.memory);
+  f.memory.withAcceptedNote = (note, work) => acceptedNote(note, () => work(() => { throw new Error("fixture append interrupted before effect"); }));
   try { expect(() => f.candidates.accept(id, acceptance(f))).toThrow("fixture append interrupted"); }
-  finally { f.memory.note = note; }
+  finally { f.memory.withAcceptedNote = acceptedNote; }
   expect(f.candidates.get(id, PROJECT)?.status).toBe("accepting");
   expect(() => f.candidates.accept(id, acceptance(f))).toThrow("interrupted");
   expect(bytes(f.memory)).toEqual(before);
@@ -327,8 +327,45 @@ test("interruption after a correction note but before supersede keeps one note a
   finally { f.memory.supersede = supersede; }
   const added = authored(f.memory).filter(row => !before.has(row.id));
   expect(added).toHaveLength(1); expect(added[0]).toMatchObject({ op: "note", tier: "long", kind: "contract" });
+  expect(f.memory.get(added[0]!.id, PROJECT)?.id).toBe(added[0]!.id);
   expect(f.candidates.get(id, PROJECT)?.status).toBe("accepting"); expect(f.memory.get(f.target, PROJECT)?.supersededBy).toBeNull();
   const interrupted = bytes(f.memory);
   expect(() => f.candidates.accept(id, acceptance(f))).toThrow("interrupted");
   expect(bytes(f.memory)).toEqual(interrupted);
+});
+
+test("a competing supersede at the last target read cannot authorize a stale candidate", () => {
+  const f = fixture(), id = f.candidates.put(correction(f.view), "public"), replacement = f.note("concurrent replacement");
+  const other = new MemoryStore({ home: f.home, now: () => f.clock.now, deferPromotions: true }); cleanup.push(() => other.close());
+  const get = f.memory.get.bind(f.memory); let reads = 0, accepted = false;
+  f.memory.get = (...args: Parameters<MemoryStore["get"]>) => {
+    const current = get(...args);
+    if (args[0] === f.target && ++reads === 2) other.supersede(f.target, replacement, "other", PROJECT);
+    return current;
+  };
+  try { f.candidates.accept(id, acceptance(f)); accepted = true; } catch { /* stale or blocked competing mutation must fail closed */ }
+  expect(accepted).toBe(false);
+  expect(authored(f.memory).filter(row => row.op === "note" && row.text.includes(`Accepted candidate: ${id}`))).toEqual([]);
+});
+
+for (const tier of ["short", "long"] as const) test(`acceptance screens the exact persisted ${tier} note id, timestamp and expiry`, () => {
+  const f = fixture(), target = f.note("screened authority", { tier }), current = f.memory.get(target, PROJECT)!;
+  const id = f.candidates.put(correction(current), "public"); let screened: View | undefined;
+  const checked = new MemoryStore({ home: f.home, now: () => f.clock.now, deferPromotions: true, screen: view => {
+    screened = structuredClone(view); f.clock.now += 1000; return "promote";
+  } }); cleanup.push(() => checked.close());
+  const result = f.candidates.accept(id, { ...acceptance(f), store: checked });
+  const persisted = checked.get(result.noteId, PROJECT)!;
+  expect({ id: persisted.id, at: persisted.at, expiresAt: persisted.expiresAt }).toEqual({ id: screened!.id, at: screened!.at, expiresAt: screened!.expiresAt });
+});
+
+test("sync cannot modify segments while a candidate acceptance holds the mutation boundary", async () => {
+  const f = fixture(), before = bytes(f.memory); let attemptedNetwork = false;
+  let result: ReturnType<typeof syncMemory> | undefined;
+  f.memory.withAcceptedNote({ op: "note", project: PROJECT, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "screen-only fixture", about: [] }, () => {
+    result = syncMemory(f.memory, { remote: "unused-fixture-remote", visibility: async () => { attemptedNetwork = true; return "private"; } });
+  });
+  expect(await result!).toMatchObject({ ok: false, error: "another memory mutation is running on this machine" });
+  expect(attemptedNetwork).toBe(false); expect(bytes(f.memory)).toEqual(before);
+  expect(existsSync(join(f.memory.dir, "sync.lock"))).toBe(false);
 });

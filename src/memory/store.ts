@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
+import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 
 /**
@@ -179,6 +180,7 @@ export class MemoryStore {
   readonly dir: string;
   readonly machine: Machine;
   private readonly db: Database;
+  private readonly mutationDb: Database;
   private readonly ttl: number;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
@@ -212,11 +214,12 @@ export class MemoryStore {
     db.run("CREATE TABLE IF NOT EXISTS edges (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))");
     db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
     this.db = db;
+    this.mutationDb = mutationDatabase(this.dir);
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
     this.refresh();
   }
 
-  close(): void { this.db.close(); }
+  close(): void { this.db.close(); this.mutationDb.close(); }
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
   withDeferredPromotions<T>(work: () => T): T {
@@ -225,14 +228,34 @@ export class MemoryStore {
     try { return work(); } finally { this.promoting = previous; }
   }
 
-  /** Screen a proposed accepted note before any append. No configured policy means no acceptance. */
-  screenAcceptedNote(note: NoteInput): boolean {
-    const body = { schema: MEMORY_SCHEMA, at: new Date(this.now()).toISOString(), machine: this.machine.id, ...note } as const;
-    const view: View = { ...note, id: entryId(body), at: body.at, machine: body.machine, title: note.title ?? null,
-      task: note.task ?? null, source: note.source, about: [...note.about], supersededBy: null,
-      supersedes: note.supersedes ? [note.supersedes] : [], promotedFrom: note.promotedFrom ?? null,
-      expiresAt: note.expires ?? null, local: note.tier === "short" };
-    return this.screen?.(view) === "promote";
+  private withMutation<T>(work: () => T): T {
+    return this.mutationDb.transaction(work).immediate();
+  }
+
+  /** Serialize current-store writers, screen one normalized body, and expose a one-shot append of that body. */
+  withAcceptedNote<T>(note: NoteInput, work: (append: () => string) => T): T {
+    try { return this.withMutation(() => {
+      const at = new Date(this.now()).toISOString();
+      const normalized = structuredClone({ ...note, text: note.text.slice(0, MAX_TEXT),
+        ...(note.title ? { title: note.title.slice(0, MAX_TITLE) } : {}),
+        ...(note.tier === "short" && !note.expires ? { expires: new Date(Date.parse(at) + this.ttl).toISOString() } : {}) });
+      const body = { schema: MEMORY_SCHEMA, at, machine: this.machine.id, ...normalized } as const;
+      const view: View = { ...normalized, id: entryId(body), at, machine: body.machine, title: normalized.title ?? null,
+        task: normalized.task ?? null, about: [...normalized.about], supersededBy: null,
+        supersedes: normalized.supersedes ? [normalized.supersedes] : [], promotedFrom: normalized.promotedFrom ?? null,
+        expiresAt: normalized.expires ?? null, local: normalized.tier === "short" };
+      if (this.screen?.(view) !== "promote") throw new Error("candidate refused by current promotion screen");
+      let appended = false;
+      return work(() => {
+        if (appended) throw new Error("accepted note already appended");
+        appended = true;
+        return this.appendBody(body, normalized.tier === "short");
+      });
+    }); } catch (error) {
+      // A callback can fail after a durable JSONL append; ensure the derived index catches up.
+      this.stale = true;
+      throw error;
+    }
   }
 
   /** When a short-term entry written now leaves the index. */
@@ -242,12 +265,18 @@ export class MemoryStore {
   private append(entry: NoteInput | OpInput | GoalInput, local: boolean, at = new Date(this.now()).toISOString(), machine = this.machine.id): string {
     const capped = entry.op === "note" ? { ...entry, text: entry.text.slice(0, MAX_TEXT), ...(entry.title ? { title: entry.title.slice(0, MAX_TITLE) } : {}) } : entry;
     const body = { schema: MEMORY_SCHEMA, at, machine, ...capped } as Omit<Entry, "id">;
-    const id = entryId(body);
-    appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
-    // The line is written, so the entry is saved: an index that cannot be updated now (a busy database) catches up on the
-    // next read, and the caller is never told it failed.
-    try { this.refresh(); } catch (e) { this.stale = true; this.log(`hub memory index not updated yet: ${(e as Error).message}`); }
-    return id;
+    return this.appendBody(body, local);
+  }
+
+  private appendBody(body: Omit<Entry, "id">, local: boolean): string {
+    // Lock the authoritative log independently: a busy derived index must never prevent an ordinary append.
+    return this.withMutation(() => {
+      const id = entryId(body);
+      appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
+      // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.
+      try { this.refresh(); } catch (e) { this.stale = true; this.log(`hub memory index not updated yet: ${(e as Error).message}`); }
+      return id;
+    });
   }
 
   /** A note: short-term ones stay on this machine, long-term ones go to the synced log. The caller has screened it. */
@@ -263,11 +292,13 @@ export class MemoryStore {
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
-    // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
-    const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
-    if (known) return { id: known.id, added: false };
-    appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
-    return { id, added: true };
+    return this.withMutation(() => {
+      // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
+      const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
+      if (known) return { id: known.id, added: false };
+      appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
+      return { id, added: true };
+    });
   }
 
   /** A person's or the hub's op on an entry; it goes where the entry lives, so forgetting a long-term entry syncs. */

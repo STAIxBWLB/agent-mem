@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
+import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 
 /**
@@ -78,7 +79,10 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   if (!opts.remote && !existsSync(join(dir, ".git"))) return fail(noRemote); // never set up: nothing to do, nothing created
   const release = lock(dir);
   if (!release) return fail("another sync is running on this machine");
+  let releaseMutation: (() => void) | undefined;
   try {
+    releaseMutation = acquireMutation(dir);
+    if (!releaseMutation) return fail("another memory mutation is running on this machine");
     // Holding sync.lock, no other git runs in this repository: what a killed one left behind is stale.
     rmSync(join(dir, ".git", "index.lock"), { force: true });
     if (existsSync(join(dir, ".git", "MERGE_HEAD"))) await git(dir, ["merge", "--abort"]);
@@ -136,9 +140,11 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
       pushed = true;
     }
     if (opts.signal?.aborted) return fail("stopped");
-    store.refresh();
-    return { ok: true, pushed, entries: store.counts().long, ...(warning ? { warning } : {}) };
+    return store.withDeferredPromotions(() => {
+      store.refresh();
+      return { ok: true, pushed, entries: store.counts().long, ...(warning ? { warning } : {}) };
+    });
   } catch (e) {
     return fail((e as Error).message.slice(0, 200));
-  } finally { release(); }
+  } finally { try { releaseMutation?.(); } finally { release(); } }
 }

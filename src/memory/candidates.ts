@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { memoryHome } from "./home.ts";
-import { canonicalPath } from "./platform.ts";
+import { realPath } from "./platform.ts";
 import { MemoryStore, type NoteInput, type View } from "./store.ts";
 
 export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
@@ -147,7 +147,7 @@ export class CandidateStore {
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
     personOnly(context.actor); publicOnly(context.verdict);
-    if (canonicalPath(context.store.dir) !== canonicalPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");
+    if (realPath(context.store.dir) !== realPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");
     return context.store.withDeferredPromotions(() => this.acceptDeferred(id, context));
   }
   private acceptDeferred(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
@@ -174,22 +174,23 @@ export class CandidateStore {
       text: `Accepted candidate: ${id}\nTarget revision: ${data.target?.revision ?? "none"}\nTarget entry: ${data.target?.id ?? "none"}\n\n${body}` };
     if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
     if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
-    if (!context.store.screenAcceptedNote(note)) throw new Error("candidate refused by current promotion screen");
-    resolve(); // A policy callback may have observed or changed the target; never write against its older revision.
-    const started = this.db.transaction(() => {
-      const current = this.get(id, context.project);
-      if (!current) throw new Error("candidate unavailable");
-      if (current.status === "accepted") return current.acceptedNoteId!;
-      if (current.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
-      this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project = ?").run(id, context.project);
-      return undefined;
-    }).immediate();
-    if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
-    // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
-    // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
-    const noteId = context.store.note(note, true);
-    if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
-    this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project = ?").run(noteId, id, context.project);
-    return { candidateId: id, noteId, alreadyAccepted: false };
+    return context.store.withAcceptedNote(note, append => {
+      resolve(); // Recheck under the same mutation lock as the note and supersede appends.
+      const started = this.db.transaction(() => {
+        const current = this.get(id, context.project);
+        if (!current) throw new Error("candidate unavailable");
+        if (current.status === "accepted") return current.acceptedNoteId!;
+        if (current.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
+        this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project = ?").run(id, context.project);
+        return undefined;
+      }).immediate();
+      if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
+      // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
+      // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
+      const noteId = append();
+      if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
+      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project = ?").run(noteId, id, context.project);
+      return { candidateId: id, noteId, alreadyAccepted: false };
+    });
   }
 }
