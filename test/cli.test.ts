@@ -83,3 +83,17 @@ test("standalone import counts secret skips and goal links fail explicitly befor
   const result = JSON.parse(await runCli(["import", "claude-mem", "--db", file, "--policy-free", "--json"], context(root, true)));
   expect(result.skipped).toEqual({ model: 0, pii: 0, secret: 1 }); expect(result.added).toBe(0);
 });
+
+
+test("completion generation is read-only and unsupported shells exit 2", async () => {
+  const root = temp(), home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
+  for (const shell of ["zsh", "bash", "fish"]) expect(await runCli(["completion", shell], context(root))).toContain("_amem_candidates");
+  const env: NodeJS.ProcessEnv = { ...process.env, AMEM_HOME: home };
+  for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
+  for (const shell of ["nushell", ""]) {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "completion", ...(shell ? [shell] : [])], { env, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(2); expect(child.stdout.toString()).toBe(""); expect(child.stderr.toString()).toContain(shell ? "shell takes" : "usage:");
+  }
+  await expect(runCli(["completion", "bash"], { env: { CODEX_THREAD_ID: "fixture" } })).rejects.toThrow(PERSON_ONLY);
+  expect(existsSync(home)).toBe(false);
+});

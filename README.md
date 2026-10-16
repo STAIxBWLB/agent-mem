@@ -46,6 +46,62 @@ amem sync --remote <private-git-url> --policy-free
 
 Use `ahub memory` for the policy-applying path. `--policy-free` does not bypass the secret screen or the sync remote's privacy checks. Forgetting a shared note appends an operation; its previous content remains in the remote's git history.
 
+## Shell completion
+
+Generate completion for `zsh`, `bash`, or `fish` with `amem completion <shell>`. Generation prints a script to stdout; it does not install files or edit shell configuration. The following commands are for a person's terminal.
+
+### zsh
+
+```sh
+mkdir -p ~/.zfunc
+amem completion zsh > ~/.zfunc/_amem
+```
+
+Enable it by adding these lines to `~/.zshrc`, placing `fpath` before your existing `compinit` call (use only one `compinit` call):
+
+```sh
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Start a new shell. After upgrading amem, regenerate `~/.zfunc/_amem` with the same command and start a new shell. To remove it, delete `~/.zfunc/_amem` and start a new shell; remove the added `fpath` entry only if no other completions use that directory.
+
+### bash
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+amem completion bash > ~/.local/share/bash-completion/completions/amem
+```
+
+Enable it by adding this line to `~/.bashrc`:
+
+```sh
+source ~/.local/share/bash-completion/completions/amem
+```
+
+Source that file or start a new interactive Bash. After upgrading amem, regenerate it and source it again. To remove it, delete that file, remove its source line from `~/.bashrc`, and run `complete -r amem` in the current shell (or start a new shell).
+
+### fish
+
+```sh
+mkdir -p ~/.config/fish/completions
+amem completion fish > ~/.config/fish/completions/amem.fish
+```
+
+Fish loads this directory automatically. Start a new fish shell. After upgrading amem, regenerate the file and start a new shell. To remove it, delete `~/.config/fish/completions/amem.fish` and start a new shell, or run `complete -c amem -e` to clear the current shell's definitions.
+
+### Manual Tab checks
+
+These interactive checks remain unrun until a person checks them in each installed shell; automated syntax/candidate tests do not establish terminal behavior.
+
+- Type `amem ` and press Tab: top-level commands appear.
+- Type `amem goal ` and press Tab: goal subcommands appear.
+- Type `amem list --tier ` and press Tab: `short` and `long` appear.
+- Type `amem goal state <id> ` and press Tab: goal states appear.
+- Type `amem import claude-mem --db ` and press Tab in a directory containing a filename with spaces: the path remains one argument.
+- Type `amem completion ` and press Tab: `zsh`, `bash`, and `fish` appear.
+
 ## Data directory
 
 `memoryHome()` selects `AMEM_HOME` first, otherwise `$AGENTHUB_HOME/memory`, otherwise `~/.agenthub/memory`. `AMEM_HOME` names the memory directory itself; `AGENTHUB_HOME` names its parent. Existing agent-hub memory directories need no migration. An explicit `StoreOptions.home` retains the parent-directory convention and appends `/memory`.
