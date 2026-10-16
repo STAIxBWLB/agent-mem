@@ -36,6 +36,8 @@ The published `@staix/agent-mem@0.1.1` reader is pinned as a development-only al
 
 For shared v1, C05 remains a declared ceiling: expiry removes derived rows using the wall clock without a durable prune operation. Moving the clock backward can leave the incremental index empty while a rebuild restores the authored row and its edges. The clock-rollback fixture asserts this exact divergence, unchanged authored bytes and stable subsequent rebuilds. It does not claim universal incremental/rebuild equality across backward time. Generation prune makes an explicitly tombstoned exact entry permanently gone; it does not change the shared-v1 ceiling or make unpruned expiry permanent.
 
+C02 has a generation counterpart: a live generation handle hashes only appended bytes but still reads and compares the whole prefix of a changed segment to catch rewrite-plus-growth, so a changed refresh costs O(segment) I/O (about 13 MB and 247 ms p50 at 20,000 entries in the [read receipt](bench/p9-generation-read.md)). Unchanged segments cost no data I/O. The upgrade, measured first, is a per-block hash chain or a tail window plus an inode/size check.
+
 ## Privacy matrix (C3)
 
 `test/contract/coverage.ts` names each core test and each host-owned row. The package does not infer PII or authenticate a caller-supplied privacy verdict.
