@@ -68,3 +68,19 @@ After p50 read still grows from 43.06 ms at 20K to 505.84 ms at 200K (11.75x); s
 - `bun test --timeout 20000`: 95 pass, 5 skip, 0 fail; 100 tests across 10 files, 46.65 s. Five skips are zsh/fish completion checks because those shells are unavailable in the Linux runner.
 - `npm pack --dry-run`: exit 0, 15 intended files under LICENSE/README/package.json/bin/src; benchmark data and tests are not shipped.
 - Both benchmark runs exit 0. No real memory home, model, sync or live-account leg was used.
+
+
+## P7a write-lock follow-up (#95)
+
+[Measured JSON](p7a-write.json), SHA-256 `c1843aadc20ef56306a1158b200165c7f367f1c953c3e630dd88df4c8a85286e`, records source `bee55a4267a6faaf4d28b65a8f3aadce34ba80e8` after P7a. The unchanged harness was run once with `--sizes 2000,20000 --repeats 10`; all operations ran in the original order, and this follow-up compares write only. Harness SHA-256 remains `2244884aa023e976c3e054bfd24f20a064522326a842ca6dae9af0d7b28e019a`. The runner environment and fixture digests exactly match `p6-after.json`: the same Linux Xeon 8480CL runner class, Bun 1.4.2, 16-CPU / 32-GiB container, one sequential process. The JSON hardware counts describe the host, not its allocation. The source digest in the receipt precedes this comment-only follow-up.
+
+| Notes | P6 write p50 (ms) | P7a write p50 (ms) | P6 write p95 (ms) | P7a write p95 (ms) | p95 change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 | 3.455041 | 3.323716 | 4.597487 | 6.511542 | +41.63% |
+| 20,000 | 34.351182 | 32.689815 | 37.603780 | 35.694211 | -5.08% |
+
+Each cell is based on ten samples; nearest-rank p95 is therefore the single observed maximum. The 2K p95 increase is 1.914055 ms, while its p50 falls and both 20K statistics improve. These samples cannot establish whether the isolated maximum is lock overhead or environmental variation: the 2K result is inconclusive, with the increase retained. The required >20% stop triggered, was reported to the reviewer, and work resumed only after the reviewer directed preserving this measurement and proceeding. No rerun or sample selection was performed. These write samples do not measure lock contention or a production latency SLO.
+
+Resource admission initially deferred on a concurrent peer-sync rsync; the benchmark started only after those processes exited. Ordinary writes acquire the mutation lock before JSONL append with a bounded timeout; the derived-index busy contracts remain covered by unchanged tests. Promotion still checks outside that lock and locks only its append, so C01 remains declared. Older hubs and raw/external segment writers that do not take the lock remain unserialized; no cross-version serialization is claimed.
+
+Follow-up verification: typecheck exit 0; `boundary: OK (13 source files)`; admitted remote tests 138 pass, 5 skip, 0 fail (143 tests across 13 files, 2,422 assertions, 56.73 s). Five skips are unavailable zsh/fish completion checks. `npm pack --dry-run` lists 17 intended files. All 20 write result counts/digests match P6. No installed-runtime or multi-machine acceptance is claimed.
