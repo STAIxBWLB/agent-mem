@@ -5,12 +5,15 @@
     "": {
       "name": "@staix/agent-mem",
       "devDependencies": {
+        "@staix/agent-mem-v1": "npm:@staix/agent-mem@0.1.1",
         "@types/bun": "^1.3.0",
         "typescript": "^5.8.0",
       },
     },
   },
   "packages": {
+    "@staix/agent-mem-v1": ["@staix/agent-mem@0.1.1", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-YxbmvV2KMWsfE75GVkUwSwYe0dT+KPVLwL9vI5Exh81TX+sbDz/WlHsghXjzpmzFV0DZsdAmPp6NyivqgvZXtw=="],
+
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 
     "@types/node": ["@types/node@26.6.5", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg=="],

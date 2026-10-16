@@ -1,0 +1,40 @@
+import type { Entry } from "../../src/memory/store.ts";
+
+/** Authored v1 golden payloads. IDs are frozen SHA-256 receipts, not computed by the implementation under test. */
+export interface GoldenFixture { id: string; payloadVersion: "agent-hub.memory/v1"; placement: "log" | "local"; entry: Entry }
+export const GOLDEN_FIXTURES: readonly GoldenFixture[] = [
+  { id: "v1-note", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"ba9c0d804f5894bd57fff65640594281","schema":"agent-hub.memory/v1","at":"2026-10-16T00:00:00.000Z","machine":"fixture-a","op":"note","project":"agent-hub","scope":"project","tier":"long","kind":"contract","peer":"codex","text":"preserve the contract","about":["path:src/public.ts"],"source":"hub"} },
+  { id: "note-replacement", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"766c0a5fdea87a4fa64376e611cb0102","schema":"agent-hub.memory/v1","at":"2026-10-16T00:01:00.000Z","machine":"fixture-a","op":"note","project":"agent-hub","scope":"project","tier":"long","kind":"decision","peer":"codex","text":"newer authoritative decision","about":["path:src/public.ts"],"source":"hub"} },
+  { id: "note-forgotten", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"743a34254cdd09ffcd079e8be63371ed","schema":"agent-hub.memory/v1","at":"2026-10-16T00:02:00.000Z","machine":"fixture-a","op":"note","project":"agent-hub","scope":"project","tier":"long","kind":"finding","peer":"codex","text":"forget this finding","about":["path:src/public.ts"],"source":"hub"} },
+  { id: "note-demoted", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"1d34f1fcad38f70ad8f47078396f5c71","schema":"agent-hub.memory/v1","at":"2026-10-16T00:01:00.000Z","machine":"fixture-a","op":"note","project":"agent-hub","scope":"project","tier":"long","kind":"contract","peer":"codex","text":"demote this contract","about":["path:src/public.ts"],"source":"hub"} },
+  { id: "note-settled", payloadVersion: "agent-hub.memory/v1", placement: "local", entry: {"id":"76fd22ca122ba1eb5cd9c54a6d404a47","schema":"agent-hub.memory/v1","at":"2026-10-16T00:00:00.000Z","machine":"fixture-a","op":"note","project":"agent-hub","scope":"project","tier":"short","kind":"finding","peer":"codex","text":"settled finding","about":["path:src/public.ts"],"source":"hub","task":"agent-hub#1@1"} },
+  { id: "v1-goal", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"5bc138f061ddc452296bc44198a7f1f5","schema":"agent-hub.memory/v1","at":"2026-10-16T00:00:00.000Z","machine":"fixture-a","op":"goal","project":"agent-hub","scope":"project","title":"fixture goal","milestones":["deliver"],"dependsOn":[],"actor":"person"} },
+  { id: "v1-forget", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"21feef569798e7623bc807b48b199211","schema":"agent-hub.memory/v1","at":"2026-10-16T00:03:00.000Z","machine":"fixture-b","op":"forget","target":"743a34254cdd09ffcd079e8be63371ed","actor":"person"} },
+  { id: "v1-supersede", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"f18c8bf65cb4f80b2254330a50477458","schema":"agent-hub.memory/v1","at":"2026-10-16T00:03:00.000Z","machine":"fixture-b","op":"supersede","target":"ba9c0d804f5894bd57fff65640594281","actor":"person","by":"766c0a5fdea87a4fa64376e611cb0102"} },
+  { id: "v1-demote", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"3368fca87946965ad8da5ea910bfabb6","schema":"agent-hub.memory/v1","at":"2026-10-16T00:04:00.000Z","machine":"fixture-b","op":"demote","target":"1d34f1fcad38f70ad8f47078396f5c71","actor":"person","by":"2026-10-17T00:00:00.000Z"} },
+  { id: "v1-settle", payloadVersion: "agent-hub.memory/v1", placement: "local", entry: {"id":"60ecfa7fc3efb06b731d6cec01efda25","schema":"agent-hub.memory/v1","at":"2026-10-16T00:04:00.000Z","machine":"fixture-b","op":"settle","target":"agent-hub#1@1","actor":"person","by":"2026-10-17T00:00:00.000Z"} },
+  { id: "v1-goal_state", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"e1bb670f7c79e26fc73c0c4df1d28a4e","schema":"agent-hub.memory/v1","at":"2026-10-16T00:04:00.000Z","machine":"fixture-b","op":"goal_state","target":"5bc138f061ddc452296bc44198a7f1f5","actor":"person","by":"active"} },
+  { id: "v1-goal_link", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"18b365de4b5e058d1702d912e37ae517","schema":"agent-hub.memory/v1","at":"2026-10-16T00:05:00.000Z","machine":"fixture-b","op":"goal_link","target":"5bc138f061ddc452296bc44198a7f1f5","actor":"person","by":"agent-hub#1@1"} },
+  { id: "v1-lease", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"8d72dd05dce9312168a0ead80cb9e19f","schema":"agent-hub.memory/v1","at":"2026-10-16T00:06:00.000Z","machine":"fixture-a","op":"lease","target":"5bc138f061ddc452296bc44198a7f1f5","actor":"person","by":"2026-10-17T00:00:00.000Z"} },
+  { id: "lease-contender", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"516482a3979e345047dccfa8d399b7de","schema":"agent-hub.memory/v1","at":"2026-10-16T00:07:00.000Z","machine":"fixture-b","op":"lease","target":"5bc138f061ddc452296bc44198a7f1f5","actor":"person","by":"2026-10-17T00:00:00.000Z"} },
+  { id: "v1-lease_force", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"e8dc5283414fdc9517217280b9878dc2","schema":"agent-hub.memory/v1","at":"2026-10-16T00:08:00.000Z","machine":"fixture-c","op":"lease_force","target":"5bc138f061ddc452296bc44198a7f1f5","actor":"person","by":"2026-10-17T00:00:00.000Z"} },
+  { id: "v1-suggest", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"fe816fc02eef052fbb10e15e673165e8","schema":"agent-hub.memory/v1","at":"2026-10-16T00:09:00.000Z","machine":"fixture-b","op":"suggest","target":"ba9c0d804f5894bd57fff65640594281","actor":"person","by":"contradicts:766c0a5fdea87a4fa64376e611cb0102"} },
+  { id: "v1-confirm", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"51bbdcf9559751d5e77333fd97c167f1","schema":"agent-hub.memory/v1","at":"2026-10-16T00:10:00.000Z","machine":"fixture-b","op":"confirm","target":"fe816fc02eef052fbb10e15e673165e8","actor":"person"} },
+  { id: "suggest-rejected", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"fdee916841b9df6c5ab6d3171df67e78","schema":"agent-hub.memory/v1","at":"2026-10-16T00:09:00.000Z","machine":"fixture-b","op":"suggest","target":"ba9c0d804f5894bd57fff65640594281","actor":"person","by":"same_topic:766c0a5fdea87a4fa64376e611cb0102"} },
+  { id: "v1-reject", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"9744a7c7b093d2784cfb593696fa37fe","schema":"agent-hub.memory/v1","at":"2026-10-16T00:11:00.000Z","machine":"fixture-b","op":"reject","target":"fdee916841b9df6c5ab6d3171df67e78","actor":"person"} },
+ ];
+export const GOLDEN_NOW = Date.parse("2026-10-16T01:00:00.000Z");
+export const GOLDEN_DEADLINE = "2026-10-17T00:00:00.000Z";
+export const GOLDEN_PROJECT = "agent-hub";
+export function fixture(id: string): GoldenFixture {
+  const value = GOLDEN_FIXTURES.find(row => row.id === id);
+  if (!value) throw new Error(`missing golden fixture ${id}`);
+  return value;
+}
+/** Reserved operations have no payload: these fixtures authorize refusal only, never a future writer. */
+export const denyFixtureId = (op: string) => `deny-${op}`;
+
+/** Optional v1 fields are frozen schema fixtures, separate from the lifecycle replay scenario. */
+export const SCHEMA_FIXTURES: readonly GoldenFixture[] = [
+  { id: "schema-note-optional", payloadVersion: "agent-hub.memory/v1", placement: "log", entry: {"id":"e22636b6d1d1063e032720646ddf26ad","schema":"agent-hub.memory/v1","at":"2026-10-16T00:00:00.000Z","machine":"fixture-optional","op":"note","project":"agent-hub","scope":"shared","tier":"long","kind":"fail","peer":"person","title":"optional v1 fields","text":"portable optional payload","about":["path:src/optional.ts"],"source":"person","task":"agent-hub#2@2","supersedes":"11111111111111111111111111111111","promotedFrom":"22222222222222222222222222222222","expires":"2026-10-17T00:00:00.000Z"} },
+];
