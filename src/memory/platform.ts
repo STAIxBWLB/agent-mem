@@ -1,4 +1,4 @@
-// Private core portability helpers. Keep behavior aligned with the hub originals through memory-parity.test.ts.
+// Single-source platform helpers. Hub, local and Pi modules re-export these functions unchanged.
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spawnSync, execFileSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
@@ -39,6 +39,8 @@ export function realPath(path: string): string {
   }
 }
 
+/** One denylist for core extraction, hub path guards, sandbox rules and capture. */
+// `.agenthub/archive` holds reset state directories, including task text and PII.
 export const DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
 /** Regex sources, matched against a file's basename. */
 export const DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
@@ -51,6 +53,23 @@ export function isDenied(path: string, extra: string[] = []): boolean {
   return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
 }
 
+/**
+ * The one helper for every git call the hub makes outside the sandbox (#281): the repository's own configuration
+ * must not name a program the hub then runs with its own rights (defense in depth behind the seatbelt profile,
+ * which refuses a sandboxed command the writes that would plant one). Every call gets:
+ * - core.fsmonitor=false: the file-system monitor is an arbitrary command read from the repo config.
+ * - core.hooksPath=/dev/null: hooks come from a non-directory, so every hook lookup fails closed.
+ * - diff.external= (empty): no external diff driver.
+ * - core.pager=cat and --no-pager: no pager, whatever the config says (stdout is a pipe everywhere anyway).
+ * - credential.helper= (empty resets the list) and core.askpass= (empty fails closed), with GIT_TERMINAL_PROMPT=0:
+ *   no hub command authenticates, so any prompt is a bug and must fail instead of running a configured helper.
+ * git has no global switch for filter drivers or textconv: both are per-driver config keys. Of the hub's commands
+ * only the snapshot's `add`/`restore` would run a filter driver, and only a content diff would run textconv — the
+ * hub's one content diff is `diff --no-index`, which DOES read the repository's config (verified: a planted
+ * diff.external runs for it), so that call passes `--no-ext-diff` and `--no-textconv` on top of the config here,
+ * and the driver command of a filter lives in the `.git/config` the seatbelt profile refuses to a sandboxed
+ * command. GIT_CONFIG_NOSYSTEM/global are left alone: those files are the user's own.
+ */
 const SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
 /** Hub memory sync (#258) pushes to the person's own remote: their global credential helper stays, the rest does not. */
 const CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
