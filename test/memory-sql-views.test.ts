@@ -193,3 +193,22 @@ test("SQL candidate projection shares lifecycle snapshot with metadata during a 
     expect(store.list({ project, limit: Number.MAX_SAFE_INTEGER }).map(row => row.id)).toEqual([copy!]);
   } finally { db.query = query; }
 });
+
+test("raw command human header counts only project-wide readable tiers regardless of display query or cap", async () => {
+  const { home, store, clock } = fixture(), project = memoryProjectKey(home);
+  const add = (text: string, extra: Partial<NoteInput> = {}) => { clock.now++; return store.note({ op: "note", project, scope: "project", tier: "long", kind: "contract", peer: "codex", text, about: [], source: "person", ...extra }); };
+  add("needle public selected"); add("outside-query public long"); add("outside-query public short", { tier: "short" });
+  add("needle withheld long"); add("withheld short", { tier: "short" });
+  add("outside-query shared public", { project: "foreign", scope: "shared" });
+  add("foreign private excluded", { project: "foreign", scope: "project" });
+  const before = segmentBytes(store);
+  const options = { store, open: () => { throw new Error("provided store must be used"); }, importPolicy: () => () => false,
+    readable: (rows: View[]) => rows.filter(row => !row.text.includes("withheld")) };
+  for (const args of [["search", "needle", "--limit", "1"], ["list", "--tier", "short", "--limit", "1"]]) {
+    const output = await rawMemoryCommand(args, home, options);
+    expect(output.split("\n")[0]).toContain(": 3 long-term, 1 short-term");
+    expect(output).toContain("(1 withheld:");
+    expect(output).not.toContain("withheld long"); expect(output).not.toContain("withheld short");
+  }
+  expect(segmentBytes(store)).toEqual(before);
+});

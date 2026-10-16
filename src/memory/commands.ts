@@ -55,7 +55,9 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         // Screened first, then cut to the limit: withheld entries never crowd out readable ones.
         const readable = opts.readable(all), rows = readable.slice(0, limit ? Number(limit) : 50);
         if (json) return JSON.stringify(rows, null, 2);
-        const c = store.counts(project);
+        // Preserve project-wide header semantics, but count only rows the host policy lets this reader see.
+        const counted = opts.readable(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }));
+        const c = { machine: store.machine, long: counted.filter(v => v.tier === "long").length, short: counted.filter(v => v.tier === "short").length };
         const withheld = all.length - readable.length;
         return [`hub memory for ${project} on machine ${c.machine.label}: ${c.long} long-term, ${c.short} short-term`, ...(rows.length ? rows.map(one) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
