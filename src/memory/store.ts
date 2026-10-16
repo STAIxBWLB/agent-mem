@@ -5,6 +5,7 @@ import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
+import { assertSharedV1Op } from "./ops-contract.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -271,6 +272,7 @@ export class MemoryStore {
   }
 
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
+    assertSharedV1Op(body.op);
     // Lock the authoritative log independently: a busy derived index must never prevent an ordinary append.
     return this.withMutation(() => {
       const id = entryId(body);
@@ -291,6 +293,7 @@ export class MemoryStore {
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
   importNote(n: NoteInput, at: string): { id: string; added: boolean } {
+    assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);

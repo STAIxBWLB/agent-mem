@@ -1,0 +1,33 @@
+/** Declarative matrix receipt: a host-owned row is not a passed core privacy guarantee. */
+export interface ContractMatrixRow {
+  id: string;
+  contract: "C3" | "C4";
+  owner: "agent-mem" | "agent-hub";
+  surface: string;
+  fields: readonly string[];
+  testFile?: string;
+  testName?: string;
+  limitation?: string;
+}
+const privacyFile = "test/contract/privacy-matrix.test.ts", evidenceFile = "test/contract/evidence-matrix.test.ts";
+export const PRIVACY_MATRIX: readonly ContractMatrixRow[] = [
+  { id: "C3-core-readable", contract: "C3", owner: "agent-mem", surface: "raw command list/search/show callback", fields: ["every actual View key, including metadata and lifecycle projection"], testFile: privacyFile, testName: "C3 raw readable policy receives every View field for list search and show", limitation: "The callback is supplied by the host; the package does not classify PII." },
+  { id: "C3-person-read-ceiling", contract: "C3", owner: "agent-mem", surface: "direct person reads and raw graph", fields: ["title", "text", "graph labels", "graph metadata"], testFile: privacyFile, testName: "C3 core reads remain unscreened and raw graph is an explicit person-only host ceiling", limitation: "Direct MemoryStore reads are intentionally unscreened. rawMemoryCommand graph does not invoke readable; host identity or screened graph tools own that boundary." },
+  { id: "C3-promotion", contract: "C3", owner: "agent-mem", surface: "StoreOptions.screen", fields: ["title", "text", "peer", "project", "task", "about"], testFile: privacyFile, testName: "C3 promotion screen receives complete views and refuses private markers in every textual input field", limitation: "Promotion-only callback; it is not a read or direct-note write policy." },
+  { id: "C3-import", contract: "C3", owner: "agent-mem", surface: "claude-mem import", fields: ["source title", "source text/narrative"], testFile: privacyFile, testName: "C3 import policy screens title and body and secret screen skips both without changing source bytes", limitation: "isPii and looksSecret screen title/body, not arbitrary source metadata; a host must screen complete output before models read it." },
+  { id: "C3-candidate-verdict", contract: "C3", owner: "agent-mem", surface: "candidate put privacy verdict", fields: ["project", "approach", "symptom", "cause", "evidenceRefs", "retryWhen", "proposedText", "reason", "valid opaque target identity fixtures"], testFile: privacyFile, testName: "C3 candidate verdicts reject private pii and unknown payloads before any sidecar row", limitation: "A public verdict is supplied by an authenticated host boundary; it is not authentication or a core PII classifier." },
+  { id: "C3-counter-verdict", contract: "C3", owner: "agent-mem", surface: "counter privacy verdict", fields: ["project", "task", "turn", "session", "deliveryId", "rendered/delivered/cited unknown vs zero"], testFile: privacyFile, testName: "C3 counters require a public verdict for every valid contextual field and keep unknown distinct from zero", limitation: "Entry ids remain validated opaque 32-hex identifiers; private-turn detection is host-owned." },
+  { id: "C3-host-consumers", contract: "C3", owner: "agent-hub", surface: "read tools/recall/brief/ask/staleness/capture/PII turns", fields: ["query", "title", "text", "nodes", "edges", "errors", "counts", "task/turn/session context", "private paths"], limitation: "Outside the standalone core. Must be checked against the consuming hub's current policy; these matrix rows make no core proof claim." },
+];
+export const EVIDENCE_MATRIX: readonly ContractMatrixRow[] = [
+  { id: "C4-list", contract: "C4", owner: "agent-mem", surface: "list", fields: ["candidate", "counter", "suggestion ids"], testFile: evidenceFile, testName: "C4 list returns only ordinary notes while candidate counter and suggestion ids stay separate" },
+  { id: "C4-search", contract: "C4", owner: "agent-mem", surface: "search", fields: ["proposal text", "candidate id", "counter id/context"], testFile: evidenceFile, testName: "C4 search cannot find sidecar proposal or counter context as memory text" },
+  { id: "C4-show", contract: "C4", owner: "agent-mem", surface: "get/show", fields: ["candidate", "counter", "suggestion ids"], testFile: evidenceFile, testName: "C4 show resolves ordinary note ids but not candidate counter or suggestion ids" },
+  { id: "C4-graph", contract: "C4", owner: "agent-mem", surface: "graph/related", fields: ["suggested relationship", "confirmed relationship", "candidate/counter exclusion"], testFile: evidenceFile, testName: "C4 graph labels unconfirmed suggestions and retrieval ignores them until a person confirms", limitation: "Raw graph intentionally shows suggested edges for dashed presentation; related excludes them until explicit confirmation. A raw graph is not itself an evidence-only projection." },
+  { id: "C4-import", contract: "C4", owner: "agent-mem", surface: "import", fields: ["sidecar SQLite", "explicit ahub ask model provenance"], testFile: evidenceFile, testName: "C4 import rejects the sidecar as a source and skips provenance-marked model answers", limitation: "Externally relabeled model text without retained provenance cannot be inferred as model output by this importer." },
+  { id: "C4-sync", contract: "C4", owner: "agent-mem", surface: "local synthetic git sync", fields: ["sidecar candidates/counters", "proposal text", "v1 suggest op"], testFile: evidenceFile, testName: "C4 sync carries v1 suggestions but never sidecar candidates counters or proposal text", limitation: "Synthetic local remote only. Real multi-machine/account live legs remain separate." },
+  { id: "C4-rebuild", contract: "C4", owner: "agent-mem", surface: "rebuild/dump", fields: ["sidecar candidate/counter ids and text", "ordinary rows"], testFile: evidenceFile, testName: "C4 rebuild leaves proposals and counters outside all derived v1 tables" },
+  { id: "C4-person-action", contract: "C4", owner: "agent-mem", surface: "candidate acceptance", fields: ["actor", "policy", "accepted note", "target supersession"], testFile: evidenceFile, testName: "C4 only an explicit person acceptance can append a candidate-derived ordinary note", limitation: "Host authenticates actor and current privacy policy; the actor string alone grants no authentication." },
+  { id: "C4-host-evidence", contract: "C4", owner: "agent-hub", surface: "brief/ask/recall/capture consumers", fields: ["proposals", "counters", "model suggestions", "model summaries"], limitation: "Requires host consumer fixtures. Core sidecar exclusion does not certify hub-specific evidence or capture paths." },
+];
+export const CONTRACT_MATRIX: readonly ContractMatrixRow[] = [...PRIVACY_MATRIX, ...EVIDENCE_MATRIX];

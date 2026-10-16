@@ -149,6 +149,14 @@ The root entry needs Bun (it loads `bun:sqlite`). Node hosts that need only the 
 
 The entry point exports the store, types and identity helpers, sync and claude-mem import, project/home helpers, raw memory/goal command handlers, and platform helpers. Hosts inject their own privacy policy through `StoreOptions.screen`; CLI wrappers can supply screened reads and import policy through the raw command options.
 
+## Contracts
+
+Shared segments retain the `agent-hub.memory/v1` profile. `OP_CONTRACTS` declares every current operation's payload, immutable targets, placement, ordering, identity and crash boundary. Both append paths refuse an unknown or truth-changing operation before writing a log line. The reserved `prune`, `correct`, `lift`, `consolidate` and `group` operations have no writer; introducing one requires the person's generation migration and its own contract first. Reader announcements cannot authorize a new operation.
+
+The contract suites run the published 0.1.1 reader and compare all six derived tables after replay and rebuild. Privacy and evidence matrices test the core's actual callbacks and sidecar boundaries; model-facing reads, PII turns, staleness checks and capture remain the host's responsibility. Direct person reads remain unscreened. Expiry after a wall-clock rollback retains the existing C05 ceiling: a rebuild can restore a previously expired row until its deadline passes again. This phase adds no durable prune operation.
+
+See [the contract and coverage tables](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/contracts.md) for the fixtures, host-owned rows and declared ceilings. These are automated synthetic checks, not proof of the separate multi-machine or managed-agent live legs.
+
 ## Development
 
 ```sh
