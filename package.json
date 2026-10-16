@@ -16,7 +16,8 @@
     "typescript": "^5.8.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./platform": "./src/memory/platform.ts"
   },
   "bin": {
     "amem": "./bin/amem.js"

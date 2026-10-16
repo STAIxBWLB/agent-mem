@@ -122,6 +122,8 @@ try {
 }
 ```
 
+The root entry needs Bun (it loads `bun:sqlite`). Node hosts that need only the deny list, hardened git invocation, `realPath` or process identity import `@staix/agent-mem/platform`, which uses `node:` built-ins only.
+
 The entry point exports the store, types and identity helpers, sync and claude-mem import, project/home helpers, raw memory/goal command handlers, and platform helpers. Hosts inject their own privacy policy through `StoreOptions.screen`; CLI wrappers can supply screened reads and import policy through the raw command options.
 
 ## Development
