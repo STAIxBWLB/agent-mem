@@ -53,3 +53,7 @@ The benchmark does not assert a performance target, replace privacy/lifecycle te
 `p6-before.json` records the untouched `f322b197fb261a1082db1bef933fa063a50cd271` source, with all three sizes and ten samples for every operation. It was measured through the workspace remote development runner, with a 16-CPU and 32-GiB container limit. The JSON hardware fields describe the host-visible CPU and RAM, not the container allocation. The benchmark is one sequential Bun process, with no worker pool.
 
 At 200,000 notes, baseline read p50/p95 is 884.93/945.15 ms and search is 912.29/957.00 ms. The SQL-selection target is to reduce those observed large-store distributions while preserving exact results; all smaller-store, open, write and graph distributions will also be reported, including regressions. Ten samples make nearest-rank p95 the observed maximum; these are workload measurements, not a production SLO or a statistical confidence claim. No revision cache or lifecycle/concurrency mechanism is included in this step.
+
+## Recorded comparison
+
+See [P6 results](p6-results.md) for the complete before/after table, correctness boundaries, measured regressions and the evidence for a separate cache proposal.
