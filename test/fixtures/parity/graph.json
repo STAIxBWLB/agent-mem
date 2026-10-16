@@ -1,0 +1,53 @@
+{
+  "nodes": [
+    {
+      "id": "mem:26a604d279d68185bbbf4159f60e7dc6",
+      "type": "memory",
+      "label": "Fixture contract",
+      "kind": "contract",
+      "tier": "long"
+    },
+    {
+      "id": "path:src/example.ts",
+      "type": "path",
+      "label": "src/example.ts"
+    },
+    {
+      "id": "peer:codex",
+      "type": "peer",
+      "label": "codex"
+    },
+    {
+      "id": "machine:0123456789abcdef",
+      "type": "machine",
+      "label": "0123456789abcdef"
+    },
+    {
+      "id": "project:github.com/example/amem-parity",
+      "type": "project",
+      "label": "github.com/example/amem-parity"
+    }
+  ],
+  "edges": [
+    {
+      "from": "mem:26a604d279d68185bbbf4159f60e7dc6",
+      "to": "path:src/example.ts",
+      "rel": "about"
+    },
+    {
+      "from": "mem:26a604d279d68185bbbf4159f60e7dc6",
+      "to": "peer:codex",
+      "rel": "by"
+    },
+    {
+      "from": "mem:26a604d279d68185bbbf4159f60e7dc6",
+      "to": "machine:0123456789abcdef",
+      "rel": "by"
+    },
+    {
+      "from": "mem:26a604d279d68185bbbf4159f60e7dc6",
+      "to": "project:github.com/example/amem-parity",
+      "rel": "in"
+    }
+  ]
+}
