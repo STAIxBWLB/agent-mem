@@ -369,3 +369,12 @@ test("sync cannot modify segments while a candidate acceptance holds the mutatio
   expect(attemptedNetwork).toBe(false); expect(bytes(f.memory)).toEqual(before);
   expect(existsSync(join(f.memory.dir, "sync.lock"))).toBe(false);
 });
+
+test("an accepted mutation refuses a busy derived index before appending any note", () => {
+  const f = fixture(), before = bytes(f.memory), index = new Database(join(f.memory.dir, "index.db"));
+  index.run("BEGIN IMMEDIATE");
+  try {
+    expect(() => f.memory.withAcceptedNote({ op: "note", project: PROJECT, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "must not authorize from a possibly stale index", about: [] }, append => append())).toThrow();
+    expect(bytes(f.memory)).toEqual(before);
+  } finally { index.run("ROLLBACK"); index.close(); }
+});

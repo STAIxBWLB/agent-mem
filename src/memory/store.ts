@@ -235,6 +235,8 @@ export class MemoryStore {
   /** Serialize current-store writers, screen one normalized body, and expose a one-shot append of that body. */
   withAcceptedNote<T>(note: NoteInput, work: (append: () => string) => T): T {
     try { return this.withMutation(() => {
+      // Ordinary writes may defer indexing, but accepting an exact target revision must have a current index.
+      this.db.transaction(() => this.refresh()).immediate();
       const at = new Date(this.now()).toISOString();
       const normalized = structuredClone({ ...note, text: note.text.slice(0, MAX_TEXT),
         ...(note.title ? { title: note.title.slice(0, MAX_TITLE) } : {}),
