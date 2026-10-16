@@ -73,6 +73,8 @@ export class SegmentReader {
       let hasher: Hash;
       if (!full && prior && cached && cached.offset === prior.offset && cached.hash === prior.hash) {
         // Changed live input still reads/compares the old bytes, so rewrite-plus-growth cannot masquerade as append.
+        // ponytail: generation counterpart of C02, O(segment) I/O per changed refresh despite suffix-only hashing.
+        // Measure first, then consider a per-block chain or tail-window plus inode/size checks.
         if (!cached.bytes.equals(bytes.subarray(0, prior.offset))) failure();
         hasher = cached.hasher.copy(); const suffix = bytes.subarray(prior.offset); hasher.update(suffix); this.measured.bytesHashed += suffix.length;
       } else {
