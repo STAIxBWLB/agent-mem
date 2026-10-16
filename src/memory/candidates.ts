@@ -138,10 +138,12 @@ export class CandidateStore {
   }
   reject(id: string, context: { project: string; actor: "person" | "agent"; verdict: CandidateVerdict }): void {
     personOnly(context.actor); publicOnly(context.verdict);
-    const candidate = this.get(id, context.project);
-    if (!candidate) throw new Error("candidate unavailable");
-    if (candidate.status === "accepted" || candidate.status === "accepting") throw new Error("candidate acceptance already started; inspect its ordinary note before any further action");
-    this.db.query("UPDATE candidates SET status = 'rejected' WHERE id = ? AND project = ? AND status = 'pending'").run(id, context.project);
+    this.db.transaction(() => {
+      const candidate = this.get(id, context.project);
+      if (!candidate) throw new Error("candidate unavailable");
+      if (candidate.status === "accepted" || candidate.status === "accepting") throw new Error("candidate acceptance already started; inspect its ordinary note before any further action");
+      this.db.query("UPDATE candidates SET status = 'rejected' WHERE id = ? AND project = ? AND status = 'pending'").run(id, context.project);
+    }).immediate();
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
     personOnly(context.actor); publicOnly(context.verdict);
