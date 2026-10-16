@@ -3,6 +3,8 @@ import { chmodSync } from "node:fs";
 import { join } from "node:path";
 
 export const MUTATION_BUSY_TIMEOUT_MS = 3000;
+// ponytail: older hubs (before consuming this agent-mem), raw/legacy log writers and any segment editor
+// that bypasses this lock are not serialized. Require every writer to take it, or make segment appends API-only.
 /** An empty, machine-local SQLite file used only for crash-safe writer exclusion, never for memory data. */
 export function mutationDatabase(dir: string): Database {
   const file = join(dir, "mutation-lock.db"), db = new Database(file, { create: true });
