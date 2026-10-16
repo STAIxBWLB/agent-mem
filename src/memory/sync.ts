@@ -1,7 +1,6 @@
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { hubGitArgv, hubGitEnv } from "../hub/git.ts";
-import { processLiveness, processSignature } from "../pi/process-signature.ts";
+import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
 import type { MemoryStore } from "./store.ts";
 
 /**
@@ -17,7 +16,7 @@ const STEP_MS = 60_000;
 
 async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
-  const p = Bun.spawn(hubGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: hubGitEnv() });
+  const p = Bun.spawn(memoryGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv() });
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
   const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };

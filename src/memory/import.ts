@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { realPath } from "../hub/project.ts";
+import { realPath } from "./platform.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { KINDS, looksSecret, type Kind, type MemoryStore } from "./store.ts";

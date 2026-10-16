@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
-import { isDenied } from "../local/deny.ts";
-import { hubHome } from "../hub/project.ts";
+import { isDenied } from "./platform.ts";
+import { memoryHome } from "./home.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -184,7 +184,7 @@ export class MemoryStore {
   private readonly log: (line: string) => void;
 
   constructor(opts: StoreOptions = {}) {
-    this.dir = join(opts.home ?? hubHome(), "memory");
+    this.dir = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
     mkdirSync(join(this.dir, "log"), { recursive: true, mode: 0o700 });
     mkdirSync(join(this.dir, "local"), { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
