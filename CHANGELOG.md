@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- First release through the tag workflow with npm trusted publishing (OIDC) and provenance; pins npm 11.20.0 in the release job. No code changes.
+
 ## 0.1.0
 
 - Initial standalone `@staix/agent-mem` library and person-only `amem` CLI.
