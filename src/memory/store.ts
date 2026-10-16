@@ -491,6 +491,11 @@ export class MemoryStore {
    * ponytail: lifecycle metadata is still scanned on every read; measure before adding a revision cache.
    */
   private views(expired = false, selection?: Filter, expiredOnly = false): View[] {
+    // Metadata, ops and candidate bodies must describe one WAL snapshot, even if another process indexes a copy.
+    return this.db.transaction(() => this.viewRows(expired, selection, expiredOnly)).deferred();
+  }
+
+  private viewRows(expired: boolean, selection: Filter | undefined, expiredOnly: boolean): View[] {
     const now = this.now(), selecting = selection !== undefined || expiredOnly;
     // Relations may cross projects and promoted copies: fold their small metadata globally, never filtered bodies.
     const rows = this.db.query(selecting

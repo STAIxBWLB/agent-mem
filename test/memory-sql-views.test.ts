@@ -165,3 +165,31 @@ test("raw command readable policy runs before selection cap and returned-row cou
   expect(seen[1]).toHaveLength(6);
   expect(segmentBytes(store)).toEqual(before);
 });
+
+test("SQL candidate projection shares lifecycle snapshot with metadata during a second-handle promotion", () => {
+  const { home, store, clock } = fixture(), project = "project/snapshot";
+  const source = store.note({ op: "note", project, scope: "project", tier: "short", kind: "contract", peer: "codex", text: "promote between projections", about: [], source: "person" });
+  const writer = new MemoryStore({ home, now: () => clock.now, screen: () => "promote" });
+  cleanup.push(() => writer.close());
+  type ProjectionDb = { query(sql: string): { all(...bindings: unknown[]): unknown[] } };
+  const db = (store as unknown as { db: ProjectionDb }).db, query = db.query.bind(db);
+  let injected = false, copy: string | undefined;
+  db.query = (sql: string) => {
+    const statement = query(sql);
+    // This is the selected full-row fetch, never prune's expired-only projection.
+    if (sql.startsWith("SELECT * FROM entries") && sql.includes("(project = ? OR scope = 'shared')")) return {
+      all: (...bindings: unknown[]) => {
+        if (!injected) { injected = true; copy = writer.promote(source, "user", project); }
+        return statement.all(...bindings);
+      },
+    };
+    return statement;
+  };
+  try {
+    const first = store.list({ project, limit: Number.MAX_SAFE_INTEGER }).map(row => row.id);
+    expect(injected).toBe(true); expect(copy).toBeDefined();
+    expect(first).toHaveLength(1);
+    expect(first.every(id => id === source || id === copy)).toBe(true);
+    expect(store.list({ project, limit: Number.MAX_SAFE_INTEGER }).map(row => row.id)).toEqual([copy!]);
+  } finally { db.query = query; }
+});
