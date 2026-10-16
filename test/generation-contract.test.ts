@@ -7,6 +7,7 @@ import { MemoryStore as LegacyV1 } from "@staix/agent-mem-v1";
 import { MemoryStore as LegacyV02 } from "@staix/agent-mem-v02";
 import { MemoryStore, entryId, type NoteInput } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
+import { realPath } from "../src/memory/platform.ts";
 import { planPrune, applyPrune, type PruneAuthorization } from "../src/memory/prune.ts";
 import { derivedTables } from "./contract/replay.ts";
 
@@ -15,7 +16,7 @@ const readers = [{ label: "published 0.1.1", alias: "@staix/agent-mem-v1", Store
 type OldStore = LegacyV1 | LegacyV02;
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-function home(): string { const value = mkdtempSync(join(tmpdir(), "amem-generation-contract-")); cleanup.push(() => rmSync(value, { recursive: true, force: true })); return value; }
+function home(): string { const value = realPath(mkdtempSync(join(tmpdir(), "amem-generation-contract-"))); cleanup.push(() => rmSync(value, { recursive: true, force: true })); return value; }
 function input(text: string, over: Partial<NoteInput> = {}): NoteInput { return { op: "note", project: PROJECT, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text, about: ["path:src/public.ts"], ...over }; }
 function legacyAuth(): PruneAuthorization { return { project: PROJECT, actor: "person", authorize: () => true }; }
 function rootBytes(memoryDir: string): Record<string, string> {
