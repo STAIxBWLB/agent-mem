@@ -1,0 +1,68 @@
+[
+  {
+    "id": "c5f94e3f5d24975b30b5e7f97d18ef15",
+    "at": "2026-10-01T00:03:00.000Z",
+    "machine": "0123456789abcdef",
+    "project": "github.com/example/amem-parity",
+    "scope": "project",
+    "tier": "short",
+    "kind": "finding",
+    "peer": "codex",
+    "title": "Fixture finding",
+    "text": "A synthetic short-term finding.",
+    "task": null,
+    "about": [
+      "path:src/example.ts"
+    ],
+    "source": "hub",
+    "supersededBy": null,
+    "supersedes": [],
+    "promotedFrom": null,
+    "expiresAt": "2099-01-01T00:00:00.000Z",
+    "local": true
+  },
+  {
+    "id": "c12d2fc1d93b43a039d5a87beb634bcc",
+    "at": "2026-10-01T00:02:00.000Z",
+    "machine": "0123456789abcdef",
+    "project": "github.com/example/amem-parity",
+    "scope": "project",
+    "tier": "long",
+    "kind": "fail",
+    "peer": "codex",
+    "title": "Fixture fail",
+    "text": "Keep the failed approach visible.",
+    "task": null,
+    "about": [
+      "path:src/example.ts"
+    ],
+    "source": "hub",
+    "supersededBy": null,
+    "supersedes": [],
+    "promotedFrom": null,
+    "expiresAt": null,
+    "local": false
+  },
+  {
+    "id": "26a604d279d68185bbbf4159f60e7dc6",
+    "at": "2026-10-01T00:01:00.000Z",
+    "machine": "0123456789abcdef",
+    "project": "github.com/example/amem-parity",
+    "scope": "project",
+    "tier": "long",
+    "kind": "contract",
+    "peer": "codex",
+    "title": "Fixture contract",
+    "text": "Preserve the append-only contract.",
+    "task": null,
+    "about": [
+      "path:src/example.ts"
+    ],
+    "source": "hub",
+    "supersededBy": null,
+    "supersedes": [],
+    "promotedFrom": null,
+    "expiresAt": null,
+    "local": false
+  }
+]

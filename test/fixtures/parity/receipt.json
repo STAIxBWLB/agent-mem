@@ -1,0 +1,23 @@
+{
+  "source": "installed ahub",
+  "version": "0.12.29",
+  "expectedVersion": "0.12.29",
+  "project": "github.com/example/amem-parity",
+  "remote": "https://github.com/example/amem-parity.git",
+  "commands": {
+    "list": [
+      "list",
+      "--json"
+    ],
+    "show": [
+      "show",
+      "26a604d279d68185bbbf4159f60e7dc6",
+      "--json"
+    ],
+    "graph": [
+      "graph",
+      "26a604d279d68185bbbf4159f60e7dc6",
+      "--json"
+    ]
+  }
+}
