@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
-import { MemoryStore, type Graph, type View } from "../../src/memory/store.ts";
-import { GOLDEN_FIXTURES, GOLDEN_NOW, GOLDEN_DEADLINE, fixture } from "./fixtures.ts";
-import { Replay, authoredLogs } from "./replay.ts";
+import { MemoryStore, entryId, type Entry, type Graph, type View } from "../../src/memory/store.ts";
+import { V1_OPS } from "../../src/memory/ops-contract.ts";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z"), at = new Date(NOW).toISOString();
 const project = "agent-hub";
@@ -127,44 +126,83 @@ test("C1 the actual writer refuses reserved truth-changing and unknown ops befor
 });
 
 
-test("C1 all 13 v1 ops preserve the published legacy reader's full semantic projection", () => {
-  expect(new Set(GOLDEN_FIXTURES.map(row => row.entry.op))).toEqual(new Set(["note", "forget", "supersede", "demote", "settle", "goal", "goal_state", "goal_link", "lease", "lease_force", "suggest", "confirm", "reject"]));
-  const replay = new Replay();
-  cleanup.push(() => replay.close());
-  for (const row of GOLDEN_FIXTURES) replay.append(row);
-  replay.store.refresh();
-  const authored = authoredLogs(replay.store.dir), oldHome = home();
-  for (const [path, bytes] of Object.entries(authored)) {
-    const folder = path.startsWith("log/") ? "log" : "local";
-    mkdirSync(join(oldHome, "memory", folder), { recursive: true });
-    writeFileSync(join(oldHome, "memory", path), bytes);
-  }
-  const received = logs(oldHome);
-  const old = new LegacyMemoryStore({ home: oldHome, now: () => GOLDEN_NOW });
-  cleanup.push(() => old.close());
-  const current = replay.store, id = (name: string) => fixture(name).entry.id;
-  const all = sorted(old.list({ project, includeSuperseded: true, limit: 100 }));
-  expect(all).toEqual(sorted(current.list({ project, includeSuperseded: true, limit: 100 })));
-  const visible = sorted(old.list({ project, limit: 100 }));
-  expect(visible).toEqual(sorted(current.list({ project, limit: 100 })));
-  expect(visible.map(row => row.id)).toEqual([id("note-replacement"), id("note-demoted"), id("note-settled")].sort());
-  expect(all.find(row => row.id === id("v1-note"))?.supersededBy).toBe(id("note-replacement"));
-  expect(all.find(row => row.id === id("note-demoted"))).toMatchObject({ tier: "short", expiresAt: GOLDEN_DEADLINE });
-  expect(all.find(row => row.id === id("note-settled"))).toMatchObject({ tier: "short", expiresAt: GOLDEN_DEADLINE });
-  for (const row of GOLDEN_FIXTURES.filter(row => row.entry.op === "note")) {
-    expect(old.get(row.entry.id, project)).toEqual(current.get(row.entry.id, project));
-  }
-  expect(old.get(id("note-forgotten"), project)).toBeUndefined();
-  expect(old.goalOf(id("v1-goal"), project)).toEqual(current.goalOf(id("v1-goal"), project));
-  expect(old.goalOf(id("v1-goal"), project)).toMatchObject({ state: "active", title: "fixture goal", links: [{ task: "agent-hub#1@1" }], lease: { holder: "fixture-c", until: GOLDEN_DEADLINE, conflict: [], expired: false } });
-  const suggestions = old.suggestions(project).sort((a, b) => a.id.localeCompare(b.id));
-  expect(suggestions).toEqual(current.suggestions(project).sort((a, b) => a.id.localeCompare(b.id)));
-  expect(suggestions.find(row => row.id === id("v1-suggest"))).toMatchObject({ status: "confirmed", rel: "contradicts" });
-  expect(suggestions.find(row => row.id === id("suggest-rejected"))).toMatchObject({ status: "rejected", rel: "same_topic" });
+test("C1 all 13 real v1 writers preserve authored payloads, placement and the published legacy projection", () => {
+  const dir = home(), oldHome = home(), ttl = 86_400_000;
+  let now = NOW;
+  const writer = new MemoryStore({ home: dir, now: () => now, ttlMs: ttl, deferPromotions: true });
+  cleanup.push(() => writer.close());
+  const noteIds: string[] = [], goalIds: string[] = [], seen = new Set<string>();
   const graphProjection = (graph: Graph) => ({ nodes: [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id)), edges: [...graph.edges].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) });
-  for (const start of [`mem:${id("v1-note")}`, `mem:${id("note-replacement")}`, `goal:${id("v1-goal")}`, "path:src/public.ts"]) {
-    expect(graphProjection(old.graph(project, start, 2, 200))).toEqual(graphProjection(current.graph(project, start, 2, 200)));
+  function parity(): void {
+    const authored = logs(dir);
+    // Transfer only bytes emitted by real writers, never an index or a golden fixture.
+    for (const [path, bytes] of Object.entries(authored)) {
+      mkdirSync(join(oldHome, "memory", path.startsWith("log/") ? "log" : "local"), { recursive: true });
+      writeFileSync(join(oldHome, "memory", path), bytes);
+    }
+    const received = logs(oldHome), old = new LegacyMemoryStore({ home: oldHome, now: () => now });
+    try {
+      for (const includeSuperseded of [false, true]) expect(sorted(old.list({ project, includeSuperseded, limit: 100 }))).toEqual(sorted(writer.list({ project, includeSuperseded, limit: 100 })));
+      for (const id of noteIds) expect(old.get(id, project)).toEqual(writer.get(id, project));
+      for (const id of goalIds) expect(old.goalOf(id, project)).toEqual(writer.goalOf(id, project));
+      expect(old.suggestions(project)).toEqual(writer.suggestions(project));
+      for (const start of [...noteIds.map(id => `mem:${id}`), ...goalIds.map(id => `goal:${id}`), "path:src/public.ts"]) expect(graphProjection(old.graph(project, start, 2, 200))).toEqual(graphProjection(writer.graph(project, start, 2, 200)));
+      expect(logs(oldHome)).toEqual(received);
+      expect(logs(dir)).toEqual(authored);
+    } finally { old.close(); }
   }
-  expect(logs(oldHome)).toEqual(received);
-  expect(authoredLogs(replay.store.dir)).toEqual(authored);
+  function step(fields: Record<string, unknown>, placement: "local" | "log", act: () => unknown): string {
+    now++;
+    const before = logs(dir), body = { schema: "agent-hub.memory/v1", at: new Date(now).toISOString(), machine: writer.machine.id, ...structuredClone(fields) };
+    const id = entryId(body as unknown as Omit<Entry, "id">);
+    act();
+    const path = `${placement}/${writer.machine.id}.jsonl`;
+    // Assert the complete emitted body and exactly one append in the expected segment, including field order.
+    expect(logs(dir)).toEqual({ ...before, [path]: (before[path] ?? "") + JSON.stringify({ ...body, id }) + "\n" });
+    seen.add(fields.op as string);
+    if (fields.op === "note") noteIds.push(id);
+    if (fields.op === "goal") goalIds.push(id);
+    parity();
+    return id;
+  }
+  function addNote(text: string, tier: "short" | "long" = "long", task?: string, kind: "finding" | "contract" = "finding"): string {
+    const input = { op: "note" as const, project, scope: "project" as const, tier, kind, peer: "person", source: "person" as const, text, about: ["path:src/public.ts"], ...(task ? { task } : {}) };
+    return step(input, tier === "short" ? "local" : "log", () => writer.note(input));
+  }
+  const original = addNote("original v1 authority"), replacement = addNote("replacement v1 authority");
+  const forgotten = addNote("forgotten v1 finding"), demoted = addNote("demoted v1 finding");
+  const task = "agent-hub#1@1", held = addNote("held v1 finding", "short", task);
+  step({ op: "forget", target: forgotten, actor: "person" }, "log", () => writer.forget(forgotten, "person", project));
+  step({ op: "supersede", target: original, actor: "person", by: replacement }, "log", () => writer.supersede(original, replacement, "person", project));
+  const demotionDeadline = new Date(now + 1 + ttl).toISOString();
+  step({ op: "demote", target: demoted, actor: "person", by: demotionDeadline }, "log", () => writer.demote(demoted, "person", project));
+  const settlementDeadline = new Date(now + 1 + ttl).toISOString();
+  step({ op: "settle", target: task, actor: "person", by: settlementDeadline }, "local", () => writer.settle(task, "person"));
+  const goalInput = { project, scope: "project" as const, title: "writer compatibility goal", milestones: ["deliver"], dependsOn: [], actor: "person" };
+  const goal = step({ op: "goal", ...goalInput }, "log", () => writer.goal(goalInput));
+  step({ op: "goal_state", target: goal, by: "active", actor: "person" }, "log", () => writer.goalState(goal, "active", "person"));
+  step({ op: "goal_link", target: goal, by: task, actor: "person" }, "log", () => writer.goalLink(goal, task, "person"));
+  step({ op: "lease", target: goal, by: new Date(now + 1 + ttl).toISOString(), actor: "person" }, "log", () => writer.take(goal, "person", { ms: ttl }));
+  const forcedDeadline = new Date(now + 1 + ttl).toISOString();
+  step({ op: "lease_force", target: goal, by: forcedDeadline, actor: "person" }, "log", () => writer.take(goal, "person", { force: true, ms: ttl }));
+  const suggestion = step({ op: "suggest", target: replacement, by: `contradicts:${demoted}`, actor: "hub-model" }, "log", () => writer.suggest(replacement, demoted, "contradicts"));
+  step({ op: "confirm", target: suggestion, actor: "person" }, "log", () => writer.judge(suggestion, "confirm", "person", project));
+  expect(writer.graph(project, `mem:${replacement}`, 1).edges).toContainEqual({ from: `mem:${replacement}`, to: `mem:${demoted}`, rel: "contradicts" });
+  step({ op: "reject", target: suggestion, actor: "person" }, "log", () => writer.judge(suggestion, "reject", "person", project));
+  expect(writer.graph(project, `mem:${replacement}`, 1).edges.some(edge => edge.rel.includes("contradicts"))).toBe(false);
+  expect(writer.list({ project }).map(row => row.id).sort()).toEqual([replacement, demoted, held].sort());
+  expect(writer.get(forgotten, project)).toBeUndefined();
+  expect(writer.get(original, project)?.supersededBy).toBe(replacement);
+  expect(writer.get(demoted, project)).toMatchObject({ tier: "short", expiresAt: demotionDeadline });
+  expect(writer.get(held, project)).toMatchObject({ tier: "short", expiresAt: settlementDeadline });
+  expect(writer.goalOf(goal, project)).toMatchObject({ state: "active", links: [{ task }], lease: { holder: writer.machine.id, until: forcedDeadline, conflict: [], expired: false } });
+  expect(writer.suggestions(project).find(row => row.id === suggestion)?.status).toBe("rejected");
+
+  // Target-local operations must stay local too; a synced-only fixture would miss this writer branch.
+  const localTask = "agent-hub#2@2", localOld = addNote("local old", "short", localTask, "contract"), localNew = addNote("local new", "short", localTask, "contract");
+  step({ op: "settle", target: localTask, actor: "person", by: new Date(now + 1 + ttl).toISOString() }, "local", () => writer.settle(localTask, "person"));
+  step({ op: "demote", target: localOld, actor: "person", by: new Date(now + 1 + ttl).toISOString() }, "local", () => writer.keepShort(localOld, "person"));
+  step({ op: "supersede", target: localOld, actor: "person", by: localNew }, "local", () => writer.supersede(localOld, localNew, "person", project));
+  step({ op: "forget", target: localNew, actor: "person" }, "local", () => writer.forget(localNew, "person", project));
+  expect([...seen].sort()).toEqual([...V1_OPS].sort());
 });
