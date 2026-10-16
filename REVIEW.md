@@ -6,3 +6,11 @@
 - For command or completion changes, compare the shared definitions, parser/help and shell candidates. Check path quoting and static generation; distinguish automated shell checks from manual interactive Tab evidence.
 - For releases, check the package version, documented install commands, intended tarball contents and zero runtime dependencies. Keep npm credentials out of files and results; distinguish bootstrap publication from trusted-publisher evidence.
 - Require successful typecheck, source-boundary and test checks at the reviewed head. Report platform skips and unverified live behavior explicitly.
+
+## Passes and findings
+
+- Run Bugs, Security, and spec/plan Compliance passes. For instruction files and prompts, also run Instruction prose: keep actionable rules, retain safety/permission boundaries, and move rationale to human documentation.
+- Tag findings with pass, severity, evidence and provenance (introduced, pre-existing or indeterminate). Put pre-existing concerns in follow-up work rather than expanding the release.
+- Reserve Important for broken behavior, data leaks or policy breaches. Treat style and naming as nits; report at most two nits and count the remainder.
+- Skip generated-file formatting complaints, but review fixture compatibility and artifact correctness. There are no wholly excluded generated paths in this repository.
+- Avoid duplicating failures already enforced by successful current-head CI (typecheck, import boundary and tests). Report coverage gaps, skipped live behavior and defects that those checks do not establish.
