@@ -138,8 +138,8 @@ CI runs the typecheck, boundary check and tests on Ubuntu and macOS with Bun 1.4
 
 ## Publishing
 
-The first publication is the person's responsibility. npm trusted publishing requires an existing package: first publish `@staix/agent-mem` manually, then configure its GitHub Actions trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml`. No publication is performed by this extraction task.
+0.1.0 was published once by hand, because npm trusted publishing requires an existing package; the trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml` was configured after it. Every later release goes through the tag workflow.
 
-After setup, a `v*` tag triggers both operating-system gates. The tag must equal `v` plus `package.json`'s version. Only after both gates pass does the release job run `npm publish --provenance --access public`, authenticated through GitHub OIDC with `id-token: write`. The workflow uses no `NPM_TOKEN`.
+After setup, a `v*` tag triggers both operating-system gates. The tag must equal `v` plus `package.json`'s version. Only after both gates pass does the release job install npm 11.20.0 (trusted publishing needs 11.5.1 or later) and run `npm publish --access public`, authenticated through GitHub OIDC with `id-token: write`; npm adds provenance itself. The workflow uses no `NPM_TOKEN`.
 
 License: MIT.
