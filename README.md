@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.2.0. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.3.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Install
 
@@ -158,9 +158,9 @@ The shared-v1 contract suites run the published 0.1.1 reader and compare all six
 See [the contract and coverage tables](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/contracts.md) for the fixtures, host-owned rows and declared ceilings. These are automated synthetic checks, not proof of the separate multi-machine or managed-agent live legs.
 
 
-## Generation migration and exact-entry prune (unreleased)
+## Generation migration and exact-entry prune
 
-This section describes the generation-capable development build, not the published 0.2.0 package.
+Available from 0.3.0. Do not migrate a memory home that agent-hub also uses until agent-hub pins a generation-capable agent-mem and binds the selected profile (rollout order in [#9](https://github.com/STAIxBWLB/agent-mem/issues/9)); until then a running hub keeps writing shared v1 and the person's notes would split.
 
 Shared v1 remains the default until a person explicitly migrates the memory home. A generation uses `M/generations/G/` and a separate Git repository/ref (`refs/heads/amem/gen/G`); legacy directories and `main` are unchanged. The one-way readonly bridge consumes complete validated legacy prefixes without using the old index or writing legacy notes. Old programs continue using their legacy view, and generation-created notes never flow back to it.
 

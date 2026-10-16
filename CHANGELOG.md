@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Generation profile (agent-hub#412 P9, #9): opt-in, person-run migration to `M/generations/G` with its own logs, index, locks and Git ref `amem/gen/G`; machine-local selector changed by compare-and-swap; `amem migrate --dry-run | --resume | --deactivate`. Shared v1 stays the default and its behavior, sync included, is unchanged.
+- Read-only legacy bridge over raw v1 JSONL: ids preserved, malformed lines skipped and counted as in shared v1, no Git on ordinary reads.
+- Durable exact-entry prune in a generation (`amem prune`): explicit target id and row hash, expiry proven only by an explicit `expires`/`by`; private targets stay in local rows. Closes C05 for pruned entries; the shared-v1 C05 ceiling stays.
+- Contract gates extended: real 0.1.1 and 0.2.0 readers, sync isolation, replay, privacy and migration crash points.
+- Do not migrate a home agent-hub uses until agent-hub binds the profile (#9 rollout).
+
 ## 0.2.0
 
 - Reads select note rows in SQL before building views (agent-hub#412 P6): at 200,000 notes read p95 -45 %, search -39 %, write -31 % (docs/bench/p6-results.md). Metadata, operations and rows come from one read snapshot.
