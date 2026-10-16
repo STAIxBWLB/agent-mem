@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { MemoryStore, looksSecret } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -6,6 +6,10 @@ import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
 
 import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
+import { memoryHome } from "./memory/home.ts";
+import { resolveProfile } from "./memory/generation.ts";
+import { migrate } from "./memory/migrate.ts";
+import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
 
 export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -40,7 +44,29 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (definition.policyFree && !policyFree) {
     throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
   }
+  if (sub === "migrate") {
+    const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
+    if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
+    const mode = options["--dry-run"] ? "dry-run" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "apply";
+    return JSON.stringify(await migrate({ memoryDir: memoryHome(), mode, ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true }), null, 2);
+  }
+  if (sub === "prune") {
+    const applying = options["--apply"] === true;
+    if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune --cutoff <UTC> --dry-run | --apply --plan <file>");
+    let input: string | undefined;
+    if (applying) {
+      const file = String(options["--plan"]), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > PRUNE_PLAN_MAX_BYTES) throw new Error("prune plan unavailable or oversized");
+      input = readFileSync(file, "utf8");
+    }
+    const store = new MemoryStore({ deferPromotions: true });
+    try {
+      const auth = { project: memoryProjectKey(context.cwd ?? process.cwd()), actor: "person" as const, authorize: () => true };
+      return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
+    } finally { store.close(); }
+  }
   if (review) {
+    if (resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use the profile-aware host after its integration");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
     const project = memoryProjectKey(context.cwd ?? process.cwd()), candidates = new CandidateStore();

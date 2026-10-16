@@ -99,3 +99,61 @@ export function assertSharedV1Op(op: unknown): void {
   const contract = typeof op === "string" && Object.hasOwn(OP_CONTRACTS, op) ? OP_CONTRACTS[op] : undefined;
   if (!contract?.implemented || contract.status !== "v1-equal") throw new Error("operation is not allowed in shared v1 segments; a person-run generation migration and contract are required");
 }
+
+/** Separate registry: importing this metadata never authorizes prune in OP_CONTRACTS/shared v1. */
+export interface GenerationPayloadField {
+  type: "string" | "object" | "array";
+  values?: readonly string[];
+  pattern?: string;
+  format?: "canonical-utc";
+  required?: readonly string[];
+  fields?: Readonly<Record<string, GenerationPayloadField>>;
+  additionalProperties?: false;
+  items?: GenerationPayloadField;
+  minItems?: number;
+  maxItems?: number;
+  sortedUniqueBy?: string;
+}
+export interface GenerationOpContract extends Omit<OpContract, "implemented" | "payloadSchema"> {
+  implemented: true;
+  generationOnly: true;
+  targetSemantics: "exact-entry-v1";
+  validator: "validatePruneRow";
+  validation: readonly string[];
+  payloadSchema: {
+    version: 1;
+    required: readonly string[];
+    fields: Readonly<Record<string, GenerationPayloadField>>;
+    additionalProperties: false;
+    maxUtf8Bytes: number;
+  };
+}
+const generationId: GenerationPayloadField = { type: "string", pattern: "^[a-f0-9]{32}$" };
+const authoredHash: GenerationPayloadField = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const canonicalUtc: GenerationPayloadField = { type: "string", format: "canonical-utc" };
+const pruneRequired = ["schema", "op", "generation", "at", "machine", "actor", "placement", "cutoff", "targets", "id"] as const;
+export const PRUNE_GENERATION_CONTRACT: GenerationOpContract = Object.freeze<GenerationOpContract>({
+  status: "truth-changing", implemented: true, generationOnly: true, targetSemantics: "exact-entry-v1", validator: "validatePruneRow",
+  validation: ["exact required keys at each nested level; no additional fields", "canonical UTC; cutoff <= at; each expiredAt <= cutoff", "1..32 targets, strictly sorted unique full ids; canonical row <=16384 UTF-8 bytes", "id equals first 32 hex of canonical complete payload hash excluding id", "generation and authored segment placement match the bound generation/input", "target/basis full authored hashes and explicit expires/by relationship verified separately by reducer; missing witnesses remain pending"],
+  payloadVersion: "agent-mem.prune/v1", required: pruneRequired,
+  payloadSchema: { version: 1, required: pruneRequired, additionalProperties: false, maxUtf8Bytes: 16_384, fields: {
+    schema: { type: "string", values: ["agent-mem.prune/v1"] }, op: { type: "string", values: ["prune"] },
+    generation: generationId, at: canonicalUtc, machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
+    actor: { type: "string", values: ["person"] }, placement: { type: "string", values: ["local", "synced"] }, cutoff: canonicalUtc, id: generationId,
+    targets: { type: "array", minItems: 1, maxItems: 32, sortedUniqueBy: "id", items: {
+      type: "object", required: ["id", "rowHash", "expiredAt", "basis"], additionalProperties: false, fields: {
+        id: generationId, rowHash: authoredHash, expiredAt: canonicalUtc,
+        basis: { type: "object", required: ["kind", "id", "rowHash"], additionalProperties: false, fields: {
+          kind: { type: "string", values: ["note", "demote", "settle"] }, id: generationId, rowHash: authoredHash,
+        } },
+      },
+    } },
+  } },
+  immutableTargets: "only explicit full note id plus SHA-256 of complete canonical authored row including id; exact note.expires or demote/settle.by basis id/hash; no implicit TTL/backstop proof or ancestry traversal",
+  placement: "generation local by default; synced only for positively attested public target and basis already in verified cached legacy-main or generation public segments; no policy-free bypass",
+  precedence: "validated exact target is permanently gone, union/idempotent across prune rows; later clock/deadline changes do not revoke it; missing witnesses pending; different IDs and independent replacements survive; raw promotion metadata remains for v1 source hiding",
+  identity: "sha256(canonical complete prune payload excluding id), first 32 hex; generation/at/machine/placement/cutoff/ordered targets participate; rowHash is full SHA-256 of authored witness including id",
+  crashBoundary: "fsync exact local sealed plan, mutation fence, revalidate proofs/policy, append+fsync complete row then refresh; per-row atomicity; retry skips durable IDs; incomplete own tail completes only from identical persisted-plan prefix; mismatched tail refuses",
+  fixtures: ["test/generation-prune.test.ts#only explicit note expires or demote settle by values can prove expiry", "test/generation-prune.test.ts#exact-entry reducer waits for witnesses and cannot be reversed by clock or later deadlines", "test/generation-prune.test.ts#prune partitions private target or basis locally and public attestations bind only public rows", "test/generation-prune.test.ts#prune row shape hashes canonical time ordering placement and byte bounds are strict"],
+});
+export const GENERATION_OP_CONTRACTS: Readonly<Record<"prune", GenerationOpContract>> = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT });

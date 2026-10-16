@@ -151,11 +151,44 @@ The entry point exports the store, types and identity helpers, sync and claude-m
 
 ## Contracts
 
-Shared segments retain the `agent-hub.memory/v1` profile. `OP_CONTRACTS` declares every current operation's payload, immutable targets, placement, ordering, identity and crash boundary. Both append paths refuse an unknown or truth-changing operation before writing a log line. The reserved `prune`, `correct`, `lift`, `consolidate` and `group` operations have no writer; introducing one requires the person's generation migration and its own contract first. Reader announcements cannot authorize a new operation.
+Shared segments retain the `agent-hub.memory/v1` profile. `OP_CONTRACTS` and `V1_OPS` keep the shared-v1 operation contract; both shared append paths refuse unknown or truth-changing operations. The separate `GENERATION_OP_CONTRACTS` enables only `prune` after an explicit generation selection. `correct`, `lift`, `consolidate` and `group` remain blocked. Reader announcements cannot authorize a new operation or relax generation isolation.
 
-The contract suites run the published 0.1.1 reader and compare all six derived tables after replay and rebuild. Privacy and evidence matrices test the core's actual callbacks and sidecar boundaries; model-facing reads, PII turns, staleness checks and capture remain the host's responsibility. Direct person reads remain unscreened. Expiry after a wall-clock rollback retains the existing C05 ceiling: a rebuild can restore a previously expired row until its deadline passes again. This phase adds no durable prune operation.
+The shared-v1 contract suites run the published 0.1.1 reader and compare all six v1 derived tables after replay and rebuild; generation fixtures cover their expanded derived state separately. Privacy and evidence matrices test the core's actual callbacks and sidecar boundaries; model-facing reads, PII turns, staleness checks and capture remain the host's responsibility. Direct person reads remain unscreened. Expiry after a wall-clock rollback retains the existing C05 ceiling: a rebuild can restore a previously expired row until its deadline passes again. A generation can persist exact-entry prune; shared-v1 and unpruned entries retain their existing expiry limitations.
 
 See [the contract and coverage tables](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/contracts.md) for the fixtures, host-owned rows and declared ceilings. These are automated synthetic checks, not proof of the separate multi-machine or managed-agent live legs.
+
+
+## Generation migration and exact-entry prune (unreleased)
+
+This section describes the generation-capable development build, not the published 0.2.0 package.
+
+Shared v1 remains the default until a person explicitly migrates the memory home. A generation uses `M/generations/G/` and a separate Git repository/ref (`refs/heads/amem/gen/G`); legacy directories and `main` are unchanged. The one-way readonly bridge consumes complete validated legacy prefixes without using the old index or writing legacy notes. Old programs continue using their legacy view, and generation-created notes never flow back to it.
+
+The following interfaces are for a person's terminal and an already initialized synthetic memory home. They do not authorize real-data migration. Use the same current project directory throughout planning and apply:
+
+```sh
+AMEM_HOME=/path/to/synthetic-memory amem migrate --dry-run
+AMEM_HOME=/path/to/synthetic-memory amem migrate
+# If interrupted, resume the recorded generation rather than creating another:
+AMEM_HOME=/path/to/synthetic-memory amem migrate --resume
+umask 077
+AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run > prune-plan.json
+AMEM_HOME=/path/to/synthetic-memory amem prune --apply --plan prune-plan.json
+# Explicitly select shared v1 again while preserving both histories:
+AMEM_HOME=/path/to/synthetic-memory amem migrate --deactivate
+```
+
+All migrate/prune modes, including dry-run, refuse agent markers and require stdin TTY. `--generation <32-hex-G>` selects an explicitly named generation during migration/join; it is never discovered and activated from a remote automatically. Invalid active metadata blocks access rather than silently opening shared v1. Existing handles remain bound to the profile they opened; a selector change does not restart or rebind a running hub.
+
+A prune plan is a person-local JSON receipt containing exact target/basis hashes, selector/project/policy revisions, fixed row bytes, local counts and a seal. Apply commits that same receipt after revalidation; it is not an authorization token. Maximums are 256 KiB per plan, 16 rows, 256 targets, and 32 targets/16 KiB per row. Larger automatic selections report `hasMore`; another plan handles remaining targets. Keep redirected plans private and out of source control, model context and sync.
+
+Only explicit serialized expiry is eligible: a note's `expires`, or an exact demote/settle row's `by`. Implicit backstop or instance-TTL deadlines cannot prove prune eligibility. Exact pruned IDs stay unavailable after clock rollback, including get/alias/graph-start paths. A different later promotion or replacement ID remains an independent note; this is not text/family removal, log erasure or storage reclamation. Unpruned expiry still follows the clock.
+
+Standalone CLI prune is local-only, even over a synced target. No `--policy-free` escape enables public prune. A later policy-aware host integration must authenticate intent and attest the exact public payload and current policy revision; only verified public target/basis provenance may sync. Local masks, plans, journals, caches and sidecars never sync. Generation sync refuses public or unknown remote visibility. An interrupted apply resumes the same durable row IDs and exact partial tail; it never rewrites complete lines.
+
+Candidate/counter sidecars are not migrated. `amem review` currently refuses a selected generation rather than using an unbound legacy sidecar. A profile-aware host integration must handle that context explicitly.
+
+Real migration remains blocked until the separately reviewed generation-capable amem release and exact-pinned agent-hub integration are installed and their running stores prove the same home/G/selector revision. Synthetic cross-writes and exact prune readbacks precede separately confirmed real migration; known local handles must be quiesced/closed and reopened through the supported session-preserving lifecycle. Release, deployment, real migration, host evidence/capture receipts and real multi-machine sync are not established by these source changes. Deactivation omits generation-only notes/prunes from the v1 view and is not a lossless rollback.
 
 ## Development
 

@@ -55,6 +55,14 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     accept: { description: "Accept one candidate through the current memory policy", options: policy, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
   } },
+  migrate: { description: "Select a person-approved generation or deactivate it", mutates: true, options: {
+    ...json, "--dry-run": flag("Read-only migration receipt"), "--generation": text("Explicit 32-hex generation ID"),
+    "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),
+  } },
+  prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
+    ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
+    "--apply": flag("Apply the exact local plan"), "--plan": { description: "Sealed local plan JSON file", value: "path" },
+  } },
   completion: { description: "Print static shell completion", args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
   help: { description: "Show help" }, version: { description: "Show version" },
 };

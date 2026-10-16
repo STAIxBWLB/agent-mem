@@ -5,6 +5,7 @@
     "": {
       "name": "@staix/agent-mem",
       "devDependencies": {
+        "@staix/agent-mem-v02": "npm:@staix/agent-mem@0.2.0",
         "@staix/agent-mem-v1": "npm:@staix/agent-mem@0.1.1",
         "@types/bun": "^1.3.0",
         "typescript": "^5.8.0",
@@ -12,6 +13,8 @@
     },
   },
   "packages": {
+    "@staix/agent-mem-v02": ["@staix/agent-mem@0.2.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-18rqJ1U7ALQ3Brtu8Kv6AQWK4dDPHQ9EZEDP8/Y1ghcO84giueme7qJOD/RBsEJmKYpT5XoOXrRrcxDiBiUOMQ=="],
+
     "@staix/agent-mem-v1": ["@staix/agent-mem@0.1.1", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-YxbmvV2KMWsfE75GVkUwSwYe0dT+KPVLwL9vI5Exh81TX+sbDz/WlHsghXjzpmzFV0DZsdAmPp6NyivqgvZXtw=="],
 
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],

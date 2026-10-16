@@ -6,6 +6,11 @@ import { isDenied } from "./platform.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
+import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
+import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
+import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
+import type { PruneStorePort } from "./prune.ts";
+import { isDeepStrictEqual } from "node:util";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -175,10 +180,16 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * `screen`: applied to every promotion. Without one, automatic promotions (a settlement, a held note whose replacement
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
-export interface StoreOptions { home?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean }
+export interface StoreOptions { home?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
+}
 
+const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
+interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits: readonly LegacyCheckpoint[]; commit?: string }
 export class MemoryStore {
   readonly dir: string;
+  readonly profile: BoundProfile;
+  private readonly generationIndex?: GenerationIndex;
+  private readonly bootstrapOnly: boolean;
   readonly machine: Machine;
   private readonly db: Database;
   private readonly mutationDb: Database;
@@ -187,8 +198,16 @@ export class MemoryStore {
   private readonly log: (line: string) => void;
   private readonly deferPromotions: boolean;
 
-  constructor(opts: StoreOptions = {}) {
-    this.dir = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
+  constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
+    if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
+    this.bootstrapOnly = bootstrap !== undefined;
+    const home = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
+    this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
+    if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
+      || this.profile.dir !== generationDir(this.profile.home, this.profile.generation)
+      || canonicalJSON(readProfileJSON(join(this.profile.dir, "generation.json"))) !== canonicalJSON(generationDescriptor(this.profile.generation)))) throw new Error("invalid migration profile binding");
+    // Shared-v1 preserves its historical lexical dir API; profile.home is still canonical for selector identity.
+    this.dir = this.profile.kind === "shared-v1" ? home : this.profile.dir;
     mkdirSync(join(this.dir, "log"), { recursive: true, mode: 0o700 });
     mkdirSync(join(this.dir, "local"), { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
@@ -217,7 +236,22 @@ export class MemoryStore {
     this.db = db;
     this.mutationDb = mutationDatabase(this.dir);
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
+    if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
+      apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
+      ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
     this.refresh();
+  }
+
+  /** The host must authenticate person intent before authorizing plan/apply through this port. */
+  prunePort(): PruneStorePort {
+    if (this.bootstrapOnly || !this.generationIndex) throw new Error("durable prune requires an active generation handle");
+    return this.generationIndex.port(this.machine.id);
+  }
+
+  /** Full derived receipt for golden replay; raw debug data, never model evidence. */
+  derivedTables(): Record<string, unknown[]> {
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[];
+    return Object.fromEntries(tables.map(({ name }) => [name, (this.db.query(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all() as unknown[]).sort((a, b) => canonicalJSON(a).localeCompare(canonicalJSON(b)))]));
   }
 
   close(): void { this.db.close(); this.mutationDb.close(); }
@@ -272,9 +306,11 @@ export class MemoryStore {
   }
 
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
+    if (this.bootstrapOnly) throw new Error("migration bootstrap cannot author memory");
     assertSharedV1Op(body.op);
     // Lock the authoritative log independently: a busy derived index must never prevent an ordinary append.
     return this.withMutation(() => {
+      this.generationIndex?.assertAppendable(local, this.machine.id);
       const id = entryId(body);
       appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.
@@ -293,11 +329,13 @@ export class MemoryStore {
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
   importNote(n: NoteInput, at: string): { id: string; added: boolean } {
+    if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
     assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
     return this.withMutation(() => {
+      this.generationIndex?.assertAppendable(n.tier === "short", this.machine.id);
       // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
       const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
       if (known) return { id: known.id, added: false };
@@ -429,6 +467,7 @@ export class MemoryStore {
       const settled = new Set((this.db.query("SELECT target FROM ops WHERE op = 'settle'").all() as { target: string }[]).map((r) => r.target));
       if (!settled.size) return;
       for (const v of this.views()) {
+        if (this.generationIndex && !this.generationIndex.own(v.id)) continue; // The bridge never auto-promotes legacy inputs.
         if (v.task && settled.has(v.task) && v.tier === "short" && v.local && !v.supersededBy && v.expiresAt === null && PROMOTED_KINDS.includes(v.kind)) {
           try { this.promote(v.id, "hub", undefined, true); } catch { /* fail-open: tried again at the next read */ }
         }
@@ -438,6 +477,7 @@ export class MemoryStore {
 
   /** Index what the segments gained since the last read. A line still being written (no newline yet) waits for the next read. */
   refresh(attempt = 0): void {
+    if (this.generationIndex) { this.generationIndex.refresh(); return; }
     const files = [...this.segments("log"), ...this.segments("local")];
     const seen = this.shape(files); // taken before reading: a line written meanwhile changes it again
     // One statement, one snapshot: an offset and a head from two different commits would look like a rewrite.
@@ -499,6 +539,7 @@ export class MemoryStore {
 
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
+    if (this.generationIndex) { this.generationIndex.rebuild(); return; }
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
     this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
   }
@@ -552,6 +593,8 @@ export class MemoryStore {
 
   private viewRows(expired: boolean, selection: Filter | undefined, expiredOnly: boolean): View[] {
     const now = this.now(), selecting = selection !== undefined || expiredOnly;
+    const pruned = this.generationIndex ? new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)) : undefined;
+    if (this.generationIndex && pruned) this.generationIndex.pruned = pruned;
     // Relations may cross projects and promoted copies: fold their small metadata globally, never filtered bodies.
     const rows = this.db.query(selecting
       ? "SELECT id, at, tier, kind, task, expires, supersedes, promoted_from FROM entries"
@@ -584,6 +627,7 @@ export class MemoryStore {
     const byId = new Map(rows.map((r) => [r.id!, r]));
     const copyOf = new Map(rows.filter((r) => r.promoted_from).map((r) => [r.promoted_from!, r.id!]));
     const gone = (id: string): boolean => {
+      if (pruned?.has(id)) return true;
       const r = byId.get(id);
       if (!r || forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from))) return true;
       const copy = copyOf.get(id);
@@ -619,7 +663,7 @@ export class MemoryStore {
       const hidden: string[] = [], expiredIds: string[] = [];
       for (const r of rows) {
         const id = r.id!;
-        if (forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) { hidden.push(id); continue; }
+        if (pruned?.has(id) || forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) { hidden.push(id); continue; }
         const at = expiry(r);
         if (at !== null && Date.parse(at) <= now) expiredIds.push(id);
       }
@@ -647,7 +691,7 @@ export class MemoryStore {
     for (const r of candidates) {
       const id = r.id!;
       // A forgotten entry is gone, and so is its promoted copy's source or copy: forgetting either forgets both.
-      if (forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) continue;
+      if (pruned?.has(id) || forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) continue;
       const tier: Tier = demoted.has(id) ? "short" : r.tier as Tier;
       const expiresAt = expiry(r);
       if (!expired && expiresAt !== null && Date.parse(expiresAt) <= now) continue;
@@ -663,6 +707,7 @@ export class MemoryStore {
    * the clock passes it once more. A durable prune entry in the log would close that gap.
    */
   prune(): number {
+    if (this.generationIndex) return 0; // Generation raw rows remain authoritative; only explicit durable prune masks them.
     const now = this.now();
     const expired = this.views(true, undefined, true).filter((v) => v.expiresAt !== null && Date.parse(v.expiresAt) <= now);
     // A copy that expires (it was demoted) takes its whole hidden promotion ancestry with it, or an ancestor would reappear.
@@ -676,6 +721,7 @@ export class MemoryStore {
 
   /** Index deferred writes before any note, goal or suggestion read. */
   private ensureFresh(): void {
+    if (this.generationIndex) { this.generationIndex.refresh(); return; }
     // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
     if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
   }
@@ -705,12 +751,13 @@ export class MemoryStore {
     id = id.replace(/^mem:/, ""); // briefs and recall print `mem:<id>`
     const all = this.live().filter((v) => !project || v.project === project || v.scope === "shared");
     const pick = <T extends { id: string }>(rows: T[]) => rows.find((v) => v.id === id) ?? (id.length >= 6 ? (() => { const m = rows.filter((v) => v.id.startsWith(id)); return m.length === 1 ? m[0] : undefined; })() : undefined);
+    if (this.generationIndex?.pruned.has(id)) return undefined;
     const found = pick(all);
     if (found) return found;
     // A short-term id an agent kept after its task was approved names the promoted copy now, here or on another machine
     // that has only the synced copy (which names its source).
     let at = pick(this.db.query("SELECT id FROM entries UNION SELECT promoted_from FROM entries WHERE promoted_from IS NOT NULL").all() as { id: string }[])?.id;
-    for (let copy = at; copy; copy = (this.db.query("SELECT id FROM entries WHERE promoted_from = ?").get(copy) as { id: string } | null)?.id) at = copy;
+    for (let copy = at; copy; copy = (this.db.query("SELECT id FROM entries WHERE promoted_from = ?").get(copy) as { id: string } | null)?.id) { if (this.generationIndex?.pruned.has(copy)) return undefined; at = copy; }
     return at ? all.find((v) => v.id === at) : undefined;
   }
 
@@ -745,12 +792,15 @@ export class MemoryStore {
 
   /** The neighbourhood of one node for the dashboard: up to `hops` (1 or 2) steps, at most `cap` nodes. */
   graph(project: string, start: Node, hops = 1, cap = 200): Graph {
+    this.ensureFresh();
+    if (start.startsWith("mem:") && this.generationIndex?.pruned.has(start.slice(4))) return { nodes: [], edges: [] };
     const live = new Map(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => [`mem:${v.id}`, v]));
     const nodes = new Map<Node, Graph["nodes"][number]>(), edges = new Map<string, Graph["edges"][number]>();
     const goals = new Map(this.goals(project).map((g) => [`goal:${g.id}`, g]));
     const suggestions = this.suggestions().filter((x) => x.status !== "rejected");
     const taskNode = (key: string) => `task:${key}`; // a link's task key is the task node's own (id and proposal time)
     const node = (id: Node) => {
+      if (id.startsWith("mem:") && this.generationIndex?.pruned.has(id.slice(4))) return false;
       if (nodes.has(id) || nodes.size >= cap) return nodes.has(id);
       const v = live.get(id), g = goals.get(id);
       nodes.set(id, v ? { id, type: "memory", label: (v.title ?? v.text).slice(0, 60), kind: v.kind, tier: v.tier } : g ? { id, type: "goal", label: g.title.slice(0, 60), kind: g.state } : { id, type: id.slice(0, id.indexOf(":")), label: id.slice(id.indexOf(":") + 1) });
@@ -895,4 +945,34 @@ export class MemoryStore {
   dump(): string {
     return JSON.stringify(["entries", "ops", "edges", "goals"].map((t) => this.db.query(`SELECT * FROM ${t} ORDER BY 1, 2`).all()));
   }
+}
+
+/** Migration builds only its generation-owned index over exact captured source prefixes. */
+export function buildGenerationIndex(profile: BoundProfile, sources: readonly LegacyCheckpoint[], legacyCommit?: string): void {
+  const store = new MemoryStore({ deferPromotions: true }, { token: MIGRATION_BOOTSTRAP, profile, limits: sources, ...(legacyCommit ? { commit: legacyCommit } : {}) });
+  try { const before = store.derivedTables(); store.rebuild(); if (!isDeepStrictEqual(before, store.derivedTables())) throw new Error("generation rebuild differs from incremental index"); }
+  finally { store.close(); }
+}
+
+/** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */
+export function summarizeRawExpiry(rawLines: string[], now: number, tailBytes: number): import("./migrate.ts").MigrationCounts {
+  const bytes = Buffer.from(rawLines.filter(Boolean).join("\n") + (rawLines.length ? "\n" : ""));
+  let malformed = 0;
+  const rows = legacyEntries([{ source: "legacy-local", path: "log/inspection.jsonl", bytes, offset: bytes.length, hash: createHash("sha256").update(bytes).digest("hex"), local: false, tailBytes: 0 }], { onMalformed: () => malformed++ });
+  const byOp: Record<string, number> = {}, byTier: Record<string, number> = {};
+  for (const row of rows) { byOp[row.op] = (byOp[row.op] ?? 0) + 1; if (row.op === "note") byTier[row.tier] = (byTier[row.tier] ?? 0) + 1; }
+  // Explicit proof eligibility is shared with prune planning; implicit TTL is reported but never used as a prune proof.
+  const located = rows.map(row => ({ row, placement: "local" as const, publicWitness: false }));
+  const explicit = explicitExpirySnapshot(located).filter(e => Date.parse(e.expiredAt) <= now);
+  const proved = new Map(explicitExpirySnapshot(located).map(e => [e.targetId, e.expiredAt]));
+  const settled = new Set(rows.flatMap(e => e.op === "settle" ? [e.target] : []));
+  const expiredRows = rows.filter(row => {
+    if (row.op !== "note") return false;
+    const fixed = proved.get(row.id);
+    if (fixed) return Date.parse(fixed) <= now;
+    if (row.tier !== "short" || row.task && settled.has(row.task) && PROMOTED_KINDS.includes(row.kind)) return false;
+    // Diagnostic only, at the CLI's default TTL. Such derived expiry is never a durable-prune witness.
+    return Date.parse(row.at) + (row.task ? UNSETTLED_MS : DEFAULT_TTL_MS) <= now;
+  }).length;
+  return { validRows: rows.length, expiredRows, eligibleRows: explicit.length, skippedRows: malformed, tailBytes, byOp, byTier };
 }

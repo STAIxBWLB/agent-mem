@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
+import { syncGenerationMemory } from "./generation-sync.ts";
 
 /**
  * #258 phase 2: hub memory between a person's machines through a git remote they configure. The memory directory is a
@@ -17,7 +18,9 @@ const STEP_MS = 60_000;
 
 async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
-  const p = Bun.spawn(memoryGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv() });
+  // A fixed child-only umask keeps Git-created metadata private without changing the daemon's process umask.
+  // Args are positional shell parameters, never interpolated or evaluated as shell code.
+  const p = Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
   const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };
@@ -28,6 +31,8 @@ async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_
     return { code, out: out.trim(), err: err.trim() };
   } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
 }
+
+export { git as syncGit };
 
 /** GitHub remotes are asked through `gh`; any other host, or a `gh` that cannot answer, is unknown. */
 export async function remoteVisibility(url: string): Promise<Visibility> {
@@ -72,6 +77,7 @@ export interface SyncOptions {
 }
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  if (store.profile.kind === "generation") return syncGenerationMemory(store, opts);
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });
   if (opts.signal?.aborted) return fail("stopped");

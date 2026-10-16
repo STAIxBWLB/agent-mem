@@ -7,3 +7,6 @@ export * from "./memory/platform.ts";
 export * from "./memory/commands.ts";
 export * from "./memory/candidates.ts";
 export * from "./memory/ops-contract.ts";
+export * from "./memory/generation.ts";
+export * from "./memory/migrate.ts";
+export * from "./memory/prune.ts";
