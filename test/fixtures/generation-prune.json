@@ -1,0 +1,44 @@
+{
+  "note": {
+    "schema": "agent-hub.memory/v1",
+    "op": "note",
+    "at": "2026-09-30T00:00:00.000Z",
+    "machine": "2222222222222222",
+    "project": "agent-hub",
+    "scope": "project",
+    "tier": "short",
+    "kind": "finding",
+    "peer": "person",
+    "text": "synthetic frozen exact-entry prune",
+    "about": [
+      "path:public.ts"
+    ],
+    "source": "person",
+    "expires": "2026-10-01T00:00:00.000Z",
+    "id": "958e28d493b372f3d047801a132b6ace"
+  },
+  "prune": {
+    "schema": "agent-mem.prune/v1",
+    "op": "prune",
+    "generation": "11111111111111111111111111111111",
+    "at": "2026-10-02T00:00:00.000Z",
+    "machine": "2222222222222222",
+    "actor": "person",
+    "placement": "local",
+    "cutoff": "2026-10-02T00:00:00.000Z",
+    "targets": [
+      {
+        "id": "958e28d493b372f3d047801a132b6ace",
+        "rowHash": "86d74eeeedf28bf0d1d64b95981f5c8e20499fae28f00b98a93d22714288f106",
+        "expiredAt": "2026-10-01T00:00:00.000Z",
+        "basis": {
+          "kind": "note",
+          "id": "958e28d493b372f3d047801a132b6ace",
+          "rowHash": "86d74eeeedf28bf0d1d64b95981f5c8e20499fae28f00b98a93d22714288f106"
+        }
+      }
+    ],
+    "id": "cf32fd93d8b870edba972c4f9ba3dc10"
+  },
+  "canonicalLine": "{\"actor\":\"person\",\"at\":\"2026-10-02T00:00:00.000Z\",\"cutoff\":\"2026-10-02T00:00:00.000Z\",\"generation\":\"11111111111111111111111111111111\",\"id\":\"cf32fd93d8b870edba972c4f9ba3dc10\",\"machine\":\"2222222222222222\",\"op\":\"prune\",\"placement\":\"local\",\"schema\":\"agent-mem.prune/v1\",\"targets\":[{\"basis\":{\"id\":\"958e28d493b372f3d047801a132b6ace\",\"kind\":\"note\",\"rowHash\":\"86d74eeeedf28bf0d1d64b95981f5c8e20499fae28f00b98a93d22714288f106\"},\"expiredAt\":\"2026-10-01T00:00:00.000Z\",\"id\":\"958e28d493b372f3d047801a132b6ace\",\"rowHash\":\"86d74eeeedf28bf0d1d64b95981f5c8e20499fae28f00b98a93d22714288f106\"}]}\n"
+}

@@ -1,0 +1,580 @@
+{
+  "schema": "agent-mem.generation-read-bench/v1",
+  "bun": "1.4.2",
+  "os": "linux",
+  "release": "6.8.0-90-generic",
+  "arch": "x64",
+  "harnessSha256": "a00d4649d52be6dd61f8113dbde5049347b9603d0433176cb72d7b8bf59774f9",
+  "sourceSha256": "1718354b51666bd6db51c74daefea7a6098e6d9ad7fa33218c4bd2ee4c89429f",
+  "notes": "Synthetic homes only. Reopen samples include constructor+list; warm/live samples include list+refresh. Live SHA state is seeded by an untimed rebuild. IO metrics count segment-reader data/prefix hashing, excluding small metadata and parsed row validation. Live growth still reads/compares prefix bytes but hashes only suffix; cold changed seeds prefix once. P95 with 10 samples is the maximum. No before/after speedup claim.",
+  "results": [
+    {
+      "size": 2000,
+      "workload": "warm_unchanged",
+      "repeats": 10,
+      "samplesMs": [
+        8.534629999999993,
+        6.363997999999924,
+        5.895970000000034,
+        7.963129999999978,
+        6.05762100000004,
+        5.8399950000000445,
+        6.191535000000044,
+        5.6387620000000425,
+        5.390611999999919,
+        6.509005000000002
+      ],
+      "p50Ms": 6.05762100000004,
+      "p95Ms": 8.534629999999993,
+      "ioSamples": [
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 2000,
+      "workload": "reopen_unchanged",
+      "repeats": 10,
+      "samplesMs": [
+        7.177363000000014,
+        6.797770000000014,
+        8.195091999999931,
+        7.069635000000062,
+        6.84077400000001,
+        7.723322999999937,
+        6.50645499999996,
+        6.174404999999979,
+        7.908979999999929,
+        6.442800000000034
+      ],
+      "p50Ms": 6.84077400000001,
+      "p95Ms": 8.195091999999931,
+      "ioSamples": [
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 2000,
+      "workload": "live_append",
+      "repeats": 10,
+      "samplesMs": [
+        20.11594100000002,
+        22.038395000000037,
+        21.039722000000097,
+        19.594618999999966,
+        28.687068000000068,
+        21.27161799999999,
+        22.63078799999994,
+        21.37376900000004,
+        20.966785999999956,
+        19.901372000000038
+      ],
+      "p50Ms": 21.039722000000097,
+      "p95Ms": 28.687068000000068,
+      "ioSamples": [
+        {
+          "bytesRead": 1302432,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1303084,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1303736,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1304388,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1305040,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1305692,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1306344,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1306996,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1307648,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 1308300,
+          "bytesHashed": 326,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 2000,
+      "workload": "cold_changed",
+      "repeats": 10,
+      "samplesMs": [
+        22.295775999999933,
+        26.24757199999999,
+        24.50290199999995,
+        22.111171000000013,
+        23.089148000000023,
+        22.135782999999947,
+        24.65376900000001,
+        22.267933000000085,
+        23.132810000000063,
+        23.26713800000016
+      ],
+      "p50Ms": 23.089148000000023,
+      "p95Ms": 26.24757199999999,
+      "ioSamples": [
+        {
+          "bytesRead": 1308952,
+          "bytesHashed": 654476,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1309604,
+          "bytesHashed": 654802,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1310256,
+          "bytesHashed": 655128,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1310908,
+          "bytesHashed": 655454,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1311560,
+          "bytesHashed": 655780,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1312212,
+          "bytesHashed": 656106,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1312864,
+          "bytesHashed": 656432,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1313516,
+          "bytesHashed": 656758,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1314168,
+          "bytesHashed": 657084,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 1314820,
+          "bytesHashed": 657410,
+          "coldChanged": 1
+        }
+      ]
+    },
+    {
+      "size": 20000,
+      "workload": "warm_unchanged",
+      "repeats": 10,
+      "samplesMs": [
+        63.121149999999034,
+        61.483399000000645,
+        55.652030999999624,
+        73.41726400000152,
+        60.80225799999971,
+        66.86472599999979,
+        59.586850000001505,
+        64.17285900000024,
+        61.983713000001444,
+        64.58977799999957
+      ],
+      "p50Ms": 61.983713000001444,
+      "p95Ms": 73.41726400000152,
+      "ioSamples": [
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 20000,
+      "workload": "reopen_unchanged",
+      "repeats": 10,
+      "samplesMs": [
+        61.65287200000057,
+        63.027695000000676,
+        59.9350059999997,
+        61.97082799999953,
+        61.32804700000088,
+        57.944901000000755,
+        57.817823000001226,
+        59.38521899999978,
+        61.61879299999964,
+        56.86306599999989
+      ],
+      "p50Ms": 59.9350059999997,
+      "p95Ms": 63.027695000000676,
+      "ioSamples": [
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 0,
+          "bytesHashed": 0,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 20000,
+      "workload": "live_append",
+      "repeats": 10,
+      "samplesMs": [
+        253.58886900000107,
+        253.22745100000066,
+        256.10824200000025,
+        244.8681059999999,
+        240.47956700000032,
+        248.56075799999962,
+        247.01867499999935,
+        245.96021199999996,
+        243.15788599999905,
+        247.8244569999988
+      ],
+      "p50Ms": 247.01867499999935,
+      "p95Ms": 256.10824200000025,
+      "ioSamples": [
+        {
+          "bytesRead": 13058434,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13059088,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13059742,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13060396,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13061050,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13061704,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13062358,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13063012,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13063666,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        },
+        {
+          "bytesRead": 13064320,
+          "bytesHashed": 327,
+          "coldChanged": 0
+        }
+      ]
+    },
+    {
+      "size": 20000,
+      "workload": "cold_changed",
+      "repeats": 10,
+      "samplesMs": [
+        256.46443,
+        253.34996200000023,
+        258.1646839999994,
+        278.99792100000013,
+        259.23153600000114,
+        275.2806670000009,
+        262.8524499999985,
+        267.17516799999976,
+        274.6497299999992,
+        281.83077499999854
+      ],
+      "p50Ms": 262.8524499999985,
+      "p95Ms": 281.83077499999854,
+      "ioSamples": [
+        {
+          "bytesRead": 13064974,
+          "bytesHashed": 6532487,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13065628,
+          "bytesHashed": 6532814,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13066282,
+          "bytesHashed": 6533141,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13066936,
+          "bytesHashed": 6533468,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13067590,
+          "bytesHashed": 6533795,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13068244,
+          "bytesHashed": 6534122,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13068898,
+          "bytesHashed": 6534449,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13069552,
+          "bytesHashed": 6534776,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13070206,
+          "bytesHashed": 6535103,
+          "coldChanged": 1
+        },
+        {
+          "bytesRead": 13070860,
+          "bytesHashed": 6535430,
+          "coldChanged": 1
+        }
+      ]
+    }
+  ]
+}

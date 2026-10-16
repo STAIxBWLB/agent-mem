@@ -82,7 +82,14 @@ export const memoryGitArgv = (args: string[], opts: { credentials?: boolean } = 
   ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
 
 /** The caller's env plus the no-prompt switch; existing keys (childEnv, GIT_OPTIONAL_LOCKS=0) pass through. */
-export const memoryGitEnv = (env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({ ...env, GIT_TERMINAL_PROMPT: "0" });
+export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { repositoryIsolation?: boolean } = {}): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (options.repositoryIsolation) {
+    for (const key of Object.keys(result)) if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key)) delete result[key];
+    result.GIT_NO_REPLACE_OBJECTS = "1";
+  }
+  return result;
+}
 
 /** spawnSync form of the same call: the env option is merged with memoryGitEnv, everything else passes through. */
 export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> {
