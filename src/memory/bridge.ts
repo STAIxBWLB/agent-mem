@@ -75,8 +75,6 @@ export class SegmentReader {
         // Changed live input still reads/compares the old bytes, so rewrite-plus-growth cannot masquerade as append.
         // ponytail: the generation counterpart of C02: O(segment) I/O per changed refresh (13 MB at 20K entries, p50 247 ms,
         // docs/bench/p9-generation-read.md). Upgrade, measured first: a per-block hash chain or a tail window plus inode/size check.
-        // ponytail: generation counterpart of C02, O(segment) I/O per changed refresh despite suffix-only hashing.
-        // Measure first, then consider a per-block chain or tail-window plus inode/size checks.
         if (!cached.bytes.equals(bytes.subarray(0, prior.offset))) failure();
         hasher = cached.hasher.copy(); const suffix = bytes.subarray(prior.offset); hasher.update(suffix); this.measured.bytesHashed += suffix.length;
       } else {
