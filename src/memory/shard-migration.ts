@@ -218,7 +218,7 @@ function route(captured: Capture, completed?: readonly SourcePrefix[], dryRun = 
       const split = row.by?.indexOf(":") ?? -1, to = split < 0 ? "" : row.by!.slice(split + 1);
       const from = owners.get(row.target), other = owners.get(to);
       if (from === undefined || other === undefined) throw new Error(`cannot route legacy suggestion ${row.id}`);
-      const destinations = [...new Set([from, other])]; suggestions.set(row.id, destinations); return destinations;
+      const destinations = [...new Set<Destination>([from, other])]; suggestions.set(row.id, destinations); return destinations;
     }
     if (row.op === "confirm" || row.op === "reject") {
       const destinations = suggestions.get(row.target);

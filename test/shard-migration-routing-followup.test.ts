@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryStore, entryId, openShardStore, type Entry, type NoteInput, type OpEntry } from "../src/memory/store.ts";
+import { MemoryStore, entryId, openShardStore, type Entry, type NoteInput, type NoteEntry, type OpEntry } from "../src/memory/store.ts";
 import { migrateShards, shardMigrationStatus } from "../src/memory/shard-migration.ts";
 import { shardDir, userShardDir } from "../src/memory/shard.ts";
 import { migrate } from "../src/memory/migrate.ts";
@@ -27,8 +27,9 @@ function seed(dir: string, input = note(A, "original valid note")) {
   return { memory, id, path, file, bytes, row };
 }
 function later(row: Entry, text: string): Entry {
+  if (row.op !== "note") throw new Error("fixture expects a note");
   const { id: _id, ...body } = row;
-  const next = { ...body, text, at: new Date(Date.parse(row.at) + 1000).toISOString() } as Omit<Entry, "id">;
+  const next: Omit<NoteEntry, "id"> = { ...body, text, at: new Date(Date.parse(row.at) + 1000).toISOString() };
   return { ...next, id: entryId(next) } as Entry;
 }
 const encoded = (row: Entry) => JSON.stringify(row) + "\n";
@@ -96,7 +97,7 @@ test("#119 resume completes a matching copied partial tail by append without cha
   } })).rejects.toThrow("fixture interrupted");
   await migrateShards(options(dir, "resume"));
   const completed = readFileSync(copied);
-  expect(completed.subarray(0, prefix!.length)).toEqual(prefix!);
+  expect(Buffer.from(completed.subarray(0, prefix!.length))).toEqual(Buffer.from(prefix!));
   expect(completed.toString("utf8")).toBe(source.bytes.toString("utf8") + bytes.toString("utf8"));
   const store = openShardStore({ home: dir, project: A });
   try { expect(store.list({ project: A }).map(view => view.id)).toContain(row.id); } finally { store.close(); }
