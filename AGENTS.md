@@ -23,7 +23,7 @@
 
 ## Releasing
 
-- Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow's `release-notes` job publishes it as the GitHub Release body and fails when it is missing. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
+- Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow checks it before `npm publish` and its `release-notes` job publishes it as the GitHub Release body. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
 - After the release, read back the published version with a cache-busting registry request (not `npm view`) and read back the Release body.
 
 ## Storage invariants
