@@ -8,9 +8,16 @@ import type { CaptureRow } from "./capture.ts";
  * platform's sqlite has FTS5 (verified in bun:sqlite on Bun 1.4.2, macOS and Linux). The index lives in its own
  * `search.db` beside the memory logs: `index.db`'s table set is part of the shared-v1 golden contract and must not
  * gain tables, and the sync .gitignore already keeps every other file machine-local. `search.db` is derived only
- * from curated rows: every add is idempotent by entry id, and a store rebuild, a prune or any count drift forces a
- * full resync, so the incremental index equals a rebuild.
+ * from curated rows: every add is idempotent by entry id, and a store rebuild, a prune, a lock or any count drift
+ * forces a full resync, so the incremental index equals a rebuild.
+ *
+ * The copy is a DERIVED cache: a locked or failing `search.db` never fails or stalls a curated write — the apply
+ * path marks the copy stale and the next search resyncs it (busy timeout 100 ms on the write path, not the
+ * curated index's 3 s).
  */
+
+/** Bumped when the docs table's shape changes: an older copy is dropped and rebuilt from the curated rows. */
+const SEARCH_SCHEMA = "2";
 
 let probe: boolean | undefined;
 /** One runtime probe; the answer is cached for the process. */
@@ -34,30 +41,39 @@ export function setFts5AvailableForTest(value: boolean | undefined): void {
 }
 
 /**
- * A free-text query as a safe FTS5 MATCH string: unicode61-ish terms (the index tokenizer's alphabet), each quoted
- * so query punctuation can never become MATCH syntax, joined with OR so natural multi-word queries rank partial
- * matches instead of requiring every word like the substring filter did (the P0 recall gap).
+ * A free-text query as a safe FTS5 MATCH string: unicode61-ish terms (the index tokenizer's alphabet), each a
+ * quoted PREFIX term (`"word" *` — inflections and Korean particles like 메모리/메모리를 match), quoted so query
+ * punctuation can never become MATCH syntax, joined with OR so natural multi-word queries rank partial matches
+ * instead of requiring every word like the substring filter did (the P0 recall gap).
  */
 export function ftsTerms(q: string): string {
   const terms = q.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
-  return [...new Set(terms)].slice(0, 32).map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ");
+  return [...new Set(terms)].slice(0, 32).map((t) => `"${t.replaceAll('"', '""')}" *`).join(" OR ");
 }
 
-export interface CuratedDoc { id: string; at: string; project: string; tier: string; body: string }
+export interface CuratedDoc { id: string; at: string; project: string; tier: string; scope: string; body: string }
 export interface RankedRef { ref: string; project: string; tier: string; at: string; rank: number }
 
 export class SearchIndex {
   readonly available: boolean;
   private readonly db?: Database;
+  /** A write that failed (a locked or failing derived file): the next search resyncs, never the curated writer. */
+  private stale = false;
 
   constructor(file: string) {
     if (!fts5Available()) { this.available = false; return; }
     try {
       const db = new Database(file, { create: true });
-      db.run("PRAGMA busy_timeout = 3000");
+      db.run("PRAGMA busy_timeout = 100"); // derived: the curated writer never waits on this file
       db.run("PRAGMA journal_mode = WAL");
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-      db.run("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(body, ref UNINDEXED, project UNINDEXED, tier UNINDEXED, at UNINDEXED)");
+      if ((db.query("SELECT value FROM meta WHERE key = 'schema'").get() as { value: string } | null)?.value !== SEARCH_SCHEMA) {
+        db.run("DROP TABLE IF EXISTS docs");
+        db.run("DROP TABLE IF EXISTS refs");
+        db.run("DELETE FROM meta");
+        db.query("INSERT INTO meta (key, value) VALUES ('schema', ?)").run(SEARCH_SCHEMA);
+      }
+      db.run("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(body, ref UNINDEXED, project UNINDEXED, tier UNINDEXED, at UNINDEXED, scope UNINDEXED)");
       // FTS5 has no unique constraint: refs remembers what is indexed, so a repeated or rebuilt row is never doubled.
       db.run("CREATE TABLE IF NOT EXISTS refs (ref TEXT PRIMARY KEY)");
       try { chmodSync(file, 0o600); } catch { /* best effort */ }
@@ -70,66 +86,82 @@ export class SearchIndex {
     return (this.db!.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null)?.value;
   }
 
-  /** Called from the curated store's apply path, after the entry row committed. Idempotent by entry id. */
+  /** Called from the curated store's apply path, after the entry row committed. Idempotent by entry id. Never throws. */
   addCurated(doc: CuratedDoc): void {
     const db = this.db;
     if (!db) return;
-    db.transaction(() => {
-      // bun:sqlite's run().changes is not reliable for an ignored insert inside a transaction (the FTS triggers
-      // confuse it), so idempotency is a plain lookup, never the statement's change count.
-      if (db.query("SELECT 1 FROM refs WHERE ref = ?").get(doc.id)) return;
-      db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
-      db.query("INSERT INTO docs (body, ref, project, tier, at) VALUES (?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at);
-      db.query("INSERT INTO meta (key, value) VALUES ('curated', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run();
-    }).immediate();
+    try {
+      db.transaction(() => {
+        // bun:sqlite's run().changes is not reliable for an ignored insert inside a transaction (the FTS triggers
+        // confuse it), so idempotency is a plain lookup, never the statement's change count.
+        if (db.query("SELECT 1 FROM refs WHERE ref = ?").get(doc.id)) return;
+        db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
+        db.query("INSERT INTO docs (body, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at, doc.scope);
+        db.query("INSERT INTO meta (key, value) VALUES ('curated', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run();
+      }).immediate();
+    } catch { this.markDirty(); } // the FTS copy degrades, the curated write stands
   }
 
   /** A curated prune removed rows the FTS copy cannot subtract incrementally: the next search resyncs instead. */
   markDirty(): void {
-    this.db?.query("INSERT INTO meta (key, value) VALUES ('dirty', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+    this.stale = true;
+    try { this.db?.query("INSERT INTO meta (key, value) VALUES ('dirty', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run(); } catch { /* the in-memory flag is enough for this process */ }
   }
 
-  /** True when the FTS copy no longer mirrors the curated rows (a prune, a crashed apply or a rebuilt index). */
+  /** True when the FTS copy no longer mirrors the curated rows (a prune, a crashed apply, a lock or a rebuilt index). */
   needsResync(curatedCount: number): boolean {
     if (!this.db) return false;
-    return this.meta("dirty") === "1" || Number(this.meta("curated") ?? "0") !== curatedCount;
+    if (this.stale) return true;
+    try { return this.meta("dirty") === "1" || Number(this.meta("curated") ?? "0") !== curatedCount; }
+    catch { return true; }
   }
 
   /** Rebuild the FTS copy from the curated rows; the caller scans them. */
   resync(load: () => Iterable<CuratedDoc>): void {
     const db = this.db;
     if (!db) return;
-    db.transaction(() => {
-      db.run("DELETE FROM docs");
-      db.run("DELETE FROM refs");
-      let n = 0;
-      for (const doc of load()) {
-        db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
-        db.query("INSERT INTO docs (body, ref, project, tier, at) VALUES (?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at);
-        n++;
-      }
-      db.query("INSERT INTO meta (key, value) VALUES ('curated', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(n));
-      db.query("DELETE FROM meta WHERE key = 'dirty'").run();
-    }).immediate();
+    try {
+      db.transaction(() => {
+        db.run("DELETE FROM docs");
+        db.run("DELETE FROM refs");
+        let n = 0;
+        for (const doc of load()) {
+          db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
+          db.query("INSERT INTO docs (body, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at, doc.scope);
+          n++;
+        }
+        db.query("INSERT INTO meta (key, value) VALUES ('curated', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(n));
+        db.query("DELETE FROM meta WHERE key = 'dirty'").run();
+      }).immediate();
+      this.stale = false;
+    } catch { this.stale = true; }
   }
 
   /** The store drops and re-reads every curated row: the FTS copy starts over and the apply path refills it. */
   reset(): void {
     const db = this.db;
     if (!db) return;
-    db.transaction(() => {
-      db.run("DELETE FROM docs");
-      db.run("DELETE FROM refs");
-      db.run("DELETE FROM meta");
-    }).immediate();
+    try {
+      db.transaction(() => {
+        db.run("DELETE FROM docs");
+        db.run("DELETE FROM refs");
+        db.run("DELETE FROM meta WHERE key != 'schema'");
+      }).immediate();
+      this.stale = false;
+    } catch { this.stale = true; }
   }
 
-  /** Best BM25 first (rank is negative: smaller wins). Visibility and project filtering stay with the caller. */
-  query(q: string, limit: number): RankedRef[] {
+  /**
+   * Best BM25 first (rank is negative: smaller wins). `project` filters inside the MATCH (its own rows plus shared
+   * ones), so a busy sibling project can never starve a project's LIMIT. Visibility stays with the caller.
+   */
+  query(q: string, limit: number, project?: string): RankedRef[] {
     if (!this.db) return [];
     const match = ftsTerms(q);
     if (!match) return [];
-    return this.db.query("SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE docs MATCH ? ORDER BY rank LIMIT ?").all(match, limit) as RankedRef[];
+    const where = project ? "docs MATCH ? AND (project = ? OR scope = 'shared')" : "docs MATCH ?";
+    const bind = project ? [match, project] : [match];
+    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank LIMIT ?`).all(...bind, limit) as RankedRef[];
   }
 
   close(): void { this.db?.close(); }

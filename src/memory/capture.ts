@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
 import { isDenied } from "./platform.ts";
@@ -43,6 +43,8 @@ export const CAPTURE_MAX_PATHS = 32;
 /** Eviction and drain work per invocation, so a shrunk cap or a long outage is worked off over many hooks. */
 export const CAPTURE_EVICT_BATCH_ROWS = 256;
 export const CAPTURE_EVICT_MAX_BATCHES = 4;
+/** Wall-time bound for one invocation's eviction: with the batch bound, an append stays inside R2 after a cap shrink. */
+export const CAPTURE_EVICT_MAX_MS = 25;
 export const CAPTURE_DRAIN_MAX_LINES = 1000;
 const ROW_OVERHEAD_BYTES = 96;
 const SPOOL = "spool.jsonl";
@@ -73,6 +75,14 @@ export interface CaptureOptions {
   screen?: (text: string) => boolean;
 }
 export type CaptureAppend = { id: number } | { spooled: true };
+
+/** One row after validation, deny-filtering, bounding and screening: what both the insert and the spool carry. */
+interface NormalizedCapture {
+  at: string; project: string; agent: string; event: string;
+  tool: string | null; paths: string[]; status: string | null; excerpt: string; bytes: number;
+  /** Entropy per spooled line, so two byte-identical hook events are two rows; a replayed line still dedupes. */
+  nonce?: string;
+}
 
 const configValues = (parsed: Record<string, unknown>): Partial<CaptureConfig> => {
   const capMb = Number(parsed.cap_mb), retentionDays = Number(parsed.retention_days);
@@ -175,7 +185,7 @@ export class CaptureStore {
     this.migrated = this.contended ? 0 : this.migrateLegacy();
   }
 
-  /** The pre-T1 machine-wide store hands this project key's rows to the shard, once; an emptied legacy store goes away. */
+  /** The pre-T1 machine-wide store hands this project key's rows AND spool lines to the shard, once; an emptied legacy store goes away. */
   private migrateLegacy(): number {
     const legacyDir = join(this.base, "capture"); // the pre-T1 machine-wide location (this branch never shipped)
     const file = join(legacyDir, "capture.db");
@@ -186,25 +196,47 @@ export class CaptureStore {
     let moved = 0;
     try {
       legacy = new Database(file);
-      legacy.run("PRAGMA busy_timeout = 3000");
+      legacy.run(`PRAGMA busy_timeout = ${CAPTURE_BUSY_TIMEOUT_MS}`); // never stall a hook on another project's migration
       const rows = legacy.query("SELECT * FROM rows WHERE project = ? OR project = ? ORDER BY id").all(this.key, this.requestedKey) as RawRow[];
       // `legacy:<id>` spool ids make the move idempotent: a crash between the two writes replays nothing.
       this.db.transaction(() => {
         for (const r of rows) {
-          if (this.appendRow({ project: this.key, agent: r.agent, event: r.event, at: r.at, ...(r.tool ? { tool: r.tool } : {}), ...(r.status ? { status: r.status } : {}),
-            paths: JSON.parse(r.paths) as string[], excerpt: r.excerpt }, `legacy:${r.id}`)) moved++;
+          const row: NormalizedCapture = { at: r.at, project: this.key, agent: r.agent, event: r.event, tool: r.tool, status: r.status,
+            paths: JSON.parse(r.paths) as string[], excerpt: r.excerpt, bytes: r.bytes };
+          if (this.insertRow(row, `legacy:${r.id}`) !== undefined) moved++;
         }
       }).immediate();
       legacy.transaction(() => { for (const r of rows) legacy!.query("DELETE FROM rows WHERE id = ?").run(r.id); }).immediate();
-      if ((legacy.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n === 0) {
+      // Legacy spool lines for this key move to the shard spool (they drain on the next append); other keys' lines stay.
+      let spoolLeft = 0;
+      for (const name of ["spool.jsonl", "spool.jsonl.draining"]) {
+        const legacySpool = join(legacyDir, name);
+        if (!existsSync(legacySpool)) continue;
+        const lines = readFileSync(legacySpool, "utf8").split("\n").filter(Boolean);
+        const keep: string[] = [];
+        for (const line of lines) {
+          let project = "";
+          try { project = String((JSON.parse(line) as { project?: unknown }).project ?? ""); } catch { /* unparseable: keep */ }
+          if (project === this.key || project === this.requestedKey) this.spoolRaw(line);
+          else keep.push(line);
+        }
+        if (keep.length) { writeFileSync(legacySpool, keep.join("\n") + "\n", { mode: 0o600 }); spoolLeft += keep.length; }
+        else rmSync(legacySpool, { force: true });
+      }
+      if ((legacy.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n === 0 && spoolLeft === 0) {
         legacy.close();
         legacy = undefined;
-        for (const name of ["capture.db", "capture.db-wal", "capture.db-shm", "spool.jsonl", "spool.jsonl.draining"]) rmSync(join(legacyDir, name), { force: true });
+        for (const name of ["capture.db", "capture.db-wal", "capture.db-shm"]) rmSync(join(legacyDir, name), { force: true });
         try { rmSync(legacyDir, { recursive: true }); } catch { /* a leftover file keeps the directory */ }
       }
-    } catch { return moved; }
+    } catch { return moved; } // locked or unreadable: the next open of this project retries
     finally { legacy?.close(); }
     return moved;
+  }
+
+  /** A line moved from the legacy spool, byte for byte: the shard's drain normalizes whatever format it holds. */
+  private spoolRaw(line: string): void {
+    appendFileSync(join(this.dir, SPOOL), line + "\n", { mode: 0o600 });
   }
 
   /** External-content FTS5 over the excerpts, kept in sync by triggers, so capture search needs no catch-up pass. */
@@ -227,36 +259,46 @@ export class CaptureStore {
   }
 
   /**
-   * One capture row. On lock contention the row goes to the spool and the caller exits fast (R2); the row is not
-   * lost, and the next uncontended writer replays it with its original timestamp.
+   * One capture row. Validation, deny-filtering, bounding and screening happen once, BEFORE anything is written:
+   * the spool holds only the screened row (never raw input, so no secret or PII excerpt ever reaches spool.jsonl),
+   * and a later drainer — under any screen — inserts exactly that row. On lock contention the row goes to the spool
+   * and the caller exits fast (R2); the next uncontended writer replays it with its original timestamp.
    */
   append(input: CaptureInput): CaptureAppend {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
-    const at = input.at ?? new Date(this.now()).toISOString();
-    const tool = str(input.tool, 64) ? input.tool! : null;
-    const status = str(input.status, 64) ? input.status! : null;
-    const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
-    const pathsJson = JSON.stringify(paths);
-    let excerpt = (input.excerpt ?? "").slice(0, CAPTURE_MAX_EXCERPT);
-    if (excerpt && this.screen(excerpt)) excerpt = "[secret-screened]";
-    const bytes = Buffer.byteLength(excerpt) + Buffer.byteLength(pathsJson) + ROW_OVERHEAD_BYTES;
+    const row = this.normalize(input);
     if (this.contended) {
-      appendFileSync(join(this.dir, SPOOL), JSON.stringify({ ...input, at }) + "\n", { mode: 0o600 });
+      this.spool(row);
       return { spooled: true };
     }
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
-      const id = Number(this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
-        .run(at, input.project, input.agent, input.event, tool, pathsJson, status, excerpt, bytes).lastInsertRowid);
-      this.addBytes(bytes);
+      const id = this.insertRow(row, null);
       this.evict();
-      return { id };
+      return { id: id! };
     } catch (error) {
       if (!lockError(error)) throw error;
-      appendFileSync(join(this.dir, SPOOL), JSON.stringify({ ...input, at }) + "\n", { mode: 0o600 });
+      this.spool(row);
       return { spooled: true };
     }
+  }
+
+  /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
+  private normalize(input: CaptureInput): NormalizedCapture {
+    const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
+    const at = input.at ?? new Date(this.now()).toISOString();
+    const tool = str(input.tool, 64) ? input.tool! : null;
+    const status = str(input.status, 64) ? input.status! : null;
+    const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
+    let excerpt = (input.excerpt ?? "").slice(0, CAPTURE_MAX_EXCERPT);
+    if (excerpt && this.screen(excerpt)) excerpt = "[secret-screened]";
+    return { at, project: input.project, agent: input.agent, event: input.event, tool, paths, status, excerpt,
+      bytes: Buffer.byteLength(excerpt) + Buffer.byteLength(JSON.stringify(paths)) + ROW_OVERHEAD_BYTES };
+  }
+
+  private spool(row: NormalizedCapture): void {
+    appendFileSync(join(this.dir, SPOOL), JSON.stringify({ ...row, nonce: randomBytes(4).toString("hex") }) + "\n", { mode: 0o600 });
   }
 
   /**
@@ -270,7 +312,8 @@ export class CaptureStore {
       const file = join(this.dir, DRAINING);
       if (renameFirst && existsSync(join(this.dir, SPOOL))) {
         if (budget <= 0) break;
-        try { renameSync(join(this.dir, SPOOL), file); } catch { continue; }
+        // link+remove, not rename: a draining file another process owns is never clobbered.
+        try { linkSync(join(this.dir, SPOOL), file); rmSync(join(this.dir, SPOOL)); } catch { continue; }
       }
       if (!existsSync(file)) continue;
       const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
@@ -279,10 +322,13 @@ export class CaptureStore {
       try {
         this.db.transaction(() => {
           for (const line of batch) {
-            let input: CaptureInput;
-            try { input = JSON.parse(line) as CaptureInput; } catch { continue; }
-            if (typeof input.at !== "string") continue;
-            const added = this.appendRow(input, createHash("sha256").update(line).digest("hex"));
+            let raw: Partial<NormalizedCapture> & { bytes?: number };
+            try { raw = JSON.parse(line) as typeof raw; } catch { continue; }
+            // Spool lines written since the screened-spool rule are already bounded and screened; older lines
+            // (this branch's pre-release format) pass through normalize once.
+            const row = typeof raw.bytes === "number" && typeof raw.excerpt === "string" ? raw as NormalizedCapture : this.normalize(raw as CaptureInput);
+            if (!row || typeof row.at !== "string") continue;
+            const added = this.insertRow(row, createHash("sha256").update(line).digest("hex")) !== undefined;
             if (added) drained++;
           }
         }).immediate();
@@ -298,58 +344,53 @@ export class CaptureStore {
   }
 
   /** The row insert shared by append, drain and the legacy migration; with a spool id the insert is idempotent. */
-  private appendRow(input: CaptureInput, spoolId: string | null): boolean {
-    const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
-    if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) return false;
+  private insertRow(row: NormalizedCapture, spoolId: string | null): number | undefined {
     // bun:sqlite's run().changes is not reliable for an ignored insert inside a transaction (FTS triggers confuse
     // it), so the replay check is a plain indexed lookup, never the statement's change count.
-    if (spoolId !== null && this.db.query("SELECT 1 FROM rows WHERE spool_id = ?").get(spoolId)) return false;
-    const tool = str(input.tool, 64) ? input.tool! : null;
-    const status = str(input.status, 64) ? input.status! : null;
-    const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
-    const pathsJson = JSON.stringify(paths);
-    let excerpt = (input.excerpt ?? "").slice(0, CAPTURE_MAX_EXCERPT);
-    if (excerpt && this.screen(excerpt)) excerpt = "[secret-screened]";
-    const bytes = Buffer.byteLength(excerpt) + Buffer.byteLength(pathsJson) + ROW_OVERHEAD_BYTES;
+    if (spoolId !== null && this.db.query("SELECT 1 FROM rows WHERE spool_id = ?").get(spoolId)) return undefined;
     try {
-      this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(input.at!, input.project, input.agent, input.event, tool, pathsJson, status, excerpt, bytes, spoolId);
+      const id = Number(this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(row.at, row.project, row.agent, row.event, row.tool, JSON.stringify(row.paths), row.status, row.excerpt, row.bytes, spoolId).lastInsertRowid);
+      this.addBytes(row.bytes);
+      return id;
     } catch (error) {
-      if (String((error as Error)?.message ?? "").includes("UNIQUE")) return false; // a racing drain won this line
+      if (String((error as Error)?.message ?? "").includes("UNIQUE")) return undefined; // a racing drain won this line
       throw error;
     }
-    this.addBytes(bytes);
-    return true;
   }
 
   /**
-   * R6 eviction: expired rows first, then the oldest rows while over the cap, in bounded batches per invocation.
-   * Only capture rows are ever deleted; the curated store is a different file this class never opens (AC5).
+   * R6 eviction: expired rows first, then the oldest rows while over the cap, bounded per invocation by batches AND
+   * by wall time, so even a big cap shrink finishes over later appends and one hook stays inside R2. The running
+   * size in `meta.bytes` is adjusted by the removed rows' own bytes; no SUM rescan. Only capture rows are ever
+   * deleted; the curated store is a different file this class never opens (AC5).
    */
   evict(): { expired: number; trimmed: number } {
     if (this.contended) return { expired: 0, trimmed: 0 };
-    const expired = this.evictWhere("at < ?", [new Date(this.now() - this.retentionDays * 24 * 3600_000).toISOString()]);
+    const start = performance.now();
+    const expired = this.evictWhere("at < ?", [new Date(this.now() - this.retentionDays * 24 * 3600_000).toISOString()], start);
     const capBytes = this.capMb * 1024 * 1024;
     let trimmed = 0;
-    for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && this.bytes() > capBytes; batch++) trimmed += this.evictWhere("1 = 1", []);
-    return { expired, trimmed };
+    while (this.bytes() > capBytes && performance.now() - start < CAPTURE_EVICT_MAX_MS) {
+      const removed = this.evictWhere("1 = 1", [], start);
+      if (!removed.rows) break;
+      trimmed += removed.rows;
+    }
+    return { expired: expired.rows, trimmed };
   }
 
-  private evictWhere(where: string, bind: string[]): number {
-    let removed = 0;
-    for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES; batch++) {
-      const old = this.db.query(`SELECT id FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number }[];
+  private evictWhere(where: string, bind: string[], start: number): { rows: number; bytes: number } {
+    let rows = 0, bytes = 0;
+    for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && performance.now() - start < CAPTURE_EVICT_MAX_MS; batch++) {
+      const old = this.db.query(`SELECT id, bytes FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number; bytes: number }[];
       if (!old.length) break;
       this.db.transaction(() => { for (const { id } of old) this.db.query("DELETE FROM rows WHERE id = ?").run(id); }).immediate();
-      removed += old.length;
-      this.recountBytes();
+      rows += old.length;
+      bytes += old.reduce((sum, r) => sum + r.bytes, 0);
       if (old.length < CAPTURE_EVICT_BATCH_ROWS) break;
     }
-    return removed;
-  }
-
-  private recountBytes(): void {
-    this.db.query("INSERT INTO meta (key, value) VALUES ('bytes', (SELECT COALESCE(SUM(bytes), 0) FROM rows)) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    if (bytes) this.addBytes(-bytes);
+    return { rows, bytes };
   }
 
   rows(f: { project?: string; sinceId?: number; limit?: number } = {}): CaptureRow[] {

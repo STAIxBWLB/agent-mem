@@ -31,9 +31,9 @@ const mb = (bytes: number): number => bytes / 1048576;
 const p95 = (samples: number[]): number => [...samples].sort((a, b) => a - b)[Math.max(0, Math.ceil(samples.length * 0.95) - 1)]!;
 const round = (n: number): number => Math.round(n * 100) / 100;
 
-function child(script: string, home: string): { wallMs: number; out: Record<string, unknown> } {
+function child(script: string, home: string, extraEnv: Record<string, string> = {}): { wallMs: number; out: Record<string, unknown> } {
   const start = performance.now();
-  const r = spawnSync(process.execPath, [join(import.meta.dir, script)], { env: { ...process.env, AMEM_BUDGET_HOME: home }, encoding: "utf8", timeout: 10_000 });
+  const r = spawnSync(process.execPath, [join(import.meta.dir, script)], { env: { ...process.env, AMEM_BUDGET_HOME: home, ...extraEnv }, encoding: "utf8", timeout: 10_000 });
   const wallMs = performance.now() - start;
   if (r.status !== 0) throw new Error(`${script} exited ${r.status}: ${r.stderr?.slice(0, 400)}`);
   return { wallMs, out: JSON.parse(r.stdout.trim().split("\n").at(-1)!) as Record<string, unknown> };
@@ -71,11 +71,25 @@ try {
   capCheck.close();
   if (existsSync(join(capDir, "spool.jsonl"))) throw new Error("the spool did not drain after contention");
 
+  // R2 after a cap shrink: the shard is seeded over its cap, then a hook child appends with the shrunken cap and
+  // eviction must stay time-bounded inside the same budget.
+  {
+    const big = new CaptureStore({ home, project: "budget-evict" });
+    for (let i = 0; i < 6000; i++) big.append({ project: "budget-evict", agent: "measure", event: "PostToolUse", excerpt: `eviction row ${i} ${"z".repeat(1100)}` });
+    big.close();
+  }
+  const evictRuns = Array.from({ length: 10 }, () => child("budget-hook-child.ts", home, { AMEM_BUDGET_CAP_MB: "1", AMEM_BUDGET_PROJECT: "budget-evict" }));
+  const evictWall = p95(evictRuns.map((r) => r.wallMs)), evictRss = Math.max(...evictRuns.map((r) => rssMB(Number(r.out.maxRSS))));
+  for (const r of evictRuns) samples.push({ at: new Date().toISOString(), kind: "hook", wallMs: round(r.wallMs), rssMB: round(rssMB(Number(r.out.maxRSS))) });
+
   // R3: idle RSS and peak RSS during searches.
   const search = child("budget-search-child.ts", home);
   const idleRss = mb(Number(search.out.idle)), searchRss = rssMB(Number(search.out.maxRSS));
   samples.push({ at: new Date().toISOString(), kind: "search", wallMs: round(Number(search.out.p95Ms)), rssMB: round(searchRss), idleMB: round(idleRss) });
   appendMetrics(memoryBase(home), samples);
+  // The same samples feed the real home's advisor: hook/search process cost is a property of this machine, and the
+  // rolling file keeps the newest bounded set. (P3 hooks replace this writer; metrics.jsonl is trimmable anytime.)
+  try { appendMetrics(memoryBase(), samples); } catch { /* a read-only real home loses the readings, not the run */ }
 
   // R1: no budget child remains after every invocation ended (each was spawnSync-reaped; verify the process table).
   const ps = spawnSync("ps", ["-axo", "args="], { encoding: "utf8" }).stdout;
@@ -84,10 +98,11 @@ try {
   const budgets = {
     R1: { pass: leftover === 0, leftoverProcesses: leftover },
     R2: {
-      pass: plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB,
+      pass: plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && evictWall < R2_WALL_P95_MS && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB && evictRss < RSS_HOOK_MB,
       budgetMs: R2_WALL_P95_MS, budgetRssMB: RSS_HOOK_MB,
       append: { runs: HOOK_RUNS, wallP95Ms: round(plainWall), wallMaxMs: round(Math.max(...plain.map((r) => r.wallMs))), peakRssMB: round(plainRss) },
       spoolAndExit: { runs: CONTENTION_RUNS, wallP95Ms: round(spoolWall), wallMaxMs: round(Math.max(...spooled.map((r) => r.wallMs))), peakRssMB: round(spoolRss), drainedRows: captureRows, drainWallMs: round(drain.wallMs) },
+      evictionAfterShrink: { runs: evictRuns.length, wallP95Ms: round(evictWall), wallMaxMs: round(Math.max(...evictRuns.map((r) => r.wallMs))), peakRssMB: round(evictRss) },
     },
     R3: { pass: idleRss < RSS_IDLE_MB && searchRss < RSS_SEARCH_MB, idleRssMB: round(idleRss), peakRssMB: round(searchRss), budgetIdleMB: RSS_IDLE_MB, budgetPeakMB: RSS_SEARCH_MB, engine: search.out.engine },
   };

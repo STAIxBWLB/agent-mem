@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +110,48 @@ test("search results are unchanged by a rebuild: incremental FTS equals a full r
   expect(shape(s.search("bounded eviction", { project }))).toEqual(before);
   const fresh = store(dir); // another handle on the same home searches the same derived copies
   expect(shape(fresh.search("bounded eviction", { project }))).toEqual(before);
+});
+
+test("P2-3: prefix terms match inflections and Korean particles; the substring net catches FTS misses", () => {
+  if (!fts5Available()) return;
+  const dir = home(), s = store(dir);
+  s.note(note("eviction keeps the bounded store small"));
+  s.note(note("메모리를 정리하는 규칙을 기록한다"));
+  expect(s.search("evict", { project }).hits.map((h) => h.view?.text)).toContain("eviction keeps the bounded store small");
+  expect(s.search("eviction", { project }).hits.length).toBeGreaterThan(0); // "evictions" would match too
+  expect(s.search("메모리", { project }).hits.map((h) => h.view?.text)).toContain("메모리를 정리하는 규칙을 기록한다");
+  // The net: a query FTS cannot answer (punctuation-only terms) still answers like the substring filter.
+  const tricky = s.note(note("release uses the v1.2.3 tag format"));
+  expect(s.list({ project, q: "v1.2.3" }).map((v) => v.id)).toEqual([tricky]);
+  expect(s.search("v1.2.3", { project }).hits.map((h) => h.view?.id)).toEqual([tricky]);
+});
+
+test("P2-4: the project filter runs inside the FTS query; a busy sibling project cannot starve the LIMIT", () => {
+  if (!fts5Available()) return;
+  const dir = home(), s = store(dir);
+  for (let i = 0; i < 100; i++) s.note(note(`sibling project note ${i} about zebra crossings`, { project: "other" }));
+  const mine = s.note(note("my one note about zebra crossings"));
+  const result = s.search("zebra crossings", { project, limit: 10 });
+  expect(result.hits.map((h) => h.view?.id)).toContain(mine);
+});
+
+test("P2-5: a locked derived search.db never fails or stalls a curated write; the next search resyncs", () => {
+  if (!fts5Available()) return;
+  const dir = home(), s = store(dir);
+  s.note(note("a note written before the lock"));
+  // Hold the derived copy's write lock from a raw connection: curated writes must still go through, fast.
+  const holder = new Database(join(s.dir, "search.db"));
+  holder.run("PRAGMA busy_timeout = 0");
+  holder.run("BEGIN EXCLUSIVE");
+  const start = performance.now();
+  try {
+    s.note(note("a note written while the FTS copy was locked"));
+    s.note(note("another locked-window note"));
+  } finally { holder.run("ROLLBACK"); holder.close(); }
+  expect(performance.now() - start).toBeLessThan(1000); // no 3 s stall
+  const result = s.search("locked-window note", { project });
+  expect(result.hits.map((h) => h.view?.text)).toContain("a note written while the FTS copy was locked");
+  expect(result.hits.map((h) => h.view?.text)).toContain("another locked-window note");
 });
 
 test("AC8: a published v1 reader is unaffected and capture data never enters a v1 segment", () => {

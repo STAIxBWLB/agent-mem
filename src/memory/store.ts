@@ -244,7 +244,8 @@ export class MemoryStore {
     db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
     this.db = db;
     this.mutationDb = mutationDatabase(this.dir);
-    this.searchIndex = new SearchIndex(join(home, "search.db"));
+    // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
+    this.searchIndex = new SearchIndex(join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
     this.memoryBaseDir = home;
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
     if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
@@ -590,7 +591,7 @@ export class MemoryStore {
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
       // the next search resyncs.
-      if (inserted) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
+      if (inserted) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
     } else if (e.op === "goal") {
       if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
@@ -797,7 +798,9 @@ export class MemoryStore {
     const now = this.now();
     const recency = (at: string): number => 1 / (1 + Math.max(0, now - Date.parse(at)) / (30 * 24 * 3600_000));
     const hits: SearchHit[] = [];
-    for (const hit of this.searchIndex.query(q, Math.max(limit * 4, 32))) {
+    // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
+    // starve this project's LIMIT.
+    for (const hit of this.searchIndex.query(q, Math.max(limit * 4, 32), f.project)) {
       const view = visible.get(hit.ref);
       if (!view) continue;
       hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
@@ -810,18 +813,22 @@ export class MemoryStore {
         hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
       }
     }
+    // Where FTS misses entirely (a stopword-only query, a tokenization edge), the substring filter is the safety net.
+    if (!hits.length && q.trim()) {
+      for (const view of this.list({ ...f, q })) hits.push({ source: "curated", score: 0, view });
+    }
     const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));
     return { engine: "fts5", hits: hits.slice(0, limit) };
   }
 
-  /** Bring the derived FTS copy level with the curated rows when a prune, a crash or a rebuild drifted them apart. */
+  /** Bring the derived FTS copy level with the curated rows when a prune, a crash, a lock or a rebuild drifted them apart. */
   private syncSearchIndex(): void {
     if (!this.searchIndex.available) return;
     const curated = (this.db.query("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
     if (!this.searchIndex.needsResync(curated)) return;
-    this.searchIndex.resync(() => (this.db.query("SELECT id, at, project, tier, title, text, about FROM entries").all() as { id: string; at: string; project: string; tier: string; title: string | null; text: string; about: string }[])
-      .map((r) => ({ id: r.id, at: r.at, project: r.project, tier: r.tier, body: `${r.title ?? ""}\n${r.text}\n${(JSON.parse(r.about) as string[]).join(" ")}` })));
+    this.searchIndex.resync(() => (this.db.query("SELECT id, at, project, tier, scope, title, text, about FROM entries").all() as { id: string; at: string; project: string; tier: string; scope: string; title: string | null; text: string; about: string }[])
+      .map((r) => ({ id: r.id, at: r.at, project: r.project, tier: r.tier, scope: r.scope, body: `${r.title ?? ""}\n${r.text}\n${(JSON.parse(r.about) as string[]).join(" ")}` })));
   }
 
   /** One entry by id or unique id prefix; with `project`, only one that project may read (its own or shared). */

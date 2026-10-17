@@ -68,18 +68,27 @@ Of the 12 misses:
 - **Match mode: 2, both borderline** (#12, #23). An adjacent entry surfaces at rank 1 (#450 I0 multi-instance
   for the kimi pull-only query; #110 inventory-freeze for the work_state query) whose body is on-subject but
   whose title is not, so the strict title judgment marks a miss. No miss had a clearly on-topic entry buried
-  below rank 10: FTS5+BM25 removed the P0 match-mode class (word order and partial term sets) entirely —
+  below rank 10: FTS5+BM25 closed the P0 match-mode class (word order, every-word-AND), and round 3 added prefix
+  terms plus a substring net (see the round-3 note below) —
   every P0 hit is still a hit, and 8 of the 20 P0 misses are now hits.
 
 ## Embedding-revisit decision (R5)
 
-Not warranted. The residual gap is dominantly coverage (10 of 12 misses): there is no on-topic entry to
-retrieve by any match mode, and embeddings cannot change that. Match mode accounts for at most 2 borderline
-misses, both of which semantic ranking would plausibly also surface with the same non-on-subject titles.
-The recorded path to close the gap is the one P0 §3.2 named: the capture tier (this phase) feeding volume,
-candidate promotion into the curated tier (P2), and the P6 live-week re-measure of this query set. If P6
-still shows a match-mode gap after coverage improves, the opt-in, on-demand, no-resident-process embedding
-revisit of R5 is re-opened with that evidence.
+**Proposal, pending owner decision** (review round 3: this is a spec-level call, not an implementer's): no embedding
+revisit. The residual gap is dominantly coverage (10 of 12 misses): there is no on-topic entry to retrieve by any
+match mode, and embeddings cannot change that. Match mode accounts for at most 2 borderline misses, both of which
+semantic ranking would plausibly also surface with the same non-on-subject titles. The recorded path to close the
+gap is the one P0 §3.2 named: the capture tier (this phase) feeding volume, candidate promotion into the curated
+tier (P2), and the P6 live-week re-measure of this query set. If P6 still shows a match-mode gap after coverage
+improves, the opt-in, on-demand, no-resident-process embedding revisit of R5 is re-opened with that evidence.
+
+## Round-3 re-run (prefix terms, 2026-10-17, same day, corpus grown to 223 notes)
+
+Re-measured on the round-3 engine (FTS5 prefix terms `"word" *`, so inflections and Korean particles match, plus a
+substring net where FTS misses entirely; review P2-3). The per-query outcomes above are unchanged: 13/25 = 0.52,
+same hits and misses, same split. The round-1/2 claim "match mode is gone" was overstated for prefix/partial
+matching; the precise statement is: the P0 match-mode class (word order and every-word-AND) is closed, and
+prefix/inflection matching is covered by prefix terms with a substring net behind it.
 
 ## Observations (not acted on in P1)
 

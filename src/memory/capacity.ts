@@ -129,6 +129,9 @@ export function capacityReport(opts: {
     retentionDays: homeConfig.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS,
   };
   const diskShare = opts.diskShare ?? 0.02;
+  // ponytail: R6 caps are enforced per shard (#15 T1), but the disk-share budget is machine-wide; whether P1
+  // enforces a machine-wide total from the catalog sums or defers the global split to #15 T5 (D7) is a pending
+  // owner decision on issue #13 (PR #18 review round 3). Until then a home with N shards can hold N x cap.
   const budgetBytes = diskShare * disk.freeBytes;
   let { capMb, retentionDays } = current;
   const binding: string[] = [];

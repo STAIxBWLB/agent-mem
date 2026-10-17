@@ -85,6 +85,29 @@ test("an alias op maps a renamed or imported key onto the canonical one, append-
   expect(aliased.dir).toBe(canonical.dir);
 });
 
+test("P2-6: alias chains are refused in both directions", () => {
+  const dir = home(), base = join(dir, "memory");
+  appendAlias(base, { alias: "m", key: "k", actor: "person", machine: "m1" });
+  expect(() => appendAlias(base, { alias: "k", key: "l", actor: "person", machine: "m1" })).toThrow("cannot become an alias"); // k is a target
+  expect(() => appendAlias(base, { alias: "n", key: "m", actor: "person", machine: "m1" })).toThrow("another alias"); // m is an alias
+  expect(resolveAlias(base, "m")).toBe("k"); // the one accepted op stands
+});
+
+test("P2-10: a no-remote repository's main checkout, a subdirectory and a worktree resolve to one key", () => {
+  const dir = home();
+  const main = repo(join(dir, "solo-repo")); // no origin
+  const subdir = join(main, "src", "deep");
+  mkdirSync(subdir, { recursive: true });
+  const worktree = join(dir, "solo-repo-wt");
+  git(main, ["worktree", "add", "-q", "--detach", worktree]);
+  const key = memoryProjectKey(main);
+  expect(memoryProjectKey(subdir)).toBe(key);
+  expect(memoryProjectKey(worktree)).toBe(key);
+  expect(isLocalKey(key)).toBe(true); // still flagged machine-local
+  const other = repo(join(dir, "solo-repo-copy")); // same basename, unrelated repository
+  expect(memoryProjectKey(other)).not.toBe(key);
+});
+
 test("amem alias add/list is person-only and add needs a terminal", async () => {
   const dir = home();
   process.env.AMEM_HOME = join(dir, "memory");

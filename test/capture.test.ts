@@ -187,6 +187,71 @@ test("the pre-T1 machine-wide capture store migrates into the project shard on o
   expect(existsSync(legacyDir)).toBe(false); // emptied: the legacy layout is gone
 });
 
+test("P1: the spool holds only the screened, bounded, deny-filtered row; any drainer inserts it as-is", () => {
+  const dir = home();
+  const strict = capture(dir, { screen: () => true }); // a stricter host screen: every excerpt is screened
+  const holder = new Database(join(strict.dir, "capture.db"));
+  holder.run("PRAGMA busy_timeout = 0");
+  holder.run("BEGIN EXCLUSIVE");
+  try {
+    const blocked = capture(dir, { screen: () => true });
+    const pii = `PATIENT ${"x".repeat(5146)}`;
+    expect(blocked.append(input({ excerpt: pii, paths: [".ssh/id_rsa", "src/a.ts"] }))).toEqual({ spooled: true });
+    const spooled = ["spool.jsonl", "spool.jsonl.draining"].flatMap((n) => { try { return readFileSync(join(strict.dir, n), "utf8").trim().split("\n").filter(Boolean); } catch { return []; } });
+    expect(spooled).toHaveLength(1);
+    expect(spooled[0]).not.toContain("PATIENT"); // nothing unscreened reaches the spool
+    expect(spooled[0]).not.toContain("id_rsa");
+    expect(spooled[0]).toContain("[secret-screened]");
+  } finally { holder.run("ROLLBACK"); holder.close(); }
+  const drainer = capture(dir); // the default screen drains: the row stays exactly what the host screened
+  expect(drainer.drain().drained).toBe(1);
+  expect(drainer.rows()).toHaveLength(1);
+  expect(drainer.rows()[0]!.excerpt).toBe("[secret-screened]");
+  expect(drainer.rows()[0]!.paths).toEqual(["src/a.ts"]);
+});
+
+test("the pre-T1 legacy spool drains into the project shard instead of being deleted", () => {
+  const dir = home();
+  const legacyDir = join(dir, "memory", "capture");
+  mkdirSync(legacyDir, { recursive: true });
+  const legacy = new Database(join(legacyDir, "capture.db"), { create: true });
+  legacy.run(`CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, project TEXT NOT NULL, agent TEXT NOT NULL, event TEXT NOT NULL,
+    tool TEXT, paths TEXT NOT NULL, status TEXT, excerpt TEXT NOT NULL, bytes INTEGER NOT NULL, spool_id TEXT)`);
+  legacy.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  legacy.close();
+  writeFileSync(join(legacyDir, "spool.jsonl"), [
+    JSON.stringify({ project: "proj", agent: "kimi", event: "Stop", excerpt: "legacy spooled row of proj", at: "2026-10-16T03:00:00.000Z" }),
+    JSON.stringify({ project: "other", agent: "kimi", event: "Stop", excerpt: "legacy spooled row of another project", at: "2026-10-16T03:01:00.000Z" }),
+  ].join("\n") + "\n");
+  const store = capture(dir);
+  store.drain();
+  expect(store.rows().map((r) => [r.at, r.excerpt])).toEqual([["2026-10-16T03:00:00.000Z", "legacy spooled row of proj"]]);
+  expect(readFileSync(join(legacyDir, "spool.jsonl"), "utf8")).toContain("another project"); // the other project's lines wait
+  const other = capture(dir, { project: "other" });
+  other.drain();
+  expect(other.rows().map((r) => r.excerpt)).toEqual(["legacy spooled row of another project"]);
+  expect(existsSync(legacyDir)).toBe(false); // rows and spool both emptied: the legacy layout is gone
+});
+
+test("P2-7: eviction after a cap shrink is time-bounded per append and converges over invocations", () => {
+  const dir = home();
+  const excerpt = "e".repeat(900);
+  const writer = capture(dir, { capMb: 100 });
+  for (let i = 0; i < 4000; i++) writer.append(input({ excerpt, at: `2026-10-17T00:00:${String(i % 60).padStart(2, "0")}.${String(i).padStart(3, "0")}Z` }));
+  const oversized = writer.stats().bytes;
+  expect(oversized).toBeGreaterThan(1024 * 1024);
+  const shrink = capture(dir, { capMb: 0.001 }); // about 1 KB: everything must go, over many bounded invocations
+  const start = performance.now();
+  shrink.append(input({ excerpt: "trigger eviction" }));
+  const wallMs = performance.now() - start;
+  expect(wallMs).toBeLessThan(150); // R2 holds even with megabytes to evict
+  const afterOne = shrink.stats().bytes;
+  expect(afterOne).toBeLessThan(oversized); // progress was made
+  expect(afterOne).toBeGreaterThan(0.001 * 1024 * 1024); // but one invocation did not do it all
+  for (let i = 0; i < 200 && shrink.stats().bytes > 0.001 * 1024 * 1024; i++) shrink.append(input({ excerpt: "x" }));
+  expect(shrink.stats().bytes).toBeLessThanOrEqual(0.001 * 1024 * 1024); // later invocations finish it
+});
+
 test("AC3 tripwire: the capture and search modules make no network or model call", () => {
   for (const name of ["capture.ts", "search-fts.ts", "screen.ts", "shard.ts", "catalog.ts"]) {
     const source = readFileSync(join(import.meta.dir, "../src/memory", name), "utf8");

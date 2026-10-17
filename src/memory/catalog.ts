@@ -44,7 +44,9 @@ export function walkShards(base: string): { hash: string; key: string; local: bo
 
 /** What the shards and the alias log say, before anything is persisted. */
 export function scanCatalog(base: string): CatalogProject[] {
-  const aliases = listAliases(base);
+  // The latest op per alias: an alias lists only under the key it currently points at, never under a past target.
+  const latest = new Map<string, string>();
+  for (const op of listAliases(base)) latest.set(op.alias, op.key);
   const out: CatalogProject[] = [];
   for (const shard of walkShards(base)) {
     let rows = 0, bytes = 0, lastAt: string | null = null;
@@ -56,7 +58,7 @@ export function scanCatalog(base: string): CatalogProject[] {
     }
     const config = readCaptureConfig(shard.machineDirs[shard.machineDirs.length - 1] ?? join(base, "projects", shard.hash, "machine", "_"), base);
     out.push({ hash: shard.hash, key: shard.key, local: shard.local,
-      aliases: [...new Set(aliases.filter((op) => op.key === shard.key).map((op) => op.alias))].sort(),
+      aliases: [...latest.entries()].filter(([, key]) => key === shard.key).map(([alias]) => alias).sort(),
       captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, capMb: config.capMb, retentionDays: config.retentionDays });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));

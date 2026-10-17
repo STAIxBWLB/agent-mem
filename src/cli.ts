@@ -131,7 +131,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     } finally { candidates.close(); }
   }
   if (sub === "capacity") {
-    const report = capacityReport({ ...(options["--disk-share"] ? { diskShare: Number(options["--disk-share"]) } : {}) });
+    const share = options["--disk-share"];
+    if (share !== undefined && (!Number.isFinite(Number(share)) || Number(share) <= 0 || Number(share) > 1)) throw new Error("--disk-share must be a number in (0, 1]");
+    const report = capacityReport({ ...(share !== undefined ? { diskShare: Number(share) } : {}) });
     if (parsed.path[1] !== "apply") return options["--json"] ? JSON.stringify(report, null, 2) : capacityText(report);
     // Person-only (agent marker and TTY are refused above): preview first, --confirm writes the home default config.
     const file = join(memoryHome(), "capture-config.json");
@@ -140,13 +142,16 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       retentionDays: options["--retention-days"] ? Number(options["--retention-days"]) : report.proposal.retentionDays,
     };
     if (!Number.isFinite(target.capMb) || target.capMb <= 0 || !Number.isFinite(target.retentionDays) || target.retentionDays <= 0) throw new Error("capacity apply needs positive --cap-mb and --retention-days");
-    if (options["--confirm"] !== true) return JSON.stringify({ preview: { file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason }, confirm: "re-run with --confirm to write" }, null, 2);
+    const preview = { file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason };
+    if (options["--confirm"] !== true) return JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2);
     const written = writeCaptureConfigFile(file, target);
-    return JSON.stringify({ file, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
+    return JSON.stringify({ preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
   }
   if (sub === "alias") {
     if (parsed.path[1] === "add") {
-      const op = appendAlias(memoryHome(), { alias: parsed.positionals[0]!, key: parsed.positionals[1]!, actor: "person", machine: machineId(memoryHome()).id });
+      const [from, to] = parsed.positionals;
+      if (!from || !to) throw new Error("usage: amem alias add <from-key> <to-key>");
+      const op = appendAlias(memoryHome(), { alias: from, key: to, actor: "person", machine: machineId(memoryHome()).id });
       return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} -> ${op.key}`;
     }
     const ops = listAliases(memoryHome());
