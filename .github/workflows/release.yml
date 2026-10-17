@@ -59,4 +59,6 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           awk -v h="## ${version}" '$0==h{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section ## ${version}"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "@staix/agent-mem $GITHUB_REF_NAME" --notes-file notes.md
+          # Re-run safe: a Release made earlier (by hand or by a previous attempt) gets its notes replaced.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else gh release create "$GITHUB_REF_NAME" --verify-tag --title "@staix/agent-mem $GITHUB_REF_NAME" --notes-file notes.md; fi
