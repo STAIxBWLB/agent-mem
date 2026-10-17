@@ -68,7 +68,10 @@ export function memoryProjectKey(cwd: string): string {
     let root = realCommon;
     if (!bare) {
       const configured = memoryGitSync(["--git-dir", realCommon, "config", "--path", "core.worktree"], { encoding: "utf8" }).stdout?.trim() ?? "";
-      root = configured ? resolve(realCommon, configured) : dirname(realCommon);
+      const top = memoryGitSync(["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout?.trim() ?? "";
+      // Only an actual `.git` directory makes its parent the working root. A separate git dir shares its parent
+      // with unrelated repositories, so the real worktree root (or, as a last resort, the unique git dir) is safer.
+      root = configured ? resolve(realCommon, configured) : basename(realCommon) === ".git" ? dirname(realCommon) : top || realCommon;
     }
     let realRoot = root;
     try { realRoot = realPath(root); } catch { /* as given */ }
