@@ -6,7 +6,9 @@ import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards, shardMigrationStatus } from "../src/memory/shard-migration.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
-import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
+import { shardDir } from "../src/memory/shard.ts";
+import { runCli } from "../src/cli.ts";
+import { memoryGitSync } from "../src/memory/platform.ts";
 
 const A = "github.com/example/a", B = "github.com/example/b";
 const cleanup: (() => void)[] = [];
@@ -29,6 +31,15 @@ function seed(dir: string): { a: string; b: string } {
 }
 const options = (dir: string, mode: "dry-run" | "apply" | "resume") => ({ memoryDir: join(dir, "memory"), mode, authorizedPerson: true, tty: true });
 const segmentBytes = (dir: string) => Object.fromEntries(["log", "local"].flatMap((folder) => readdirSync(join(dir, "memory", folder)).filter((name) => name.endsWith(".jsonl")).map((name) => [`${folder}/${name}`, readFileSync(join(dir, "memory", folder, name), "utf8")])));
+function cwdForProject(dir: string): string {
+  const repo = join(dir, "repo");
+  mkdirSync(repo, { recursive: true });
+  for (const args of [["init", "-q"], ["remote", "add", "origin", `https://${A}.git`]]) {
+    const result = memoryGitSync(["-C", repo, ...args], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+  }
+  return repo;
+}
 
 test("apply shards curated rows with original ids and leaves legacy, capture and work untouched", async () => {
   const dir = home(), { a: aId, b: bId } = seed(dir);
@@ -93,4 +104,24 @@ test("a live reader blocks apply and an interrupted build resumes without duplic
   const a = openShardStore({ home: dir, project: A });
   expect(a.list({ project: A }).filter((row) => row.text === "alpha curated")).toHaveLength(1);
   a.close();
+});
+
+test("amem migrate --shards and status drive the same resume path and ordinary CLI opens a shard", async () => {
+  const dir = home(); seed(dir);
+  process.env.AMEM_HOME = join(dir, "memory");
+  cleanup.push(() => { delete process.env.AMEM_HOME; });
+  const context = { cwd: cwdForProject(dir), env: {}, stdinTTY: true };
+  const applied = JSON.parse(await runCli(["migrate", "--shards"], context)) as { active: boolean };
+  expect(applied.active).toBe(true);
+  const listed = JSON.parse(await runCli(["list", "--json"], context)) as { project: string; text: string }[];
+  expect(listed.some((row) => row.text === "alpha curated")).toBe(true);
+  expect(listed.some((row) => row.text === "beta curated")).toBe(false);
+  const old = new LegacyMemoryStore({ home: dir });
+  old.note(note(A, "late through CLI status"));
+  old.close();
+  const pending = JSON.parse(await runCli(["status"], context)) as { pending: { byShard: Record<string, number> } };
+  expect(pending.pending.byShard[A]).toBe(1);
+  await runCli(["migrate", "--resume"], context);
+  const settled = JSON.parse(await runCli(["status"], context)) as { pending: { rows: number } };
+  expect(settled.pending.rows).toBe(0);
 });
