@@ -16,3 +16,4 @@ export * from "./memory/ops-contract.ts";
 export * from "./memory/generation.ts";
 export * from "./memory/migrate.ts";
 export * from "./memory/prune.ts";
+export * from "./memory/shard-migration.ts";
