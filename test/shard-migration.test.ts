@@ -156,7 +156,7 @@ test("a new project initializes its own sealed shard and a selector change refus
   await migrateShards(options(dir, "apply"));
   const project = "github.com/example/c", store = openShardStore({ home: dir, project });
   store.note(note(project, "gamma in a new shard"));
-  expect(store.list({ project }).map((row) => row.text)).toEqual(["gamma in a new shard"]);
+  expect(store.list({ project }).map((row) => row.text)).toEqual(["gamma in a new shard", "shared user fact"]);
   store.close();
   writeFileSync(join(dir, "memory", "profile.json"), JSON.stringify({ schema: "agent-mem.profile/v1", kind: "shared-v1" }) + "\n");
   expect(() => openShardStore({ home: dir, project: A })).toThrow("selector changed");

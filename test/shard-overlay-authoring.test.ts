@@ -54,3 +54,15 @@ test("#15 opening an unseen project refuses a symlinked curated destination befo
   expect(() => { const store = openShardStore({ home, project: "example/symlink" }); store.close(); }).toThrow(/curated shard path/);
   expect(readFileSync(join(target, JSON.parse(readFileSync(join(memory, "machine.json"), "utf8")).id + ".jsonl"))).toEqual(before);
 });
+
+// Main 2b5d58e store.ts:783-788 includes shared rows in every project's single-store list.
+test("#15 main single-store parity: a project list keeps its own and shared user facts", () => {
+  const home = mkdtempSync(join(tmpdir(), "amem-main-parity-"));
+  closes.push(() => rmSync(home, { recursive: true, force: true }));
+  let now = Date.parse("2026-10-18T00:00:00.000Z");
+  const store = new MemoryStore({ home, now: () => now }); closes.push(() => store.close());
+  store.note(note("shared user fact")); now += 1000;
+  store.note({ ...note("foreign private fact"), scope: "project" }); now += 1000;
+  store.note({ ...note("gamma in a new shard"), project: B, scope: "project" });
+  expect(store.list({ project: B }).map(row => row.text)).toEqual(["gamma in a new shard", "shared user fact"]);
+});
