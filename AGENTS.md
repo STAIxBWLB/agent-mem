@@ -15,6 +15,17 @@
 - Add a `ponytail:` comment naming the ceiling and upgrade path for deliberate shortcuts.
 - Work on a branch; use conventional English commit messages. Do not publish without explicit authorization.
 
+## Scope and sessions
+
+- amem is developed together with agent-hub from agent-hub sessions (`../agent-hub`). Standalone-only features may be developed in a session started here. Publish a change the hub consumes first; the hub then raises its exact pin in its own PR.
+- Keep amem usable without agent-hub and without claude-mem: never import agent-hub code or call the claude-mem worker. Host behavior (privacy policy, inference) enters only through the library API. Plan and budgets: #13.
+- Never add a resident process (daemon, watcher, launchd agent), a model or network call on the capture path, or a vector index. The #13 resource budgets are acceptance criteria. Observed 2026-10-17: claude-mem's Chroma held 4.0 GB RSS for 11 h and blocked heavy-job admission.
+
+## Releasing
+
+- Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow checks it before `npm publish` and its `release-notes` job publishes it as the GitHub Release body. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
+- After the release, read back the published version with a cache-busting registry request (not `npm view`) and read back the Release body.
+
 ## Storage invariants
 
 - Preserve `agent-hub.memory/v1` inside the entryId hash, canonical JSON, full-prefix hashing, kinds, scopes and ops.
