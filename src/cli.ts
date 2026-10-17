@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
@@ -143,8 +143,20 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     };
     if (!Number.isFinite(target.capMb) || target.capMb <= 0 || !Number.isFinite(target.retentionDays) || target.retentionDays <= 0) throw new Error("capacity apply needs positive --cap-mb and --retention-days");
     const preview = { file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason };
-    if (options["--confirm"] !== true) return JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2);
+    const previewFile = join(memoryHome(), "capture-config.preview.json");
+    if (options["--confirm"] !== true) {
+      writeFileSync(previewFile, JSON.stringify(preview) + "\n", { mode: 0o600 });
+      return JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2);
+    }
+    let approved: { file?: string; current?: unknown; target?: CaptureConfig };
+    try { approved = JSON.parse(readFileSync(previewFile, "utf8")) as typeof approved; }
+    catch { throw new Error("capacity apply needs a preview first; re-run without --confirm"); }
+    if (approved.file !== file || JSON.stringify(approved.current) !== JSON.stringify(preview.current)
+      || approved.target?.capMb !== target.capMb || approved.target?.retentionDays !== target.retentionDays) {
+      throw new Error("capacity preview changed; re-run without --confirm");
+    }
     const written = writeCaptureConfigFile(file, target);
+    rmSync(previewFile, { force: true });
     return JSON.stringify({ preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
   }
   if (sub === "alias") {

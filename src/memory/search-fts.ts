@@ -40,6 +40,15 @@ export function setFts5AvailableForTest(value: boolean | undefined): void {
   probe = value;
 }
 
+const KOREAN_PARTICLES = ["에는", "에서", "으로", "에게", "한테", "처럼", "보다", "까지", "부터", "마다", "조차", "마저", "이나", "이랑", "하고", "은", "는", "이", "가", "을", "를", "에", "로", "와", "과", "도", "만", "의", "랑", "나", "라"];
+
+/** The original term plus a common-particle-stripped Korean alternative, so both 메모리 and 메모리는 match either form. */
+function queryVariants(term: string): string[] {
+  if (!/[가-힣]/u.test(term)) return [term];
+  const particle = KOREAN_PARTICLES.find((p) => term.endsWith(p) && term.length - p.length >= 2);
+  return particle ? [term, term.slice(0, -particle.length)] : [term];
+}
+
 /**
  * A free-text query as a safe FTS5 MATCH string: unicode61-ish terms (the index tokenizer's alphabet), each a
  * quoted PREFIX term (`"word" *` — inflections and Korean particles like 메모리/메모리를 match), quoted so query
@@ -47,8 +56,9 @@ export function setFts5AvailableForTest(value: boolean | undefined): void {
  * instead of requiring every word like the substring filter did (the P0 recall gap).
  */
 export function ftsTerms(q: string): string {
-  const terms = q.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
-  return [...new Set(terms)].slice(0, 32).map((t) => `"${t.replaceAll('"', '""')}" *`).join(" OR ");
+  const terms = [...new Set(q.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 32);
+  const variants = [...new Set(terms.flatMap(queryVariants))].slice(0, 64);
+  return variants.map((t) => `"${t.replaceAll('"', '""')}" *`).join(" OR ");
 }
 
 export interface CuratedDoc { id: string; at: string; project: string; tier: string; scope: string; body: string }

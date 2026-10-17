@@ -86,10 +86,8 @@ try {
   const search = child("budget-search-child.ts", home);
   const idleRss = mb(Number(search.out.idle)), searchRss = rssMB(Number(search.out.maxRSS));
   samples.push({ at: new Date().toISOString(), kind: "search", wallMs: round(Number(search.out.p95Ms)), rssMB: round(searchRss), idleMB: round(idleRss) });
+  // Benchmark samples stay in this synthetic home. Only real hook/search invocations may feed the advisor's metrics.
   appendMetrics(memoryBase(home), samples);
-  // The same samples feed the real home's advisor: hook/search process cost is a property of this machine, and the
-  // rolling file keeps the newest bounded set. (P3 hooks replace this writer; metrics.jsonl is trimmable anytime.)
-  try { appendMetrics(memoryBase(), samples); } catch { /* a read-only real home loses the readings, not the run */ }
 
   // R1: no budget child remains after every invocation ended (each was spawnSync-reaped; verify the process table).
   const ps = spawnSync("ps", ["-axo", "args="], { encoding: "utf8" }).stdout;

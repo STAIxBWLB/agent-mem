@@ -16,8 +16,9 @@ substring 5/25 (0.20). Agreed margin (§3.3): amem recall@10 >= claude-mem − 0
 
 - Query set: the 25 frozen queries of `docs/p0-baseline.md` §3.4, verbatim (hardcoded in
   `scripts/ac4-recheck.ts`).
-- Corpus: a filesystem copy of the live amem home taken 2026-10-17 (`cp -R`), opened read-only from the copy;
-  the live home was never opened by the measurement. 192 live `agent-hub` views (P0 froze 161 earlier the
+- Corpus: a filesystem copy of the live amem home taken 2026-10-17 (`cp -R`); the live home was never opened by
+  the measurement. The copy was opened read-write by `MemoryStore`, which created derived `index.db`/`search.db`
+  files there. 192 live `agent-hub` views (P0 froze 161 earlier the
   same day; the home accrued notes meanwhile) plus 25 `halla-ai/ax-commons` views excluded by project scoping,
   as in P0. No capture-tier fixture: the copy holds no capture rows, matching P0's curated-only corpus.
 - Search: `store.search(query, { project: "github.com/staixbwlb/agent-hub", limit: 10 })` on this branch,
@@ -74,13 +75,13 @@ Of the 12 misses:
 
 ## Embedding-revisit decision (R5)
 
-**Proposal, pending owner decision** (review round 3: this is a spec-level call, not an implementer's): no embedding
-revisit. The residual gap is dominantly coverage (10 of 12 misses): there is no on-topic entry to retrieve by any
-match mode, and embeddings cannot change that. Match mode accounts for at most 2 borderline misses, both of which
-semantic ranking would plausibly also surface with the same non-on-subject titles. The recorded path to close the
-gap is the one P0 §3.2 named: the capture tier (this phase) feeding volume, candidate promotion into the curated
-tier (P2), and the P6 live-week re-measure of this query set. If P6 still shows a match-mode gap after coverage
-improves, the opt-in, on-demand, no-resident-process embedding revisit of R5 is re-opened with that evidence.
+**Owner decision, 2026-10-17 (issue #13 comment 6232072487): no embedding revisit in P1.** The residual gap is
+dominantly coverage (10 of 12 misses): there is no on-topic entry to retrieve by any match mode, and embeddings
+cannot change that. Match mode accounts for at most 2 borderline misses, both of which semantic ranking would
+plausibly also surface with the same non-on-subject titles. The recorded path to close the gap is the one P0 §3.2
+named: the capture tier (this phase) feeding volume, candidate promotion into the curated tier (P2), and the P6
+live-week re-measure of this query set. If P6 still shows a match-mode gap after coverage improves, a later owner
+decision can re-open the opt-in, on-demand, no-resident-process embedding question with that evidence.
 
 ## Round-3 re-run (prefix terms, 2026-10-17, same day, corpus grown to 223 notes)
 
@@ -88,7 +89,7 @@ Re-measured on the round-3 engine (FTS5 prefix terms `"word" *`, so inflections 
 substring net where FTS misses entirely; review P2-3). The per-query outcomes above are unchanged: 13/25 = 0.52,
 same hits and misses, same split. The round-1/2 claim "match mode is gone" was overstated for prefix/partial
 matching; the precise statement is: the P0 match-mode class (word order and every-word-AND) is closed, and
-prefix/inflection matching is covered by prefix terms with a substring net behind it.
+prefix/inflection matching is covered by prefix terms, common Korean query-particle alternatives and a substring net.
 
 ## Observations (not acted on in P1)
 

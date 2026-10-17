@@ -4,7 +4,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
-import { MemoryStore, fts5Available, setFts5AvailableForTest, CaptureStore, type NoteInput } from "../src/index.ts";
+import { MemoryStore, fts5Available, CaptureStore, type NoteInput } from "../src/index.ts";
+import { setFts5AvailableForTest, type SearchIndex } from "../src/memory/search-fts.ts";
 
 
 const project = "proj";
@@ -112,14 +113,35 @@ test("search results are unchanged by a rebuild: incremental FTS equals a full r
   expect(shape(fresh.search("bounded eviction", { project }))).toEqual(before);
 });
 
+test("rebuild refills the derived FTS copy in one batch instead of one transaction per entry", () => {
+  if (!fts5Available()) return;
+  const dir = home(), s = store(dir);
+  for (let i = 0; i < 24; i++) s.note(note(`note ${i} about batched rebuild`));
+  const index = (s as unknown as { searchIndex: SearchIndex }).searchIndex;
+  let incremental = 0, batches = 0;
+  const add = index.addCurated.bind(index), resync = index.resync.bind(index);
+  index.addCurated = (doc) => { incremental++; add(doc); };
+  index.resync = (load) => { batches++; resync(load); };
+  s.rebuild();
+  expect(incremental).toBe(0);
+  expect(batches).toBe(1);
+  expect(s.search("batched rebuild", { project }).hits).toHaveLength(24);
+});
+
+test("the package entry does not expose the FTS test switch", async () => {
+  expect("setFts5AvailableForTest" in await import("../src/index.ts")).toBe(false);
+});
+
 test("P2-3: prefix terms match inflections and Korean particles; the substring net catches FTS misses", () => {
   if (!fts5Available()) return;
   const dir = home(), s = store(dir);
   s.note(note("eviction keeps the bounded store small"));
   s.note(note("메모리를 정리하는 규칙을 기록한다"));
+  s.note(note("메모리 계층은 프로젝트별로 나뉜다"));
   expect(s.search("evict", { project }).hits.map((h) => h.view?.text)).toContain("eviction keeps the bounded store small");
   expect(s.search("eviction", { project }).hits.length).toBeGreaterThan(0); // "evictions" would match too
   expect(s.search("메모리", { project }).hits.map((h) => h.view?.text)).toContain("메모리를 정리하는 규칙을 기록한다");
+  expect(s.search("메모리는", { project }).hits.map((h) => h.view?.text)).toContain("메모리 계층은 프로젝트별로 나뉜다");
   // The net: a query FTS cannot answer (punctuation-only terms) still answers like the substring filter.
   const tricky = s.note(note("release uses the v1.2.3 tag format"));
   expect(s.list({ project, q: "v1.2.3" }).map((v) => v.id)).toEqual([tricky]);

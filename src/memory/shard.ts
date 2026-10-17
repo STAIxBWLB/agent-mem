@@ -87,8 +87,9 @@ export function appendAlias(base: string, input: { alias: string; key: string; a
   if (!alias || !key) throw new Error("an alias needs both keys");
   if (alias === key) throw new Error("an alias cannot target itself");
   if (resolveAlias(base, key) !== key) throw new Error("an alias cannot target another alias");
-  // The other direction too: a key that is already a target must not become an alias, or M->K then K->L splits writes.
-  if (listAliases(base).some((op) => op.key === alias)) throw new Error("an alias target cannot become an alias");
+  // The other direction too, using only the latest op per alias: a target abandoned by a later retarget is free again.
+  const currentTargets = new Set([...new Map(listAliases(base).map((op) => [op.alias, op.key])).values()]);
+  if (currentTargets.has(alias)) throw new Error("an alias target cannot become an alias");
   const op: AliasOp = { schema: SHARD_SCHEMA, op: "alias", at: input.at ?? new Date().toISOString(), machine: input.machine, alias, key, actor: input.actor };
   mkdirSync(base, { recursive: true, mode: 0o700 });
   appendFileSync(aliasLogPath(base), JSON.stringify(op) + "\n", { mode: 0o600 });

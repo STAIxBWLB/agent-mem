@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryGitSync } from "../src/memory/platform.ts";
+import { createHash } from "node:crypto";
+import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendAlias, aliasLogPath, isLocalKey, listAliases, readShardDescriptor, resolveAlias, shardKeyHash } from "../src/memory/shard.ts";
@@ -85,12 +86,16 @@ test("an alias op maps a renamed or imported key onto the canonical one, append-
   expect(aliased.dir).toBe(canonical.dir);
 });
 
-test("P2-6: alias chains are refused in both directions", () => {
+test("P2-6: alias chains are refused in both directions, using only current targets", () => {
   const dir = home(), base = join(dir, "memory");
   appendAlias(base, { alias: "m", key: "k", actor: "person", machine: "m1" });
   expect(() => appendAlias(base, { alias: "k", key: "l", actor: "person", machine: "m1" })).toThrow("cannot become an alias"); // k is a target
   expect(() => appendAlias(base, { alias: "n", key: "m", actor: "person", machine: "m1" })).toThrow("another alias"); // m is an alias
   expect(resolveAlias(base, "m")).toBe("k"); // the one accepted op stands
+  appendAlias(base, { alias: "m", key: "k2", actor: "person", machine: "m1" });
+  expect(resolveAlias(base, "m")).toBe("k2");
+  appendAlias(base, { alias: "k", key: "l", actor: "person", machine: "m1" }); // k is no longer a current target
+  expect(resolveAlias(base, "k")).toBe("l");
 });
 
 test("P2-10: a no-remote repository's main checkout, a subdirectory and a worktree resolve to one key", () => {
@@ -101,11 +106,35 @@ test("P2-10: a no-remote repository's main checkout, a subdirectory and a worktr
   const worktree = join(dir, "solo-repo-wt");
   git(main, ["worktree", "add", "-q", "--detach", worktree]);
   const key = memoryProjectKey(main);
+  const legacyRootHash = createHash("sha256").update(realPath(main)).digest("hex").slice(0, 8);
+  expect(key).toBe(`solo-repo@${legacyRootHash}`); // root-written curated history stays under the old key
   expect(memoryProjectKey(subdir)).toBe(key);
   expect(memoryProjectKey(worktree)).toBe(key);
   expect(isLocalKey(key)).toBe(true); // still flagged machine-local
   const other = repo(join(dir, "solo-repo-copy")); // same basename, unrelated repository
   expect(memoryProjectKey(other)).not.toBe(key);
+});
+
+test("no-remote submodule and bare-worktree keys keep repository labels and root compatibility", () => {
+  const dir = home();
+  const source = repo(join(dir, "source"));
+  const superproject = repo(join(dir, "super"));
+  git(superproject, ["-c", "protocol.file.allow=always", "submodule", "add", source, "sub"]);
+  const submodule = join(superproject, "sub");
+  const subHash = createHash("sha256").update(realPath(submodule)).digest("hex").slice(0, 8);
+  expect(memoryProjectKey(submodule)).toBe(`super/sub@${subHash}`);
+
+  const bare = join(dir, "bare.git");
+  mkdirSync(bare, { recursive: true });
+  git(bare, ["init", "-q", "--bare"]);
+  const seed = repo(join(dir, "seed"));
+  git(seed, ["remote", "add", "origin", bare]);
+  git(seed, ["push", "-q", "origin", "HEAD:main"]);
+  const worktree = join(dir, "bare-worktree");
+  git(bare, ["worktree", "add", "-q", "--detach", worktree, "main"]);
+  const bareHash = createHash("sha256").update(realPath(bare)).digest("hex").slice(0, 8);
+  expect(memoryProjectKey(bare)).toBe(`bare.git@${bareHash}`);
+  expect(memoryProjectKey(worktree)).toBe(`bare.git@${bareHash}`);
 });
 
 test("amem alias add/list is person-only and add needs a terminal", async () => {

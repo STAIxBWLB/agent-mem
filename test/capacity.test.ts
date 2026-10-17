@@ -101,10 +101,18 @@ test("amem capacity reports, previews, and applies only with --confirm; agents c
   // apply previews first and writes nothing without --confirm.
   await expect(runCli(["capacity", "apply"], { ...context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
   await expect(runCli(["capacity", "apply", "--cap-mb", "64"], { ...context, env: { CODEX_THREAD_ID: "x" } })).rejects.toThrow(PERSON_ONLY);
-  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--retention-days", "30"], context)) as { preview: { target: { capMb: number } } };
-  expect(preview.preview.target).toMatchObject({ capMb: 64, retentionDays: 30 });
+  await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)).rejects.toThrow("preview first");
+  expect(readCaptureConfigFile(file)).toEqual({}); // a first-call --confirm cannot skip the preview
+  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64"], context)) as { preview: { target: { capMb: number } } };
+  expect(preview.preview.target).toMatchObject({ capMb: 64, retentionDays: 90 });
   expect(readCaptureConfigFile(file)).toEqual({});
   const written = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)) as { written: { cap_mb: number; retention_days: number } };
   expect(written.written).toEqual({ cap_mb: 64, retention_days: 90 }); // the unset value falls to the proposal
   expect(readCaptureConfigFile(file)).toEqual({ capMb: 64, retentionDays: 90 });
+});
+
+test("measure-budget keeps synthetic samples out of the real memory home", async () => {
+  const source = await Bun.file(join(import.meta.dir, "../scripts/measure-budget.ts")).text();
+  expect(source).toContain("appendMetrics(memoryBase(home), samples)");
+  expect(source).not.toContain("appendMetrics(memoryBase(), samples)");
 });

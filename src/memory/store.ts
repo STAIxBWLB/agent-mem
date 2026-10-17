@@ -206,6 +206,8 @@ export class MemoryStore {
   /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
   private readonly searchIndex: SearchIndex;
   private readonly memoryBaseDir: string;
+  /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
+  private rebuildingSearch = false;
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
@@ -558,10 +560,14 @@ export class MemoryStore {
 
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
-    this.searchIndex.reset(); // the apply path refills the FTS copy from the same rows
+    this.searchIndex.reset();
     if (this.generationIndex) { this.generationIndex.rebuild(); return; }
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
-    this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+    this.rebuildingSearch = true;
+    try {
+      this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+    } finally { this.rebuildingSearch = false; }
+    this.syncSearchIndex(); // one batched derived write, not one search.db transaction per rebuilt entry
   }
 
   private segments(sub: "log" | "local"): string[] {
@@ -591,7 +597,7 @@ export class MemoryStore {
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
       // the next search resyncs.
-      if (inserted) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
+      if (inserted && !this.rebuildingSearch) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
     } else if (e.op === "goal") {
       if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }

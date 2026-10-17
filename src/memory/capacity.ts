@@ -11,14 +11,14 @@ import { captureShardGrowth, captureShardStats, readCaptureConfigFile, CAPTURE_D
  * `amem capacity` CLI renders it and `amem capacity apply` writes the home default config after a preview. An
  * agent may read the proposal through this library function; applying stays person-only at the CLI.
  *
- * Proposal rule (documented choice): the advisor shrinks to fit and never grows a bound on its own — the proposed
- * cap and retention are the largest values not exceeding the current ones whose projection stays within the
- * disk-share bound (default 2% of free space, configurable) and whose measured search and hook readings stay
- * within R2/R3. Growing is the person's explicit choice (`amem capacity apply --cap-mb N`). The reason names the
- * binding constraint: `disk-share retention`, `disk-share cap`, `R3 search RSS`, `R2 hook cost`, or `none`.
+ * Proposal rule (owner decision, 2026-10-17): P1 is shrink-only — the proposed cap and retention are the largest
+ * values not exceeding the current ones whose projection stays within the disk-share bound (default 2% of free
+ * space, configurable) and whose measured search and hook readings stay within R2/R3. Growth proposals are a
+ * follow-up after the agent-hub release; growing in P1 is the person's explicit `amem capacity apply --cap-mb N`.
+ * The reason names the binding constraint: `disk-share retention`, `disk-share cap`, `R3 search RSS`, `R2 hook cost`, or `none`.
  *
  * Metrics: a small rolling `metrics.jsonl` in the memory home (not a memory log: it is trimmed, never synced).
- * `scripts/measure-budget.ts` appends hook and search samples; the P3 hooks will append per invocation.
+ * `scripts/measure-budget.ts` writes only to its synthetic home; the P3 hooks will append real samples per invocation.
  */
 
 export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; idleMB?: number }
@@ -129,9 +129,8 @@ export function capacityReport(opts: {
     retentionDays: homeConfig.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS,
   };
   const diskShare = opts.diskShare ?? 0.02;
-  // ponytail: R6 caps are enforced per shard (#15 T1), but the disk-share budget is machine-wide; whether P1
-  // enforces a machine-wide total from the catalog sums or defers the global split to #15 T5 (D7) is a pending
-  // owner decision on issue #13 (PR #18 review round 3). Until then a home with N shards can hold N x cap.
+  // ponytail: the 2026-10-17 owner decision keeps R6 caps per shard in P1, while the disk-share budget is
+  // machine-wide; #15 T5 (D7) owns the machine-total split. Until then a home with N shards can hold N x cap.
   const budgetBytes = diskShare * disk.freeBytes;
   let { capMb, retentionDays } = current;
   const binding: string[] = [];

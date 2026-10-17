@@ -233,6 +233,34 @@ test("the pre-T1 legacy spool drains into the project shard instead of being del
   expect(existsSync(legacyDir)).toBe(false); // rows and spool both emptied: the legacy layout is gone
 });
 
+test("N1: insert/byte-count rollback prevents duplicates and a post-commit eviction lock is non-fatal", () => {
+  const dir = home(), store = capture(dir);
+  const internals = store as unknown as { addBytes: (delta: number) => void; evict: () => { expired: number; trimmed: number } };
+  const addBytes = internals.addBytes;
+  internals.addBytes = () => { throw new Error("database is locked"); };
+  expect(store.append(input({ excerpt: "atomic insert" }))).toEqual({ spooled: true });
+  expect(store.rows()).toHaveLength(0); // the INSERT rolled back with its failed byte-count update
+  internals.addBytes = addBytes;
+  expect(store.drain().drained).toBe(1);
+  expect(store.rows()).toHaveLength(1);
+
+  internals.evict = () => { throw new Error("database is locked"); };
+  expect(store.append(input({ excerpt: "eviction lock" }))).toHaveProperty("id");
+  expect(existsSync(join(store.dir, "spool.jsonl"))).toBe(false);
+  expect(store.drain().drained).toBe(0);
+  expect(store.rows()).toHaveLength(2); // one event, one row: no post-commit respool
+});
+
+test("an incomplete spool row is skipped and counted without blocking later rows or appends", () => {
+  const dir = home(), store = capture(dir);
+  const poison = JSON.stringify({ at: "2026-10-17T00:00:00.000Z", excerpt: "missing fields", bytes: 100 });
+  const valid = JSON.stringify({ at: "2026-10-17T00:00:01.000Z", project: "proj", agent: "kimi", event: "Stop", tool: null, paths: [], status: null, excerpt: "valid after poison", bytes: 100 });
+  writeFileSync(join(store.dir, "spool.jsonl"), poison + "\n" + valid + "\n", { mode: 0o600 });
+  expect(store.drain()).toMatchObject({ drained: 1, skipped: 1 });
+  expect(store.append(input({ excerpt: "later append" }))).toHaveProperty("id");
+  expect(store.rows().map((row) => row.excerpt)).toEqual(["valid after poison", "later append"]);
+});
+
 test("P2-7: eviction after a cap shrink is time-bounded per append and converges over invocations", () => {
   const dir = home();
   const excerpt = "e".repeat(900);

@@ -1,6 +1,7 @@
 export * from "./memory/store.ts";
 export * from "./memory/capture.ts";
-export * from "./memory/search-fts.ts";
+export { fts5Available, ftsTerms, SearchIndex, captureSearch } from "./memory/search-fts.ts";
+export type { CuratedDoc, RankedRef } from "./memory/search-fts.ts";
 export * from "./memory/shard.ts";
 export * from "./memory/catalog.ts";
 export * from "./memory/capacity.ts";

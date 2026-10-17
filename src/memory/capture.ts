@@ -17,10 +17,11 @@ import { fts5Available } from "./search-fts.ts";
  * exit status and a bounded, secret-screened excerpt per row. No code path here touches the curated logs, so
  * curated notes, goals and work lists are never evicted or rewritten by capture maintenance (AC5).
  *
- * R6 bounds: a soft size cap and a retention window (defaults 512 MB per machine, 90 days), resolved at every
+ * R6 bounds: a soft size cap and a retention window (defaults 512 MB per shard, 90 days), resolved at every
  * invocation from `CaptureOptions`, then the shard's `config.json`, then the home default `capture-config.json`
- * the capacity advisor (R7) writes. Eviction removes the oldest capture rows first, in bounded batches per
- * invocation, so shrinking a cap finishes over later invocations instead of breaking the hook budget (R2).
+ * the capacity advisor (R7) writes. The 2026-10-17 owner decision keeps the P1 cap per shard; the machine-wide
+ * total is #15 T5. Eviction removes the oldest capture rows first, in bounded batches per invocation, so shrinking
+ * a cap finishes over later invocations instead of breaking the hook budget (R2).
  * ponytail: the cap counts row payload bytes, not the sqlite file's page slack or WAL; a VACUUM blocks writers and
  * stays out of the hook path, so file size can exceed the cap until pages are reused.
  *
@@ -274,8 +275,11 @@ export class CaptureStore {
     }
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
-      const id = this.insertRow(row, null);
-      this.evict();
+      // The row and its running byte count commit or roll back together: a lock after the INSERT cannot spool a duplicate.
+      const id = this.db.transaction(() => this.insertRow(row, null)).immediate();
+      try { this.evict(); } catch (error) {
+        if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
+      }
       return { id: id! };
     } catch (error) {
       if (!lockError(error)) throw error;
@@ -302,17 +306,25 @@ export class CaptureStore {
   }
 
   /**
-   * Replay the spool. The current file is renamed aside first, so rows spooled while draining are not lost, and a
-   * leftover draining file from a crash is finished first. Idempotent per spooled line. Bounded per invocation.
+   * Replay the spool, finishing a leftover draining file from a crash first. Idempotent per spooled line and bounded
+   * per invocation; malformed or incomplete lines are skipped and counted instead of poisoning every later append.
+   * ponytail: the shared spool/draining names cannot fully close multi-process replacement and already-open-writer
+   * races. Per-writer spool files with unique drain names are the upgrade path if that hard guarantee is required.
    */
-  drain(): { drained: number } {
-    let budget = CAPTURE_DRAIN_MAX_LINES, drained = 0;
-    if (this.contended) return { drained };
+  drain(): { drained: number; skipped: number } {
+    let budget = CAPTURE_DRAIN_MAX_LINES, drained = 0, skipped = 0;
+    if (this.contended) return { drained, skipped };
+    const validRow = (row: Partial<NormalizedCapture>): row is NormalizedCapture =>
+      typeof row.at === "string" && row.at.length > 0 && typeof row.project === "string" && row.project.length > 0
+      && typeof row.agent === "string" && row.agent.length > 0 && typeof row.event === "string" && row.event.length > 0
+      && (row.tool === null || typeof row.tool === "string") && Array.isArray(row.paths) && row.paths.every((p) => typeof p === "string")
+      && (row.status === null || typeof row.status === "string") && typeof row.excerpt === "string"
+      && typeof row.bytes === "number" && Number.isFinite(row.bytes) && row.bytes >= 0;
     for (const renameFirst of [false, true]) {
       const file = join(this.dir, DRAINING);
       if (renameFirst && existsSync(join(this.dir, SPOOL))) {
         if (budget <= 0) break;
-        // link+remove, not rename: a draining file another process owns is never clobbered.
+        // link+remove, not rename: a draining file another process owns is never clobbered at claim time.
         try { linkSync(join(this.dir, SPOOL), file); rmSync(join(this.dir, SPOOL)); } catch { continue; }
       }
       if (!existsSync(file)) continue;
@@ -323,12 +335,15 @@ export class CaptureStore {
         this.db.transaction(() => {
           for (const line of batch) {
             let raw: Partial<NormalizedCapture> & { bytes?: number };
-            try { raw = JSON.parse(line) as typeof raw; } catch { continue; }
-            // Spool lines written since the screened-spool rule are already bounded and screened; older lines
-            // (this branch's pre-release format) pass through normalize once.
-            const row = typeof raw.bytes === "number" && typeof raw.excerpt === "string" ? raw as NormalizedCapture : this.normalize(raw as CaptureInput);
-            if (!row || typeof row.at !== "string") continue;
-            const added = this.insertRow(row, createHash("sha256").update(line).digest("hex")) !== undefined;
+            try { raw = JSON.parse(line) as typeof raw; } catch { skipped++; continue; }
+            let candidate: NormalizedCapture;
+            try {
+              // Spool lines written since the screened-spool rule are already bounded and screened; older lines
+              // (this branch's pre-release format) pass through normalize once.
+              candidate = typeof raw.bytes === "number" && typeof raw.excerpt === "string" ? raw as NormalizedCapture : this.normalize(raw as CaptureInput);
+            } catch { skipped++; continue; }
+            if (!validRow(candidate)) { skipped++; continue; }
+            const added = this.insertRow(candidate, createHash("sha256").update(line).digest("hex")) !== undefined;
             if (added) drained++;
           }
         }).immediate();
@@ -340,7 +355,7 @@ export class CaptureStore {
       if (batch.length === lines.length) rmSync(file, { force: true });
       else { writeFileSync(file, lines.slice(batch.length).join("\n") + "\n", { mode: 0o600 }); break; }
     }
-    return { drained };
+    return { drained, skipped };
   }
 
   /** The row insert shared by append, drain and the legacy migration; with a spool id the insert is idempotent. */
@@ -384,12 +399,16 @@ export class CaptureStore {
     for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && performance.now() - start < CAPTURE_EVICT_MAX_MS; batch++) {
       const old = this.db.query(`SELECT id, bytes FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number; bytes: number }[];
       if (!old.length) break;
-      this.db.transaction(() => { for (const { id } of old) this.db.query("DELETE FROM rows WHERE id = ?").run(id); }).immediate();
+      const removedBytes = old.reduce((sum, r) => sum + r.bytes, 0);
+      // Deleting rows and adjusting the running size is atomic too; a lock cannot leave a permanently stale counter.
+      this.db.transaction(() => {
+        for (const { id } of old) this.db.query("DELETE FROM rows WHERE id = ?").run(id);
+        if (removedBytes) this.addBytes(-removedBytes);
+      }).immediate();
       rows += old.length;
-      bytes += old.reduce((sum, r) => sum + r.bytes, 0);
+      bytes += removedBytes;
       if (old.length < CAPTURE_EVICT_BATCH_ROWS) break;
     }
-    if (bytes) this.addBytes(-bytes);
     return { rows, bytes };
   }
 

@@ -38,8 +38,8 @@ export function projectChain(cwd: string): string[] {
 /**
  * #258: the name hub memory files a project's entries under. The project's `origin` remote, normalized to host and
  * path (`github.com/owner/repo`), is the same on every machine and unique; without one, the git chain plus a hash of
- * the repository's git common dir keeps two unrelated repositories that share a name apart while the main checkout,
- * a subdirectory and a worktree of one repository resolve to one key (that key is this machine's only).
+ * the main working root keeps two unrelated repositories that share a name apart while the main checkout, a
+ * subdirectory and a worktree resolve to one key (that key is this machine's only, and root-invoked keys stay stable).
  */
 export function memoryProjectKey(cwd: string): string {
   const url = memoryGitSync(["-C", cwd, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout?.trim() ?? "";
@@ -57,14 +57,22 @@ export function memoryProjectKey(cwd: string): string {
     // GitHub serves one repository under every form, and its owner and repository names ignore case.
     return host === "github.com" ? `${host}/${m[1].replace(/^~\/?/, "").toLowerCase()}` : `${host}/${m[1]}`;
   }
-  // No usable remote: the key is this machine's only. It hashes the repository's git common dir, not the cwd, so
-  // the main checkout, a subdirectory and a worktree of one repository resolve to ONE key (#15 D2/AC2); the chain
-  // comes from the main working root for the same reason. Outside a repository it falls back to the cwd hash.
+  // No usable remote: hash the main working root, not the cwd or git dir. Root-invoked keys therefore keep their
+  // pre-#15 value while the main checkout, a subdirectory and a worktree resolve to ONE key (#15 D2/AC2). A bare
+  // repository has no working root: its own directory is the stable identity for it and its worktrees.
   const common = memoryGitSync(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).stdout?.trim() ?? "";
   if (common) {
     let realCommon = common;
     try { realCommon = realPath(common); } catch { /* as given */ }
-    return `${projectChain(dirname(realCommon)).join("/")}@${createHash("sha256").update(realCommon).digest("hex").slice(0, 8)}`;
+    const bare = (memoryGitSync(["--git-dir", realCommon, "rev-parse", "--is-bare-repository"], { encoding: "utf8" }).stdout?.trim() ?? "") === "true";
+    let root = realCommon;
+    if (!bare) {
+      const configured = memoryGitSync(["--git-dir", realCommon, "config", "--path", "core.worktree"], { encoding: "utf8" }).stdout?.trim() ?? "";
+      root = configured ? resolve(realCommon, configured) : dirname(realCommon);
+    }
+    let realRoot = root;
+    try { realRoot = realPath(root); } catch { /* as given */ }
+    return `${projectChain(realRoot).join("/")}@${createHash("sha256").update(realRoot).digest("hex").slice(0, 8)}`;
   }
   let real = cwd;
   try { real = realPath(cwd); } catch { /* as given */ }
