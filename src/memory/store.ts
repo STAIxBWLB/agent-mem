@@ -15,6 +15,7 @@ import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./ge
 import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
 import type { PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
+import { registerReaderLease } from "./reader-lease.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -206,6 +207,7 @@ export class MemoryStore {
   /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
   private readonly searchIndex: SearchIndex;
   private readonly memoryBaseDir: string;
+  private releaseReaderLease?: () => void;
   /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
   private rebuildingSearch = false;
 
@@ -253,6 +255,8 @@ export class MemoryStore {
     if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
       apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
       ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
+    // Every ordinary reader of the single-home layout announces itself; shard/migration bootstraps never read that root.
+    if (!bootstrap) this.releaseReaderLease = registerReaderLease(this.profile.home);
     this.refresh();
   }
 
@@ -268,7 +272,12 @@ export class MemoryStore {
     return Object.fromEntries(tables.map(({ name }) => [name, (this.db.query(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all() as unknown[]).sort((a, b) => canonicalJSON(a).localeCompare(canonicalJSON(b)))]));
   }
 
-  close(): void { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
+  close(): void {
+    const release = this.releaseReaderLease;
+    this.releaseReaderLease = undefined;
+    try { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
+    finally { release?.(); }
+  }
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
   withDeferredPromotions<T>(work: () => T): T {
