@@ -12,8 +12,8 @@ import type { CaptureRow } from "./capture.ts";
  * forces a full resync, so the incremental index equals a rebuild.
  *
  * The copy is a DERIVED cache: a locked or failing `search.db` never fails or stalls a curated write — the apply
- * path marks the copy stale and the next search resyncs it (busy timeout 100 ms on the write path, not the
- * curated index's 3 s).
+ * path marks the copy stale and the next search resyncs it. Its busy timeout is zero: derived writes fail fast and
+ * degrade, never queue behind another process's lock (R2's 150 ms hook budget includes the write path).
  */
 
 /** Bumped when the docs table's shape changes: an older copy is dropped and rebuilt from the curated rows. */
@@ -64,7 +64,7 @@ export class SearchIndex {
     if (!fts5Available()) { this.available = false; return; }
     try {
       const db = new Database(file, { create: true });
-      db.run("PRAGMA busy_timeout = 100"); // derived: the curated writer never waits on this file
+      db.run("PRAGMA busy_timeout = 0"); // derived: fail fast and mark stale; a curated write never waits on this file
       db.run("PRAGMA journal_mode = WAL");
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       if ((db.query("SELECT value FROM meta WHERE key = 'schema'").get() as { value: string } | null)?.value !== SEARCH_SCHEMA) {
