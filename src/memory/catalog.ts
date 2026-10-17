@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { memoryBase } from "./home.ts";
 import { listAliases, readShardDescriptor } from "./shard.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
+import { openShardStore } from "./store.ts";
 
 /**
  * #15 D3 (storage part only): the user-level catalog of project shards. `catalog.db` in the memory home is derived
@@ -24,6 +25,22 @@ interface CatalogRow { hash: string; key: string; local: number; aliases: string
 
 const fromRow = (r: CatalogRow): CatalogProject => ({ hash: r.hash, key: r.key, local: r.local === 1, aliases: JSON.parse(r.aliases) as string[],
   captureRows: r.capture_rows, captureBytes: r.capture_bytes, captureLastAt: r.capture_last_at, curatedEntries: r.curated_entries, curatedLastAt: r.curated_last_at, capMb: r.cap_mb, retentionDays: r.retention_days });
+
+/** Refresh the disposable curated index from its sealed logs before deriving an own-project receipt. */
+function curatedStats(base: string, hash: string, key: string): { entries: number; lastAt: string | null } {
+  const dir = join(base, "projects", hash);
+  // A capture-only descriptor is not permission to initialize a curated store while listing the catalog.
+  if (!existsSync(join(dir, "generation.json")) && !existsSync(join(dir, "generation-seal.json"))) return { entries: 0, lastAt: null };
+  const store = openShardStore({ memoryDir: base, project: key, deferPromotions: true });
+  try {
+    const db = new Database(join(dir, "index.db"), { readonly: true });
+    try {
+      db.run("PRAGMA busy_timeout = 0");
+      const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries WHERE scope = 'project' AND project = ?").get(key) as { n: number; last: string | null };
+      return { entries: row.n, lastAt: row.last };
+    } finally { db.close(); }
+  } finally { store.close(); }
+}
 
 /** Every readable shard with its machine-scope directories; the walk behind the catalog and the capacity advisor. */
 export function walkShards(base: string): { hash: string; key: string; local: boolean; machineDirs: string[] }[] {
@@ -58,22 +75,10 @@ export function scanCatalog(base: string): CatalogProject[] {
       if (stats.lastAt && (lastAt === null || stats.lastAt > lastAt)) lastAt = stats.lastAt;
     }
     const config = readCaptureConfig(shard.machineDirs[shard.machineDirs.length - 1] ?? join(base, "projects", shard.hash, "machine", "_"), base);
-    let curatedEntries = 0, curatedLastAt: string | null = null;
-    const index = join(base, "projects", shard.hash, "index.db");
-    if (existsSync(index)) {
-      let db: Database | undefined;
-      try {
-        db = new Database(index, { readonly: true });
-        db.run("PRAGMA busy_timeout = 0");
-        const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries").get() as { n: number; last: string | null };
-        curatedEntries = row.n;
-        curatedLastAt = row.last;
-      } catch { /* an unreadable derived index contributes no curated receipt */ }
-      finally { db?.close(); }
-    }
+    const curated = curatedStats(base, shard.hash, shard.key);
     out.push({ hash: shard.hash, key: shard.key, local: shard.local,
       aliases: [...latest.entries()].filter(([, key]) => key === shard.key).map(([alias]) => alias).sort(),
-      captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, curatedEntries, curatedLastAt, capMb: config.capMb, retentionDays: config.retentionDays });
+      captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, curatedEntries: curated.entries, curatedLastAt: curated.lastAt, capMb: config.capMb, retentionDays: config.retentionDays });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
 }

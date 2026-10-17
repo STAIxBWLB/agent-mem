@@ -13,6 +13,8 @@ export interface BoundProfile {
   selectorRevision: string;
   /** Sharded profiles read only their own legacy input; the root home remains the machine/selector identity. */
   legacyHome?: string;
+  /** Public legacy witnesses stay distinct from same-machine private bridge input. */
+  legacyMainHome?: string;
   sharded?: boolean;
   shardKey?: string;
   shardUser?: boolean;

@@ -1,30 +1,37 @@
-import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { legacyEntries, legacyHead, readLegacySnapshot, type LegacySegment } from "./bridge.ts";
-import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, withProfileLock, writeProfileJSON, type BoundProfile } from "./generation.ts";
+import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacySegment } from "./bridge.ts";
+import { canonicalJSON, generationDescriptor, generationDir, hashJSON, readProfileJSON, readSelector, validGeneration, validateGeneration, withProfileLock, writeProfileJSON, type BoundProfile } from "./generation.ts";
+import { coalesceGenerationSource, explicitExpirySnapshot } from "./generation-index.ts";
+import { pruneId, prunePayloadHash, reducePruneRows, validatePruneRow, type PruneRow, type PruneSourceRow } from "./prune.ts";
 import { acquireMutation } from "./mutation.ts";
 import { canonicalPath, realPath } from "./platform.ts";
 import { assertNoLiveReaders } from "./reader-lease.ts";
-import { ensureShardDescriptor, shardDir, SHARDED_SCHEMA, userShardDir } from "./shard.ts";
+import { assertCuratedShardPaths, ensureShardDescriptor, shardDir, SHARDED_SCHEMA, userShardDir } from "./shard.ts";
 import { buildGenerationIndex, type Entry } from "./store.ts";
 import { readMigrationSources, type SourcePrefix } from "./migrate.ts";
 
-const USER = "user";
+const USER = Symbol("shared-user-shard");
+type Destination = string | typeof USER;
 const JOURNAL = "shards.json";
 const CONSEQUENCE = "Legacy bytes are never rewritten; unannounced older readers cannot be detected and remain safe only because of that rule.";
 
 interface ShardJournal {
   schema: typeof SHARDED_SCHEMA;
   generation: string;
+  sourceGeneration?: string;
   phase: "captured" | "active";
   selectorRevision: string;
   sources: SourcePrefix[];
   machine: { id: string; label: string };
   legacyCommit?: string;
+  deadLeasesRemoved?: DeadLeaseRemoval[];
 }
-export interface ShardMigrationCounts { rows: number; skippedRows: number; byShard: Record<string, number>; tailBytes: number }
-export interface ShardMigrationResult { mode: ShardMigrationOptions["mode"]; generation: string; active: boolean; alreadyActive?: boolean; counts: ShardMigrationCounts; consequence: string }
+export interface DeadLeaseRemoval { lease: string; at: string }
+export interface ShardMigrationCounts { rows: number; skippedRows: number; byShard: Record<string, number>; userRows: number; byProject: Record<string, number>; tailBytes: number;
+  legacyRows: number; generationRows: number; generationLocalRows: number; pruneRows: number; translatedPruneRows: number; refusedRows: number; sharedSupersededByPrivate: number; sharedSupersededByPrivateIds: string[] }
+export interface ShardMigrationResult { mode: ShardMigrationOptions["mode"]; generation: string; active: boolean; alreadyActive?: boolean; counts: ShardMigrationCounts; consequence: string; deadLeasesRemoved?: DeadLeaseRemoval[]; refusals?: string[] }
 export interface ShardMigrationOptions {
   memoryDir: string;
   mode: "dry-run" | "apply" | "resume";
@@ -33,13 +40,17 @@ export interface ShardMigrationOptions {
   tty: boolean;
   checkpoint?: (stage: "after-shard" | "before-active") => void | Promise<void>;
 }
-interface Capture { segments: LegacySegment[]; sources: SourcePrefix[]; legacyCommit?: string }
-interface RoutedLine { id: string; line: string; path: string; local: boolean; destinations: string[] }
-interface RoutePlan extends ShardMigrationCounts { lines: RoutedLine[]; destinations: Set<string> }
+interface Capture { segments: LegacySegment[]; sources: SourcePrefix[]; legacyCommit?: string; sourceGeneration?: string }
+interface PruneTranslation { schema: "agent-mem.shard-prune-translation/v1"; sourceId: string; sourceHash: string; translatedId: string }
+interface RoutedLine { id: string; line: string; source: string; path: string; end: number; local: boolean; destinations: Destination[]; translation?: PruneTranslation }
+interface RoutePlan extends ShardMigrationCounts { lines: RoutedLine[]; destinations: Set<Destination> }
 
 const changed = (): never => { throw new Error("shard migration source or selector changed; inspect local migration state before continuing"); };
-const destinationDir = (memoryDir: string, destination: string) => destination === USER ? userShardDir(memoryDir) : shardDir(memoryDir, destination);
+const destinationDir = (memoryDir: string, destination: Destination) => destination === USER ? userShardDir(memoryDir) : shardDir(memoryDir, destination);
+const hashBytes = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const sourceKey = (source: string, path: string) => `${source}:${path}`;
+const realmRoot = (dir: string, source: string) => source === "generation" ? dir : join(dir, source === "legacy-main" ? "legacy-main" : "legacy");
+const emptyCounts = (): ShardMigrationCounts => ({ rows: 0, skippedRows: 0, byShard: {}, userRows: 0, byProject: {}, tailBytes: 0, legacyRows: 0, generationRows: 0, generationLocalRows: 0, pruneRows: 0, translatedPruneRows: 0, refusedRows: 0, sharedSupersededByPrivate: 0, sharedSupersededByPrivateIds: [] });
 
 function identity(memoryDir: string): { id: string; label: string } {
   const value = readProfileJSON(join(memoryDir, "machine.json"), 4096) as { id?: unknown; label?: unknown } | undefined;
@@ -54,40 +65,160 @@ function readJournal(memoryDir: string, optional = false): ShardJournal | undefi
     throw new Error("no resumable shard migration journal");
   }
   if (value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || !["captured", "active"].includes(value.phase ?? "")
+    || value.sourceGeneration !== undefined && (!validGeneration(value.sourceGeneration) || value.sourceGeneration !== value.generation)
     || typeof value.selectorRevision !== "string" || !Array.isArray(value.sources) || !value.machine
     || typeof value.machine.id !== "string" || typeof value.machine.label !== "string") throw new Error("invalid shard migration journal");
+  if (value.deadLeasesRemoved !== undefined && (!Array.isArray(value.deadLeasesRemoved) || value.deadLeasesRemoved.length > 128 || value.deadLeasesRemoved.some(row =>
+    !row || typeof row !== "object" || Object.keys(row).some(key => !["lease", "at"].includes(key)) || typeof row.lease !== "string" || !/^[1-9][0-9]*-[0-9a-f]{64}\.json$/.test(row.lease) ||
+    typeof row.at !== "string" || Number.isNaN(Date.parse(row.at)) || new Date(row.at).toISOString() !== row.at))) throw new Error("invalid removed reader lease audit");
   return value as ShardJournal;
 }
 
-function capture(memoryDir: string, generation: string | undefined, previous?: ShardJournal): Capture {
-  const legacyCommit = generation ? legacyHead(memoryDir, generation) : undefined;
+function capture(memoryDir: string, generation: string | undefined, previous?: ShardJournal, sourceGeneration?: string): Capture {
+  const origin = sourceGeneration ?? previous?.sourceGeneration;
+  const bridgeGeneration = origin ?? generation;
+  const legacyCommit = bridgeGeneration ? legacyHead(memoryDir, bridgeGeneration) : undefined;
   const segments = readLegacySnapshot(memoryDir, {
-    ...(generation ? { generation } : {}), ...(legacyCommit ? { commit: legacyCommit } : {}),
-    ...(generation && previous?.legacyCommit ? { previousCommit: previous.legacyCommit } : {}),
-    ...(previous ? { checkpoints: previous.sources } : {}),
+    ...(bridgeGeneration ? { generation: bridgeGeneration } : {}), ...(legacyCommit ? { commit: legacyCommit } : {}),
+    ...(bridgeGeneration && previous?.legacyCommit ? { previousCommit: previous.legacyCommit } : {}),
+    ...(previous ? { checkpoints: previous.sources.filter(source => source.source !== "generation") } : {}),
   });
-  return { segments, sources: segments.map(({ bytes: _bytes, local: _local, ...source }) => source), ...(legacyCommit ? { legacyCommit } : {}) };
+  if (origin) {
+    validateGeneration(memoryDir, origin);
+    const root = generationDir(memoryDir, origin), reader = new SegmentReader(), returned = new Set<string>();
+    for (const folder of ["log", "local"]) {
+      const dir = join(root, folder), stat = lstatSync(dir);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) changed();
+      for (const name of readdirSync(dir).sort().filter(name => name.endsWith(".jsonl"))) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) changed();
+        const path = `${folder}/${name}`, prior = previous?.sources.find(source => source.source === "generation" && source.path === path);
+        const data = reader.read(join(dir, name), prior, true);
+        if (data.tailBytes) throw new Error("selected generation has an incomplete authored tail; finish its original recovery before shard migration");
+        segments.push({ ...data, source: "generation", path, local: folder === "local" }); returned.add(path);
+      }
+    }
+    for (const old of previous?.sources ?? []) if (old.source === "generation" && !returned.has(old.path)) changed();
+  }
+  return { segments, sources: segments.map(({ bytes: _bytes, local: _local, ...source }) => source), ...(legacyCommit ? { legacyCommit } : {}), ...(origin ? { sourceGeneration: origin } : {}) };
 }
 
-function route(capture: Capture, completed?: readonly SourcePrefix[]): RoutePlan {
-  const entries = legacyEntries(capture.segments), byId = new Map(entries.map((row) => [row.id, row]));
-  const owners = new Map<string, string>();
+function* completeLines(segment: LegacySegment): Generator<{ line?: string; end: number }> {
+  let offset = 0;
+  while (offset < segment.bytes.length) {
+    const end = segment.bytes.indexOf(10, offset);
+    if (end < 0) changed();
+    const raw = segment.bytes.subarray(offset, end); offset = end + 1;
+    let line: string;
+    try { line = new TextDecoder("utf-8", { fatal: true }).decode(raw); }
+    catch { if (segment.source === "generation") throw new Error("invalid selected generation entry"); yield { end: offset }; continue; }
+    yield { line, end: offset };
+  }
+}
+
+function route(captured: Capture, completed?: readonly SourcePrefix[], dryRun = false): RoutePlan {
+  const legacy = legacyEntries(captured.segments.filter(segment => segment.source !== "generation"));
+  const byId = new Map(legacy.map(row => [row.id, row])), snapshotRows = new Map<string, PruneSourceRow>();
+  const occurrences: { row: Entry; line: string; end: number; segment: LegacySegment }[] = [];
+  const prunes: { row: PruneRow; line: string; end: number; segment: LegacySegment }[] = [];
+  const completedBySource = new Map((completed ?? []).map(source => [sourceKey(source.source, source.path), source.offset]));
+  const result = emptyCounts();
+  for (const segment of captured.segments) for (const item of completeLines(segment)) {
+    const isNew = item.end > (completedBySource.get(sourceKey(segment.source, segment.path)) ?? 0);
+    if (item.line === undefined) { if (isNew) result.skippedRows++; continue; }
+    if (!item.line.trim()) continue;
+    let value: unknown;
+    try { value = JSON.parse(item.line); } catch {
+      if (segment.source === "generation") throw new Error("invalid selected generation entry");
+      if (isNew) result.skippedRows++; continue;
+    }
+    if (segment.source === "generation" && value && typeof value === "object" && (value as { op?: unknown }).op === "prune") {
+      const row = validatePruneRow(value, captured.sourceGeneration, segment.local ? "local" : "synced");
+      if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) throw new Error("selected generation prune placement mismatch");
+      prunes.push({ row, line: item.line, end: item.end, segment }); continue;
+    }
+    let row: Entry | undefined;
+    if (segment.source === "generation") {
+      const bytes = Buffer.from(item.line + "\n");
+      row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: hashBytes(bytes) }], { strict: true })[0];
+      if (!row) throw new Error("invalid selected generation entry");
+    } else {
+      const id = value && typeof value === "object" ? (value as { id?: unknown }).id : undefined;
+      row = typeof id === "string" ? byId.get(id) : undefined;
+      if (!row || canonicalJSON(value) !== canonicalJSON(row)) { if (isNew) result.skippedRows++; continue; }
+    }
+    snapshotRows.set(row.id, coalesceGenerationSource(snapshotRows.get(row.id), row, segment));
+    byId.set(row.id, row); occurrences.push({ row, line: item.line, end: item.end, segment });
+  }
+  const entries = [...byId.values()], owners = new Map<string, Destination>();
   for (const row of entries) if (row.op === "note" || row.op === "goal") owners.set(row.id, row.scope === "shared" ? USER : row.project);
-  const suggestions = new Map<string, string[]>();
-  const destinationsOf = (row: Entry): string[] => {
+  const snapshot = { rows: [...snapshotRows.values()], expiries: explicitExpirySnapshot([...snapshotRows.values()]) };
+  const proof = reducePruneRows(prunes.map(({ row, segment }) => ({ row, placement: segment.local ? "local" as const : "synced" as const })), snapshot, captured.sourceGeneration ?? "0".repeat(32));
+  if (proof.invalid || proof.pending.length) {
+    result.refusedRows += proof.invalid + proof.pending.length;
+    if (!dryRun) throw new Error("selected generation prune proof is invalid or incomplete; no shard migration effects were applied");
+  }
+  const ordered = entries.toSorted((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+  const copies = new Map<string, string>(), descendants = new Map<string, string[]>();
+  for (const row of ordered) if (row.op === "note" && row.promotedFrom) {
+    copies.set(row.promotedFrom, row.id);
+    const children = descendants.get(row.promotedFrom) ?? []; children.push(row.id); descendants.set(row.promotedFrom, children);
+  }
+  const lastCopy = (id: string): string => {
+    const seen = new Set<string>(); let at = id;
+    while (copies.has(at)) { if (seen.has(at)) throw new Error("cyclic promotion input; person inspection required"); seen.add(at); at = copies.get(at)!; }
+    return at;
+  };
+  const promotionOwners = (id: string): Destination[] => {
+    const seen = new Set<string>([id]), pending = [id], found = new Set<Destination>();
+    for (let index = 0; index < pending.length; index++) {
+      const at = pending[index]!, owner = owners.get(at); if (owner !== undefined) found.add(owner);
+      for (const child of descendants.get(at) ?? []) { if (seen.has(child)) throw new Error("cyclic promotion input; person inspection required"); seen.add(child); pending.push(child); }
+    }
+    return [...found];
+  };
+  const forgotten = new Set(entries.flatMap(row => row.op === "forget" ? [row.target] : []));
+  const gone = (id: string) => forgotten.has(id) || proof.targets.has(id) || (byId.get(id)?.op === "note" && forgotten.has((byId.get(id) as { promotedFrom?: string }).promotedFrom ?? ""));
+  const replacements = new Map<string, { next: string; origin: Entry; when: string }>();
+  const relate = (old: string, next: string, origin: Entry) => {
+    const when = `${origin.at} ${next}`;
+    if (when >= (replacements.get(old)?.when ?? "")) replacements.set(old, { next, origin, when });
+  };
+  for (const row of ordered) {
+    if (row.op === "note" && row.supersedes) relate(row.supersedes, row.id, row);
+    if (row.op === "supersede" && row.by) relate(row.target, row.by, row);
+  }
+  for (const [old, relation] of replacements) {
+    const target = lastCopy(old), terminal = lastCopy(relation.next);
+    if (gone(terminal) || !owners.has(target)) continue;
+    // An embedded relation in another private body needs a witness even when its copy is shared.
+    // Explicit supersede ops are safe metadata and follow promotion owners below.
+    const visibleOrigin = relation.origin.op !== "note" || owners.get(relation.origin.id) === USER || owners.get(relation.origin.id) === owners.get(target);
+    const equivalentOp = !visibleOrigin && entries.some(row => row.op === "supersede" && row.target === old && row.by && lastCopy(row.by) === terminal);
+    const next = visibleOrigin || equivalentOp ? terminal : relation.next;
+    if (!owners.has(next)) { result.refusedRows++; if (!dryRun) throw new Error("replacement terminal identity is unavailable; person inspection required"); continue; }
+    if (owners.get(target) === owners.get(next) || owners.get(next) === USER) continue;
+    // ponytail: a body-free lifecycle witness can remove this shared->private ceiling; never copy private replacement text.
+    // Expiry without an immutable forget/prune observation stays conservatively live here.
+    result.refusedRows++;
+    if (owners.get(target) === USER) {
+      result.sharedSupersededByPrivateIds.push(target);
+      if (!dryRun) throw new Error(`shared superseded by private (${target}); un-supersede, or promote the replacement to shared, then rerun shard migration`);
+    } else if (!dryRun) throw new Error("cross-project private replacement cannot be represented without foreign project text; resolve it before shard migration");
+  }
+  result.sharedSupersededByPrivateIds = [...new Set(result.sharedSupersededByPrivateIds)].sort(); result.sharedSupersededByPrivate = result.sharedSupersededByPrivateIds.length;
+  const suggestions = new Map<string, Destination[]>();
+  const destinationsOf = (row: Entry): Destination[] => {
     if (row.op === "note" || row.op === "goal") return [owners.get(row.id)!];
     if (row.op === "settle") {
       const project = row.target.split("#", 1)[0];
       if (!project) throw new Error(`cannot route legacy settlement ${row.id}`);
-      return [project];
+      return [...new Set<Destination>([project, ...entries.filter(entry => entry.op === "note" && entry.task === row.target).map(entry => owners.get(entry.id)!)])];
     }
     if (row.op === "suggest") {
       const split = row.by?.indexOf(":") ?? -1, to = split < 0 ? "" : row.by!.slice(split + 1);
       const from = owners.get(row.target), other = owners.get(to);
-      if (!from || !other) throw new Error(`cannot route legacy suggestion ${row.id}`);
-      const destinations = [...new Set([from, other])];
-      suggestions.set(row.id, destinations);
-      return destinations;
+      if (from === undefined || other === undefined) throw new Error(`cannot route legacy suggestion ${row.id}`);
+      const destinations = [...new Set([from, other])]; suggestions.set(row.id, destinations); return destinations;
     }
     if (row.op === "confirm" || row.op === "reject") {
       const destinations = suggestions.get(row.target);
@@ -95,139 +226,218 @@ function route(capture: Capture, completed?: readonly SourcePrefix[]): RoutePlan
       return destinations;
     }
     const owner = owners.get(row.target);
-    if (!owner) throw new Error(`cannot route legacy ${row.op} ${row.id}: its target is absent`);
-    return [owner];
+    if (owner === undefined) throw new Error(`cannot route legacy ${row.op} ${row.id}: its target is absent`);
+    return row.op === "forget" || row.op === "supersede" ? promotionOwners(row.target) : [owner];
   };
-  // Verdicts can precede their suggestion in segment order: index all suggestion destinations before routing any row.
   for (const row of entries) if (row.op === "suggest") destinationsOf(row);
-
-  const completedBySource = new Map((completed ?? []).map((source) => [sourceKey(source.source, source.path), source.offset]));
-  const lines: RoutedLine[] = [], destinations = new Set(owners.values());
-  let skippedRows = 0;
-  for (const segment of capture.segments) {
-    const completeBefore = completedBySource.get(sourceKey(segment.source, segment.path)) ?? 0;
-    let offset = 0;
-    for (const bytes of segment.bytes.toString("utf8").split("\n").filter(Boolean)) {
-      const end = offset + Buffer.byteLength(bytes) + 1;
-      offset = end;
-      if (end <= completeBefore) continue;
-      let id = "";
-      try { id = String((JSON.parse(bytes) as { id?: unknown }).id ?? ""); } catch { skippedRows++; continue; }
-      const row = byId.get(id);
-      if (!row) { skippedRows++; continue; }
-      const rowDestinations = destinationsOf(row);
-      for (const destination of rowDestinations) destinations.add(destination);
-      lines.push({ id, line: bytes, path: segment.path, local: segment.local, destinations: rowDestinations });
+  const destinations = new Set<Destination>([USER, ...owners.values()]), lines: RoutedLine[] = [];
+  for (const { row, line, end, segment } of occurrences) {
+    const targets = destinationsOf(row); for (const target of targets) destinations.add(target);
+    if (end <= (completedBySource.get(sourceKey(segment.source, segment.path)) ?? 0)) continue;
+    lines.push({ id: row.id, line, source: segment.source, path: segment.path, end, local: segment.local, destinations: targets });
+    if (segment.source === "generation") { result.generationRows++; if (segment.local) result.generationLocalRows++; }
+    else result.legacyRows++;
+  }
+  result.pruneRows = prunes.filter(input => input.end > (completedBySource.get(sourceKey(input.segment.source, input.segment.path)) ?? 0)).length;
+  for (const input of proof.invalid || proof.pending.length ? [] : prunes) {
+    const groups = new Map<Destination, PruneRow["targets"]>();
+    for (const target of input.row.targets) {
+      const destination = owners.get(target.id);
+      if (destination === undefined) throw new Error("prune target has no shard owner");
+      const group = groups.get(destination) ?? []; group.push(target); groups.set(destination, group);
+    }
+    for (const [destination, targets] of groups) {
+      destinations.add(destination);
+      const { id: _id, ...body } = input.row;
+      const row = groups.size === 1 ? input.row : { ...body, targets, id: pruneId({ ...body, targets }) };
+      validatePruneRow(row, captured.sourceGeneration, input.segment.local ? "local" : "synced");
+      const subset = snapshot.rows.filter(source => destinationsOf(source.row).includes(destination));
+      const translatedProof = reducePruneRows([{ row, placement: input.segment.local ? "local" : "synced" }], { rows: subset, expiries: explicitExpirySnapshot(subset) }, input.row.generation);
+      if (translatedProof.invalid || translatedProof.pending.length) throw new Error("per-shard prune proof is incomplete; no shard migration effects were applied");
+      if (input.end <= (completedBySource.get(sourceKey(input.segment.source, input.segment.path)) ?? 0)) continue;
+      lines.push({ id: row.id, line: groups.size === 1 ? input.line : canonicalJSON(row), source: "generation", path: input.segment.path, end: input.end, local: input.segment.local, destinations: [destination],
+        ...(groups.size > 1 ? { translation: { schema: "agent-mem.shard-prune-translation/v1" as const, sourceId: input.row.id, sourceHash: prunePayloadHash(input.row), translatedId: row.id } } : {}) });
+      if (groups.size > 1) result.translatedPruneRows++;
     }
   }
-  const byShard: Record<string, number> = {};
-  for (const line of lines) for (const destination of line.destinations) byShard[destination] = (byShard[destination] ?? 0) + 1;
-  return { lines, destinations, rows: lines.length, skippedRows, byShard, tailBytes: capture.sources.reduce((sum, source) => sum + source.tailBytes, 0) };
+  const ordering = new Map(captured.segments.map((segment, index) => [sourceKey(segment.source, segment.path), index]));
+  lines.sort((a, b) => ordering.get(sourceKey(a.source, a.path))! - ordering.get(sourceKey(b.source, b.path))! || a.end - b.end);
+  const increment = (record: Record<string, number>, key: string) => Object.defineProperty(record, key, { value: (Object.hasOwn(record, key) ? record[key]! : 0) + 1, enumerable: true, writable: true, configurable: true });
+  for (const line of lines) for (const destination of line.destinations) { increment(result.byShard, destination === USER ? "user" : destination); if (destination === USER) result.userRows++; else increment(result.byProject, destination); }
+  return { ...result, lines, destinations, rows: lines.length, tailBytes: captured.sources.reduce((sum, source) => sum + source.tailBytes, 0) };
 }
 
-function prepareShard(memoryDir: string, destination: string, generation: string, machine: { id: string; label: string }): string {
+function prepareShard(memoryDir: string, destination: Destination, generation: string, machine: { id: string; label: string }): string {
   const dir = destinationDir(memoryDir, destination);
   if (destination !== USER) ensureShardDescriptor(memoryDir, destination);
-  for (const folder of ["log", "local", "legacy/log", "legacy/local"]) mkdirSync(join(dir, folder), { recursive: true, mode: 0o700 });
-  for (const [path, value] of [["generation.json", generationDescriptor(generation)], ["machine.json", machine], ["legacy/machine.json", machine]] as const) {
+  for (const folder of ["log", "local", "legacy/log", "legacy/local", "legacy-main/log", "legacy-main/local"]) mkdirSync(join(dir, folder), { recursive: true, mode: 0o700 });
+  for (const [path, value] of [["generation.json", generationDescriptor(generation)], ["machine.json", machine], ["legacy/machine.json", machine], ["legacy-main/machine.json", machine]] as const) {
     const file = join(dir, path), prior = readProfileJSON(file);
     if (prior === undefined) writeProfileJSON(file, value);
-    else if (canonicalJSON(prior) !== canonicalJSON(value)) changed();
+    else if (path === "generation.json" ? canonicalJSON(prior) !== canonicalJSON(value) : (prior as { id?: unknown }).id !== machine.id) changed();
   }
   return dir;
 }
 
-function existingIds(dir: string): Set<string> {
-  return new Set(legacyEntries(readLegacySnapshot(join(dir, "legacy"))).map((row) => row.id));
+function existingRows(dir: string, generation: string): { ids: Map<string, Set<string>>; tails: Map<string, Buffer> } {
+  const ids = new Map<string, Set<string>>(), tails = new Map<string, Buffer>();
+  const legacy = readLegacySnapshot(join(dir, "legacy"));
+  const main = readLegacySnapshot(join(dir, "legacy-main")).map(segment => ({ ...segment, source: "legacy-main" }));
+  const own: LegacySegment[] = [], reader = new SegmentReader();
+  for (const folder of ["log", "local"]) for (const name of readdirSync(join(dir, folder)).sort().filter(name => name.endsWith(".jsonl"))) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) changed();
+    own.push({ ...reader.read(join(dir, folder, name), undefined, true), source: "generation", path: `${folder}/${name}`, local: folder === "local" });
+  }
+  for (const segment of [...legacy, ...main, ...own]) {
+    const key = sourceKey(segment.source, segment.path), known = new Set<string>();
+    for (const item of completeLines(segment)) {
+      if (item.line === undefined) throw new Error("copied shard input is not valid UTF-8");
+      if (!item.line.trim()) continue;
+      const value = JSON.parse(item.line) as { op?: unknown; id?: unknown };
+      if (segment.source === "generation" && value.op === "prune") known.add(validatePruneRow(value, generation, segment.local ? "local" : "synced").id);
+      else {
+        const bytes = Buffer.from(item.line + "\n");
+        const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: hashBytes(bytes) }], { strict: segment.source === "generation" })[0];
+        if (row) known.add(row.id);
+      }
+    }
+    ids.set(key, known);
+    if (segment.tailBytes) tails.set(key, readFileSync(join(realmRoot(dir, segment.source), segment.path)).subarray(segment.offset));
+  }
+  return { ids, tails };
 }
 
-function writeRoutes(memoryDir: string, plan: RoutePlan, generation: string, machine: { id: string; label: string }): Set<string> {
-  const affected = new Set<string>();
+function translationReceipt(dir: string, receipt: PruneTranslation): void {
+  const path = join(dir, "prune-translations.jsonl"), existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  if (existing && !existing.endsWith("\n")) throw new Error("shard prune translation receipt is incomplete");
+  for (const line of existing.split("\n").filter(Boolean)) {
+    const row = JSON.parse(line) as PruneTranslation;
+    if (row.schema !== "agent-mem.shard-prune-translation/v1" || !/^[a-f0-9]{32}$/.test(row.sourceId) || !/^[a-f0-9]{32}$/.test(row.translatedId) || !/^[a-f0-9]{64}$/.test(row.sourceHash)) throw new Error("invalid shard prune translation receipt");
+    if (row.translatedId === receipt.translatedId) { if (canonicalJSON(row) !== canonicalJSON(receipt)) changed(); return; }
+  }
+  appendFileSync(path, canonicalJSON(receipt) + "\n", { mode: 0o600 });
+}
+
+function writeRoutes(memoryDir: string, plan: RoutePlan, generation: string, machine: { id: string; label: string }): Set<Destination> {
+  const affected = new Set<Destination>();
   for (const destination of plan.destinations) {
-    const dir = prepareShard(memoryDir, destination, generation, machine);
-    const existing = existingIds(dir);
+    const dir = prepareShard(memoryDir, destination, generation, machine), existing = existingRows(dir, generation);
     if (!existsSync(join(dir, "generation-seal.json"))) affected.add(destination);
+    for (const [key, tail] of existing.tails) {
+      const next = plan.lines.find(line => sourceKey(line.source, line.path) === key && line.destinations.includes(destination) && !existing.ids.get(key)?.has(line.id));
+      const bytes = next && Buffer.from(next.line + "\n");
+      if (!bytes || tail.length >= bytes.length || !bytes.subarray(0, tail.length).equals(tail)) throw new Error("curated shard copied tail does not match its next authored row");
+      appendFileSync(join(realmRoot(dir, next!.source), next!.path), bytes.subarray(tail.length), { mode: 0o600 });
+      if (!existing.ids.has(key)) existing.ids.set(key, new Set()); existing.ids.get(key)!.add(next!.id); affected.add(destination);
+    }
     for (const line of plan.lines) {
-      if (!line.destinations.includes(destination) || existing.has(line.id)) continue;
-      const target = join(dir, "legacy", line.path);
-      if (existsSync(target)) {
-        const current = readFileSync(target);
-        if (current.length && current.at(-1) !== 10) throw new Error(`curated shard legacy tail is incomplete: ${target}`);
+      if (!line.destinations.includes(destination)) continue;
+      const key = sourceKey(line.source, line.path);
+      if (!existing.ids.get(key)?.has(line.id)) {
+        const target = join(realmRoot(dir, line.source), line.path);
+        if (existsSync(target)) { const current = readFileSync(target); if (current.length && current.at(-1) !== 10) throw new Error("curated shard copied tail is incomplete"); }
+        mkdirSync(dirname(target), { recursive: true, mode: 0o700 }); appendFileSync(target, line.line + "\n", { mode: 0o600 });
+        if (!existing.ids.has(key)) existing.ids.set(key, new Set()); existing.ids.get(key)!.add(line.id); affected.add(destination);
       }
-      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-      appendFileSync(target, line.line + "\n", { mode: 0o600 });
-      existing.add(line.id);
-      affected.add(destination);
+      if (line.translation) translationReceipt(dir, line.translation);
     }
   }
   return affected;
 }
 
-function buildShard(memoryDir: string, destination: string, generation: string, selectorRevision: string): void {
-  const dir = destinationDir(memoryDir, destination), legacyHome = join(dir, "legacy");
-  const sources = readMigrationSources(legacyHome);
+function buildShard(memoryDir: string, destination: Destination, generation: string, selectorRevision: string): void {
+  const dir = destinationDir(memoryDir, destination), legacyHome = join(dir, "legacy"), legacyMainHome = join(dir, "legacy-main");
+  const sources = [...readMigrationSources(legacyHome), ...readMigrationSources(legacyMainHome).map(source => ({ ...source, source: "legacy-main" }))];
   writeProfileJSON(join(dir, "migration-sources.json"), { schema: "agent-mem.migration-sources/v1", sources });
   const profile: BoundProfile = { kind: "generation", home: memoryDir, dir, generation, selectorRevision,
-    legacyHome, sharded: true, ...(destination === USER ? { shardUser: true } : { shardKey: destination }) };
+    legacyHome, legacyMainHome, sharded: true, ...(destination === USER ? { shardUser: true } : { shardKey: destination }) };
   buildGenerationIndex(profile, sources);
   writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation,
     descriptorHash: hashJSON(generationDescriptor(generation)), sourceDigest: hashJSON({ sources, legacyCommit: undefined }) });
 }
 
 function counts(plan: RoutePlan): ShardMigrationCounts {
-  return { rows: plan.rows, skippedRows: plan.skippedRows, byShard: plan.byShard, tailBytes: plan.tailBytes };
+  const { lines: _lines, destinations: _destinations, ...value } = plan; return value;
+}
+const refusalSummary = (value: ShardMigrationCounts) => value.sharedSupersededByPrivate ? { refusals: [`shared superseded by private: ${value.sharedSupersededByPrivate}`] } : {};
+const removalEvidence = (journal: ShardJournal | undefined) => journal?.deadLeasesRemoved?.length ? { deadLeasesRemoved: journal.deadLeasesRemoved } : {};
+
+export function shardMigrationStatus(memoryDir: string): { active: boolean; generation?: string; pending: ShardMigrationCounts; deadLeasesRemoved?: DeadLeaseRemoval[]; refusals?: string[] } {
+  const dir = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), journal = readJournal(dir, true);
+  if (!journal || journal.phase !== "active") return { active: false, pending: emptyCounts(), ...removalEvidence(journal) };
+  const plan = route(capture(dir, journal.generation, journal), journal.sources, true);
+  return { active: true, generation: journal.generation, pending: counts(plan), ...refusalSummary(plan), ...removalEvidence(journal) };
 }
 
-export function shardMigrationStatus(memoryDir: string): { active: boolean; generation?: string; pending: ShardMigrationCounts } {
-  const dir = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), journal = readJournal(dir, true);
-  if (!journal || journal.phase !== "active") return { active: false, pending: { rows: 0, skippedRows: 0, byShard: {}, tailBytes: 0 } };
-  const plan = route(capture(dir, journal.generation, journal), journal.sources);
-  return { active: true, generation: journal.generation, pending: counts(plan) };
+function preflight(memoryDir: string, options: ShardMigrationOptions, chosen?: string, dryRun = false) {
+  const selection = readSelector(memoryDir), previous = readJournal(memoryDir, true), machine = identity(memoryDir);
+  if (options.mode === "resume" && !previous) throw new Error("no resumable shard migration journal");
+  if (previous && previous.selectorRevision !== selection.revision) changed();
+  const selected = selection.selector?.kind === "generation" ? selection.selector.generation : undefined;
+  const sourceGeneration = previous?.sourceGeneration ?? selected;
+  const generation = options.generation ?? previous?.generation ?? chosen ?? selected ?? randomBytes(16).toString("hex");
+  if (previous && generation !== previous.generation || sourceGeneration && generation !== sourceGeneration) changed();
+  const captured = capture(memoryDir, generation, previous, sourceGeneration), plan = route(captured, previous?.sources, dryRun);
+  const regular = (path: string) => {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("shard migration planned path is not a regular file");
+  };
+  for (const segment of captured.segments) {
+    const source = segment.source === "generation" ? join(generationDir(memoryDir, sourceGeneration!), segment.path)
+      : segment.source === "legacy-main" ? join(generationDir(memoryDir, sourceGeneration ?? generation), "bridge-snapshots", segment.commit!, segment.path) : join(memoryDir, segment.path);
+    regular(source);
+  }
+  for (const destination of plan.destinations) {
+    assertCuratedShardPaths(memoryDir, destination === USER ? { user: true } : { project: destination });
+    const dir = destinationDir(memoryDir, destination);
+    regular(join(dir, "prune-translations.jsonl"));
+    for (const line of plan.lines) if (line.destinations.includes(destination)) regular(join(realmRoot(dir, line.source), line.path));
+  }
+  return { selection, previous, machine, generation, captured, plan, sourceGeneration };
 }
 
 export async function migrateShards(options: ShardMigrationOptions): Promise<ShardMigrationResult> {
   if (options.authorizedPerson !== true || options.tty !== true) throw new Error("shard migration requires an authorized person in a terminal");
   if (!["dry-run", "apply", "resume"].includes(options.mode) || options.generation !== undefined && !validGeneration(options.generation)) throw new Error("invalid shard migration request");
   const memoryDir = existsSync(options.memoryDir) ? realPath(options.memoryDir) : canonicalPath(options.memoryDir);
-  if (options.mode === "dry-run") {
-    const journal = readJournal(memoryDir, true), selection = readSelector(memoryDir);
-    const generation = options.generation ?? journal?.generation ?? (selection.selector?.kind === "generation" ? selection.selector.generation : undefined);
-    const plan = route(capture(memoryDir, generation, journal), journal?.sources);
-    return { mode: options.mode, generation: generation ?? "", active: journal?.phase === "active", counts: counts(plan), consequence: CONSEQUENCE };
-  }
+  // Validate every immutable prune and routing decision before even a profile/mutation lock creates metadata.
+  const initial = preflight(memoryDir, options, undefined, options.mode === "dry-run");
+  if (options.mode === "dry-run") return { mode: options.mode, generation: initial.generation, active: initial.previous?.phase === "active", counts: counts(initial.plan), ...refusalSummary(initial.plan), consequence: CONSEQUENCE, ...removalEvidence(initial.previous) };
   return withProfileLock(memoryDir, async () => {
-    assertNoLiveReaders(memoryDir);
-    const machine = identity(memoryDir), selection = readSelector(memoryDir);
-    const previous = readJournal(memoryDir, true);
-    if (options.mode === "resume" && !previous) throw new Error("no resumable shard migration journal");
-    if (previous && previous.selectorRevision !== selection.revision) return changed();
-    const generation = options.generation ?? previous?.generation ?? randomBytes(16).toString("hex");
-    if (previous && generation !== previous.generation) return changed();
-    const journal: ShardJournal = previous ?? { schema: SHARDED_SCHEMA, generation, phase: "captured", selectorRevision: selection.revision, sources: [], machine };
     const release = acquireMutation(memoryDir);
     if (!release) throw new Error("legacy mutation lock is busy");
-    let captured: Capture;
-    try { captured = capture(memoryDir, generation, previous); } finally { release(); }
-    const plan = route(captured, previous?.sources);
-    if (journal.phase === "active" && plan.lines.length === 0) {
-      journal.sources = captured.sources;
-      if (captured.legacyCommit) journal.legacyCommit = captured.legacyCommit;
-      writeProfileJSON(join(memoryDir, JOURNAL), journal);
-      return { mode: options.mode, generation, active: true, alreadyActive: true, counts: counts(plan), consequence: CONSEQUENCE };
-    }
-    assertNoLiveReaders(memoryDir);
-    writeProfileJSON(join(memoryDir, JOURNAL), journal);
+    let releaseOwn: (() => void) | undefined;
+    let checked: ReturnType<typeof preflight>;
+    try {
+      if (initial.sourceGeneration) {
+        releaseOwn = acquireMutation(generationDir(memoryDir, initial.sourceGeneration));
+        if (!releaseOwn) throw new Error("selected generation mutation lock is busy");
+      }
+      checked = preflight(memoryDir, options, initial.generation);
+      if (checked.selection.revision !== initial.selection.revision || checked.machine.id !== initial.machine.id) changed();
+    } finally { releaseOwn?.(); release(); }
+    const { machine, selection, previous, generation, captured, plan, sourceGeneration } = checked!;
+    const journal: ShardJournal = previous ?? { schema: SHARDED_SCHEMA, generation, ...(sourceGeneration ? { sourceGeneration } : {}), phase: "captured", selectorRevision: selection.revision, sources: [], machine };
+    const persist = () => writeProfileJSON(join(memoryDir, JOURNAL), journal);
+    const admission = () => assertNoLiveReaders(memoryDir, { onDeadLeaseRemoved: ({ lease }) => {
+      if (!/^[1-9][0-9]*-[0-9a-f]{64}\.json$/.test(lease)) throw new Error("invalid removed reader lease evidence");
+      if (journal.deadLeasesRemoved?.some(row => row.lease === lease)) return;
+      journal.deadLeasesRemoved = [...(journal.deadLeasesRemoved ?? []), { lease, at: new Date().toISOString() }].slice(-128);
+      persist(); // Positive cleanup remains visible even if a later lease refuses this migration.
+    } });
+    admission();
+    const alreadyActive = journal.phase === "active" && plan.lines.length === 0;
+    persist();
     const affected = writeRoutes(memoryDir, plan, generation, machine);
     for (const destination of affected) {
       buildShard(memoryDir, destination, generation, selection.revision);
       if (options.checkpoint) await options.checkpoint("after-shard");
     }
-    assertNoLiveReaders(memoryDir);
+    admission();
     if (options.checkpoint) await options.checkpoint("before-active");
-    journal.phase = "active";
-    journal.sources = captured.sources;
+    journal.phase = "active"; journal.sources = captured.sources;
     if (captured.legacyCommit) journal.legacyCommit = captured.legacyCommit;
-    writeProfileJSON(join(memoryDir, JOURNAL), journal);
-    return { mode: options.mode, generation, active: true, counts: counts(plan), consequence: CONSEQUENCE };
+    persist();
+    return { mode: options.mode, generation, active: true, ...(alreadyActive ? { alreadyActive: true } : {}), counts: counts(plan), ...refusalSummary(plan), consequence: CONSEQUENCE, ...removalEvidence(journal) };
   });
 }

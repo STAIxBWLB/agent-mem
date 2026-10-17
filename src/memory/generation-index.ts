@@ -1,3 +1,4 @@
+import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
@@ -41,6 +42,18 @@ export function explicitExpirySnapshot(rows: readonly PruneSourceRow[]): PruneSn
     if (!basis || !expiredAt || !Number.isFinite(Date.parse(expiredAt)) || new Date(expiredAt).toISOString() !== expiredAt) return [];
     return [{ targetId: row.id, basisId: basis.id, expiredAt }];
   });
+}
+
+/** Exact source-presence reducer shared by indexing and migration proof validation. */
+export function coalesceGenerationSource(prior: PruneSourceRow | undefined, row: Entry, source: { source: string; local: boolean }): PruneSourceRow {
+  if (prior && canonicalJSON(prior.row) !== canonicalJSON(row)) return fail();
+  const local = source.local || row.op === "settle" || row.op === "note" && row.tier === "short";
+  const publicWitness = !local && source.source !== "legacy-local";
+  const own = source.source === "generation";
+  return { row, placement: local && (!prior || prior.placement === "local") ? "local" : "synced",
+    publicWitness: !!prior?.publicWitness || publicWitness,
+    own: prior ? row.op === "note" ? prior.own === true && own : prior.own === true || own : own,
+    legacy: !!prior?.legacy || !own };
 }
 
 /** Generation-owned derived state. Legacy files are inputs, never opened as a MemoryStore. */
@@ -87,7 +100,9 @@ export class GenerationIndex {
     const legacyHome = this.profile.legacyHome ?? this.profile.home;
     const generation = this.profile.sharded ? undefined : this.profile.generation;
     const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation) : undefined);
-    const legacy = readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
+    const legacy = this.profile.sharded
+      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier })
+      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
     const own = this.ownSegments();
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
@@ -112,16 +127,12 @@ export class GenerationIndex {
         const bytes = Buffer.from(line + "\n");
         const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: digest(bytes) }], { strict: segment.source === "generation", onMalformed: () => this.recordSkipped(segment) })[0];
         if (!row) continue;
-        const canonical = canonicalJSON(row), old = db.query("SELECT line,own,legacy FROM generation_rows WHERE id=?").get(row.id) as { line: string; own: number; legacy: number } | null;
+        const canonical = canonicalJSON(row), old = db.query("SELECT line,local,public,own,legacy FROM generation_rows WHERE id=?").get(row.id) as { line: string; local: number; public: number; own: number; legacy: number } | null;
         if (old && old.line !== canonical) fail();
         this.options.apply(line, segment.path);
-        const local = segment.local || row.op === "settle" || row.op === "note" && row.tier === "short";
-        const publicWitness = !local && segment.source !== "legacy-local";
-        const own = segment.source === "generation", legacy = !own;
-        // Notes retain legacy birth when duplicated; ops can independently occur in both birth realms.
-        const ownPresence = old ? row.op === "note" ? !!old.own && own : !!old.own || own : own;
+        const presence = coalesceGenerationSource(old ? { row, placement: old.local ? "local" : "synced", publicWitness: !!old.public, own: !!old.own, legacy: !!old.legacy } : undefined, row, segment);
         db.query("INSERT INTO generation_rows VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local=MIN(local,excluded.local), public=MAX(public,excluded.public), own=excluded.own, legacy=excluded.legacy")
-          .run(row.id, canonical, Number(local), Number(publicWitness), Number(ownPresence), Number(!!old?.legacy || legacy));
+          .run(row.id, canonical, Number(presence.placement === "local"), Number(presence.publicWitness), Number(presence.own), Number(presence.legacy));
       }
       db.query("INSERT INTO generation_segments VALUES (?,?,?,?,?,?) ON CONFLICT(source,path) DO UPDATE SET offset=excluded.offset,hash=excluded.hash,commit_id=excluded.commit_id,stamp=excluded.stamp")
         .run(segment.source, segment.path, segment.offset, segment.hash, segment.commit ?? null, segment.stamp ?? null);
