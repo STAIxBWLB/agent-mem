@@ -451,9 +451,9 @@ export class MemoryStore {
     const moving = this.views().filter((v) => (!this.generationIndex || this.generationIndex.own(v.id)) && v.task === task && v.tier === "short" && v.local && !v.supersededBy && v.expiresAt === null && PROMOTED_KINDS.includes(v.kind));
     return moving.filter((v) => this.promote(v.id, actor, undefined, true) !== undefined).length;
   }
-  /** Whether a task was ever settled, for the hub's reconciliation of approvals a crash cut off before their settle entry. */
-  settled(task: string): boolean {
-    return !!this.db.query(this.generationIndex
+  /** Whether a task was settled in this profile. Reconciliation may opt into bridged legacy settlements. */
+  settled(task: string, options: { includeLegacy?: boolean } = {}): boolean {
+    return !!this.db.query(this.generationIndex && !options.includeLegacy
       ? "SELECT 1 FROM ops JOIN generation_rows ON generation_rows.id=ops.id WHERE op='settle' AND target=? AND own=1"
       : "SELECT 1 FROM ops WHERE op = 'settle' AND target = ?").get(task);
   }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Add opt-in legacy settlement queries for host approval reconciliation after generation migration, preserving own-note expiry and promotion semantics (agent-hub#432).
+
 ## 0.3.0
 
 - Generation profile (agent-hub#412 P9, #9): opt-in, person-run migration to `M/generations/G` with its own logs, index, locks and Git ref `amem/gen/G`; machine-local selector changed by compare-and-swap; `amem migrate --dry-run | --resume | --deactivate`. Shared v1 stays the default and its behavior, sync included, is unchanged.
