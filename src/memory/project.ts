@@ -38,7 +38,8 @@ export function projectChain(cwd: string): string[] {
 /**
  * #258: the name hub memory files a project's entries under. The project's `origin` remote, normalized to host and
  * path (`github.com/owner/repo`), is the same on every machine and unique; without one, the git chain plus a hash of
- * the directory keeps two unrelated repositories that share a name apart (that key is this machine's only).
+ * the main working root keeps two unrelated repositories that share a name apart while the main checkout, a
+ * subdirectory and a worktree resolve to one key (that key is this machine's only, and root-invoked keys stay stable).
  */
 export function memoryProjectKey(cwd: string): string {
   const url = memoryGitSync(["-C", cwd, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout?.trim() ?? "";
@@ -55,6 +56,26 @@ export function memoryProjectKey(cwd: string): string {
     const host = m[0].toLowerCase();
     // GitHub serves one repository under every form, and its owner and repository names ignore case.
     return host === "github.com" ? `${host}/${m[1].replace(/^~\/?/, "").toLowerCase()}` : `${host}/${m[1]}`;
+  }
+  // No usable remote: hash the main working root, not the cwd or git dir. Root-invoked keys therefore keep their
+  // pre-#15 value while the main checkout, a subdirectory and a worktree resolve to ONE key (#15 D2/AC2). A bare
+  // repository has no working root: its own directory is the stable identity for it and its worktrees.
+  const common = memoryGitSync(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  if (common) {
+    let realCommon = common;
+    try { realCommon = realPath(common); } catch { /* as given */ }
+    const bare = (memoryGitSync(["--git-dir", realCommon, "rev-parse", "--is-bare-repository"], { encoding: "utf8" }).stdout?.trim() ?? "") === "true";
+    let root = realCommon;
+    if (!bare) {
+      const configured = memoryGitSync(["--git-dir", realCommon, "config", "--path", "core.worktree"], { encoding: "utf8" }).stdout?.trim() ?? "";
+      const top = memoryGitSync(["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout?.trim() ?? "";
+      // Only an actual `.git` directory makes its parent the working root. A separate git dir shares its parent
+      // with unrelated repositories, so the real worktree root (or, as a last resort, the unique git dir) is safer.
+      root = configured ? resolve(realCommon, configured) : basename(realCommon) === ".git" ? dirname(realCommon) : top || realCommon;
+    }
+    let realRoot = root;
+    try { realRoot = realPath(root); } catch { /* as given */ }
+    return `${projectChain(realRoot).join("/")}@${createHash("sha256").update(realRoot).digest("hex").slice(0, 8)}`;
   }
   let real = cwd;
   try { real = realPath(cwd); } catch { /* as given */ }

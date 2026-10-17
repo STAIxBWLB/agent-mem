@@ -3,8 +3,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
+import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
+import { SearchIndex, captureSearch } from "./search-fts.ts";
+import { resolveAlias, shardMachineDir } from "./shard.ts";
+import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
@@ -79,10 +83,8 @@ function canonical(value: unknown): string {
 }
 export const entryId = (e: Omit<Entry, "id">): string => createHash("sha256").update(canonical(e)).digest("hex").slice(0, 32);
 
-const SECRETS = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAKIA[0-9A-Z]{16}\b/, /\bgh[pousr]_[A-Za-z0-9]{30,}/, /\bgithub_pat_[A-Za-z0-9_]{40,}/, /\bsk-[A-Za-z0-9_-]{20,}/,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /\bAIza[0-9A-Za-z_-]{35}\b/, /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, /\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}/i];
-/** A secret-looking string: refused before anything is written, since long-term entries leave the machine. */
-export const looksSecret = (text: string): boolean => SECRETS.some((re) => re.test(text));
+// Single-sourced in screen.ts so the capture tier (#13) screens excerpts without importing this store; the export stays.
+export { looksSecret };
 
 /** `task`: the board task's id and proposal time; its node carries both, so a task id reused after `ahub reset --all` is another node. */
 export interface Extract { cwd: string; project: string; repo: string; deny?: string[]; paths?: string[]; symbols?: string[]; task?: { id: number; created: number }; checkExists?: boolean }
@@ -169,6 +171,10 @@ export interface GoalView {
   lease: { holder: string | null; until: string | null; conflict: string[]; expired: boolean; lastHolder?: string | null };
 }
 export interface Filter { project?: string; tier?: Tier; kind?: Kind; peer?: string; machine?: string; since?: string; q?: string; limit?: number; includeSuperseded?: boolean }
+/** #13 search: `Filter` plus the capture-tier switch (on by default; capture is recall, never curated evidence). */
+export interface SearchFilter extends Filter { includeCapture?: boolean }
+export interface SearchHit { source: "curated" | "capture"; score: number; view?: View; capture?: CaptureRow }
+export interface SearchResult { engine: "fts5" | "substring"; hits: SearchHit[] }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
 
 /**
@@ -197,6 +203,11 @@ export class MemoryStore {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly deferPromotions: boolean;
+  /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
+  private readonly searchIndex: SearchIndex;
+  private readonly memoryBaseDir: string;
+  /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
+  private rebuildingSearch = false;
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
@@ -235,6 +246,9 @@ export class MemoryStore {
     db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
     this.db = db;
     this.mutationDb = mutationDatabase(this.dir);
+    // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
+    this.searchIndex = new SearchIndex(join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
+    this.memoryBaseDir = home;
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
     if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
       apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
@@ -254,7 +268,7 @@ export class MemoryStore {
     return Object.fromEntries(tables.map(({ name }) => [name, (this.db.query(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all() as unknown[]).sort((a, b) => canonicalJSON(a).localeCompare(canonicalJSON(b)))]));
   }
 
-  close(): void { this.db.close(); this.mutationDb.close(); }
+  close(): void { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
   withDeferredPromotions<T>(work: () => T): T {
@@ -546,9 +560,14 @@ export class MemoryStore {
 
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
+    this.searchIndex.reset();
     if (this.generationIndex) { this.generationIndex.rebuild(); return; }
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
-    this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+    this.rebuildingSearch = true;
+    try {
+      this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+    } finally { this.rebuildingSearch = false; }
+    this.syncSearchIndex(); // one batched derived write, not one search.db transaction per rebuilt entry
   }
 
   private segments(sub: "log" | "local"): string[] {
@@ -572,9 +591,13 @@ export class MemoryStore {
     if (e.op === "note") {
       if (!KINDS.includes(e.kind) || typeof e.text !== "string" || !Array.isArray(e.about) || !str(e.project, 400) || !str(e.peer, 64)
         || !opt(e.title) || !opt(e.task) || !opt(e.supersedes) || !opt(e.promotedFrom) || !opt(e.expires) || (typeof e.expires === "string" && Number.isNaN(Date.parse(e.expires))) || !opt(e.source) || !["project", "shared"].includes(e.scope as string) || !["short", "long"].includes(e.tier as string)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
-      this.db.query(`INSERT OR IGNORE INTO entries (id, at, machine, project, scope, tier, kind, peer, title, text, task, about, supersedes, promoted_from, source, expires)
+      const inserted = this.db.query(`INSERT OR IGNORE INTO entries (id, at, machine, project, scope, tier, kind, peer, title, text, task, about, supersedes, promoted_from, source, expires)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.tier === "long" ? "long" : "short",
-        e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null);
+        e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null).changes;
+      // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
+      // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
+      // the next search resyncs.
+      if (inserted && !this.rebuildingSearch) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
     } else if (e.op === "goal") {
       if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
@@ -734,6 +757,7 @@ export class MemoryStore {
     for (const v of expired) for (let id: string | undefined = v.id; id && !gone.has(id); id = parent.get(id)) gone.add(id);
     if (!gone.size) return 0;
     this.db.transaction(() => { for (const id of gone) { this.db.query("DELETE FROM entries WHERE id = ?").run(id); this.db.query("DELETE FROM edges WHERE src = ?").run(id); } }).immediate();
+    this.searchIndex.markDirty(); // FTS cannot subtract rows incrementally: the next search resyncs it
     return gone.size;
   }
 
@@ -762,6 +786,55 @@ export class MemoryStore {
       && (!f.peer || v.peer === f.peer) && (!f.machine || v.machine === f.machine) && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)
       && q.every((w) => `${v.title ?? ""}\n${v.text}\n${v.about.join(" ")}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
+  }
+
+  /**
+   * #13 R5: natural-language search over the curated tier and this machine's capture tier, ranked by BM25 with
+   * tier and recency weights (curated outranks capture; a newer row beats an older one at equal text). Visibility
+   * (forgotten, superseded, expired, pruned) is decided by the same live views `list` uses. Without FTS5 the engine
+   * falls back to the substring filter and says so; capture recall needs FTS5 and is skipped in the fallback (the
+   * R3 cost of the fallback is the pre-#13 behavior: same scan, same memory).
+   */
+  search(q: string, f: SearchFilter = {}): SearchResult {
+    const limit = f.limit ?? 200;
+    if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map((view) => ({ source: "curated" as const, score: 0, view })) };
+    const visible = new Map(this.live(f).filter((v) => (!f.project || v.project === f.project || v.scope === "shared")
+      && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)).map((v) => [v.id, v]));
+    this.syncSearchIndex();
+    const now = this.now();
+    const recency = (at: string): number => 1 / (1 + Math.max(0, now - Date.parse(at)) / (30 * 24 * 3600_000));
+    const hits: SearchHit[] = [];
+    // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
+    // starve this project's LIMIT.
+    for (const hit of this.searchIndex.query(q, Math.max(limit * 4, 32), f.project)) {
+      const view = visible.get(hit.ref);
+      if (!view) continue;
+      hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+    }
+    // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
+    if (f.includeCapture !== false && f.project) {
+      const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32))) {
+        if (f.since && Date.parse(row.at) < Date.parse(f.since)) continue;
+        hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
+      }
+    }
+    // Where FTS misses entirely (a stopword-only query, a tokenization edge), the substring filter is the safety net.
+    if (!hits.length && q.trim()) {
+      for (const view of this.list({ ...f, q })) hits.push({ source: "curated", score: 0, view });
+    }
+    const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
+    hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));
+    return { engine: "fts5", hits: hits.slice(0, limit) };
+  }
+
+  /** Bring the derived FTS copy level with the curated rows when a prune, a crash, a lock or a rebuild drifted them apart. */
+  private syncSearchIndex(): void {
+    if (!this.searchIndex.available) return;
+    const curated = (this.db.query("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
+    if (!this.searchIndex.needsResync(curated)) return;
+    this.searchIndex.resync(() => (this.db.query("SELECT id, at, project, tier, scope, title, text, about FROM entries").all() as { id: string; at: string; project: string; tier: string; scope: string; title: string | null; text: string; about: string }[])
+      .map((r) => ({ id: r.id, at: r.at, project: r.project, tier: r.tier, scope: r.scope, body: `${r.title ?? ""}\n${r.text}\n${(JSON.parse(r.about) as string[]).join(" ")}` })));
   }
 
   /** One entry by id or unique id prefix; with `project`, only one that project may read (its own or shared). */
