@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { chmodSync } from "node:fs";
+import { chmodSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 
 export const MUTATION_BUSY_TIMEOUT_MS = 3000;
@@ -19,4 +19,16 @@ export function acquireMutation(dir: string): (() => void) | undefined {
   try { db.run("BEGIN IMMEDIATE"); }
   catch { db.close(); return undefined; }
   return () => { try { db.run("ROLLBACK"); } finally { db.close(); } };
+}
+
+/** Short local admission fence, never held across sync/network or data mutations. */
+export function readerAdmissionDatabase(dir: string): Database {
+  const file = join(dir, "reader-admission.db");
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    const stat = lstatSync(file + suffix, { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("reader admission fence is not a regular file");
+  }
+  const db = new Database(file, { create: true });
+  try { chmodSync(file, 0o600); db.run(`PRAGMA busy_timeout = ${MUTATION_BUSY_TIMEOUT_MS}`); return db; }
+  catch (error) { db.close(); throw error; }
 }

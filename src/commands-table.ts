@@ -63,6 +63,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   status: { description: "Report shard migration and pending old-layout appends", options: json },
   prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
     ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
+    "--user": flag("Select the user shard explicitly after a curated split (default: current project)"),
     "--apply": flag("Apply the exact local plan"), "--plan": { description: "Sealed local plan JSON file", value: "path" },
   } },
   capacity: { description: "Report capture use and propose R6 bounds (R7)", options: { ...json, "--disk-share": text("Disk-share bound for the proposal (default 0.02)") }, commands: {

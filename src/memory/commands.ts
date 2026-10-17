@@ -125,7 +125,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       }
       case "machine": {
         const label = flag("--label");
-        const m = label ? setMachineLabel(store.dir, label) : store.machine;
+        const m = label ? setMachineLabel(store.profile.sharded ? store.profile.home : store.dir, label) : store.machine;
         return json ? JSON.stringify(m) : `this machine: ${m.id} (${m.label})`;
       }
       case "rebuild": { store.rebuild(); const c = store.counts(); return `rebuilt the index from ${c.segments} segment${c.segments === 1 ? "" : "s"}: ${c.long} long-term, ${c.short} short-term entries`; }

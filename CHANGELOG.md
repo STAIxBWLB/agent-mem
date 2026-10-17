@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add person-run curated project/user shard migration with a read-only legacy bridge, selected-generation prune preservation, reader leases and measured one-shard recall (#15).
+- Add person-run curated project/user shard migration with a read-only bridge, selected-generation prune preservation, independent reader admission and shared pruning; requires shard-aware host integration before live use (#15).
 
 ## 0.3.1
 

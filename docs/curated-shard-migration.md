@@ -15,3 +15,19 @@ This implements agent-mem#15 T2 (AC1, AC2, AC7 and AC8). `amem migrate --shards`
 Dry run reports v1, generation-owned, generation-local, prune, translated-prune and refused counts. Acceptance fixtures cover populated G with own/local/pruned entries, immutable source bytes, per-shard rebuild equality, invalid-proof/no-change refusal, both replacement ceilings, partial interruption/resume, reader admission, capture-only initialization and project/user lifecycle continuity.
 
 AC8 uses 20 projects and 200,000 synthetic entries. One-shard open/search measurements and R3 idle/peak RSS are recorded separately from correctness tests; they do not prove an installed runtime, real-home migration or multi-machine sync.
+
+## Host admission and recovery boundaries
+
+There is no registered-host capability registry in this release. Both dry-run and apply output state that hosts must use `openShardStore` before a live-home split; absence of a registry is not evidence of compatibility. Plain `new MemoryStore()` refuses any `shards.json` entry before opening the legacy writer. Published unannounced old-format readers are not changed or rewritten by this rule.
+
+T2 must not ship for agent-hub use until the host integration task switches its memory factory and is installed. The current agent-hub source at `2b2d6d2d` opens the core in `src/hub/memory-profile.ts:openProfileMemory` (the `new MemoryStore` at line 157). Its entry points are `src/hub/daemon.ts:startDaemon` (line 912) and `src/cli/memory.ts:commandStores` (line 22). The existing profile binding/receipt checks also need shard-aware integration; this PR does not change that host or its pin.
+
+- Reader registration, renewal, close and the profile-lock claim share `reader-admission.db`, a dedicated short-lived local fence. Data/sync retains `mutation-lock.db`; no reader admission waits on git network work. The profile marker remains held during the switch and refuses new reader registrations. A stale marker refusal names `amem migrate --resume`.
+- Ordinary generation migration refuses every mode once a split marker exists. It never changes the selector; finish through `amem migrate --shards --resume`.
+- Candidate acceptance refuses before opening or changing its sidecar or the old store. Keep the candidate pending until shard-aware review integration is available.
+- The default durable prune port and CLI select only the project. `amem prune --user` selects the shared/user shard explicitly and preserves person/TTY/current-project authorization. The user-shard library port is `openShardStore({ user: true }).prunePort()`; no implicit merged multi-lock prune is promised.
+- Before marking a split captured, inspect every planned copy append and receipt completion. An unrelated native generation tail stays with the original writer; an unsafe touched tail refuses without changing an active split. A matching partial translation receipt completes only by append.
+- Dangling immutable lifecycle/suggestion ops are carried as ids-only user metadata and counted separately; later targets retain those operations. Refusal counts distinguish private-cross-project and shared-to-private relations, with ids-only append-only remedies. v1 counts distinguish local and fetched-main realms.
+- An interrupted catalog reports curated availability as false and count/time as null; capture receipts remain available and keep the documented cache lag. Its derived schema can be rebuilt without rewriting source logs.
+
+The reviewer recorded the person's read-only dry run on a copy at `1599fdd`: 505 rows across two shards, zero refused, zero shared-superseded-by-private. That observation is bound to that head (hub memory `848f897e`); it does not authorize or prove a live-home migration. The body-free witness ponytail remains, with no witness work in T2.

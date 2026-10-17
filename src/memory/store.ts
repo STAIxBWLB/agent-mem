@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
@@ -218,6 +218,7 @@ export class MemoryStore {
     this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
     this.userOverlay = bootstrap?.userOverlay;
     const home = bootstrap?.profile.home ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+    if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
       || (!this.profile.sharded && this.profile.dir !== generationDir(this.profile.home, this.profile.generation))

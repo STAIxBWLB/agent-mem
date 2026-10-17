@@ -1,7 +1,7 @@
 import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readProfileJSON, writeProfileJSON } from "./generation.ts";
-import { mutationDatabase } from "./mutation.ts";
+import { readerAdmissionDatabase } from "./mutation.ts";
 import { processLiveness, processSignature } from "./platform.ts";
 
 const READER_LEASE_SCHEMA = "agent-mem.reader-lease/v1";
@@ -14,7 +14,7 @@ const fileFor = (memoryDir: string, pid: number, signature: string) => join(memo
 const record = (pid: number, signature: string): Lease => ({ schema: READER_LEASE_SCHEMA, pid, signature, renewedAt: new Date().toISOString() });
 
 function withFence<T>(memoryDir: string, work: () => T): T {
-  const db = mutationDatabase(memoryDir);
+  const db = readerAdmissionDatabase(memoryDir);
   try { return db.transaction(work).immediate(); } finally { db.close(); }
 }
 
@@ -43,11 +43,11 @@ function ownedLease(memoryDir: string, file: string, signature: string): void {
 }
 
 function admitReader(memoryDir: string): void {
-  // The profile lock is created under the same mutation fence, then held across migration awaits.
+  // The profile lock is created under the same reader admission fence, then held across migration awaits.
   // Even a malformed or stale marker refuses admission; only the profile-lock owner may reclaim it.
   try {
-    if (lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw new Error("profile lock prevents reader admission");
-  } catch { throw new Error("profile lock prevents reader admission"); }
+    if (lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume");
+  } catch { throw new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume"); }
 }
 
 /** One lease per process, reference-counted across handles; an unref'd timer does not keep the process resident. */

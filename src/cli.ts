@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
@@ -60,8 +60,13 @@ export function agentMarked(env: Readonly<Record<string, string | undefined>>): 
   return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].some(key => env[key] !== undefined);
 }
 
+function shardStatePresent(): boolean {
+  try { lstatSync(join(memoryHome(), "shards.json")); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
 function curatedStore(project: string, opts: StoreOptions): MemoryStore {
-  if (existsSync(join(memoryHome(), "shards.json"))) {
+  if (shardStatePresent()) {
     readShardedSelection(memoryHome());
     return openShardStore({ ...opts, project });
   }
@@ -97,7 +102,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--dry-run"] ? "dry-run" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "apply";
     const common = { memoryDir: memoryHome(), ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true };
-    const shardRequested = options["--shards"] === true || (mode === "resume" && existsSync(join(memoryHome(), "shards.json")));
+    const shardRequested = options["--shards"] === true || (mode === "resume" && shardStatePresent());
     if (shardRequested) {
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
       return JSON.stringify(await migrateShards({ ...common, mode }), null, 2);
@@ -107,18 +112,26 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "status") return JSON.stringify(shardMigrationStatus(memoryHome()), null, 2);
   if (sub === "prune") {
     const applying = options["--apply"] === true;
-    if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune --cutoff <UTC> --dry-run | --apply --plan <file>");
+    if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune [--user] --cutoff <UTC> --dry-run | [--user] --apply --plan <file>");
     let input: string | undefined;
     if (applying) {
       input = readPrunePlanFile(String(options["--plan"]));
     }
-    const store = curatedStore(memoryProjectKey(context.cwd ?? process.cwd()), { deferPromotions: true });
+    const project = memoryProjectKey(context.cwd ?? process.cwd());
+    if (options["--user"] === true) {
+      if (!shardStatePresent()) throw new Error("prune --user requires an active curated shard migration; the default prune command selects the current project");
+      readShardedSelection(memoryHome());
+    }
+    const store = options["--user"] === true
+      ? openShardStore({ memoryDir: memoryHome(), user: true, deferPromotions: true })
+      : curatedStore(project, { deferPromotions: true });
     try {
-      const auth = { project: memoryProjectKey(context.cwd ?? process.cwd()), actor: "person" as const, authorize: () => true };
+      const auth = { project, actor: "person" as const, authorize: () => true };
       return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
     } finally { store.close(); }
   }
   if (review) {
+    if (sub === "accept" && shardStatePresent()) throw new Error("candidate acceptance requires shard-aware review integration after a shard split; the candidate remains pending and no legacy note was written. Retain the candidate until shard-aware review integration is available, then review and accept it through that integration");
     if (resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use the profile-aware host after its integration");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
