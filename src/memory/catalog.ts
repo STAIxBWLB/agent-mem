@@ -16,13 +16,14 @@ import { captureShardStats, readCaptureConfig } from "./capture.ts";
 export interface CatalogProject {
   hash: string; key: string; local: boolean; aliases: string[];
   captureRows: number; captureBytes: number; captureLastAt: string | null;
+  curatedEntries: number; curatedLastAt: string | null;
   capMb: number; retentionDays: number;
 }
 
-interface CatalogRow { hash: string; key: string; local: number; aliases: string; capture_rows: number; capture_bytes: number; capture_last_at: string | null; cap_mb: number; retention_days: number }
+interface CatalogRow { hash: string; key: string; local: number; aliases: string; capture_rows: number; capture_bytes: number; capture_last_at: string | null; curated_entries: number; curated_last_at: string | null; cap_mb: number; retention_days: number }
 
 const fromRow = (r: CatalogRow): CatalogProject => ({ hash: r.hash, key: r.key, local: r.local === 1, aliases: JSON.parse(r.aliases) as string[],
-  captureRows: r.capture_rows, captureBytes: r.capture_bytes, captureLastAt: r.capture_last_at, capMb: r.cap_mb, retentionDays: r.retention_days });
+  captureRows: r.capture_rows, captureBytes: r.capture_bytes, captureLastAt: r.capture_last_at, curatedEntries: r.curated_entries, curatedLastAt: r.curated_last_at, capMb: r.cap_mb, retentionDays: r.retention_days });
 
 /** Every readable shard with its machine-scope directories; the walk behind the catalog and the capacity advisor. */
 export function walkShards(base: string): { hash: string; key: string; local: boolean; machineDirs: string[] }[] {
@@ -57,9 +58,22 @@ export function scanCatalog(base: string): CatalogProject[] {
       if (stats.lastAt && (lastAt === null || stats.lastAt > lastAt)) lastAt = stats.lastAt;
     }
     const config = readCaptureConfig(shard.machineDirs[shard.machineDirs.length - 1] ?? join(base, "projects", shard.hash, "machine", "_"), base);
+    let curatedEntries = 0, curatedLastAt: string | null = null;
+    const index = join(base, "projects", shard.hash, "index.db");
+    if (existsSync(index)) {
+      let db: Database | undefined;
+      try {
+        db = new Database(index, { readonly: true });
+        db.run("PRAGMA busy_timeout = 0");
+        const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries").get() as { n: number; last: string | null };
+        curatedEntries = row.n;
+        curatedLastAt = row.last;
+      } catch { /* an unreadable derived index contributes no curated receipt */ }
+      finally { db?.close(); }
+    }
     out.push({ hash: shard.hash, key: shard.key, local: shard.local,
       aliases: [...latest.entries()].filter(([, key]) => key === shard.key).map(([alias]) => alias).sort(),
-      captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, capMb: config.capMb, retentionDays: config.retentionDays });
+      captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, curatedEntries, curatedLastAt, capMb: config.capMb, retentionDays: config.retentionDays });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -73,12 +87,15 @@ export function rebuildCatalog(opts: { home?: string } = {}): CatalogProject[] {
   try {
     db.run("PRAGMA busy_timeout = 3000");
     db.run(`CREATE TABLE IF NOT EXISTS projects (hash TEXT PRIMARY KEY, key TEXT NOT NULL, local INTEGER NOT NULL, aliases TEXT NOT NULL,
-      capture_rows INTEGER NOT NULL, capture_bytes INTEGER NOT NULL, capture_last_at TEXT, cap_mb REAL NOT NULL, retention_days REAL NOT NULL)`);
+      capture_rows INTEGER NOT NULL, capture_bytes INTEGER NOT NULL, capture_last_at TEXT, curated_entries INTEGER NOT NULL DEFAULT 0, curated_last_at TEXT, cap_mb REAL NOT NULL, retention_days REAL NOT NULL)`);
+    const columns = new Set((db.query("PRAGMA table_info(projects)").all() as { name: string }[]).map((row) => row.name));
+    if (!columns.has("curated_entries")) db.run("ALTER TABLE projects ADD COLUMN curated_entries INTEGER NOT NULL DEFAULT 0");
+    if (!columns.has("curated_last_at")) db.run("ALTER TABLE projects ADD COLUMN curated_last_at TEXT");
     try { chmodSync(file, 0o600); } catch { /* best effort */ }
     db.transaction(() => {
       db.run("DELETE FROM projects");
-      for (const p of projects) db.query("INSERT INTO projects (hash, key, local, aliases, capture_rows, capture_bytes, capture_last_at, cap_mb, retention_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(p.hash, p.key, p.local ? 1 : 0, JSON.stringify(p.aliases), p.captureRows, p.captureBytes, p.captureLastAt, p.capMb, p.retentionDays);
+      for (const p of projects) db.query("INSERT INTO projects (hash, key, local, aliases, capture_rows, capture_bytes, capture_last_at, curated_entries, curated_last_at, cap_mb, retention_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(p.hash, p.key, p.local ? 1 : 0, JSON.stringify(p.aliases), p.captureRows, p.captureBytes, p.captureLastAt, p.curatedEntries, p.curatedLastAt, p.capMb, p.retentionDays);
     }).immediate();
   } finally { db.close(); }
   return projects;

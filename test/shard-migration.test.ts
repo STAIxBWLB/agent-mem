@@ -9,6 +9,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { shardDir } from "../src/memory/shard.ts";
 import { runCli } from "../src/cli.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
+import { rebuildCatalog } from "../src/memory/catalog.ts";
 
 const A = "github.com/example/a", B = "github.com/example/b";
 const cleanup: (() => void)[] = [];
@@ -55,6 +56,10 @@ test("apply shards curated rows with original ids and leaves legacy, capture and
   expect(result.counts.byShard[A]).toBeGreaterThan(0);
   expect(result.counts.byShard[B]).toBeGreaterThan(0);
   expect(result.counts.byShard.user).toBeGreaterThan(0);
+  const catalog = rebuildCatalog({ home: dir });
+  expect(catalog.find((row) => row.key === A)).toMatchObject({ curatedEntries: 1 });
+  expect(catalog.find((row) => row.key === A)?.curatedLastAt).not.toBeNull();
+  expect(rebuildCatalog({ home: dir })).toEqual(catalog);
   expect(segmentBytes(dir)).toEqual(before);
   expect(readFileSync(join(work, "state.json"), "utf8")).toBe("keep me");
   const captureAgain = new CaptureStore({ home: dir, project: A });
