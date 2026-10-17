@@ -71,7 +71,7 @@ PostToolUse capture (observations written) per day, with `discovery_tokens`:
 | 2026-10-16 | 3,660 | 154,608,933 |
 | 2026-10-17 (partial) | 98 | 4,171,930 |
 
-14-day volume: 84,978 observations, ~4.12 B discovery_tokens; full-day median 5,159
+14-day volume: 84,878 observations, ~4.12 B discovery_tokens; full-day median 5,411
 observations/day, mean ~294 M discovery_tokens/day. All-time: 204,470 observations,
 5.04 B discovery_tokens (matches #412 E1). `work_state_entries` (as of ~09:20 KST, live DB):
 4,171 rows over 592 distinct project+list pairs; replaying each row (latest write wins,
@@ -89,14 +89,14 @@ closed lists, with 22 todo + 30 doing + 1 review open items in the open lists.
 | PreToolUse hook | no memory consumer found; permission decisions belong to the host (agent-hub facts-hook) | **Drop**, say so in P3 docs |
 | PostToolUse / PostToolUseFailure hooks | ~6,070 observations/day | **Keep** as deterministic capture (P1, R4) |
 | Stop / SessionEnd hooks | session lifecycle | **Keep** as `amem ingest` trigger points (P3) |
-| MCP mem_search / search | 109 invocations/14d | **Keep** as `amem mcp` search (P2) |
+| MCP mem_search / search | 93 invocations/14d | **Keep** as `amem mcp` search (P2) |
 | MCP timeline | 1 invocation/14d | **Keep** (read tool, P2) |
 | MCP get_observations | 28 invocations/14d | **Keep** as show (P2) |
 | MCP smart_outline / smart_search / smart_unfold | 4 invocations/14d, code-structure not memory | **Drop** from the memory package; hosts can offer them elsewhere |
 | MCP corpus tools (build/prime/query/rebuild/reprime/list) | 0 invocations/14d; LLM knowledge-agent feature, conflicts with R1/R4 | **Drop** |
 | MCP session_start_context, important_workflow | 0 direct invocations/14d | **Fold** into search/brief internals, not separate tools |
 | MCP get_tool_uses | 0 invocations/14d; raw tool I/O | **Drop** (capture-tier search covers the need, P2) |
-| MCP work_state_read/write | 534 invocations/14d | **Keep** as work lists (P2, C) |
+| MCP work_state_read/write | 434 invocations/14d | **Keep** as work lists (P2, C) |
 | MCP save_memory | 1 invocation/14d | **Keep** bounded, writes to candidates (P2) |
 | Transcript bridge (launchd) + cross-Mac sync | 702 codex + 352 kimi + 94 other sessions/14d captured | **Drop** as daemons; `amem ingest` + git sync replace them (R1, P3) |
 | agent-hub worker HTTP client (`client.ts`, `capture.ts`) | 21 agent-hub sessions/14d | **Drop**; agent-hub uses the library (F, P4) |
@@ -144,8 +144,10 @@ See the per-day table in §1.2: ~294 M `discovery_tokens`/day (LLM observer per 
 ### 3.1 Method
 
 25 queries taken from the last two weeks of agent-hub work (the project both stores actually
-cover). For each query, recall@10: a hit means at least one of the first 10 results is directly
-on the query's subject, judged from result titles only.
+cover). For each query, hit rate@10: a hit means at least one of the first 10 results is directly
+on the query's subject, judged from result titles only. This is a per-query success rate, not
+recall: no relevance sets were built, so a query with several relevant entries counts as a hit
+when any one of them is in the top 10. #13 AC4's "recall@10" means this hit rate.
 
 - claude-mem: the same search the hub and MCP clients use, `GET /api/search?query=...&limit=10`
   on the running worker, unfiltered (global), which is its native strength.
@@ -154,7 +156,7 @@ on the query's subject, judged from result titles only.
 
 ### 3.2 Result
 
-| System | Hits | recall@10 |
+| System | Hits | hit rate@10 |
 |---|---:|---:|
 | claude-mem | 25/25 | 1.00 |
 | amem 0.3.0 | 5/25 | 0.20 |
@@ -162,10 +164,13 @@ on the query's subject, judged from result titles only.
 Per-query table in §3.4. Follow-up single-term probes on the 20 amem misses separate the two
 causes:
 
-- **Match mode.** amem's `q` is one contiguous substring, so a natural multi-word query misses
-  notes whose titles carry the same words in another order (e.g. the #270 seatbelt notes exist
-  but "seatbelt HFS+ ignorable code points .git" is not a substring of any entry). FTS5 with
-  BM25 (R5) addresses exactly this.
+- **Match mode.** amem 0.3.0 splits `q` on whitespace and keeps an entry only when every term
+  occurs in its title, text or `about` (`MemoryStore.list`, store.ts:759-764): word order does
+  not matter, but one query term the note does not contain removes it (e.g. the #270 seatbelt
+  notes exist, but not every word of "seatbelt HFS+ ignorable code points .git" occurs in one
+  of them). Corrected 2026-10-17 from the code; the single-term probes were not rerun. FTS5 with
+  BM25 (R5) ranks by matching terms but is still all-terms by default, so it closes this gap
+  only with prefix terms or an any-term fallback, not by itself.
 - **Coverage.** For several topics (peer_stop, flaky CI, usage_update, grantablePath,
   submodule, fsmonitor, work_state) the young curated store holds no on-topic entry at all:
   161 notes over ~6 weeks of agent-hub tasks versus 204k captured observations. Entries absent
@@ -173,7 +178,7 @@ causes:
 
 ### 3.3 Proposed margin for AC4
 
-On this frozen 25-query set: **amem recall@10 at least claude-mem's minus 0.20** (i.e. >= 0.80
+On this frozen 25-query set: **amem hit rate@10 at least claude-mem's minus 0.20** (i.e. >= 0.80
 here), re-measured after P1 (FTS5 search). If amem lands below that, the gap and the embedding
 revisit decision are recorded per R5, with the match-mode and coverage contributions
 distinguished as in §3.2.
