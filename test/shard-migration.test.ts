@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,4 +130,34 @@ test("amem migrate --shards and status drive the same resume path and ordinary C
   await runCli(["migrate", "--resume"], context);
   const settled = JSON.parse(await runCli(["status"], context)) as { pending: { rows: number } };
   expect(settled.pending.rows).toBe(0);
+});
+
+test("two project shards write independently and each incremental index equals its rebuild", async () => {
+  const dir = home(); seed(dir);
+  await migrateShards(options(dir, "apply"));
+  const a = openShardStore({ home: dir, project: A }), b = openShardStore({ home: dir, project: B });
+  const holder = new Database(join(a.dir, "index.db"));
+  holder.run("PRAGMA busy_timeout = 0");
+  holder.run("BEGIN EXCLUSIVE");
+  try {
+    expect(b.note(note(B, "beta while alpha is locked"))).toBeTypeOf("string");
+  } finally { holder.run("ROLLBACK"); holder.close(); }
+  expect(a.note(note(A, "alpha after the lock"))).toBeTypeOf("string");
+  for (const store of [a, b]) {
+    const before = store.derivedTables();
+    store.rebuild();
+    expect(store.derivedTables()).toEqual(before);
+    store.close();
+  }
+});
+
+test("a new project initializes its own sealed shard and a selector change refuses stale access", async () => {
+  const dir = home(); seed(dir);
+  await migrateShards(options(dir, "apply"));
+  const project = "github.com/example/c", store = openShardStore({ home: dir, project });
+  store.note(note(project, "gamma in a new shard"));
+  expect(store.list({ project }).map((row) => row.text)).toEqual(["gamma in a new shard"]);
+  store.close();
+  writeFileSync(join(dir, "memory", "profile.json"), JSON.stringify({ schema: "agent-mem.profile/v1", kind: "shared-v1" }) + "\n");
+  expect(() => openShardStore({ home: dir, project: A })).toThrow("selector changed");
 });

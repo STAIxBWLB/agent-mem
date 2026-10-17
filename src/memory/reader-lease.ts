@@ -65,7 +65,8 @@ export function assertNoLiveReaders(memoryDir: string): { removed: number } {
   return withFence(memoryDir, () => {
     const dir = checkReadersDir(memoryDir);
     let names: string[] = [];
-    try { names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort(); } catch { return { removed: 0 }; }
+    try { names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { removed: 0 }; throw new Error("reader lease directory is unreadable"); }
     let removed = 0;
     for (const name of names) {
       if (!/^[1-9][0-9]*-[0-9a-f]{64}\.json$/.test(name)) throw new Error("unverifiable reader lease filename");

@@ -7,12 +7,13 @@ import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { SearchIndex, captureSearch } from "./search-fts.ts";
-import { resolveAlias, resolveShardProfile, shardMachineDir } from "./shard.ts";
+import { ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
-import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
+import { generationDescriptor, generationDir, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
 import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
+import { readMigrationSources } from "./migrate.ts";
 import type { PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
 import { registerReaderLease } from "./reader-lease.ts";
@@ -256,8 +257,10 @@ export class MemoryStore {
       apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
       ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
     // Every ordinary reader of the single-home layout announces itself; shard/migration bootstraps never read that root.
-    if (!bootstrap) this.releaseReaderLease = registerReaderLease(this.profile.home);
-    this.refresh();
+    if (!bootstrap) {
+      this.releaseReaderLease = registerReaderLease(this.profile.home);
+      try { this.refresh(); } catch (error) { this.releaseReaderLease(); this.releaseReaderLease = undefined; throw error; }
+    } else this.refresh();
   }
 
   /** The host must authenticate person intent before authorizing plan/apply through this port. */
@@ -357,6 +360,7 @@ export class MemoryStore {
    */
   importNote(n: NoteInput, at: string): { id: string; added: boolean } {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
+    if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
     assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
@@ -1066,9 +1070,31 @@ export function buildGenerationIndex(profile: BoundProfile, sources: readonly Le
   finally { store.close(); }
 }
 
+function initializeShard(home: string, opts: { project?: string; user?: boolean }): void {
+  const selection = readShardedSelection(home), generation = selection.generation;
+  const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!), machine = machineId(home);
+  if (opts.project !== undefined) ensureShardDescriptor(home, opts.project);
+  for (const folder of ["log", "local", "legacy/log", "legacy/local"]) mkdirSync(join(dir, folder), { recursive: true, mode: 0o700 });
+  for (const [path, value] of [["generation.json", generationDescriptor(generation)], ["machine.json", machine], ["legacy/machine.json", machine]] as const) {
+    const file = join(dir, path), prior = readProfileJSON(file);
+    if (prior === undefined) writeProfileJSON(file, value);
+    else if (canonicalJSON(prior) !== canonicalJSON(value)) throw new Error("curated shard metadata changed during initialization");
+  }
+  const legacyHome = join(dir, "legacy"), sources = readMigrationSources(legacyHome);
+  writeProfileJSON(join(dir, "migration-sources.json"), { schema: "agent-mem.migration-sources/v1", sources });
+  const profile: BoundProfile = { kind: "generation", home, dir, generation, selectorRevision: selection.selectorRevision,
+    legacyHome, sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
+  buildGenerationIndex(profile, sources);
+  writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation,
+    descriptorHash: hashJSON(generationDescriptor(generation)), sourceDigest: hashJSON({ sources, legacyCommit: undefined }) });
+}
+
 /** Open one sealed project or user shard directly; no legacy-home scan, catalog walk or old-layout reader lease. */
 export function openShardStore(opts: StoreOptions & { project?: string; user?: boolean }): MemoryStore {
+  if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
   const home = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
+  const missing = opts.user === true ? !existsSync(join(userShardDir(home), "generation.json")) : readShardDescriptor(home, shardKeyHash(opts.project!)) === undefined;
+  if (missing) initializeShard(home, opts);
   const profile = resolveShardProfile(home, opts);
   return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true });
 }

@@ -123,16 +123,16 @@ export function captureShardDir(base: string, key: string, machine: string): str
 }
 
 export const SHARDED_SCHEMA = "agent-mem.shards/v1";
-export interface ShardedSelection { schema: typeof SHARDED_SCHEMA; generation: string; phase: "active" }
+export interface ShardedSelection { schema: typeof SHARDED_SCHEMA; generation: string; phase: "active"; selectorRevision: string }
 
 export function userShardDir(base: string): string {
   return join(base, "user");
 }
 
 export function readShardedSelection(memoryDir: string): ShardedSelection {
-  const value = readProfileJSON(join(memoryDir, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown } | undefined;
-  if (!value || value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || value.phase !== "active") throw new Error("no active curated shard migration");
-  return { schema: SHARDED_SCHEMA, generation: value.generation, phase: "active" };
+  const value = readProfileJSON(join(memoryDir, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined;
+  if (!value || value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
+  return { schema: SHARDED_SCHEMA, generation: value.generation, phase: "active", selectorRevision: value.selectorRevision };
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */
@@ -151,6 +151,8 @@ export function resolveShardProfile(memoryDir: string, opts: { project?: string;
   const rootMachine = readProfileJSON(join(memoryDir, "machine.json"), 4096);
   const shardMachine = readProfileJSON(join(dir, "machine.json"), 4096);
   if (canonicalJSON(rootMachine) !== canonicalJSON(shardMachine)) throw new Error("curated shard machine identity mismatch");
-  return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: readSelector(memoryDir).revision,
+  const selector = readSelector(memoryDir);
+  if (selector.revision !== selection.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
+  return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: selector.revision,
     legacyHome: join(dir, "legacy"), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
 }

@@ -208,6 +208,24 @@ Candidate/counter sidecars are not migrated. `amem review` currently refuses a s
 
 Real migration remains blocked until the separately reviewed generation-capable amem release and exact-pinned agent-hub integration are installed and their running stores prove the same home/G/selector revision. Synthetic cross-writes and exact prune readbacks precede separately confirmed real migration; known local handles must be quiesced/closed and reopened through the supported session-preserving lifecycle. Release, deployment, real migration, host evidence/capture receipts and real multi-machine sync are not established by these source changes. Deactivation omits generation-only notes/prunes from the v1 view and is not a lossless rollback.
 
+## Curated shard migration (#15 T2)
+
+`amem migrate --shards` moves the curated single home into `projects/<key-hash>/` and `user/` through a resumable generation journal. The original single-home log bytes are never rewritten. Each project shard keeps migrated rows as read-only `legacy/` input, new generation rows in its own `log/` and `local/`, and its own `index.db`, `search.db` and mutation lock; original IDs, schema and placement are preserved. Existing capture and `work/` directories are not migration inputs and are left untouched. `catalog.db` remains derived and rebuildable, now including curated entry counts and last use. Per-shard sync refs are T3 and are not built.
+
+Use the same synthetic-home and person-authority boundaries as generation migration:
+
+```sh
+AMEM_HOME=/path/to/synthetic-memory amem migrate --shards --dry-run
+AMEM_HOME=/path/to/synthetic-memory amem migrate --shards
+AMEM_HOME=/path/to/synthetic-memory amem status
+# Later old-layout appends are reported by status and carried in idempotently:
+AMEM_HOME=/path/to/synthetic-memory amem migrate --resume
+```
+
+Every ordinary build that reads the single-home layout holds a cooperating lease in `readers/<pid>-<start-signature>.json`, renewed within 30 seconds and removed on close. Apply and resume refuse a live or unverifiable lease and remove only leases whose pid is confirmed gone. Published builds without leases cannot be detected: no process scan proves their absence, and their safety rests only on unchanged legacy bytes. Old-format writers may still append after the split; `amem status` reports those rows and resume carries them into the proper shards.
+
+Library callers open an already sealed shard directly with `openShardStore({ home, project })` or `openShardStore({ home, user: true })`; these opens do not scan the legacy home or walk the catalog. Project entries accept only their own project key, while the user shard accepts shared entries. Two project shards have independent writer locks, and each incremental index equals its rebuild. `bun scripts/measure-shard-ac8.ts` builds 20 projects and 200,000 entries, poisons the other 19 indexes, and measures open plus ten searches on one shard against the R3 idle/peak RSS limits.
+
 ## Development
 
 ```sh
