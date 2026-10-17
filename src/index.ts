@@ -1,4 +1,6 @@
 export * from "./memory/store.ts";
+export * from "./memory/capture.ts";
+export * from "./memory/search-fts.ts";
 export * from "./memory/sync.ts";
 export * from "./memory/import.ts";
 export * from "./memory/project.ts";

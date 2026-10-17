@@ -131,6 +131,14 @@ These interactive checks remain unrun until a person checks them in each install
 
 The JSONL segments are authoritative. `index.db` is derived and can be rebuilt. Entries are immutable; changes append operations. The compatibility schema remains `agent-hub.memory/v1` because it participates in entry IDs.
 
+## Capture tier and full-text search
+
+From issue #13 (phase P1), the package carries a second, machine-local tier beside the curated store. The capture tier records deterministic tool-event rows (project, agent, event, tool, paths, exit status and a bounded, secret-screened excerpt) in `capture/capture.db` under the memory home. It is never synced (the sync ignore admits only `log/*.jsonl`), never read as curated evidence, and never writes a curated log, so its maintenance can never evict notes, goals or work lists. Capture is bounded by a soft size cap and a retention window (defaults 512 MB per machine, 90 days), read from `capture/config.json` at every invocation, adjustable with `writeCaptureConfig` or through `CaptureOptions` when a host supplies the values; eviction removes the oldest capture rows first in bounded batches. On lock contention a writer appends to an append-only spool and exits fast; the next uncontended writer replays the spool idempotently. The capture path makes no network or model call.
+
+`store.search(query, filter)` searches both tiers with SQLite FTS5 and BM25 plus tier/recency weighting: natural multi-word queries match partial term sets (the substring filter required every word), and a curated row outranks the same text in the capture tier. The FTS copy of the curated rows lives in its own derived `search.db` (`index.db`'s table set is a frozen contract and gains nothing); it is written from the same apply path as the index, and a prune, crash or rebuild is detected and resynced, so the incremental FTS copy equals a full resync. Where FTS5 is unavailable the engine falls back to the substring filter and reports `engine: "substring"`; capture recall needs FTS5 and is skipped in the fallback. The library entry exports `CaptureStore`, `captureSearch`, `readCaptureConfig`, `writeCaptureConfig`, `SearchIndex` and `fts5Available`.
+
+Resource budgets are acceptance criteria, measured by `bun scripts/measure-budget.ts` in CI on Ubuntu and macOS: a hook-like append (including the spool-and-exit path under contention) must stay under 150 ms p95 wall time and 100 MB peak RSS (R2), the search path under 100 MB idle and 200 MB peak RSS (R3), and no amem process may remain after exit (R1). The script prints a machine-readable verdict per budget and its CI log is also the FTS5 availability evidence for Linux (R5).
+
 ## Library
 
 ```ts
