@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { entryId, MemoryStore, openShardStore, type Entry, type NoteInput, type NoteEntry, type OpEntry } from "../src/memory/store.ts";
@@ -111,4 +111,29 @@ test("#119 F12 unrelated translation receipt tail refuses before any activation 
   writeFileSync(path, '{"unrelated":'); const before = readFileSync(journal), tail = readFileSync(path);
   await expect(migrateShards(opts(f.dir, "resume"))).rejects.toThrow(/receipt.*(inspect|recover)|inspect.*receipt/i);
   expect(readFileSync(path)).toEqual(tail); expect(readFileSync(journal)).toEqual(before);
+});
+
+
+test("#119 F2 resume finishes an empty bridge interrupted before its machine identity was written", async () => {
+  const dir = home(), source = seed(dir), before = readFileSync(source.file);
+  await expect(migrateShards({ ...opts(dir, "apply"), checkpoint: () => { throw new Error("captured initialization fixture"); } })).rejects.toThrow("captured initialization fixture");
+  const project = shardDir(source.memory, A);
+  rmSync(project, { recursive: true, force: true }); mkdirSync(join(project, "legacy", "log"), { recursive: true });
+  const captured = JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8"));
+  expect(captured.phase).toBe("captured"); expect(captured.sources).toEqual([]);
+  expect(existsSync(join(project, "legacy", "machine.json"))).toBe(false);
+  await migrateShards(opts(dir, "resume"));
+  expect(readFileSync(source.file)).toEqual(before);
+  const shard = openShardStore({ home: dir, project: A });
+  try { expect(shard.list({ project: A }).map(row => row.id)).toContain(source.id); } finally { shard.close(); }
+});
+
+test("#119 F2 missing copied identity with nonempty rows refuses before deactivating an active split", async () => {
+  const dir = home(), source = seed(dir); await migrateShards(opts(dir, "apply"));
+  const bridge = join(shardDir(source.memory, A), "legacy"), copied = join(bridge, "log", `${source.row.machine}.jsonl`);
+  const copiedBefore = readFileSync(copied), journal = join(source.memory, "shards.json"), before = readFileSync(journal);
+  rmSync(join(bridge, "machine.json")); appendNote(source, "new source must not assign old unproven copied bytes");
+  await expect(migrateShards(opts(dir, "resume"))).rejects.toThrow(/identity.*inspect|inspect.*identity/i);
+  expect(readFileSync(journal)).toEqual(before); expect(readFileSync(copied)).toEqual(copiedBefore);
+  expect(existsSync(join(bridge, "machine.json"))).toBe(false);
 });

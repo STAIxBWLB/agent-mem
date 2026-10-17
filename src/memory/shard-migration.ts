@@ -289,10 +289,33 @@ function prepareShard(memoryDir: string, destination: Destination, generation: s
   return dir;
 }
 
+/** An interrupted mkdir may precede machine.json; only byte-empty, regular segments lack provenance safely. */
+function copiedBridge(root: string): LegacySegment[] {
+  const refused = (): never => { throw new Error("copied bridge identity is unavailable; inspect its original initialization or writer recovery before resuming"); };
+  const dir = lstatSync(root, { throwIfNoEntry: false });
+  if (!dir) return [];
+  if (dir.isSymbolicLink() || !dir.isDirectory()) return refused();
+  const machine = lstatSync(join(root, "machine.json"), { throwIfNoEntry: false });
+  if (machine) {
+    if (machine.isSymbolicLink() || !machine.isFile()) return refused();
+    return readLegacySnapshot(root);
+  }
+  for (const name of readdirSync(root)) {
+    if (name !== "log" && name !== "local") return refused();
+    const folder = join(root, name), stat = lstatSync(folder);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return refused();
+    for (const file of readdirSync(folder)) {
+      const path = join(folder, file), entry = lstatSync(path);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(file) || entry.isSymbolicLink() || !entry.isFile() || entry.size !== 0) return refused();
+    }
+  }
+  return [];
+}
+
 function existingRows(dir: string, generation: string): { ids: Map<string, Set<string>>; tails: Map<string, Buffer> } {
   const ids = new Map<string, Set<string>>(), tails = new Map<string, Buffer>();
-  const legacy = existsSync(join(dir, "legacy")) ? readLegacySnapshot(join(dir, "legacy")) : [];
-  const main = existsSync(join(dir, "legacy-main")) ? readLegacySnapshot(join(dir, "legacy-main")).map(segment => ({ ...segment, source: "legacy-main" })) : [];
+  const legacy = copiedBridge(join(dir, "legacy"));
+  const main = copiedBridge(join(dir, "legacy-main")).map(segment => ({ ...segment, source: "legacy-main" }));
   const own: LegacySegment[] = [], reader = new SegmentReader();
   for (const folder of ["log", "local"]) for (const name of (existsSync(join(dir, folder)) ? readdirSync(join(dir, folder)) : []).sort().filter(name => name.endsWith(".jsonl"))) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) changed();
