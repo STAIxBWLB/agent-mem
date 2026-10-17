@@ -1,9 +1,10 @@
+import { SHARDED_SCHEMA } from "./shard.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile } from "./generation.ts";
+import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile } from "./generation.ts";
 import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
@@ -87,7 +88,15 @@ export class GenerationIndex {
       });
     });
   }
+  /** Authoring handles cannot read or append a partially resumed split; migration index bootstraps use captured limits. */
+  private shardFrontier(): string | undefined {
+    if (!this.profile.sharded || this.options.limits !== undefined) return undefined;
+    const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
+    if (!value || value.schema !== SHARDED_SCHEMA || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+    return hashJSON(value);
+  }
   private capture(): { segments: LegacySegment[]; commit?: string } {
+    const shardBefore = this.shardFrontier();
     const db = this.options.db;
     const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
     const initial = readProfileJSON(join(this.profile.dir, "migration-sources.json")) as { sources?: LegacyCheckpoint[]; legacyCommit?: string } | undefined;
@@ -108,6 +117,7 @@ export class GenerationIndex {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
     }
+    if (this.shardFrontier() !== shardBefore) return fail();
     return { segments: [...legacy, ...own], ...(commit ? { commit } : {}) };
   }
   private index(captured: { segments: LegacySegment[]; commit?: string }): void {
@@ -204,6 +214,7 @@ export class GenerationIndex {
   private pendingPath(local: boolean, machine: string): string { return join(this.profile.dir, "prune-plans", `pending-${local ? "local" : "log"}-${machine}.json`); }
   /** Every ordinary writer must refuse to append unrelated JSON after a prune crash tail. */
   assertAppendable(local: boolean, machine: string): void {
+    this.shardFrontier();
     if (readProfileJSON(this.pendingPath(local, machine)) !== undefined) fail();
     const file = join(this.profile.dir, local ? "local" : "log", `${machine}.jsonl`);
     if (!existsSync(file)) return;

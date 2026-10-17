@@ -346,3 +346,31 @@ test("#119 malformed UTF-8 legacy line is counted once without shifting its byte
   try { expect(shard.list({ project: A }).map(row => row.id)).toContain(next.id); }
   finally { shard.close(); }
 });
+
+
+test("#119 interrupted active resume deactivates every split reader until idempotent completion", async () => {
+  const dir = home(), source = seed(dir);
+  await migrateShards(options(dir, "apply"));
+  const existing = openShardStore({ home: dir, project: A });
+  try {
+    expect(existing.list({ project: A }).map(row => row.id)).toContain(source.id);
+    const appended = later(source.row, "old-layout append before interrupted active resume");
+    appendFileSync(source.file, encoded(appended));
+    await expect(migrateShards({ ...options(dir, "resume"), checkpoint: stage => {
+      if (stage === "after-shard") throw new Error("interrupt active resume after a shard");
+    } })).rejects.toThrow("interrupt active resume after a shard");
+    expect(JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8")).phase).toBe("captured");
+    expect(shardMigrationStatus(source.memory)).toMatchObject({ active: false, phase: "captured", pending: { rows: 1 } });
+    expect(() => openShardStore({ home: dir, project: A })).toThrow();
+    expect(() => existing.list({ project: A })).toThrow();
+    expect(() => existing.note(note(A, "must never append while split is incomplete"))).toThrow();
+    await migrateShards(options(dir, "resume"));
+    await migrateShards(options(dir, "resume"));
+    expect(JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8")).phase).toBe("active");
+    const reopened = openShardStore({ home: dir, project: A });
+    try {
+      expect(reopened.list({ project: A }).filter(row => row.id === appended.id)).toHaveLength(1);
+      expect(reopened.list({ project: A }).some(row => row.text === "must never append while split is incomplete")).toBe(false);
+    } finally { reopened.close(); }
+  } finally { existing.close(); }
+});

@@ -362,11 +362,11 @@ function counts(plan: RoutePlan): ShardMigrationCounts {
 const refusalSummary = (value: ShardMigrationCounts) => value.sharedSupersededByPrivate ? { refusals: [`shared superseded by private: ${value.sharedSupersededByPrivate}`] } : {};
 const removalEvidence = (journal: ShardJournal | undefined) => journal?.deadLeasesRemoved?.length ? { deadLeasesRemoved: journal.deadLeasesRemoved } : {};
 
-export function shardMigrationStatus(memoryDir: string): { active: boolean; generation?: string; pending: ShardMigrationCounts; deadLeasesRemoved?: DeadLeaseRemoval[]; refusals?: string[] } {
+export function shardMigrationStatus(memoryDir: string): { active: boolean; generation?: string; phase?: "captured" | "active"; pending: ShardMigrationCounts; deadLeasesRemoved?: DeadLeaseRemoval[]; refusals?: string[] } {
   const dir = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), journal = readJournal(dir, true);
-  if (!journal || journal.phase !== "active") return { active: false, pending: emptyCounts(), ...removalEvidence(journal) };
+  if (!journal) return { active: false, pending: emptyCounts() };
   const plan = route(capture(dir, journal.generation, journal), journal.sources, true);
-  return { active: true, generation: journal.generation, pending: counts(plan), ...refusalSummary(plan), ...removalEvidence(journal) };
+  return { active: journal.phase === "active", phase: journal.phase, generation: journal.generation, pending: counts(plan), ...refusalSummary(plan), ...removalEvidence(journal) };
 }
 
 function preflight(memoryDir: string, options: ShardMigrationOptions, chosen?: string, dryRun = false) {
@@ -427,6 +427,9 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
     } });
     admission();
     const alreadyActive = journal.phase === "active" && plan.lines.length === 0;
+    // Existing source checkpoints stay committed only after all affected shards are sealed.
+    // A resumed active split must stop serving reads before the first copied append.
+    if (!alreadyActive) journal.phase = "captured";
     persist();
     const affected = writeRoutes(memoryDir, plan, generation, machine);
     for (const destination of affected) {
