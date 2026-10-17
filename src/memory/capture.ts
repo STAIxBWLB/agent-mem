@@ -4,27 +4,34 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameS
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
 import { isDenied } from "./platform.ts";
-import { captureHome } from "./home.ts";
-import { fts5Available, ftsTerms } from "./search-fts.ts";
+import { memoryBase } from "./home.ts";
+import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
+import { machineId } from "./store.ts";
+import { fts5Available } from "./search-fts.ts";
 
 /**
- * #13 design A, tier 2: machine-local capture. Deterministic extraction only (R4: no model call, no network): an
- * event, a tool, paths, an exit status and a bounded, secret-screened excerpt per row. The tier lives in its own
- * `capture.db` under `<memory home>/capture/`, never in a shared v1 segment (AC8): the sync .gitignore admits only
- * `log/*.jsonl`, and no code path here touches the curated logs, so curated notes, goals and work lists are never
- * evicted or rewritten by capture maintenance (AC5). Capture rows are recall candidates, never curated evidence.
+ * #13 design A, tier 2, born sharded (#15 T1): machine-local capture, one shard per project key. A shard lives at
+ * `projects/<key-hash>/machine/<machine-id>/` under the memory home (D1's shard root, the scope table's machine
+ * level), has its own locks, so sessions in two projects never contend, and is never synced and never read as
+ * curated evidence. Deterministic extraction only (R4: no model call, no network): an event, a tool, paths, an
+ * exit status and a bounded, secret-screened excerpt per row. No code path here touches the curated logs, so
+ * curated notes, goals and work lists are never evicted or rewritten by capture maintenance (AC5).
  *
- * R6 bounds: a soft size cap (default 512 MB per machine) and a retention window (default 90 days), both read from
- * `config.json` at every invocation and overridable through the library options a host such as agent-hub passes in.
- * Eviction removes the oldest capture rows first, in bounded batches per invocation, so shrinking the cap finishes
- * over later invocations instead of breaking the hook budget (R2).
+ * R6 bounds: a soft size cap and a retention window (defaults 512 MB per machine, 90 days), resolved at every
+ * invocation from `CaptureOptions`, then the shard's `config.json`, then the home default `capture-config.json`
+ * the capacity advisor (R7) writes. Eviction removes the oldest capture rows first, in bounded batches per
+ * invocation, so shrinking a cap finishes over later invocations instead of breaking the hook budget (R2).
  * ponytail: the cap counts row payload bytes, not the sqlite file's page slack or WAL; a VACUUM blocks writers and
  * stays out of the hook path, so file size can exceed the cap until pages are reused.
  *
- * R2 contention: a writer that cannot take the database lock within `busyTimeoutMs` appends the row to the
+ * R2 contention: a writer that cannot take its shard's lock within `busyTimeoutMs` appends the row to the
  * append-only `spool.jsonl` and exits instead of blocking the agent. The next uncontended writer (or an explicit
  * `drain()`) replays the spool; replay is idempotent per spooled line, so a crash between insert and truncation
  * never doubles a row.
+ *
+ * Migration: the pre-T1 machine-wide `capture/` (this branch never shipped) is drained per project on open —
+ * each project key's rows move into its shard with their original timestamps, and the legacy store is removed
+ * once empty.
  */
 
 export const CAPTURE_DEFAULT_CAP_MB = 512;
@@ -53,8 +60,13 @@ export interface CaptureRow {
 }
 export interface CaptureConfig { capMb: number; retentionDays: number }
 export interface CaptureOptions {
-  home?: string; now?: () => number;
-  /** Host-supplied R6 values win over the machine-local config file. */
+  home?: string;
+  /** The project key this shard belongs to; aliases resolve to the canonical key (#15 D2). */
+  project: string;
+  /** Defaults to this machine's `machine.json` identity, shared with the curated store. */
+  machine?: string;
+  now?: () => number;
+  /** Host-supplied R6 values win over the shard and home config files. */
   capMb?: number; retentionDays?: number;
   busyTimeoutMs?: number;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
@@ -62,20 +74,22 @@ export interface CaptureOptions {
 }
 export type CaptureAppend = { id: number } | { spooled: true };
 
-/** The machine-local R6 settings, read at every invocation so a change applies at the next hook or search. */
-export function readCaptureConfig(dir: string): CaptureConfig {
-  let parsed: Record<string, unknown> = {};
-  try { parsed = JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as Record<string, unknown>; } catch { /* absent or unreadable: defaults */ }
+const configValues = (parsed: Record<string, unknown>): Partial<CaptureConfig> => {
   const capMb = Number(parsed.cap_mb), retentionDays = Number(parsed.retention_days);
   return {
-    capMb: Number.isFinite(capMb) && capMb > 0 ? capMb : CAPTURE_DEFAULT_CAP_MB,
-    retentionDays: Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : CAPTURE_DEFAULT_RETENTION_DAYS,
+    ...(Number.isFinite(capMb) && capMb > 0 ? { capMb } : {}),
+    ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}),
   };
+};
+
+/** The R6 settings one config file holds; absent or invalid keys are simply not set. */
+export function readCaptureConfigFile(path: string): Partial<CaptureConfig> {
+  try { return configValues(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>); } catch { return {}; }
 }
 
-/** The person (or, through the library, an authorized host flow) adjusts the R6 bounds; agents never write this. */
-export function writeCaptureConfig(dir: string, config: Partial<CaptureConfig>): CaptureConfig {
-  const next = readCaptureConfig(dir);
+/** Merge `config` into one config file; only given keys change. The person (or R7's apply) writes these, never an agent. */
+export function writeCaptureConfigFile(path: string, config: Partial<CaptureConfig>): Partial<CaptureConfig> {
+  const next = { ...readCaptureConfigFile(path) };
   if (config.capMb !== undefined) {
     if (!Number.isFinite(config.capMb) || config.capMb <= 0) throw new Error("capture.cap_mb must be a positive number");
     next.capMb = config.capMb;
@@ -84,9 +98,25 @@ export function writeCaptureConfig(dir: string, config: Partial<CaptureConfig>):
     if (!Number.isFinite(config.retentionDays) || config.retentionDays <= 0) throw new Error("capture.retention_days must be a positive number");
     next.retentionDays = config.retentionDays;
   }
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ cap_mb: next.capMb, retention_days: next.retentionDays }) + "\n", { mode: 0o600 });
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify({ cap_mb: next.capMb ?? CAPTURE_DEFAULT_CAP_MB, retention_days: next.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS }) + "\n", { mode: 0o600 });
   return next;
+}
+
+/** The effective R6 settings for a shard directory: shard config over the home default over the built-in defaults. */
+export function readCaptureConfig(dir: string, base?: string): CaptureConfig {
+  const homeDefault = base === undefined ? {} : readCaptureConfigFile(join(base, "capture-config.json"));
+  const shard = readCaptureConfigFile(join(dir, "config.json"));
+  return {
+    capMb: shard.capMb ?? homeDefault.capMb ?? CAPTURE_DEFAULT_CAP_MB,
+    retentionDays: shard.retentionDays ?? homeDefault.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS,
+  };
+}
+
+/** Adjust a shard's own R6 bounds (an override of the home default); merged over that shard's current file. */
+export function writeCaptureConfig(dir: string, config: Partial<CaptureConfig>): CaptureConfig {
+  const next = writeCaptureConfigFile(join(dir, "config.json"), config);
+  return { capMb: next.capMb ?? CAPTURE_DEFAULT_CAP_MB, retentionDays: next.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS };
 }
 
 const lockError = (error: unknown): boolean => /lock|busy/i.test((error as Error)?.message ?? "");
@@ -96,6 +126,12 @@ const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.proje
 
 export class CaptureStore {
   readonly dir: string;
+  /** The canonical project key of this shard (aliases resolved). */
+  readonly key: string;
+  /** Rows the pre-T1 machine-wide capture store handed this shard on open. */
+  readonly migrated: number;
+  private readonly base: string;
+  private readonly requestedKey: string;
   private readonly db: Database;
   private readonly now: () => number;
   private readonly screen: (text: string) => boolean;
@@ -104,11 +140,17 @@ export class CaptureStore {
   /** Set when the schema setup itself met the lock: appends spool without touching the database again. */
   private contended = false;
 
-  constructor(opts: CaptureOptions = {}) {
-    this.dir = captureHome(opts.home);
+  constructor(opts: CaptureOptions) {
+    if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
+    this.base = memoryBase(opts.home);
+    const machine = opts.machine ?? machineId(this.base).id;
+    this.requestedKey = opts.project;
+    this.key = resolveAlias(this.base, opts.project);
+    ensureShardDescriptor(this.base, this.key);
+    this.dir = captureShardDir(this.base, opts.project, machine);
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
-    const config = readCaptureConfig(this.dir); // each invocation: a config change applies at the next hook
+    const config = readCaptureConfig(this.dir, this.base); // each invocation: a config change applies at the next hook
     this.capMb = opts.capMb ?? config.capMb;
     this.retentionDays = opts.retentionDays ?? config.retentionDays;
     this.now = opts.now ?? Date.now;
@@ -130,6 +172,39 @@ export class CaptureStore {
       if (!lockError(error)) throw error;
       this.contended = true; // R2: the hook spools and exits instead of waiting out another writer
     }
+    this.migrated = this.contended ? 0 : this.migrateLegacy();
+  }
+
+  /** The pre-T1 machine-wide store hands this project key's rows to the shard, once; an emptied legacy store goes away. */
+  private migrateLegacy(): number {
+    const legacyDir = join(this.base, "capture"); // the pre-T1 machine-wide location (this branch never shipped)
+    const file = join(legacyDir, "capture.db");
+    if (!existsSync(file)) return 0;
+    const homeDefault = join(this.base, "capture-config.json");
+    if (existsSync(join(legacyDir, "config.json")) && !existsSync(homeDefault)) renameSync(join(legacyDir, "config.json"), homeDefault);
+    let legacy: Database | undefined;
+    let moved = 0;
+    try {
+      legacy = new Database(file);
+      legacy.run("PRAGMA busy_timeout = 3000");
+      const rows = legacy.query("SELECT * FROM rows WHERE project = ? OR project = ? ORDER BY id").all(this.key, this.requestedKey) as RawRow[];
+      // `legacy:<id>` spool ids make the move idempotent: a crash between the two writes replays nothing.
+      this.db.transaction(() => {
+        for (const r of rows) {
+          if (this.appendRow({ project: this.key, agent: r.agent, event: r.event, at: r.at, ...(r.tool ? { tool: r.tool } : {}), ...(r.status ? { status: r.status } : {}),
+            paths: JSON.parse(r.paths) as string[], excerpt: r.excerpt }, `legacy:${r.id}`)) moved++;
+        }
+      }).immediate();
+      legacy.transaction(() => { for (const r of rows) legacy!.query("DELETE FROM rows WHERE id = ?").run(r.id); }).immediate();
+      if ((legacy.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n === 0) {
+        legacy.close();
+        legacy = undefined;
+        for (const name of ["capture.db", "capture.db-wal", "capture.db-shm", "spool.jsonl", "spool.jsonl.draining"]) rmSync(join(legacyDir, name), { force: true });
+        try { rmSync(legacyDir, { recursive: true }); } catch { /* a leftover file keeps the directory */ }
+      }
+    } catch { return moved; }
+    finally { legacy?.close(); }
+    return moved;
   }
 
   /** External-content FTS5 over the excerpts, kept in sync by triggers, so capture search needs no catch-up pass. */
@@ -222,13 +297,13 @@ export class CaptureStore {
     return { drained };
   }
 
-  /** The row insert shared by append and drain; with a spool id the insert is idempotent. */
-  private appendRow(input: CaptureInput, spoolId: string): boolean {
+  /** The row insert shared by append, drain and the legacy migration; with a spool id the insert is idempotent. */
+  private appendRow(input: CaptureInput, spoolId: string | null): boolean {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) return false;
     // bun:sqlite's run().changes is not reliable for an ignored insert inside a transaction (FTS triggers confuse
     // it), so the replay check is a plain indexed lookup, never the statement's change count.
-    if (this.db.query("SELECT 1 FROM rows WHERE spool_id = ?").get(spoolId)) return false;
+    if (spoolId !== null && this.db.query("SELECT 1 FROM rows WHERE spool_id = ?").get(spoolId)) return false;
     const tool = str(input.tool, 64) ? input.tool! : null;
     const status = str(input.status, 64) ? input.status! : null;
     const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
@@ -294,17 +369,28 @@ export class CaptureStore {
   close(): void { this.db.close(); }
 }
 
-/** The capture leg of #13 search: BM25 over the excerpts of this machine's capture tier. Empty when FTS5 is absent. */
-export function captureSearch(dir: string, q: string, limit: number): { row: CaptureRow; rank: number }[] {
-  const match = ftsTerms(q);
-  if (!match || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
+/** One shard's capture totals for the catalog and the capacity advisor, without opening a writer. */
+export function captureShardStats(dir: string): { rows: number; bytes: number; lastAt: string | null } {
+  if (!existsSync(join(dir, "capture.db"))) return { rows: 0, bytes: 0, lastAt: null };
   let db: Database | undefined;
   try {
     db = new Database(join(dir, "capture.db"), { readonly: true });
     db.run("PRAGMA busy_timeout = 3000");
-    if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get()) return [];
-    const rows = db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit) as (RawRow & { rank: number })[];
-    return rows.map((r) => ({ row: toRow(r), rank: r.rank }));
-  } catch { return []; } // a contended or corrupted capture tier degrades recall, never the search itself
+    const row = db.query("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b, MAX(at) AS last FROM rows").get() as { n: number; b: number; last: string | null };
+    return { rows: row.n, bytes: row.b, lastAt: row.last };
+  } catch { return { rows: 0, bytes: 0, lastAt: null }; }
+  finally { db?.close(); }
+}
+
+/** One shard's capture added since an ISO time: the growth input of the R7 capacity advisor. */
+export function captureShardGrowth(dir: string, since: string): { rows: number; bytes: number } {
+  if (!existsSync(join(dir, "capture.db"))) return { rows: 0, bytes: 0 };
+  let db: Database | undefined;
+  try {
+    db = new Database(join(dir, "capture.db"), { readonly: true });
+    db.run("PRAGMA busy_timeout = 3000");
+    const row = db.query("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM rows WHERE at >= ?").get(since) as { n: number; b: number };
+    return { rows: row.n, bytes: row.b };
+  } catch { return { rows: 0, bytes: 0 }; }
   finally { db?.close(); }
 }

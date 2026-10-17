@@ -5,9 +5,10 @@ import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
-import { memoryHome, captureHome } from "./home.ts";
-import { SearchIndex } from "./search-fts.ts";
-import { captureSearch, type CaptureRow } from "./capture.ts";
+import { memoryHome } from "./home.ts";
+import { SearchIndex, captureSearch } from "./search-fts.ts";
+import { resolveAlias, shardMachineDir } from "./shard.ts";
+import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
@@ -202,9 +203,9 @@ export class MemoryStore {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly deferPromotions: boolean;
-  /** #13: the derived FTS5 copy of the curated rows, and this machine's capture tier directory. */
+  /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
   private readonly searchIndex: SearchIndex;
-  private readonly captureDir: string;
+  private readonly memoryBaseDir: string;
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
@@ -244,7 +245,7 @@ export class MemoryStore {
     this.db = db;
     this.mutationDb = mutationDatabase(this.dir);
     this.searchIndex = new SearchIndex(join(home, "search.db"));
-    this.captureDir = captureHome(opts.home);
+    this.memoryBaseDir = home;
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
     if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
       apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
@@ -801,10 +802,13 @@ export class MemoryStore {
       if (!view) continue;
       hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
     }
-    if (f.includeCapture !== false) for (const { row, rank } of captureSearch(this.captureDir, q, Math.max(limit * 4, 32))) {
-      if (f.project && row.project !== f.project) continue;
-      if (f.since && Date.parse(row.at) < Date.parse(f.since)) continue;
-      hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
+    // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
+    if (f.includeCapture !== false && f.project) {
+      const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32))) {
+        if (f.since && Date.parse(row.at) < Date.parse(f.since)) continue;
+        hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
+      }
     }
     const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));

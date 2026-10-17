@@ -7,6 +7,9 @@
  *   150 ms and peak RSS under 100 MB, both for a plain append and for the spool-and-exit path under lock contention.
  * - R3 (search cost): idle RSS under 100 MB, peak under 200 MB across ten searches over a seeded home.
  * - R1 (no resident process): after every child exits, no budget child process remains.
+ *
+ * Every sample is also appended to the seeded home's rolling `metrics.jsonl` (#13 R7): the format the capacity
+ * advisor reads, written here until the P3 hooks become the steady-state writers.
  */
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
@@ -15,7 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "../src/memory/store.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
-import { captureHome } from "../src/memory/home.ts";
+import { memoryBase } from "../src/memory/home.ts";
+import { appendMetrics, type MetricSample } from "../src/memory/capacity.ts";
 import { fts5Available } from "../src/memory/search-fts.ts";
 
 const R2_WALL_P95_MS = 150, RSS_HOOK_MB = 100, RSS_IDLE_MB = 100, RSS_SEARCH_MB = 200;
@@ -37,35 +41,41 @@ function child(script: string, home: string): { wallMs: number; out: Record<stri
 
 const home = mkdtempSync(join(tmpdir(), "amem-budget-"));
 const memory = new MemoryStore({ home, screen: () => "keep" });
+const samples: MetricSample[] = [];
 try {
   // A seeded home, so the measurements cover a store with content rather than an empty one.
   for (let i = 0; i < 200; i++) memory.note({ op: "note", project: "budget", scope: "project", tier: "long", kind: "finding", peer: "measure", source: "hub", text: `note ${i} about bounded capture tiers, eviction order and the storage engine`, about: [] });
-  const capture = new CaptureStore({ home });
+  const capture = new CaptureStore({ home, project: "budget" });
   for (let i = 0; i < 2000; i++) capture.append({ project: "budget", agent: "measure", event: "PostToolUse", tool: "Edit", paths: ["src/memory/store.ts"], status: "ok", excerpt: `capture row ${i} ${"y".repeat(220)}` });
+  const capDir = capture.dir;
   capture.close();
 
   // R2, uncontended: p95 wall and peak RSS per hook invocation.
   const plain = Array.from({ length: HOOK_RUNS }, () => child("budget-hook-child.ts", home));
   const plainWall = p95(plain.map((r) => r.wallMs)), plainRss = Math.max(...plain.map((r) => rssMB(Number(r.out.maxRSS))));
+  for (const r of plain) samples.push({ at: new Date().toISOString(), kind: "hook", wallMs: round(r.wallMs), rssMB: round(rssMB(Number(r.out.maxRSS))) });
 
   // R2 under contention: the writer spools and exits; afterwards one uncontended hook drains the spool.
-  const holder = new Database(join(captureHome(home), "capture.db"));
+  const holder = new Database(join(capDir, "capture.db"));
   holder.run("PRAGMA busy_timeout = 0");
   holder.run("BEGIN EXCLUSIVE");
   const spooled = Array.from({ length: CONTENTION_RUNS }, () => child("budget-hook-child.ts", home));
   holder.run("ROLLBACK");
   holder.close();
   const spoolWall = p95(spooled.map((r) => r.wallMs)), spoolRss = Math.max(...spooled.map((r) => rssMB(Number(r.out.maxRSS))));
+  for (const r of spooled) samples.push({ at: new Date().toISOString(), kind: "hook", wallMs: round(r.wallMs), rssMB: round(rssMB(Number(r.out.maxRSS))) });
   if (!spooled.every((r) => "spooled" in r.out)) throw new Error("a contended hook wrote instead of spooling");
   const drain = child("budget-hook-child.ts", home); // an uncontended hook replays the spool inside the same budget
-  const capCheck = new CaptureStore({ home });
+  const capCheck = new CaptureStore({ home, project: "budget" });
   const captureRows = capCheck.stats().rows;
   capCheck.close();
-  if (existsSync(join(captureHome(home), "spool.jsonl"))) throw new Error("the spool did not drain after contention");
+  if (existsSync(join(capDir, "spool.jsonl"))) throw new Error("the spool did not drain after contention");
 
   // R3: idle RSS and peak RSS during searches.
   const search = child("budget-search-child.ts", home);
   const idleRss = mb(Number(search.out.idle)), searchRss = rssMB(Number(search.out.maxRSS));
+  samples.push({ at: new Date().toISOString(), kind: "search", wallMs: round(Number(search.out.p95Ms)), rssMB: round(searchRss), idleMB: round(idleRss) });
+  appendMetrics(memoryBase(home), samples);
 
   // R1: no budget child remains after every invocation ended (each was spawnSync-reaped; verify the process table).
   const ps = spawnSync("ps", ["-axo", "args="], { encoding: "utf8" }).stdout;
@@ -81,7 +91,7 @@ try {
     },
     R3: { pass: idleRss < RSS_IDLE_MB && searchRss < RSS_SEARCH_MB, idleRssMB: round(idleRss), peakRssMB: round(searchRss), budgetIdleMB: RSS_IDLE_MB, budgetPeakMB: RSS_SEARCH_MB, engine: search.out.engine },
   };
-  const report = { platform: process.platform, bun: Bun.version, fts5Available: fts5Available(), budgets, pass: Object.values(budgets).every((b) => b.pass) };
+  const report = { platform: process.platform, bun: Bun.version, fts5Available: fts5Available(), budgets, metricsWritten: samples.length, pass: Object.values(budgets).every((b) => b.pass) };
   console.log(JSON.stringify(report, null, 2));
   if (!report.pass) process.exitCode = 1;
 } finally {

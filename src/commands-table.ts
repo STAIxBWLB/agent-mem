@@ -63,6 +63,14 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
     "--apply": flag("Apply the exact local plan"), "--plan": { description: "Sealed local plan JSON file", value: "path" },
   } },
+  capacity: { description: "Report capture use and propose R6 bounds (R7)", options: { ...json, "--disk-share": text("Disk-share bound for the proposal (default 0.02)") }, commands: {
+    apply: { description: "Write the proposed (or given) bounds to the home capture config", mutates: true, options: {
+      ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview") } },
+  } },
+  alias: { description: "Person-reviewed project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
+    list: { description: "List alias ops" },
+    add: { description: "Map one key onto its canonical key (append-only op)", args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
+  } },
   completion: { description: "Print static shell completion", args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
   help: { description: "Show help" }, version: { description: "Show version" },
 };

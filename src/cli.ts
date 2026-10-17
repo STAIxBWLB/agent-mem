@@ -1,8 +1,12 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
-import { MemoryStore, looksSecret } from "./memory/store.ts";
+import { join } from "node:path";
+import { MemoryStore, looksSecret, machineId } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
+import { appendAlias, listAliases } from "./memory/shard.ts";
+import { capacityReport, capacityText } from "./memory/capacity.ts";
+import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
 import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
@@ -125,6 +129,28 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ordinary v1 note ${result.noteId}`;
       } finally { store.close(); }
     } finally { candidates.close(); }
+  }
+  if (sub === "capacity") {
+    const report = capacityReport({ ...(options["--disk-share"] ? { diskShare: Number(options["--disk-share"]) } : {}) });
+    if (parsed.path[1] !== "apply") return options["--json"] ? JSON.stringify(report, null, 2) : capacityText(report);
+    // Person-only (agent marker and TTY are refused above): preview first, --confirm writes the home default config.
+    const file = join(memoryHome(), "capture-config.json");
+    const target: CaptureConfig = {
+      capMb: options["--cap-mb"] ? Number(options["--cap-mb"]) : report.proposal.capMb,
+      retentionDays: options["--retention-days"] ? Number(options["--retention-days"]) : report.proposal.retentionDays,
+    };
+    if (!Number.isFinite(target.capMb) || target.capMb <= 0 || !Number.isFinite(target.retentionDays) || target.retentionDays <= 0) throw new Error("capacity apply needs positive --cap-mb and --retention-days");
+    if (options["--confirm"] !== true) return JSON.stringify({ preview: { file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason }, confirm: "re-run with --confirm to write" }, null, 2);
+    const written = writeCaptureConfigFile(file, target);
+    return JSON.stringify({ file, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
+  }
+  if (sub === "alias") {
+    if (parsed.path[1] === "add") {
+      const op = appendAlias(memoryHome(), { alias: parsed.positionals[0]!, key: parsed.positionals[1]!, actor: "person", machine: machineId(memoryHome()).id });
+      return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} -> ${op.key}`;
+    }
+    const ops = listAliases(memoryHome());
+    return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})`).join("\n") : "no aliases recorded";
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");

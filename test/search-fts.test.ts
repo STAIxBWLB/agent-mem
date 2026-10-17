@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
 import { MemoryStore, fts5Available, setFts5AvailableForTest, CaptureStore, type NoteInput } from "../src/index.ts";
-import { captureHome } from "../src/memory/home.ts";
+
 
 const project = "proj";
 const cleanup: (() => void)[] = [];
@@ -42,7 +42,7 @@ test("BM25 ranks the stronger match first; curated outranks capture; recency bre
   expect(bm25.hits.map((h) => h.view?.text)).toEqual(["ranking alpha alpha alpha alpha", "ranking alpha beta gamma delta epsilon zeta"]);
 
   s.note(note("the bounded store evicts oldest capture rows first"));
-  const capture = new CaptureStore({ home: dir, now: () => now });
+  const capture = new CaptureStore({ home: dir, project, now: () => now });
   cleanup.push(() => capture.close());
   capture.append({ project, agent: "kimi", event: "PostToolUse", excerpt: "the bounded store evicts oldest capture rows first" });
   const twin = s.search("bounded store evicts oldest capture rows", { project });
@@ -86,7 +86,7 @@ test("without FTS5 the engine falls back to the substring filter", () => {
   setFts5AvailableForTest(false);
   const dir = home(), s = store(dir);
   s.note(note("keep bun:sqlite as the only storage engine"));
-  const capture = new CaptureStore({ home: dir });
+  const capture = new CaptureStore({ home: dir, project });
   cleanup.push(() => capture.close());
   capture.append({ project, agent: "kimi", event: "PostToolUse", excerpt: "storage engine capture row" });
   const result = s.search("storage engine", { project });
@@ -100,7 +100,7 @@ test("search results are unchanged by a rebuild: incremental FTS equals a full r
   if (!fts5Available()) return;
   const dir = home(), s = store(dir);
   for (let i = 0; i < 12; i++) s.note(note(`note ${i} about bounded capture and eviction${i % 3 === 0 ? " with extra bounded detail" : ""}`));
-  const capture = new CaptureStore({ home: dir });
+  const capture = new CaptureStore({ home: dir, project });
   cleanup.push(() => capture.close());
   capture.append({ project, agent: "kimi", event: "PostToolUse", excerpt: "a bounded capture row about eviction" });
   const shape = (r: ReturnType<MemoryStore["search"]>) => r.hits.map((h) => `${h.source}:${h.view?.id ?? h.capture!.id}:${h.score.toFixed(9)}`);
@@ -119,7 +119,7 @@ test("AC8: a published v1 reader is unaffected and capture data never enters a v
     readdirSync(join(s.dir, sub)).sort().filter((n) => n.endsWith(".jsonl")).map((n) => [`${sub}/${n}`, readFileSync(join(s.dir, sub, n), "utf8")])));
   const before = segments();
   const marker = "capture-only-marker-7f3a9c";
-  const capture = new CaptureStore({ home: dir });
+  const capture = new CaptureStore({ home: dir, project });
   cleanup.push(() => capture.close());
   capture.append({ project, agent: "kimi", event: "PostToolUse", excerpt: `a row with ${marker}` });
   const result = s.search("capture-only-marker", { project });

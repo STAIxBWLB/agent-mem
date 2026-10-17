@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
-import { chmodSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import type { CaptureRow } from "./capture.ts";
 
 /**
  * #13 R5: full-text search over the curated tier with SQLite FTS5 and BM25, replacing substring matching where the
@@ -131,4 +133,24 @@ export class SearchIndex {
   }
 
   close(): void { this.db?.close(); }
+}
+
+interface RawCaptureRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string }
+
+/**
+ * The capture leg of #13 search: BM25 over the excerpts of one capture shard (`machine/<id>` of a project shard,
+ * #15 T1). Empty when FTS5 or the shard is absent; a contended or corrupted shard degrades recall, never the search.
+ */
+export function captureSearch(dir: string, q: string, limit: number): { row: CaptureRow; rank: number }[] {
+  const match = ftsTerms(q);
+  if (!match || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
+  let db: Database | undefined;
+  try {
+    db = new Database(join(dir, "capture.db"), { readonly: true });
+    db.run("PRAGMA busy_timeout = 3000");
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get()) return [];
+    const rows = db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit) as (RawCaptureRow & { rank: number })[];
+    return rows.map((r) => ({ row: { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt }, rank: r.rank }));
+  } catch { return []; }
+  finally { db?.close(); }
 }

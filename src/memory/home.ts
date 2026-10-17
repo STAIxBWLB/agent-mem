@@ -9,11 +9,7 @@ export function memoryHome(env: NodeJS.ProcessEnv = process.env): string {
   return join(canonicalPath(env.AGENTHUB_HOME?.trim() || join(homedir(), ".agenthub")), "memory");
 }
 
-/**
- * #13: the machine-local capture tier lives in `capture/` under the memory home, next to the curated logs and the
- * derived indexes. It is never synced (the sync .gitignore admits only `log/*.jsonl`) and never read as curated
- * evidence. `home` retains the parent-directory convention of `StoreOptions.home`.
- */
-export function captureHome(home?: string): string {
-  return join(home === undefined ? memoryHome() : join(home, "memory"), "capture");
+/** The store's own base convention: `StoreOptions.home` names the parent and gets `/memory` appended. */
+export function memoryBase(home?: string): string {
+  return home === undefined ? memoryHome() : join(home, "memory");
 }
