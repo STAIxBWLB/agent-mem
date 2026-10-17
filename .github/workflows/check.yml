@@ -26,3 +26,6 @@ jobs:
       - run: bun scripts/check-boundary.ts
       - run: bun test --timeout 20000
       - run: npm pack --dry-run
+      # npm 11 publishes a corrected manifest: a bin it auto-corrects is dropped from the tarball (0.3.1 lost `amem`).
+      - name: package.json needs no npm auto-correction
+        run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
