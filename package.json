@@ -22,7 +22,7 @@
     "./platform": "./src/memory/platform.ts"
   },
   "bin": {
-    "amem": "./bin/amem.js"
+    "amem": "bin/amem.js"
   },
   "files": [
     "src/",
