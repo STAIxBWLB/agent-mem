@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keeps the workflow actions current; npm stays manual (zero runtime dependencies).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
