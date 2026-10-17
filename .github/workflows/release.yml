@@ -29,6 +29,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           awk -v h="## ${version}" '$0==h{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md | grep -q '[^[:space:]]' || { echo "CHANGELOG.md has no section ## ${version}"; exit 1; }
       - run: bun install --frozen-lockfile
+      # Same guard as check.yml: the tag workflow is the only publish path and check.yml does not run on tags.
+      - name: package.json needs no npm auto-correction
+        run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
       - run: bun x tsc --noEmit
       - run: bun scripts/check-boundary.ts
       - run: bun test --timeout 20000
