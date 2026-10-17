@@ -7,7 +7,7 @@ import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { SearchIndex, captureSearch } from "./search-fts.ts";
-import { resolveAlias, shardMachineDir } from "./shard.ts";
+import { resolveAlias, resolveShardProfile, shardMachineDir } from "./shard.ts";
 import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
@@ -191,7 +191,7 @@ export interface StoreOptions { home?: string; ttlMs?: number; now?: () => numbe
 }
 
 const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
-interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits: readonly LegacyCheckpoint[]; commit?: string }
+interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits?: readonly LegacyCheckpoint[]; commit?: string; authoring?: boolean }
 export class MemoryStore {
   readonly dir: string;
   readonly profile: BoundProfile;
@@ -213,18 +213,18 @@ export class MemoryStore {
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
-    this.bootstrapOnly = bootstrap !== undefined;
+    this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
     const home = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
-      || this.profile.dir !== generationDir(this.profile.home, this.profile.generation)
+      || (!this.profile.sharded && this.profile.dir !== generationDir(this.profile.home, this.profile.generation))
       || canonicalJSON(readProfileJSON(join(this.profile.dir, "generation.json"))) !== canonicalJSON(generationDescriptor(this.profile.generation)))) throw new Error("invalid migration profile binding");
     // Shared-v1 preserves its historical lexical dir API; profile.home is still canonical for selector identity.
     this.dir = this.profile.kind === "shared-v1" ? home : this.profile.dir;
     mkdirSync(join(this.dir, "log"), { recursive: true, mode: 0o700 });
     mkdirSync(join(this.dir, "local"), { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
-    this.machine = machineId(this.dir);
+    this.machine = machineId(this.profile.sharded ? this.profile.home : this.dir);
     this.ttl = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? (() => {});
@@ -249,7 +249,7 @@ export class MemoryStore {
     this.db = db;
     this.mutationDb = mutationDatabase(this.dir);
     // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
-    this.searchIndex = new SearchIndex(join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
+    this.searchIndex = new SearchIndex(this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
     this.memoryBaseDir = home;
     try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
     if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
@@ -330,6 +330,10 @@ export class MemoryStore {
 
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot author memory");
+    if (this.profile.sharded && (body.op === "note" || body.op === "goal") && "scope" in body && "project" in body) {
+      if (this.profile.shardUser ? body.scope !== "shared" : body.scope !== "project" || body.project !== this.profile.shardKey) throw new Error("entry does not belong to this curated shard");
+    }
+    if (this.profile.sharded && body.op === "settle" && "target" in body && (this.profile.shardUser || typeof body.target !== "string" || !body.target.startsWith(`${this.profile.shardKey}#`))) throw new Error("settlement does not belong to this curated shard");
     assertSharedV1Op(body.op);
     // Lock the authoritative log independently: a busy derived index must never prevent an ordinary append.
     return this.withMutation(() => {
@@ -1060,6 +1064,13 @@ export function buildGenerationIndex(profile: BoundProfile, sources: readonly Le
   const store = new MemoryStore({ deferPromotions: true }, { token: MIGRATION_BOOTSTRAP, profile, limits: sources, ...(legacyCommit ? { commit: legacyCommit } : {}) });
   try { const before = store.derivedTables(); store.rebuild(); if (!isDeepStrictEqual(before, store.derivedTables())) throw new Error("generation rebuild differs from incremental index"); }
   finally { store.close(); }
+}
+
+/** Open one sealed project or user shard directly; no legacy-home scan, catalog walk or old-layout reader lease. */
+export function openShardStore(opts: StoreOptions & { project?: string; user?: boolean }): MemoryStore {
+  const home = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
+  const profile = resolveShardProfile(home, opts);
+  return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true });
 }
 
 /** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */

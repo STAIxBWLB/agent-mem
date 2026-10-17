@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, type BoundProfile, type GenerationSeal } from "./generation.ts";
 
 /**
  * #15 T1: the per-project shard layout under the user home. One shard per project key at `projects/<key-hash>/`;
@@ -119,4 +120,37 @@ export function resolveAlias(base: string, key: string): string {
 /** `memoryBase(home)` plus the shard of `key` after alias resolution. */
 export function captureShardDir(base: string, key: string, machine: string): string {
   return shardMachineDir(base, resolveAlias(base, key), machine);
+}
+
+export const SHARDED_SCHEMA = "agent-mem.shards/v1";
+export interface ShardedSelection { schema: typeof SHARDED_SCHEMA; generation: string; phase: "active" }
+
+export function userShardDir(base: string): string {
+  return join(base, "user");
+}
+
+export function readShardedSelection(memoryDir: string): ShardedSelection {
+  const value = readProfileJSON(join(memoryDir, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown } | undefined;
+  if (!value || value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || value.phase !== "active") throw new Error("no active curated shard migration");
+  return { schema: SHARDED_SCHEMA, generation: value.generation, phase: "active" };
+}
+
+/** Open one already-sealed shard without consulting the legacy home or the catalog. */
+export function resolveShardProfile(memoryDir: string, opts: { project?: string; user?: boolean }): BoundProfile {
+  if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
+  const selection = readShardedSelection(memoryDir), generation = selection.generation;
+  const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
+  if (opts.project !== undefined && readShardDescriptor(memoryDir, shardKeyHash(opts.project))?.key !== opts.project) throw new Error("curated shard project identity mismatch");
+  const expected = generationDescriptor(generation);
+  if (canonicalJSON(readProfileJSON(join(dir, "generation.json"), 4096)) !== canonicalJSON(expected)) throw new Error("curated shard generation metadata mismatch");
+  const sources = readProfileJSON(join(dir, "migration-sources.json")) as { schema?: unknown; sources?: unknown; legacyCommit?: unknown } | undefined;
+  const seal = readProfileJSON(join(dir, "generation-seal.json"), 4096) as GenerationSeal | undefined;
+  if (!sources || sources.schema !== "agent-mem.migration-sources/v1" || !Array.isArray(sources.sources)
+    || !seal || seal.schema !== "agent-mem.generation-seal/v1" || seal.generation !== generation
+    || seal.descriptorHash !== hashJSON(expected) || seal.sourceDigest !== hashJSON({ sources: sources.sources, legacyCommit: sources.legacyCommit })) throw new Error("curated shard source seal mismatch");
+  const rootMachine = readProfileJSON(join(memoryDir, "machine.json"), 4096);
+  const shardMachine = readProfileJSON(join(dir, "machine.json"), 4096);
+  if (canonicalJSON(rootMachine) !== canonicalJSON(shardMachine)) throw new Error("curated shard machine identity mismatch");
+  return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: readSelector(memoryDir).revision,
+    legacyHome: join(dir, "legacy"), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
 }

@@ -11,6 +11,11 @@ export interface BoundProfile {
   dir: string;
   generation?: string;
   selectorRevision: string;
+  /** Sharded profiles read only their own legacy input; the root home remains the machine/selector identity. */
+  legacyHome?: string;
+  sharded?: boolean;
+  shardKey?: string;
+  shardUser?: boolean;
 }
 export type ProfileInput = "shared-v1" | { generation: string };
 export interface ProfileSelector { schema: "agent-mem.profile/v1"; kind: "shared-v1" | "generation"; generation?: string }

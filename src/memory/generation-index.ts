@@ -84,8 +84,10 @@ export class GenerationIndex {
     const persisted = new Set(previous.map(row => `${row.source}:${row.path}`));
     const completeFrontier = checkpoints.every(row => persisted.has(`${row.source}:${row.path}`));
     const prior = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value ?? initial?.legacyCommit;
-    const commit = this.options.commit ?? legacyHead(this.profile.home, this.profile.generation!);
-    const legacy = readLegacySnapshot(this.profile.home, { generation: this.profile.generation, ...(commit ? { commit } : {}), checkpoints, ...(prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
+    const legacyHome = this.profile.legacyHome ?? this.profile.home;
+    const generation = this.profile.sharded ? undefined : this.profile.generation;
+    const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation) : undefined);
+    const legacy = readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
     const own = this.ownSegments();
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
