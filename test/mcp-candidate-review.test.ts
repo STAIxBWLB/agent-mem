@@ -42,7 +42,7 @@ for (const mode of ["generation", "shards"] as const) {
       expect(await mcp.tools.amem_search({ query: "reusable" })).toMatchObject({ hits: [] });
     } finally { mcp.close(); }
     const beforeLegacy = legacyBytes(f.base);
-    const result = JSON.parse(await runCli(["review", "accept", id!, "--policy-free", "--json"], f.context)) as { noteId: string; candidateId: string; alreadyAccepted: boolean };
+    const result = JSON.parse(await runCli(["review", "accept", id!, "--kind", "memory", "--policy-free", "--json"], f.context)) as { noteId: string; candidateId: string; alreadyAccepted: boolean };
     expect(result).toMatchObject({ candidateId: id!, alreadyAccepted: false });
     expect(legacyBytes(f.base)).toEqual(beforeLegacy);
     const store = f.open();
@@ -53,7 +53,7 @@ for (const mode of ["generation", "shards"] as const) {
       const before = store.dump(); store.rebuild(); expect(store.dump()).toBe(before);
     } finally { store.close(); }
     const authored = logBytes(f.base);
-    expect(JSON.parse(await runCli(["review", "accept", id!, "--policy-free", "--json"], f.context)))
+    expect(JSON.parse(await runCli(["review", "accept", id!, "--kind", "memory", "--policy-free", "--json"], f.context)))
       .toEqual({ ...result, alreadyAccepted: true });
     expect(logBytes(f.base)).toEqual(authored);
     const candidates = new CandidateStore({ memoryDir: f.base });
@@ -65,7 +65,7 @@ for (const mode of ["generation", "shards"] as const) {
     const id = candidates.put({ project: f.project, kind: "memory", text: "Contact fixture.person@example.com for the reusable choice", noteKind: "finding" }, "public");
     candidates.close();
     const before = logBytes(f.base);
-    await expect(runCli(["review", "accept", id, "--policy-free", "--json"], f.context)).rejects.toThrow("current standalone privacy policy");
+    await expect(runCli(["review", "accept", id, "--kind", "memory", "--policy-free", "--json"], f.context)).rejects.toThrow("current standalone privacy policy");
     expect(logBytes(f.base)).toEqual(before);
     const pending = new CandidateStore({ memoryDir: f.base });
     try { expect(pending.get(id, f.project)).toMatchObject({ status: "pending", acceptedNoteId: null }); } finally { pending.close(); }
@@ -78,7 +78,7 @@ for (const mode of ["generation", "shards"] as const) {
     const id = candidates.put({ project: "other-project", kind: "memory", text: "Another project's retained choice", noteKind: "decision" }, "public");
     candidates.close();
     const before = logBytes(f.base);
-    await expect(runCli(["review", "accept", id, "--policy-free", "--json"], f.context)).rejects.toThrow("candidate unavailable");
+    await expect(runCli(["review", "accept", id, "--kind", "memory", "--policy-free", "--json"], f.context)).rejects.toThrow("candidate unavailable");
     expect(logBytes(f.base)).toEqual(before);
     const pending = new CandidateStore({ memoryDir: f.base });
     try { expect(pending.get(id, "other-project")).toMatchObject({ status: "pending", acceptedNoteId: null }); } finally { pending.close(); }

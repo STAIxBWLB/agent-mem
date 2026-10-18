@@ -54,7 +54,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
       "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory"] }, "--limit": text("Maximum candidates (1..500)"),
     } },
-    accept: { description: "Accept one candidate through the current memory policy", options: policy, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
+    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Explicit standalone candidate kind for selected profiles", value: ["memory"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
   } },
   migrate: { description: "Select a person-approved generation or deactivate it", mutates: true, options: {
