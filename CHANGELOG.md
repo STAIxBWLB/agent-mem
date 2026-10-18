@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add person-run curated project/user shard migration with a read-only bridge, selected-generation prune preservation, independent reader admission and shared pruning; requires shard-aware host integration before live use (#15).
+
 ## 0.3.1
 
 - Add opt-in legacy settlement queries for host approval reconciliation after generation migration, preserving own-note expiry and promotion semantics (agent-hub#432).

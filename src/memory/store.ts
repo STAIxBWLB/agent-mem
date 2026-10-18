@@ -1,20 +1,22 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { SearchIndex, captureSearch } from "./search-fts.ts";
-import { resolveAlias, shardMachineDir } from "./shard.ts";
+import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
-import { generationDescriptor, generationDir, canonicalJSON, readProfileJSON, resolveProfile, type BoundProfile, type ProfileInput } from "./generation.ts";
+import { generationDescriptor, generationDir, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
 import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
+import { readMigrationSources } from "./migrate.ts";
 import type { PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
+import { registerReaderLease } from "./reader-lease.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -190,7 +192,7 @@ export interface StoreOptions { home?: string; ttlMs?: number; now?: () => numbe
 }
 
 const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
-interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits: readonly LegacyCheckpoint[]; commit?: string }
+interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits?: readonly LegacyCheckpoint[]; commit?: string; authoring?: boolean; userOverlay?: MemoryStore }
 export class MemoryStore {
   readonly dir: string;
   readonly profile: BoundProfile;
@@ -206,54 +208,69 @@ export class MemoryStore {
   /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
   private readonly searchIndex: SearchIndex;
   private readonly memoryBaseDir: string;
+  private releaseReaderLease?: () => void;
+  private readonly userOverlay?: MemoryStore;
   /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
   private rebuildingSearch = false;
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
-    this.bootstrapOnly = bootstrap !== undefined;
-    const home = opts.home === undefined ? memoryHome() : join(opts.home, "memory");
+    this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
+    this.userOverlay = bootstrap?.userOverlay;
+    const home = bootstrap?.profile.home ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+    if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
-      || this.profile.dir !== generationDir(this.profile.home, this.profile.generation)
+      || (!this.profile.sharded && this.profile.dir !== generationDir(this.profile.home, this.profile.generation))
       || canonicalJSON(readProfileJSON(join(this.profile.dir, "generation.json"))) !== canonicalJSON(generationDescriptor(this.profile.generation)))) throw new Error("invalid migration profile binding");
     // Shared-v1 preserves its historical lexical dir API; profile.home is still canonical for selector identity.
     this.dir = this.profile.kind === "shared-v1" ? home : this.profile.dir;
     mkdirSync(join(this.dir, "log"), { recursive: true, mode: 0o700 });
     mkdirSync(join(this.dir, "local"), { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
-    this.machine = machineId(this.dir);
+    this.machine = machineId(this.profile.sharded ? this.profile.home : this.dir);
     this.ttl = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? (() => {});
     this.screen = opts.screen;
     this.deferPromotions = opts.deferPromotions ?? false;
-    const db = new Database(join(this.dir, "index.db"), { create: true });
-    db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
-    db.run("PRAGMA journal_mode = WAL");
-    if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
-      for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) db.run(`DROP TABLE IF EXISTS ${t}`);
-      db.run(`PRAGMA user_version = ${INDEX_VERSION}`);
+    // Announce before opening derived handles or reading rows; failed admission leaks no database handles.
+    if (!bootstrap) this.releaseReaderLease = registerReaderLease(this.profile.home);
+    let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
+    try {
+      const db = openedDb = new Database(join(this.dir, "index.db"), { create: true });
+      db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
+      db.run("PRAGMA journal_mode = WAL");
+      if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
+        for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) db.run(`DROP TABLE IF EXISTS ${t}`);
+        db.run(`PRAGMA user_version = ${INDEX_VERSION}`);
+      }
+      db.run("CREATE TABLE IF NOT EXISTS segments (file TEXT PRIMARY KEY, offset INTEGER NOT NULL)");
+      // The hash of each segment's whole indexed prefix: a segment rewritten in place (same size or larger) is caught.
+      db.run("CREATE TABLE IF NOT EXISTS heads (file TEXT PRIMARY KEY, hash TEXT NOT NULL)");
+      db.run("CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, title TEXT NOT NULL, milestones TEXT NOT NULL, depends TEXT NOT NULL, actor TEXT NOT NULL)");
+      db.run(`CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, tier TEXT NOT NULL,
+        kind TEXT NOT NULL, peer TEXT NOT NULL, title TEXT, text TEXT NOT NULL, task TEXT, about TEXT NOT NULL, supersedes TEXT, promoted_from TEXT, source TEXT NOT NULL, expires TEXT)`);
+      db.run("CREATE TABLE IF NOT EXISTS ops (id TEXT PRIMARY KEY, op TEXT NOT NULL, at TEXT NOT NULL, machine TEXT NOT NULL, target TEXT NOT NULL, by TEXT, actor TEXT NOT NULL)");
+      db.run("CREATE TABLE IF NOT EXISTS edges (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))");
+      db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
+      this.db = db;
+      this.mutationDb = openedMutation = mutationDatabase(this.dir);
+      // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
+      this.searchIndex = openedSearch = new SearchIndex(this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
+      this.memoryBaseDir = home;
+      try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
+      if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
+        apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
+        ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
+      this.refresh();
+    } catch (error) {
+      for (const handle of [openedSearch, openedMutation, openedDb]) { try { handle?.close(); } catch { /* preserve the opening failure */ } }
+      const release = this.releaseReaderLease;
+      this.releaseReaderLease = undefined;
+      release?.();
+      throw error;
     }
-    db.run("CREATE TABLE IF NOT EXISTS segments (file TEXT PRIMARY KEY, offset INTEGER NOT NULL)");
-    // The hash of each segment's whole indexed prefix: a segment rewritten in place (same size or larger) is caught.
-    db.run("CREATE TABLE IF NOT EXISTS heads (file TEXT PRIMARY KEY, hash TEXT NOT NULL)");
-    db.run("CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, title TEXT NOT NULL, milestones TEXT NOT NULL, depends TEXT NOT NULL, actor TEXT NOT NULL)");
-    db.run(`CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at TEXT NOT NULL, machine TEXT NOT NULL, project TEXT NOT NULL, scope TEXT NOT NULL, tier TEXT NOT NULL,
-      kind TEXT NOT NULL, peer TEXT NOT NULL, title TEXT, text TEXT NOT NULL, task TEXT, about TEXT NOT NULL, supersedes TEXT, promoted_from TEXT, source TEXT NOT NULL, expires TEXT)`);
-    db.run("CREATE TABLE IF NOT EXISTS ops (id TEXT PRIMARY KEY, op TEXT NOT NULL, at TEXT NOT NULL, machine TEXT NOT NULL, target TEXT NOT NULL, by TEXT, actor TEXT NOT NULL)");
-    db.run("CREATE TABLE IF NOT EXISTS edges (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))");
-    db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
-    this.db = db;
-    this.mutationDb = mutationDatabase(this.dir);
-    // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
-    this.searchIndex = new SearchIndex(join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
-    this.memoryBaseDir = home;
-    try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
-    if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
-      apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
-      ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
-    this.refresh();
   }
 
   /** The host must authenticate person intent before authorizing plan/apply through this port. */
@@ -268,7 +285,12 @@ export class MemoryStore {
     return Object.fromEntries(tables.map(({ name }) => [name, (this.db.query(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all() as unknown[]).sort((a, b) => canonicalJSON(a).localeCompare(canonicalJSON(b)))]));
   }
 
-  close(): void { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
+  close(): void {
+    const release = this.releaseReaderLease;
+    this.releaseReaderLease = undefined;
+    try { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
+    finally { try { this.userOverlay?.close(); } finally { release?.(); } }
+  }
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
   withDeferredPromotions<T>(work: () => T): T {
@@ -283,6 +305,7 @@ export class MemoryStore {
 
   /** Serialize current-store writers, screen one normalized body, and expose a one-shot append of that body. */
   withAcceptedNote<T>(note: NoteInput, work: (append: () => string) => T): T {
+    if (this.userOverlay && note.scope === "shared") return this.userOverlay.withAcceptedNote(note, work);
     try { return this.withMutation(() => {
       // Ordinary writes may defer indexing, but accepting an exact target revision must have a current index.
       this.db.transaction(() => this.refresh()).immediate();
@@ -321,6 +344,14 @@ export class MemoryStore {
 
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot author memory");
+    if (this.userOverlay) {
+      if ((body.op === "note" || body.op === "goal") && "scope" in body && body.scope === "shared") return this.userOverlay.appendBody(body, local);
+      if ("target" in body && body.op !== "settle" && this.userOverlay.ownsTarget(body.target as string)) return this.userOverlay.appendBody(body, local);
+    }
+    if (this.profile.sharded && (body.op === "note" || body.op === "goal") && "scope" in body && "project" in body) {
+      if (this.profile.shardUser ? body.scope !== "shared" : body.scope !== "project" || body.project !== this.profile.shardKey) throw new Error("entry does not belong to this curated shard");
+    }
+    if (this.profile.sharded && body.op === "settle" && "target" in body && (typeof body.target !== "string" || (!this.profile.shardUser && !body.target.startsWith(`${this.profile.shardKey}#`)))) throw new Error("settlement does not belong to this curated shard");
     assertSharedV1Op(body.op);
     // Lock the authoritative log independently: a busy derived index must never prevent an ordinary append.
     return this.withMutation(() => {
@@ -344,6 +375,8 @@ export class MemoryStore {
    */
   importNote(n: NoteInput, at: string): { id: string; added: boolean } {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
+    if (this.userOverlay && n.scope === "shared") return this.userOverlay.importNote(n, at);
+    if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
     assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
     const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
@@ -433,6 +466,7 @@ export class MemoryStore {
    */
   promote(id: string, actor: string, project?: string, auto = false): string | undefined {
     const v = this.get(id, project);
+    if (v && this.userOverlay?.ownsTarget(v.id)) return this.userOverlay.promote(v.id, actor, project, auto);
     if (v && this.generationIndex && !this.generationIndex.own(v.id)) return undefined;
     if (!v || v.tier !== "short") return v?.id;
     if (v.supersededBy) return undefined;
@@ -456,8 +490,11 @@ export class MemoryStore {
   settle(task: string, actor: string): number {
     this.promoting = true; // promoted here, in the settling actor's name, not after each read
     try {
-      this.append({ op: "settle", target: task, actor, by: this.until() }, true);
-      return this.promoteSettled(task, actor);
+      const entry = { op: "settle", target: task, actor, by: this.until() } as const;
+      const at = new Date(this.now()).toISOString();
+      this.append(entry, true, at);
+      if (this.userOverlay) this.userOverlay.append(entry, true, at, this.machine.id);
+      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0);
     } finally { this.promoting = false; }
   }
   private promoteSettled(task: string, actor: string): number {
@@ -467,12 +504,12 @@ export class MemoryStore {
   }
   /** Whether a task was settled in this profile. Reconciliation may opt into bridged legacy settlements. */
   settled(task: string, options: { includeLegacy?: boolean } = {}): boolean {
-    return !!this.db.query(this.generationIndex && !options.includeLegacy
+    return this.readRows(this.generationIndex && !options.includeLegacy
       ? "SELECT 1 FROM ops JOIN generation_rows ON generation_rows.id=ops.id WHERE op='settle' AND target=? AND own=1"
-      : "SELECT 1 FROM ops WHERE op = 'settle' AND target = ?").get(task);
+      : "SELECT 1 FROM ops WHERE op = 'settle' AND target = ?", task).length > 0;
   }
   /** Whether any entry was saved against the task. */
-  hasTask(task: string): boolean { return !!this.db.query("SELECT 1 FROM entries WHERE task = ?").get(task); }
+  hasTask(task: string): boolean { this.ensureFresh(); return this.readRows("SELECT 1 FROM entries WHERE task = ?", task).length > 0; }
   private promoting = false;
   private readonly screen?: PromotionScreen;
   /**
@@ -611,6 +648,21 @@ export class MemoryStore {
     }
   }
 
+  /** Only the bound project and user overlay participate; never scan another project's private shard. */
+  private readStores(): MemoryStore[] { return this.userOverlay ? [this, this.userOverlay] : [this]; }
+
+  private readRows(sql: string, ...bind: string[]): Record<string, unknown>[] {
+    const rows = this.readStores().flatMap(store => store.db.query(sql).all(...bind) as Record<string, unknown>[]);
+    const unique = new Map<string, Record<string, unknown>>();
+    for (const row of rows) unique.set(typeof row.id === "string" ? row.id : canonicalJSON(row), row);
+    return [...unique.values()].sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")) || String(a.id ?? "").localeCompare(String(b.id ?? "")));
+  }
+
+  private ownsTarget(id: string): boolean {
+    this.ensureFresh();
+    return !!this.db.query("SELECT id FROM entries WHERE id=? UNION SELECT id FROM goals WHERE id=? UNION SELECT id FROM ops WHERE id=?").get(id, id, id);
+  }
+
   /**
    * Every live note with its derived state; an expired one is left out as soon as its deadline passes, before any
    * prune. Lifecycle relations still fold globally; SQL selects full rows before View/JSON materialization.
@@ -618,19 +670,20 @@ export class MemoryStore {
    */
   private views(expired = false, selection?: Filter, expiredOnly = false): View[] {
     // Metadata, ops and candidate bodies must describe one WAL snapshot, even if another process indexes a copy.
-    return this.db.transaction(() => this.viewRows(expired, selection, expiredOnly)).deferred();
+    const read = () => this.viewRows(expired, selection, expiredOnly);
+    return this.db.transaction(() => this.userOverlay ? this.userOverlay.db.transaction(read).deferred() : read()).deferred();
   }
 
   private viewRows(expired: boolean, selection: Filter | undefined, expiredOnly: boolean): View[] {
     const now = this.now(), selecting = selection !== undefined || expiredOnly;
-    const pruned = this.generationIndex ? new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)) : undefined;
-    if (this.generationIndex && pruned) this.generationIndex.pruned = pruned;
+    const pruned = this.generationIndex ? new Set((this.readRows("SELECT id FROM generation_targets") as { id: string }[]).map(row => row.id)) : undefined;
+    if (this.generationIndex) this.generationIndex.pruned = new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id));
     // Relations may cross projects and promoted copies: fold their small metadata globally, never filtered bodies.
-    const rows = this.db.query(selecting
+    const rows = this.readRows(selecting
       ? "SELECT id, at, tier, kind, task, expires, supersedes, promoted_from FROM entries"
-      : "SELECT * FROM entries").all() as Record<string, string | null>[];
-    const ops = this.db.query("SELECT id, op, at, target, by FROM ops ORDER BY at, id").all() as { id: string; op: string; at: string; target: string; by: string | null }[];
-    const realms = this.generationIndex ? new Map((this.db.query("SELECT id,own,legacy FROM generation_rows").all() as { id: string; own: number; legacy: number }[]).map(row => [row.id, row])) : undefined;
+      : "SELECT * FROM entries") as Record<string, string | null>[];
+    const ops = this.readRows("SELECT id, op, at, target, by FROM ops ORDER BY at, id") as { id: string; op: string; at: string; target: string; by: string | null }[];
+    const realms = this.generationIndex ? new Map((this.readRows("SELECT id,own,legacy FROM generation_rows") as { id: string; own: number; legacy: number }[]).map(row => [row.id, row])) : undefined;
     const born = realms ? new Set([...realms.values()].filter(row => row.own).map(row => row.id)) : undefined;
     const forgotten = new Set(ops.filter((o) => o.op === "forget").map((o) => o.target));
     // Deadlines were fixed when the entries were written, so every process (whatever its own TTL) prunes the same rows.
@@ -726,7 +779,7 @@ export class MemoryStore {
       }
       // No SQL LIMIT: a host may screen the complete matching set before its own caps or visible counts.
       // Date parsing, Unicode query matching, locale order and slice semantics stay in JavaScript.
-      candidates = this.db.query(`SELECT * FROM entries${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`).all(...bind) as Record<string, string | null>[];
+      candidates = this.readRows(`SELECT * FROM entries${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`, ...bind) as Record<string, string | null>[];
     }
     const out: View[] = [];
     for (const r of candidates) {
@@ -763,6 +816,7 @@ export class MemoryStore {
 
   /** Index deferred writes before any note, goal or suggestion read. */
   private ensureFresh(): void {
+    this.userOverlay?.ensureFresh();
     if (this.generationIndex) { this.generationIndex.refresh(); return; }
     // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
     if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
@@ -774,7 +828,7 @@ export class MemoryStore {
    */
   private live(selection?: Filter): View[] {
     this.ensureFresh();
-    this.prune(); this.promoteHeld(); return this.views(false, selection);
+    this.prune(); this.userOverlay?.promoteHeld(); this.promoteHeld(); return this.views(false, selection);
   }
   /** A write whose index update failed: the next read refreshes first. */
   private stale = false;
@@ -800,13 +854,13 @@ export class MemoryStore {
     if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map((view) => ({ source: "curated" as const, score: 0, view })) };
     const visible = new Map(this.live(f).filter((v) => (!f.project || v.project === f.project || v.scope === "shared")
       && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)).map((v) => [v.id, v]));
-    this.syncSearchIndex();
+    for (const store of this.readStores()) store.syncSearchIndex();
     const now = this.now();
     const recency = (at: string): number => 1 / (1 + Math.max(0, now - Date.parse(at)) / (30 * 24 * 3600_000));
     const hits: SearchHit[] = [];
     // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
     // starve this project's LIMIT.
-    for (const hit of this.searchIndex.query(q, Math.max(limit * 4, 32), f.project)) {
+    for (const hit of this.readStores().flatMap(store => store.searchIndex.query(q, Math.max(limit * 4, 32), f.project))) {
       const view = visible.get(hit.ref);
       if (!view) continue;
       hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
@@ -847,8 +901,8 @@ export class MemoryStore {
     if (found) return found;
     // A short-term id an agent kept after its task was approved names the promoted copy now, here or on another machine
     // that has only the synced copy (which names its source).
-    let at = pick(this.db.query("SELECT id FROM entries UNION SELECT promoted_from FROM entries WHERE promoted_from IS NOT NULL").all() as { id: string }[])?.id;
-    for (let copy = at; copy; copy = (this.db.query("SELECT id FROM entries WHERE promoted_from = ?").get(copy) as { id: string } | null)?.id) { if (this.generationIndex?.pruned.has(copy)) return undefined; at = copy; }
+    let at = pick(this.readRows("SELECT id FROM entries UNION SELECT promoted_from AS id FROM entries WHERE promoted_from IS NOT NULL") as { id: string }[])?.id;
+    for (let copy = at; copy; copy = (this.readRows("SELECT id FROM entries WHERE promoted_from = ?", copy)[0] as { id: string } | undefined)?.id) { if (this.generationIndex?.pruned.has(copy)) return undefined; at = copy; }
     return at ? all.find((v) => v.id === at) : undefined;
   }
 
@@ -866,7 +920,7 @@ export class MemoryStore {
     const near = new Map<string, 1 | 2>();
     const about = (ns: Iterable<Node>) => {
       const ids = new Set<string>();
-      for (const n of ns) for (const r of this.db.query("SELECT src FROM edges WHERE dst = ?").all(n) as { src: string }[]) if (live.has(r.src)) ids.add(r.src);
+      for (const n of ns) for (const r of this.readRows("SELECT src FROM edges WHERE dst = ?", n) as { src: string }[]) if (live.has(r.src)) ids.add(r.src);
       return ids;
     };
     const first = about(nodes);
@@ -966,8 +1020,8 @@ export class MemoryStore {
   goals(project?: string): GoalView[] {
     this.ensureFresh();
     const now = this.now();
-    const rows = this.db.query("SELECT * FROM goals").all() as { id: string; at: string; machine: string; project: string; scope: string; title: string; milestones: string; depends: string }[];
-    const ops = this.db.query("SELECT op, at, machine, target, by FROM ops WHERE op IN ('goal_state', 'goal_link', 'lease', 'lease_force') ORDER BY at, id").all() as { op: string; at: string; machine: string; target: string; by: string | null }[];
+    const rows = this.readRows("SELECT * FROM goals") as { id: string; at: string; machine: string; project: string; scope: string; title: string; milestones: string; depends: string }[];
+    const ops = this.readRows("SELECT id, op, at, machine, target, by FROM ops WHERE op IN ('goal_state', 'goal_link', 'lease', 'lease_force') ORDER BY at, id") as { op: string; at: string; machine: string; target: string; by: string | null }[];
     return rows.filter((r) => !project || r.project === project || r.scope === "shared").map((r): GoalView => {
       const mine = ops.filter((o) => o.target === r.id);
       const states = mine.filter((o) => o.op === "goal_state" && (GOAL_STATES as readonly string[]).includes(o.by ?? ""));
@@ -1016,7 +1070,7 @@ export class MemoryStore {
   suggestions(project?: string): Suggestion[] {
     this.ensureFresh();
     const visible = project ? new Set(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => v.id)) : undefined;
-    const ops = this.db.query("SELECT id, op, at, target, by FROM ops WHERE op IN ('suggest', 'confirm', 'reject') ORDER BY at, id").all() as { id: string; op: string; at: string; target: string; by: string | null }[];
+    const ops = this.readRows("SELECT id, op, at, target, by FROM ops WHERE op IN ('suggest', 'confirm', 'reject') ORDER BY at, id") as { id: string; op: string; at: string; target: string; by: string | null }[];
     const verdict = new Map<string, "confirmed" | "rejected">();
     for (const o of ops) if (o.op !== "suggest") verdict.set(o.target, o.op === "confirm" ? "confirmed" : "rejected");
     return ops.filter((o) => o.op === "suggest" && o.by).flatMap((o) => {
@@ -1051,6 +1105,40 @@ export function buildGenerationIndex(profile: BoundProfile, sources: readonly Le
   const store = new MemoryStore({ deferPromotions: true }, { token: MIGRATION_BOOTSTRAP, profile, limits: sources, ...(legacyCommit ? { commit: legacyCommit } : {}) });
   try { const before = store.derivedTables(); store.rebuild(); if (!isDeepStrictEqual(before, store.derivedTables())) throw new Error("generation rebuild differs from incremental index"); }
   finally { store.close(); }
+}
+
+function initializeShard(home: string, opts: { project?: string; user?: boolean }): void {
+  const selection = readShardedSelection(home), generation = selection.generation;
+  const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!), machine = machineId(home);
+  if (opts.project !== undefined) ensureShardDescriptor(home, opts.project);
+  for (const folder of ["log", "local", "legacy/log", "legacy/local", "legacy-main/log", "legacy-main/local"]) mkdirSync(join(dir, folder), { recursive: true, mode: 0o700 });
+  for (const [path, value] of [["generation.json", generationDescriptor(generation)], ["machine.json", machine], ["legacy/machine.json", machine], ["legacy-main/machine.json", machine]] as const) {
+    const file = join(dir, path), prior = readProfileJSON(file);
+    if (prior === undefined) writeProfileJSON(file, value);
+    else if (canonicalJSON(prior) !== canonicalJSON(value)) throw new Error("curated shard metadata changed during initialization");
+  }
+  const legacyHome = join(dir, "legacy"), sources = readMigrationSources(legacyHome);
+  writeProfileJSON(join(dir, "migration-sources.json"), { schema: "agent-mem.migration-sources/v1", sources });
+  const profile: BoundProfile = { kind: "generation", home, dir, generation, selectorRevision: selection.selectorRevision,
+    legacyHome, legacyMainHome: join(dir, "legacy-main"), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
+  buildGenerationIndex(profile, sources);
+  writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation,
+    descriptorHash: hashJSON(generationDescriptor(generation)), sourceDigest: hashJSON({ sources, legacyCommit: undefined }) });
+}
+
+/** Open one sealed project or user shard directly; no legacy-home scan, catalog walk or old-layout reader lease. */
+export function openShardStore(opts: StoreOptions & { project?: string; user?: boolean; memoryDir?: string }): MemoryStore {
+  if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
+  if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
+  const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+  assertCuratedShardPaths(home, opts);
+  const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
+  const missing = !existsSync(join(dir, "generation.json"));
+  if (missing) initializeShard(home, opts);
+  const profile = resolveShardProfile(home, opts);
+  const userOverlay = opts.user === true ? undefined : openShardStore({ ...opts, project: undefined, user: true });
+  try { return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true, userOverlay }); }
+  catch (error) { userOverlay?.close(); throw error; }
 }
 
 /** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { mutationDatabase } from "./mutation.ts";
+import { readerAdmissionDatabase } from "./mutation.ts";
 import { dirname, join } from "node:path";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./platform.ts";
 
@@ -11,6 +11,13 @@ export interface BoundProfile {
   dir: string;
   generation?: string;
   selectorRevision: string;
+  /** Sharded profiles read only their own legacy input; the root home remains the machine/selector identity. */
+  legacyHome?: string;
+  /** Public legacy witnesses stay distinct from same-machine private bridge input. */
+  legacyMainHome?: string;
+  sharded?: boolean;
+  shardKey?: string;
+  shardUser?: boolean;
 }
 export type ProfileInput = "shared-v1" | { generation: string };
 export interface ProfileSelector { schema: "agent-mem.profile/v1"; kind: "shared-v1" | "generation"; generation?: string }
@@ -102,7 +109,7 @@ export async function withProfileLock<T>(memoryDir: string, work: () => T | Prom
   const deadline = Date.now() + PROFILE_LOCK_TIMEOUT_MS;
   for (;;) {
     let acquired = false;
-    const fence = mutationDatabase(memoryDir);
+    const fence = readerAdmissionDatabase(memoryDir);
     let fenced = false;
     try {
       // Serialize the complete stale-owner probe/unlink/recreate sequence, then release before waiting on a live owner.

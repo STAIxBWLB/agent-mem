@@ -1,10 +1,10 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryStore, looksSecret, machineId } from "./memory/store.ts";
+import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, listAliases } from "./memory/shard.ts";
+import { appendAlias, listAliases, readShardedSelection } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -13,6 +13,7 @@ import { completionScript } from "./completion.ts";
 import { memoryHome } from "./memory/home.ts";
 import { resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
+import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
 import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
 
 export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
@@ -59,6 +60,19 @@ export function agentMarked(env: Readonly<Record<string, string | undefined>>): 
   return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].some(key => env[key] !== undefined);
 }
 
+function shardStatePresent(): boolean {
+  try { lstatSync(join(memoryHome(), "shards.json")); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+function curatedStore(project: string, opts: StoreOptions): MemoryStore {
+  if (shardStatePresent()) {
+    readShardedSelection(memoryHome());
+    return openShardStore({ ...opts, project });
+  }
+  return new MemoryStore(opts);
+}
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   if (agentMarked(context.env ?? process.env)) throw new Error(PERSON_ONLY);
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
@@ -87,22 +101,37 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--dry-run"] ? "dry-run" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "apply";
-    return JSON.stringify(await migrate({ memoryDir: memoryHome(), mode, ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true }), null, 2);
+    const common = { memoryDir: memoryHome(), ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true };
+    const shardRequested = options["--shards"] === true || (mode === "resume" && shardStatePresent());
+    if (shardRequested) {
+      if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
+      return JSON.stringify(await migrateShards({ ...common, mode }), null, 2);
+    }
+    return JSON.stringify(await migrate({ ...common, mode }), null, 2);
   }
+  if (sub === "status") return JSON.stringify(shardMigrationStatus(memoryHome()), null, 2);
   if (sub === "prune") {
     const applying = options["--apply"] === true;
-    if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune --cutoff <UTC> --dry-run | --apply --plan <file>");
+    if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune [--user] --cutoff <UTC> --dry-run | [--user] --apply --plan <file>");
     let input: string | undefined;
     if (applying) {
       input = readPrunePlanFile(String(options["--plan"]));
     }
-    const store = new MemoryStore({ deferPromotions: true });
+    const project = memoryProjectKey(context.cwd ?? process.cwd());
+    if (options["--user"] === true) {
+      if (!shardStatePresent()) throw new Error("prune --user requires an active curated shard migration; the default prune command selects the current project");
+      readShardedSelection(memoryHome());
+    }
+    const store = options["--user"] === true
+      ? openShardStore({ memoryDir: memoryHome(), user: true, deferPromotions: true })
+      : curatedStore(project, { deferPromotions: true });
     try {
-      const auth = { project: memoryProjectKey(context.cwd ?? process.cwd()), actor: "person" as const, authorize: () => true };
+      const auth = { project, actor: "person" as const, authorize: () => true };
       return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
     } finally { store.close(); }
   }
   if (review) {
+    if (sub === "accept" && shardStatePresent()) throw new Error("candidate acceptance requires shard-aware review integration after a shard split; the candidate remains pending and no legacy note was written. Retain the candidate until shard-aware review integration is available, then review and accept it through that integration");
     if (resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use the profile-aware host after its integration");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
@@ -172,9 +201,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");
   const crosses = definition.policyFree === true && policyFree;
-  // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
-  const open = () => new MemoryStore({ screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
   const cwd = context.cwd ?? process.cwd();
+  // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
+  const open = () => curatedStore(memoryProjectKey(cwd), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
   // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
   if (goal) return rawGoalCommand(args, cwd, { open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};

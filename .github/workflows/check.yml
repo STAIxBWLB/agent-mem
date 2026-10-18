@@ -27,6 +27,7 @@ jobs:
       - run: bun test --timeout 20000
       - run: npm pack --dry-run
       - run: bun scripts/measure-budget.ts
+      - run: bun scripts/measure-shard-ac8.ts
       # npm 11 normalizes the manifest at publish and warns (0.3.1: "./bin/amem.js"); keep package.json already normalized.
       - name: package.json needs no npm auto-correction
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json

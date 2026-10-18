@@ -97,10 +97,17 @@ function writeSources(memoryDir: string, journal: MigrationJournal): void {
     { schema: "agent-mem.migration-sources/v1", sources: journal.sources, legacyCommit: journal.legacyCommit });
 }
 
+function refuseShardSelection(memoryDir: string): void {
+  try { lstatSync(join(memoryDir, "shards.json")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  throw new Error("ordinary generation migration is unavailable after shard migration starts; inspect amem status and use amem migrate --shards --resume; the existing selector was retained");
+}
+
 export async function migrate(options: MigrateOptions): Promise<MigrationResult> {
   if (options.authorizedPerson !== true || options.tty !== true) throw new Error("migration requires an authorized person in a terminal");
   if (!["dry-run", "apply", "resume", "deactivate"].includes(options.mode) || options.generation !== undefined && !validGeneration(options.generation)) throw new Error("invalid migration request");
   const memoryDir = existsSync(options.memoryDir) ? realPath(options.memoryDir) : canonicalPath(options.memoryDir);
+  refuseShardSelection(memoryDir);
   const selection = readSelector(memoryDir);
   // Explicit undo reads only the selector: broken/missing G must not make the escape back to v1 impossible.
   const selectedG = selection.selector?.kind === "generation" ? selection.selector.generation : undefined;
@@ -111,6 +118,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
     return { mode: options.mode, profile: initial, counts: await counts(memoryDir, options.generation ?? initial.generation, (options.now ?? Date.now)()), consequence };
   }
   return withProfileLock(memoryDir, async () => {
+    refuseShardSelection(memoryDir);
     const selected = readSelector(memoryDir);
     if (selected.revision !== initial.selectorRevision) return changed();
     if (options.mode === "deactivate") {
