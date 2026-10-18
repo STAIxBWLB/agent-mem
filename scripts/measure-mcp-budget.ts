@@ -2,18 +2,20 @@
  * Instrumentation is confined to the child fixture; production handlers and transport are unchanged.
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { WorkListStore } from "../src/memory/work-lists.ts";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 
 const home = mkdtempSync(join(tmpdir(), "amem-mcp-budget-"));
 const cwd = join(home, "project"), base = join(home, "memory"), reportPath = join(home, "rss.json");
-const CURATED = 200, CAPTURE = 2000, SEARCHES = 10;
+const CURATED = 200, CAPTURE = 2000, SEARCHES = 10, WORK_ROWS = 2000, WORK_ITEMS = 100;
 const mb = (bytes: number) => Math.round(bytes / 1048576 * 100) / 100;
 let child: ReturnType<typeof spawn> | undefined;
 let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -32,6 +34,20 @@ try {
     for (let i = 0; i < CAPTURE; i++) capture.append({ project, agent: "budget", event: "PostToolUse", tool: "Edit", paths: ["src/storage.ts"], status: "ok",
       excerpt: `mcpbudgetneedle capture variant ${i} ${"bounded storage retrieval ".repeat(10)}` });
   } finally { capture.close(); }
+  // Meaningful append history without quadratic setup through thousands of write()/refresh() calls.
+  // Replay the synthetic hashed segment once; the measured child still opens and reads the real work-list store.
+  const work = new WorkListStore({ base, project, policy: () => true });
+  try {
+    const machine = "c".repeat(16);
+    let segment = "";
+    for (let i = 0; i < WORK_ROWS; i++) {
+      const body = { schema: "agent-mem.work-list/v1", project, machine, at: i, nonce: i.toString(16).padStart(32, "0"), list: "budget-work",
+        fields: { task: `item-${i % WORK_ITEMS}`, status: "doing", progress: i, detail: `bounded synthetic work-list observation ${i} ${"storage retrieval budget ".repeat(8)}` } };
+      segment += canonicalJSON({ ...body, id: hashJSON(body) }) + "\n";
+    }
+    writeFileSync(join(work.dir, "log", `${machine}.jsonl`), segment, { mode: 0o600 });
+    work.rebuild();
+  } finally { work.close(); }
   // Allowlist environment: no real-home state, inherited agent settings, credentials or network provider configuration.
   child = spawn(process.execPath, [join(import.meta.dir, "budget-mcp-child.ts"), cwd, base, reportPath], {
     cwd, env: { PATH: process.env.PATH ?? "", HOME: home, AMEM_HOME: base, TMPDIR: home }, stdio: ["pipe", "pipe", "pipe"],
@@ -66,18 +82,25 @@ try {
     const result = await request("tools/call", { name: "amem_search", arguments: { query: "mcpbudgetneedle", limit: 10, includeCapture: true } });
     if (result.isError || !result.content?.some((item: { type: string; text?: string }) => item.type === "text" && item.text?.includes("mcpbudgetneedle"))) throw new Error("search did not return seeded MCP evidence");
   }
+  for (const args of [{ includeClosed: true }, { list: "budget-work", includeClosed: true }]) {
+    const result = await request("tools/call", { name: "amem_work_state_read", arguments: args });
+    const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
+    if (result.isError || typeof text !== "string") throw new Error("work-list MCP read failed");
+    const lists = JSON.parse(text) as { list: string; items: { task: string; fields: { progress: number } }[] }[];
+    if (lists.length !== 1 || lists[0]?.list !== "budget-work" || lists[0].items.length !== WORK_ITEMS || !lists[0].items.some(item => item.fields.progress === WORK_ROWS - 1)) throw new Error("work-list MCP read did not reduce the complete seeded history");
+  }
   proc.stdin!.end(); // The stdio session's EOF, not a shutdown RPC or a kill, must close and reap the child.
   const exitCode = await reaped;
   clearTimeout(deadline);
   if (exitCode !== 0) throw new Error(`MCP EOF exit ${exitCode}: ${stderr}`);
   let remains = true;
   try { process.kill(proc.pid!, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") remains = false; else throw error; }
-  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number };
+  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; workReads: number };
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
-  const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && !remains;
-  console.log(JSON.stringify({ platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE },
+  const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.workReads === 2 && !remains;
+  console.log(JSON.stringify({ platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
-    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, budgetIdleMB: 100, budgetPeakMB: 200 }, pass }, null, 2));
+    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, workReads: measured.workReads, budgetIdleMB: 100, budgetPeakMB: 200 }, pass }, null, 2));
   if (!pass) process.exitCode = 1;
 } finally {
   if (deadline) clearTimeout(deadline);

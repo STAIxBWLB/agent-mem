@@ -9,7 +9,7 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, listAliases, readShardedSelection } from "./memory/shard.ts";
+import { appendAlias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -107,6 +107,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (definition.policyFree && !policyFree) {
     throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
   }
+  let canonicalProject: string | undefined;
+  const boundProject = () => canonicalProject ??= resolveAlias(memoryHome(), memoryProjectKey(context.cwd ?? process.cwd()));
   if (sub === "migrate") {
     const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
@@ -127,7 +129,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (applying) {
       input = readPrunePlanFile(String(options["--plan"]));
     }
-    const project = memoryProjectKey(context.cwd ?? process.cwd());
+    const project = boundProject();
     if (options["--user"] === true) {
       if (!shardStatePresent()) throw new Error("prune --user requires an active curated shard migration; the default prune command selects the current project");
       readShardedSelection(memoryHome());
@@ -146,7 +148,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (sub === "list" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; select --kind memory for the standalone memory candidate surface");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
-    const project = memoryProjectKey(context.cwd ?? process.cwd()), candidates = new CandidateStore();
+    const project = boundProject(), candidates = new CandidateStore();
     try {
       if (sub === "list") {
         const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),
@@ -175,7 +177,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     } finally { candidates.close(); }
   }
   if (sub === "vault-candidates") {
-    const project = memoryProjectKey(context.cwd ?? process.cwd()), store = curatedStore(project, { deferPromotions: true });
+    const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
       const result = await vaultCandidates(store, { project, policy: createStandalonePolicy(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
       return JSON.stringify(result, null, 2);
@@ -225,15 +227,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const crosses = definition.policyFree === true && policyFree;
   const cwd = context.cwd ?? process.cwd();
   // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
-  const open = () => curatedStore(memoryProjectKey(cwd), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
+  const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
   // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
-  if (goal) return rawGoalCommand(args, cwd, { open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
+  if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};
-  const output = await rawMemoryCommand(args, cwd, { open, readable: notes => notes, importPolicy: () => () => false,
+  const output = await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => () => false,
     onBridgeStatus: status => { receipt.bridgeStatus = status; } });
   if (sub === "import" && parsed.path[1] === "claude-mem") {
     const policy = createStandalonePolicy();
-    const work = await importClaudeMemWorkState({ base: memoryHome(), project: memoryProjectKey(cwd), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });
+    const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });
     return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}`;
   }
   return !options["--json"] && receipt.bridgeStatus

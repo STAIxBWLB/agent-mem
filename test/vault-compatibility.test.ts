@@ -127,3 +127,26 @@ test("C2 vault_link contract requires every frozen field and refuses shared-v1 w
   expect(() => validateVaultLinkRow(frozen.link, "f".repeat(32), "local")).toThrow();
   expect(() => validateVaultLinkRow(frozen.link, frozen.link.generation, "synced")).toThrow();
 });
+
+
+test("C1 pre-vault 0.3.1 can reuse the P2-updated shared index but refuses its next full rebuild", async () => {
+  const f = await fixture();
+  const old = new PreVaultStore({ home: f.root, deferPromotions: true });
+  try {
+    expect(old.get(frozen.note.id, project)?.text).toBe(frozen.note.text);
+    await f.link(); // The P2 writer also advances the shared derived watermark.
+    expect(old.list({ project }).map(row => row.id)).toContain(frozen.note.id);
+    expect(() => old.rebuild()).toThrow();
+  } finally { old.close(); }
+});
+
+
+test("C1 a pre-vault reader with its own unadvanced index refuses an unknown link suffix during refresh", async () => {
+  const f = await fixture(), control = readerCopy(f.memory);
+  const old = new PreVaultStore({ home: control, deferPromotions: true });
+  try {
+    expect(old.get(frozen.note.id, project)?.text).toBe(frozen.note.text);
+    appendFileSync(join(old.dir, "local", `${frozen.link.machine}.jsonl`), frozen.canonicalLine);
+    expect(() => old.list({ project })).toThrow();
+  } finally { old.close(); }
+});

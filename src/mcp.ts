@@ -80,7 +80,8 @@ export async function serveMcp(options: McpOptions): Promise<void> {
     }
     if (phase !== "ready") { await error(id, -32002, "Initialize the session first"); return; }
     if (msg.method === "tools/list") {
-      if (msg.params !== undefined && (!plain(msg.params) || Object.keys(msg.params).length)) { await error(id, -32602, "Invalid tool listing arguments"); return; }
+      const params = msg.params;
+      if (params !== undefined && params !== null && (!plain(params) || Object.keys(params).some(key => key !== "cursor" && key !== "_meta") || params.cursor !== undefined && params.cursor !== null || params._meta !== undefined && (!plain(params._meta) || Object.keys(params._meta).length > 0))) { await error(id, -32602, "Invalid tool listing arguments"); return; }
       await send({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } }); return;
     }
     if (msg.method !== "tools/call") { await error(id, -32601, "Method not found"); return; }

@@ -41,11 +41,12 @@
 
 ## CLI and policy boundaries
 
-- Refuse every CLI command in an agent-marked session; agents use the hub's `hub_memory_*` tools. Require stdin TTY for mutations.
-- Require explicit `--policy-free` for promote, import and sync. Keep host privacy policy out of this package; person reads are unscreened and import/promotion retain the secret screen.
+- Refuse ordinary CLI commands in agent-marked sessions. `amem mcp` is the sole intentional session agent entrypoint; its bounded writes go only to candidates and work lists, never directly to curated notes. Keep ordinary CLI mutations person-only and require stdin TTY.
+- Require explicit `--policy-free` for promote, import and sync. Keep host privacy policy out of this package; ordinary person reads are unscreened, vault-candidate listings use current policy, and import/promotion retain the secret screen.
 - Resolve data storage with `memoryHome()`: `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. Keep tests isolated through `test/home.ts`.
 
 ## Things agents get wrong
 
 - For the extraction contract (2026-10-16, recheck when changing storage or host integration), preserve schema/hash/path compatibility with existing agent-hub stores; do not rename the schema to match this package.
 - For CLI authorization (2026-10-16, recheck when changing CLI entry points), agent environment markers are an honest-session refusal, not authentication; never offer bypass instructions or widen hub sandbox permissions.
+- For vault-link authoring (2026-10-18, recheck before authoring or a host-pin change), require every host sharing that memory home to include P2 vault-link support. Do not record links while a sharing agent-hub still pins agent-mem 0.3.1; compatibility details: `docs/contracts.md` §Generation-only vault links.

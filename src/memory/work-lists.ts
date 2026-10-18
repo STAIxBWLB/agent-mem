@@ -11,6 +11,7 @@ import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./store.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
+const READ_ROW_CEILING = 5000;
 export type WorkListFields = Record<string, string | number | boolean | null>;
 export type WorkListPolicy = (row: unknown) => boolean | Promise<boolean>;
 export interface WorkListSource { source: string; id: string; machine?: string; at?: number }
@@ -216,7 +217,14 @@ export class WorkListStore {
 
   async read(list?: string, includeClosed = false): Promise<WorkListView[]> {
     if (list !== undefined && !bounded(list, 300) || typeof includeClosed !== "boolean") return invalid();
-    const rows = this.locked(() => { this.refresh(); return (this.db.query("SELECT payload, position FROM work_ops").all() as { payload: string; position: number }[]).map(row => ({ row: this.decode(row.payload), position: row.position })).sort(replayOrder); });
+    const rows = this.locked(() => {
+      this.refresh();
+      // ponytail: 5000 persisted operations per project read, including named-list reads. Refuse before payload
+      // materialization; append truth is never truncated. Upgrade to bounded streaming reduction for longer histories.
+      const count = this.db.query("SELECT count(*) AS count FROM work_ops").get() as { count: number };
+      if (count.count > READ_ROW_CEILING) throw new Error("work-list read exceeds 5000-row ceiling");
+      return (this.db.query("SELECT payload, position FROM work_ops").all() as { payload: string; position: number }[]).map(row => ({ row: this.decode(row.payload), position: row.position })).sort(replayOrder);
+    });
     const views = new Map<string, { fields: WorkListFields; items: Map<string, WorkListFields> }>();
     for (const { row } of rows) {
       if (!await this.permitted(row)) continue;

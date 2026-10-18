@@ -77,3 +77,17 @@ test("a fake client uses a real stdio child, whose EOF closes once and exits wit
     expect(JSON.parse(replies[2].result.content[0].text)).toEqual({ args: { id: "abcdef123456" } });
   } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await child.exited; } }
 });
+
+test("tools/list accepts MCP null cursor and metadata forms without widening tool arguments", async () => {
+  const accepted = [null, { cursor: null }, { _meta: {} }];
+  for (const params of accepted) {
+    const s = await session(initialize + request(2, "tools/list", params));
+    expect(s.replies.find(r => r.id === 2)?.result.tools).toHaveLength(9);
+    expect(s.calls).toBe(0);
+  }
+  for (const params of [{ cursor: "next" }, { _meta: { unexpected: true } }, { extra: true }, [], 1]) {
+    const s = await session(initialize + request(2, "tools/list", params));
+    expect(s.replies.find(r => r.id === 2)?.error.code).toBe(-32602);
+    expect(s.calls).toBe(0);
+  }
+});

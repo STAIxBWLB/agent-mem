@@ -47,7 +47,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const work = new WorkListStore({ base, project, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
     const guard = () => {
       if (closed) unavailable();
-      const releaseProbe = registerReaderLease(base); releaseProbe();
+      release.verify();
       if (resolveAlias(base, requested) !== project || readSelector(base).revision !== selection) unavailable();
       const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
       if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) unavailable();
