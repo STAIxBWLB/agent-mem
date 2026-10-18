@@ -378,3 +378,17 @@ test("an accepted mutation refuses a busy derived index before appending any not
     expect(bytes(f.memory)).toEqual(before);
   } finally { index.run("ROLLBACK"); index.close(); }
 });
+
+
+test("general memory is a pending candidate until current person policy accepts it (#13 P2)", () => {
+  const f = fixture(), before = f.memory.dump();
+  const id = f.candidates.put({ project: PROJECT, kind: "memory", text: "Reusable transaction boundary", title: "Boundary", noteKind: "finding" }, "public");
+  expect(f.memory.dump()).toBe(before);
+  expect(f.candidates.get(id, PROJECT)?.status).toBe("pending");
+  expect(() => f.candidates.accept(id, { ...acceptance(f), actor: "agent" })).toThrow("person");
+  expect(() => f.candidates.accept(id, { ...acceptance(f), policy: () => false })).toThrow("policy");
+  expect(f.memory.dump()).toBe(before);
+  const accepted = f.candidates.accept(id, acceptance(f));
+  expect(f.memory.get(accepted.noteId, PROJECT)).toMatchObject({ kind: "finding", title: "Boundary", text: expect.stringContaining("Reusable transaction boundary") });
+  expect(f.candidates.accept(id, acceptance(f)).alreadyAccepted).toBe(true);
+});

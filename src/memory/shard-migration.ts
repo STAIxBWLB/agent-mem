@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacySegment } from "./bridge.ts";
-import { canonicalJSON, generationDescriptor, generationDir, hashJSON, readProfileJSON, readSelector, validGeneration, validateGeneration, withProfileLock, writeProfileJSON, type BoundProfile } from "./generation.ts";
+import { canonicalJSON, generationDescriptor, generationDir, hashJSON, readProfileJSON, readSelector, validGeneration, validateGeneration, withProfileLock, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLinkRow } from "./generation.ts";
 import { coalesceGenerationSource, explicitExpirySnapshot } from "./generation-index.ts";
 import { pruneId, prunePayloadHash, reducePruneRows, validatePruneRow, type PruneRow, type PruneSourceRow } from "./prune.ts";
 import { acquireMutation } from "./mutation.ts";
@@ -119,6 +119,7 @@ function route(captured: Capture, completed?: readonly SourcePrefix[], dryRun = 
   const legacy = legacyEntries(captured.segments.filter(segment => segment.source !== "generation"));
   const byId = new Map(legacy.map(row => [row.id, row])), snapshotRows = new Map<string, PruneSourceRow>();
   const occurrences: { row: Entry; line: string; end: number; segment: LegacySegment }[] = [];
+  const vaultLinks: { row: VaultLinkRow; line: string; end: number; segment: LegacySegment }[] = [];
   const prunes: { row: PruneRow; line: string; end: number; segment: LegacySegment }[] = [];
   const completedBySource = new Map((completed ?? []).map(source => [sourceKey(source.source, source.path), source.offset]));
   const result = emptyCounts();
@@ -135,6 +136,11 @@ function route(captured: Capture, completed?: readonly SourcePrefix[], dryRun = 
       const row = validatePruneRow(value, captured.sourceGeneration, segment.local ? "local" : "synced");
       if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) throw new Error("selected generation prune placement mismatch");
       prunes.push({ row, line: item.line, end: item.end, segment }); continue;
+    }
+    if (segment.source === "generation" && value && typeof value === "object" && (value as { op?: unknown }).op === "vault_link") {
+      const row = validateVaultLinkRow(value, captured.sourceGeneration, segment.local ? "local" : "synced");
+      if (segment.path !== `local/${row.machine}.jsonl`) throw new Error("selected generation vault link placement mismatch");
+      vaultLinks.push({ row, line: item.line, end: item.end, segment }); continue;
     }
     let row: Entry | undefined;
     if (segment.source === "generation") {
@@ -269,6 +275,14 @@ function route(captured: Capture, completed?: readonly SourcePrefix[], dryRun = 
       if (groups.size > 1) result.translatedPruneRows++;
     }
   }
+  for (const input of vaultLinks) {
+    const witness = byId.get(input.row.target), destination = owners.get(input.row.target);
+    if (!witness || witness.op !== "note" || witness.project !== input.row.project || hashJSON(witness) !== input.row.rowHash || destination === undefined) throw new Error("vault link exact target has no shard witness");
+    destinations.add(destination);
+    if (input.end <= (completedBySource.get(sourceKey(input.segment.source, input.segment.path)) ?? 0)) continue;
+    lines.push({ id: input.row.id, line: input.line, source: "generation", path: input.segment.path, end: input.end, local: true, destinations: [destination] });
+    result.generationRows++; result.generationLocalRows++;
+  }
   result.danglingIds = [...dangling].sort(); result.danglingRows = dangling.size;
   const ordering = new Map(captured.segments.map((segment, index) => [sourceKey(segment.source, segment.path), index]));
   lines.sort((a, b) => ordering.get(sourceKey(a.source, a.path))! - ordering.get(sourceKey(b.source, b.path))! || a.end - b.end);
@@ -328,6 +342,7 @@ function existingRows(dir: string, generation: string): { ids: Map<string, Set<s
       if (!item.line.trim()) continue;
       const value = JSON.parse(item.line) as { op?: unknown; id?: unknown };
       if (segment.source === "generation" && value.op === "prune") known.add(validatePruneRow(value, generation, segment.local ? "local" : "synced").id);
+      else if (segment.source === "generation" && value.op === "vault_link") known.add(validateVaultLinkRow(value, generation, segment.local ? "local" : "synced").id);
       else {
         const bytes = Buffer.from(item.line + "\n");
         const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: hashBytes(bytes) }], { strict: segment.source === "generation" })[0];

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { types } from "node:util";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { readerAdmissionDatabase } from "./mutation.ts";
 import { dirname, join } from "node:path";
@@ -147,4 +148,35 @@ export async function withProfileLock<T>(memoryDir: string, work: () => T | Prom
       if (existsSync(file) && !lstatSync(file).isSymbolicLink() && readFileSync(file, "utf8") === owner) { unlinkSync(file); fsyncDirectory(memoryDir); }
     }
   }
+}
+
+
+export interface VaultLinkRow {
+  schema: "agent-mem.vault-link/v1"; op: "vault_link"; generation: string;
+  id: string; at: string; machine: string; actor: "person"; placement: "local";
+  target: string; rowHash: string; project: string; path: string;
+}
+export interface VaultLink { id: string; target: string; rowHash: string; project: string; path: string; at: string }
+const invalidVaultLink = (): never => { throw new Error("invalid vault link or unavailable exact entry"); };
+export const vaultLinkId = (body: unknown): string => createHash("sha256").update(canonicalJSON(body)).digest("hex").slice(0, 32);
+
+/** Metadata only: this path is never resolved, opened, copied or written by amem. */
+export function validVaultPath(path: unknown): path is string {
+  return typeof path === "string" && path.length > 0 && Buffer.byteLength(path) <= 512 && path.endsWith(".md")
+    && !/[\\:\p{Cc}]/u.test(path) && !path.startsWith("/") && path.split("/").every(part => part !== "" && part !== "." && part !== "..");
+}
+export function validateVaultLinkRow(value: unknown, generation: string | undefined, placement: "local" | "synced"): VaultLinkRow {
+  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Object.getOwnPropertySymbols(value).length) return invalidVaultLink();
+  const expected = ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"].sort();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (canonicalJSON(Object.keys(descriptors).sort()) !== canonicalJSON(expected) || Object.values(descriptors).some(field => !("value" in field) || !field.enumerable || typeof field.value !== "string")) return invalidVaultLink();
+  const row = value as VaultLinkRow;
+  if (row.schema !== "agent-mem.vault-link/v1" || row.op !== "vault_link" || row.generation !== generation || !/^[a-f0-9]{32}$/.test(row.generation)
+    || row.placement !== "local" || placement !== "local" || row.actor !== "person" || !/^[a-f0-9]{16}$/.test(row.machine)
+    || !/^[a-f0-9]{32}$/.test(row.id) || !/^[a-f0-9]{32}$/.test(row.target) || !/^[a-f0-9]{64}$/.test(row.rowHash)
+    || !row.project.trim() || row.project.length > 400 || /\p{Cc}/u.test(row.project) || !validVaultPath(row.path)
+    || !Number.isFinite(Date.parse(row.at)) || new Date(row.at).toISOString() !== row.at || Buffer.byteLength(canonicalJSON(row)) > 4096) return invalidVaultLink();
+  const { id, ...body } = row;
+  if (id !== vaultLinkId(body)) return invalidVaultLink();
+  return row;
 }

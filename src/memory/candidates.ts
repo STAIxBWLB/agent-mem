@@ -14,6 +14,7 @@ export interface CandidateTarget { id: string; revision: string }
 export type CandidateInput = { project: string } & (
   | { kind: "correction"; target: CandidateTarget; proposedText: string; reason: string; noteKind?: "decision" | "contract" | "fail" }
   | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string }
+  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" }
   | { kind: "decay"; target: CandidateTarget; reason: string }
 );
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
@@ -50,6 +51,8 @@ function validate(input: CandidateInput): void {
     if (!validTarget(input.target) || !text(input.proposedText) || !text(input.reason) || input.noteKind !== undefined && !["decision", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid correction candidate");
   } else if (input.kind === "fail") {
     if (input.target !== undefined && !validTarget(input.target) || ![input.approach, input.symptom, input.cause, input.retryWhen].every(x => text(x)) || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
+  } else if (input.kind === "memory") {
+    if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid memory candidate");
   } else if (input.kind === "decay") {
     if (!validTarget(input.target) || !text(input.reason)) throw new Error("invalid decay candidate");
   } else throw new Error("invalid candidate kind");
@@ -73,8 +76,9 @@ export class CandidateStore {
   readonly path: string;
   private readonly db: Database;
   private readonly now: () => number;
-  constructor(options: { home?: string; now?: () => number } = {}) {
-    this.dir = options.home === undefined ? memoryHome() : join(options.home, "memory");
+  constructor(options: { home?: string; memoryDir?: string; now?: () => number } = {}) {
+    if (options.memoryDir !== undefined && options.home !== undefined) throw new Error("choose a home or an exact memory directory");
+    this.dir = options.memoryDir ?? (options.home === undefined ? memoryHome() : join(options.home, "memory"));
     this.now = options.now ?? Date.now;
     mkdirSync(this.dir, { recursive: true, mode: 0o700 }); chmodSync(this.dir, 0o700);
     this.path = join(this.dir, "candidates.db");
@@ -112,7 +116,7 @@ export class CandidateStore {
     return row ? this.decode(row) : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
-    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay"].includes(filter.kind)) throw new Error("invalid candidate filter");
+    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory"].includes(filter.kind)) throw new Error("invalid candidate filter");
     const limit = filter.limit ?? CANDIDATE_RETENTION.count;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANDIDATE_RETENTION.count) throw new Error("candidate limit must be 1..500");
     this.prune();
@@ -147,7 +151,7 @@ export class CandidateStore {
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
     personOnly(context.actor); publicOnly(context.verdict);
-    if (realPath(context.store.dir) !== realPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");
+    if (realPath(context.store.profile.home) !== realPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");
     return context.store.withDeferredPromotions(() => this.acceptDeferred(id, context));
   }
   private acceptDeferred(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
@@ -157,21 +161,21 @@ export class CandidateStore {
     if (candidate.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
     if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
     const resolve = () => {
-      const target = candidate.input.target;
+      const target = candidate.input.kind === "memory" ? undefined : candidate.input.target;
       if (!target) return undefined;
       const current = context.store.get(target.id, context.project);
       if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
       return current;
     };
     const target = resolve(), data = candidate.input;
-    const body = data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
+    const body = data.kind === "memory" ? data.text : data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
       : `Approach: ${data.approach}\nSymptom: ${data.symptom}\nCause: ${data.cause}\nEvidence: ${data.evidenceRefs.join(", ")}\nRetry when: ${data.retryWhen}`;
-    const note: NoteInput = { op: "note", project: data.kind === "correction" ? target!.project : context.project,
+    const note: NoteInput = { op: "note", ...(data.kind === "memory" && data.title ? { title: data.title } : {}), project: data.kind === "correction" ? target!.project : context.project,
       scope: data.kind === "correction" ? target!.scope : "project",
       // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
       tier: data.kind === "correction" && target!.local ? "short" : "long",
       kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: "person", source: "person", about: [...target?.about ?? []],
-      text: `Accepted candidate: ${id}\nTarget revision: ${data.target?.revision ?? "none"}\nTarget entry: ${data.target?.id ?? "none"}\n\n${body}` };
+      text: `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
     if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
     if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
     return context.store.withAcceptedNote(note, append => {

@@ -21,6 +21,8 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
+  mcp: { description: "Run the project-bound MCP stdio server for this session" },
+  "vault-candidates": { description: "List screened durable curated vault candidates", options: { ...json, "--limit": text("Maximum candidates (1..100)") } },
   list: { description: "List memory", options: filters },
   search: { description: "Search memory", options: filters, args: [{ name: "words", variadic: true }] },
   show: { description: "Show a note", options: json, args: [{ name: "id" }] },
@@ -50,7 +52,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
     list: { description: "List review candidates", options: {
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
-      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay"] }, "--limit": text("Maximum candidates (1..500)"),
+      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory"] }, "--limit": text("Maximum candidates (1..500)"),
     } },
     accept: { description: "Accept one candidate through the current memory policy", options: policy, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },

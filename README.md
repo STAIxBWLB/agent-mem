@@ -204,7 +204,7 @@ Only explicit serialized expiry is eligible: a note's `expires`, or an exact dem
 
 Standalone CLI prune is local-only, even over a synced target. No `--policy-free` escape enables public prune. A later policy-aware host integration must authenticate intent and attest the exact public payload and current policy revision; only verified public target/basis provenance may sync. Local masks, plans, journals, caches and sidecars never sync. Generation sync refuses public or unknown remote visibility. An interrupted apply resumes the same durable row IDs and exact partial tail; it never rewrites complete lines.
 
-Candidate/counter sidecars are not migrated. `amem review` currently refuses a selected generation rather than using an unbound legacy sidecar. A profile-aware host integration must handle that context explicitly.
+Candidate/counter sidecars are not migrated. `amem review list --kind memory` lists the new machine-local memory candidates under a selected generation; the default legacy review list retains its generation refusal. General memory candidates can be accepted by the person into the current project store after current standalone screening; older correction/fail candidates still require profile-aware host integration for generation acceptance.
 
 Real migration remains blocked until the separately reviewed generation-capable amem release and exact-pinned agent-hub integration are installed and their running stores prove the same home/G/selector revision. Synthetic cross-writes and exact prune readbacks precede separately confirmed real migration; known local handles must be quiesced/closed and reopened through the supported session-preserving lifecycle. Release, deployment, real migration, host evidence/capture receipts and real multi-machine sync are not established by these source changes. Deactivation omits generation-only notes/prunes from the v1 view and is not a lossless rollback.
 
@@ -230,9 +230,37 @@ Library callers open an already sealed shard directly with `openShardStore({ hom
 
 Dry run reports v1, generation-owned/local, prune and translated-prune counts, plus refused relations. A private-to-private replacement across projects refuses before effects. A shared entry superseded by a private entry also refuses: the dry run reports `shared superseded by private: N` and entry IDs only. Un-supersede it, or promote the replacement to shared, then rerun. `ponytail:` supporting that direction requires a body-free lifecycle witness; revisit when a read-only dry run on a copy of the person's home reports a nonzero count, never by probing or migrating the live home here. Private-to-shared replacements remain supported. See [the T2 contract](docs/curated-shard-migration.md).
 
-After a split, ordinary generation `amem migrate` modes (including `--deactivate`) refuse without changing the selector. Use `amem migrate --shards --resume` to finish the split. Candidate `review accept` also refuses before touching its sidecar or old logs; preserve the pending candidate until shard-aware review integration is available. Default `prune` selects the current project's shard; use the person-only `amem prune --user --cutoff <UTC> --dry-run` and `amem prune --user --apply --plan <file>` for shared/user entries. The actor and current-project authorization checks are unchanged.
+After a split, ordinary generation `amem migrate` modes (including `--deactivate`) refuse without changing the selector. Use `amem migrate --shards --resume` to finish the split. General memory candidates can be accepted into the selected project shard after standalone screening; correction/fail candidates still refuse pending shard-aware host integration. Default `prune` selects the current project's shard; use the person-only `amem prune --user --cutoff <UTC> --dry-run` and `amem prune --user --apply --plan <file>` for shared/user entries. The actor and current-project authorization checks are unchanged.
 
 A native shard crash tail is left to its original writer's recovery. Migration checks planned copy tails and translation-receipt tails before changing activation; matching copies finish append-only and mismatches give an inspection hint. Dangling lifecycle/suggestion metadata is carried as ids-only user data and counted, so a target arriving later retains its intent. Cross-private replacements have their own ids-only count and the un-supersede/promote-to-shared remedy. During interruption the catalog keeps capture information available while `curatedEntries` is `null` and `curatedAvailable` is `false`; its cached capture counts may still lag.
+
+## Session MCP and work lists (#13 P2)
+
+Run `amem mcp` as a stdio child of the agent CLI. It binds the working directory, canonical project key, exact memory home and selected profile once, accepts no project/home overrides in tool arguments, and closes all stores on stdin EOF. It has no listener, daemon, watcher or model call. Ordinary person commands retain their agent-marker refusal and mutation TTY checks; `mcp` is the sole agent entry point.
+
+The frozen nine-tool contract for dotfiles#255 and maru#458:
+
+| Tool | Purpose |
+| --- | --- |
+| `amem_search` | Screened project search, FTS5/BM25 with tier/recency ranking |
+| `amem_show` | Exact or unique-prefix curated note; explicit `capture:<id>` recall |
+| `amem_timeline` | Screened notes and labelled capture near an id or time |
+| `amem_graph` | Screened curated note neighbourhood, excluding capture and candidate data |
+| `amem_work_state_read` | Project work lists, optional closed lists/items |
+| `amem_work_state_write` | Append scalar fields, null clears, task selects an item |
+| `amem_remember` | General memory candidate only, awaiting person acceptance |
+| `amem_vault_candidates` | Read-only screened durable curated notes |
+| `amem_capacity` | Numeric machine capacity proposal; no apply capability |
+
+Search/show/timeline label capture as recall with `evidence: false`; capture never enters the curated graph. Policy screens complete rows before selection, limits or graph construction. The standalone secret screen, private flags, PII patterns and deny paths compose with a host's stricter policy through `createMemoryMcp({cwd, base, policy})`. Screening errors fail closed. `base` is the exact memory root; historical library `home` options still name its parent. Scope and profile changes refuse further access instead of silently reopening another store. Reads currently refuse above 5,000 rows per tier rather than return an incomplete screened corpus. Graphs cover curated-note relationships, not goal/suggestion tables.
+
+`WorkListStore` writes `projects/<key-hash>/work/` with its own append log, derived index and lock. Scalar fields reduce by latest value, null clears, list status `done` closes, and item status is `todo|doing|done|dropped`. Work lists are outside generation selection and capture eviction. `amem import claude-mem` additionally imports `work_state_entries` only through persisted person-reviewed D2 aliases, preserving source DB bytes and stable replay receipts; JSON keeps observation fields and adds `work` counts/cursor.
+
+`amem vault-candidates --json` and the MCP read tool select durable long-term notes under current policy, excluding task/review/PR/CI progress and already-linked entries. The deterministic status filter covers English status phrases and can miss paraphrased or other-language status text; candidates require person review. No vault is opened, indexed or written. Library `recordVaultLink` records an exact-entry hash and relative Markdown path in a generation-only local append op; it survives index rebuild and shard migration, stays machine-local, and does not change shared-v1 schemas or sync semantics. There is no MCP link writer.
+
+General memory candidates are separate from curated evidence. `amem review accept <id> --policy-free` remains person-only and rechecks the current standalone privacy policy before the accepted note append. Machine capacity reports numeric aggregate use across shards, as R7 requires; it does not return foreign project names or text.
+
+`bun scripts/measure-mcp-budget.ts` measures an actual stdio session with 200 curated notes and 2,000 capture rows: idle RSS below 100 MB, search peak below 200 MB, and a reaped child after EOF. CI runs it on macOS and Linux. This is synthetic verification; live P6 measurements remain separate.
 
 ## Development
 

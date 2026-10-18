@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
@@ -10,7 +10,7 @@ import { SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import type { CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
-import { generationDescriptor, generationDir, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput } from "./generation.ts";
+import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
 import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
 import { readMigrationSources } from "./migrate.ts";
@@ -166,6 +166,7 @@ export interface View {
   /** Written as short-term, so it lives in this machine's local segment and never syncs. */
   local: boolean;
 }
+export interface VaultEntry { view: View; /** Full authored hash in generation profiles; empty for read-only shared-v1. */ rowHash: string }
 export interface GoalView {
   id: string; at: string; machine: string; project: string; scope: Scope; title: string; milestones: string[]; dependsOn: string[];
   state: GoalState; links: { task: string; at: string; machine: string }[];
@@ -188,7 +189,7 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * `screen`: applied to every promotion. Without one, automatic promotions (a settlement, a held note whose replacement
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
-export interface StoreOptions { home?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
+export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
 }
 
 const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
@@ -217,7 +218,8 @@ export class MemoryStore {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
     this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
     this.userOverlay = bootstrap?.userOverlay;
-    const home = bootstrap?.profile.home ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+    if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
+    const home = bootstrap?.profile.home ?? opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
     if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
@@ -277,6 +279,56 @@ export class MemoryStore {
   prunePort(): PruneStorePort {
     if (this.bootstrapOnly || !this.generationIndex) throw new Error("durable prune requires an active generation handle");
     return this.generationIndex.port(this.machine.id);
+  }
+
+  /** Read-only project views, bounded before bodies or hashes; never promotes or authors a prune. */
+  vaultEntries(project: string): VaultEntry[] {
+    if (!project.trim() || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw new Error("vault project does not match the bound store");
+    this.withDeferredPromotions(() => this.ensureFresh());
+    const scanLimit = 5000;
+    const own = this.db.query("SELECT id FROM entries WHERE project=? LIMIT ?").all(project, scanLimit + 1) as { id: string }[];
+    if (own.length > scanLimit) throw new Error("vault scan budget exceeded; refine the store before retrying");
+    const overlay = new Map(this.userOverlay?.vaultEntries(project).map(entry => [entry.view.id, entry.rowHash]));
+    if (new Set([...own.map(row => row.id), ...overlay.keys()]).size > scanLimit) throw new Error("vault scan budget exceeded; refine the store before retrying");
+    const authored = this.generationIndex?.vaultWitnesses(own.map(row => row.id));
+    return this.views(false, { project }).filter(view => view.project === project).map(view => {
+      // A shared-v1 read cannot record links and needs no authored witness or new index field.
+      const rowHash = this.generationIndex ? authored?.get(view.id) ?? overlay.get(view.id) : "";
+      if (rowHash === undefined) throw new Error("authored vault entry witness unavailable");
+      return { view, rowHash };
+    });
+  }
+  vaultLinks(project: string): VaultLink[] {
+    this.ensureFresh();
+    if (!project.trim() || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw new Error("vault project does not match the bound store");
+    return [...(this.generationIndex?.vaultLinks(project) ?? []), ...(this.userOverlay?.vaultLinks(project) ?? [])];
+  }
+  /** Exact id/hash recheck under the existing mutation fence; never follows promoted/superseded aliases. */
+  recordVaultLink(id: string, path: string, project: string, rowHash: string): string {
+    if (this.bootstrapOnly || !this.generationIndex) throw new Error("vault links require an active generation handle");
+    if (this.userOverlay?.vaultEntries(project).some(entry => entry.view.id === id)) return this.userOverlay.recordVaultLink(id, path, project, rowHash);
+    return this.withMutation(() => {
+      this.refresh();
+      const entry = this.vaultEntries(project).find(row => row.view.id === id && row.rowHash === rowHash);
+      if (!entry || entry.view.tier !== "long" || entry.view.local || entry.view.supersededBy) throw new Error("exact vault entry changed or unavailable");
+      const prior = this.vaultLinks(project).find(row => row.target === id && row.rowHash === rowHash && row.path === path);
+      if (prior) return prior.id;
+      const body = { schema: "agent-mem.vault-link/v1", op: "vault_link", generation: this.profile.generation!,
+        at: new Date(this.now()).toISOString(), machine: this.machine.id, actor: "person", placement: "local", target: id, rowHash, project, path } as const;
+      const row: VaultLinkRow = { ...body, id: vaultLinkId(body) };
+      validateVaultLinkRow(row, this.profile.generation, "local");
+      this.generationIndex!.assertAppendable(true, this.machine.id);
+      const file = join(this.dir, "local", `${this.machine.id}.jsonl`), existed = existsSync(file);
+      const fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+      try {
+        const stat = fstatSync(fd);
+        if (!stat.isFile() || stat.nlink !== 1) throw new Error("vault link segment is not an owned regular file");
+        appendFileSync(fd, canonicalJSON(row) + "\n"); fsyncSync(fd);
+      } finally { closeSync(fd); }
+      if (!existed) fsyncDirectory(join(this.dir, "local"));
+      try { this.refresh(); } catch (error) { this.stale = true; throw error; }
+      return row.id;
+    });
   }
 
   /** Full derived receipt for golden replay; raw debug data, never model evidence. */

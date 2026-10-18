@@ -114,7 +114,7 @@ export class WorkListStore {
   private closed = false;
 
   constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number }) {
-    if (!bounded(options.project, 1000) || typeof options.policy !== "function") return invalid();
+    if (!bounded(options.project, 1000) || typeof options.policy !== "function") throw new Error("invalid work-list input");
     const base = canonicalPath(options.base);
     this.project = resolveAlias(base, options.project);
     regular(join(base, "projects"), true); regular(shardDir(base, this.project), true);

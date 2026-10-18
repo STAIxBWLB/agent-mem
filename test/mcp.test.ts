@@ -8,7 +8,7 @@ async function session(lines: string, handlers: Partial<McpHandlers> = {}) {
   const input = new PassThrough(), output = new PassThrough();
   let text = "", closed = 0, calls = 0;
   output.on("data", chunk => { text += chunk.toString(); });
-  const tools = Object.fromEntries(MCP_TOOLS.map(t => [t.name, async () => { calls++; return { ok: true }; }])) as McpHandlers;
+  const tools = Object.fromEntries(MCP_TOOLS.map(t => [t.name, async () => { calls++; return { ok: true }; }])) as unknown as McpHandlers;
   const done = serveMcp({ input, output, tools: { ...tools, ...handlers }, close: () => { closed++; } });
   input.end(lines);
   await done;

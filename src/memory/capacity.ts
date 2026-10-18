@@ -95,11 +95,12 @@ export interface CapacityReport {
 const MB = 1048576, GROWTH_DAYS = 7, PROJECT_DAYS = 30;
 
 export function capacityReport(opts: {
-  home?: string; diskShare?: number; now?: () => number;
+  home?: string; memoryDir?: string; diskShare?: number; now?: () => number;
   /** Tests and fixtures inject machine readings; the CLI always uses the native ones. */
   inject?: { disk?: { freeBytes: number; totalBytes: number }; memoryPressure?: string | null; metrics?: MetricSample[] };
 } = {}): CapacityReport {
-  const base = memoryBase(opts.home);
+  if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
+  const base = opts.memoryDir ?? memoryBase(opts.home);
   mkdirSync(base, { recursive: true, mode: 0o700 }); // a report on a fresh home still needs a path df can read
   const now = opts.now ?? Date.now;
   const since = new Date(now() - GROWTH_DAYS * 24 * 3600_000).toISOString();

@@ -17,3 +17,9 @@ export * from "./memory/generation.ts";
 export * from "./memory/migrate.ts";
 export * from "./memory/prune.ts";
 export * from "./memory/shard-migration.ts";
+
+export * from "./mcp.ts";
+export * from "./mcp-memory.ts";
+export * from "./memory/policy.ts";
+export * from "./memory/work-lists.ts";
+export * from "./memory/vault.ts";

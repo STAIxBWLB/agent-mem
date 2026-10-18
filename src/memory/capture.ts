@@ -63,6 +63,7 @@ export interface CaptureRow {
 }
 export interface CaptureConfig { capMb: number; retentionDays: number }
 export interface CaptureOptions {
+  memoryDir?: string;
   home?: string;
   /** The project key this shard belongs to; aliases resolve to the canonical key (#15 D2). */
   project: string;
@@ -153,7 +154,8 @@ export class CaptureStore {
 
   constructor(opts: CaptureOptions) {
     if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
-    this.base = memoryBase(opts.home);
+    if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
+    this.base = opts.memoryDir ?? memoryBase(opts.home);
     const machine = opts.machine ?? machineId(this.base).id;
     this.requestedKey = opts.project;
     this.key = resolveAlias(this.base, opts.project);
