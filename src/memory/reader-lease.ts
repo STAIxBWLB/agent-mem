@@ -7,6 +7,7 @@ import { processLiveness, processSignature } from "./platform.ts";
 const READER_LEASE_SCHEMA = "agent-mem.reader-lease/v1";
 const RENEW_MS = 25_000;
 interface Lease { schema: typeof READER_LEASE_SCHEMA; pid: number; signature: string; renewedAt: string }
+export interface ReaderLease { (): void; verify(): void }
 interface OpenLease { refs: number; timer: ReturnType<typeof setInterval> }
 const open = new Map<string, OpenLease>();
 
@@ -51,8 +52,8 @@ function admitReader(memoryDir: string): void {
 }
 
 /** One lease per process, reference-counted across handles; an unref'd timer does not keep the process resident. */
-export function registerReaderLease(memoryDir: string): () => void {
-  const signature = processSignature(process.pid);
+export function registerReaderLease(memoryDir: string): ReaderLease {
+  const pid = process.pid, signature = processSignature(pid);
   if (!signature) throw new Error("cannot establish reader lease identity");
   const file = fileFor(memoryDir, process.pid, signature);
   mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
@@ -83,7 +84,7 @@ export function registerReaderLease(memoryDir: string): () => void {
     open.set(file, { refs: 1, timer });
   });
   let released = false;
-  return () => {
+  const release = () => {
     if (released) return;
     released = true;
     const held = open.get(file);
@@ -99,6 +100,15 @@ export function registerReaderLease(memoryDir: string): () => void {
       });
     } catch { /* another actor replaced it: never remove its lease */ }
   };
+  return Object.assign(release, {
+    verify(): void {
+      if (released || process.pid !== pid || !open.has(file)) throw new Error("reader lease ownership is unavailable");
+      // The held lifetime lease blocks legitimate migration. Verification reads only: no ps, DB fence or refcount mutation.
+      // ponytail: no atomic same-user concurrent path-swap claim; descriptor-relative ownership checks are the upgrade path.
+      admitReader(memoryDir);
+      ownedLease(memoryDir, file, signature);
+    },
+  });
 }
 
 /** Fail closed on a live or unverifiable lease; remove only a pid confirmed gone, never by TTL. */

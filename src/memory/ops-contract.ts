@@ -118,7 +118,7 @@ export interface GenerationOpContract extends Omit<OpContract, "implemented" | "
   implemented: true;
   generationOnly: true;
   targetSemantics: "exact-entry-v1";
-  validator: "validatePruneRow";
+  validator: "validatePruneRow" | "validateVaultLinkRow";
   validation: readonly string[];
   payloadSchema: {
     version: 1;
@@ -156,4 +156,21 @@ export const PRUNE_GENERATION_CONTRACT: GenerationOpContract = Object.freeze<Gen
   crashBoundary: "fsync exact local sealed plan, mutation fence, revalidate proofs/policy, append+fsync complete row then refresh; per-row atomicity; retry skips durable IDs; incomplete own tail completes only from identical persisted-plan prefix; mismatched tail refuses",
   fixtures: ["test/generation-prune.test.ts#only explicit note expires or demote settle by values can prove expiry", "test/generation-prune.test.ts#exact-entry reducer waits for witnesses and cannot be reversed by clock or later deadlines", "test/generation-prune.test.ts#prune partitions private target or basis locally and public attestations bind only public rows", "test/generation-prune.test.ts#prune row shape hashes canonical time ordering placement and byte bounds are strict"],
 });
-export const GENERATION_OP_CONTRACTS: Readonly<Record<"prune", GenerationOpContract>> = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT });
+export const VAULT_LINK_GENERATION_CONTRACT: GenerationOpContract = Object.freeze<GenerationOpContract>({
+  status: "truth-changing", implemented: true, generationOnly: true, targetSemantics: "exact-entry-v1", validator: "validateVaultLinkRow",
+  validation: ["exact string-valued keys; no additional fields; canonical UTC and bounded metadata", "id is canonical complete payload hash excluding id", "bound generation and local authored machine segment must match", "projection requires exact full target id and authored row hash in the same project"],
+  payloadVersion: "agent-mem.vault-link/v1", required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"],
+  payloadSchema: { version: 1, required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"], additionalProperties: false, maxUtf8Bytes: 4096, fields: {
+    schema: { type: "string", values: ["agent-mem.vault-link/v1"] }, op: { type: "string", values: ["vault_link"] },
+    generation: generationId, id: generationId, at: canonicalUtc, machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
+    actor: { type: "string", values: ["person"] }, placement: { type: "string", values: ["local"] }, target: generationId, rowHash: authoredHash,
+    project: { type: "string" }, path: { type: "string" },
+  } },
+  immutableTargets: "full exact note id and SHA-256 of the complete canonical authored row; project must match; no aliases, promotion ancestry or replacements",
+  placement: "generation local segment only; vault paths are machine-local metadata and never sync; shard migration carries the row to its exact target owner",
+  precedence: "append-only links suppress only their witnessed exact entry from future candidates; independent replacement ids survive; malformed or missing witnesses cannot suppress",
+  identity: "sha256(canonical complete vault-link payload excluding id), first 32 hex; generation, target id, full witness hash and path participate",
+  crashBoundary: "mutation fence and exact id/hash recheck; refuse an incomplete prior tail; append+fsync then derived refresh; complete rows replay, incomplete tails require person inspection",
+  fixtures: ["test/vault.test.ts#vault links refuse shared-v1 and bind exact generation entries, survive rebuild, and never touch v1 logs", "test/vault.test.ts#vault link validation rejects changed payload hashes, foreign generation and public placement", "test/vault.test.ts#vault links retain their exact target through curated shard migration"],
+});
+export const GENERATION_OP_CONTRACTS: Readonly<Record<"prune" | "vault_link", GenerationOpContract>> = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });

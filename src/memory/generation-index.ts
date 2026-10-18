@@ -4,14 +4,14 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile } from "./generation.ts";
+import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLink } from "./generation.ts";
 import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
 
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const fail = (): never => { throw new Error("generation input unavailable or changed; person inspection required"); };
-export const GENERATION_TABLES = ["generation_rows", "generation_prunes", "generation_targets", "generation_segments", "generation_state"] as const;
+export const GENERATION_TABLES = ["generation_vault_links", "generation_rows", "generation_prunes", "generation_targets", "generation_segments", "generation_state"] as const;
 export interface GenerationIndexOptions {
   profile: BoundProfile; db: Database; now: () => number;
   apply: (line: string, source: string) => void;
@@ -69,6 +69,7 @@ export class GenerationIndex {
     const db = options.db;
     db.run("CREATE TABLE IF NOT EXISTS generation_rows (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL, public INTEGER NOT NULL, own INTEGER NOT NULL, legacy INTEGER NOT NULL)");
     if (!(db.query("PRAGMA table_info(generation_rows)").all() as { name: string }[]).some(row => row.name === "legacy")) { db.run("ALTER TABLE generation_rows ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"); this.replayProvenance = true; }
+    db.run("CREATE TABLE IF NOT EXISTS generation_vault_links (id TEXT PRIMARY KEY, target TEXT NOT NULL, row_hash TEXT NOT NULL, project TEXT NOT NULL, path TEXT NOT NULL, at TEXT NOT NULL)");
     db.run("CREATE TABLE IF NOT EXISTS generation_prunes (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL)");
     db.run("CREATE TABLE IF NOT EXISTS generation_targets (id TEXT PRIMARY KEY)");
     db.run("CREATE TABLE IF NOT EXISTS generation_segments (source TEXT NOT NULL, path TEXT NOT NULL, offset INTEGER NOT NULL, hash TEXT NOT NULL, commit_id TEXT, stamp TEXT, PRIMARY KEY(source,path))");
@@ -134,6 +135,12 @@ export class GenerationIndex {
           db.query("INSERT OR IGNORE INTO generation_prunes VALUES (?,?,?)").run(row.id, canonicalJSON(row), Number(segment.local));
           continue;
         }
+        if (segment.source === "generation" && parsed && typeof parsed === "object" && (parsed as { op?: string }).op === "vault_link") {
+          const row = validateVaultLinkRow(parsed, this.profile.generation, segment.local ? "local" : "synced");
+          if (segment.path !== `local/${row.machine}.jsonl`) fail();
+          db.query("INSERT OR IGNORE INTO generation_vault_links VALUES (?,?,?,?,?,?)").run(row.id, row.target, row.rowHash, row.project, row.path, row.at);
+          continue;
+        }
         const bytes = Buffer.from(line + "\n");
         const row = legacyEntries([{ ...segment, bytes, offset: bytes.length, hash: digest(bytes) }], { strict: segment.source === "generation", onMalformed: () => this.recordSkipped(segment) })[0];
         if (!row) continue;
@@ -195,6 +202,18 @@ export class GenerationIndex {
     }).immediate();
     if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1); return fail(); }
     this.replayProvenance = false;
+  }
+  vaultWitnesses(ids: readonly string[]): Map<string, string> {
+    if (ids.length > 5000) throw new Error("vault scan budget exceeded");
+    return new Map((this.options.db.query("SELECT id,line FROM generation_rows WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; line: string }[])
+      .map(row => [row.id, hashJSON(JSON.parse(row.line))]));
+  }
+  vaultLinks(project: string): VaultLink[] {
+    const rows = this.options.db.query("SELECT l.id,l.target,l.row_hash AS rowHash,l.project,l.path,l.at,r.line FROM generation_vault_links l JOIN generation_rows r ON r.id=l.target WHERE l.project=? ORDER BY l.at,l.id LIMIT 5001").all(project) as (VaultLink & { line: string })[];
+    if (rows.length > 5000) throw new Error("vault scan budget exceeded");
+    return rows
+      .filter(row => { const note = JSON.parse(row.line) as Entry; return note.op === "note" && note.project === row.project && hashJSON(note) === row.rowHash; })
+      .map(({ line: _line, ...row }) => row);
   }
   own(id: string): boolean { return !!(this.options.db.query("SELECT own FROM generation_rows WHERE id=?").get(id) as { own: number } | null)?.own; }
   snapshot(refresh = true): PruneSnapshot {

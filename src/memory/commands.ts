@@ -4,6 +4,8 @@ import { importClaudeMem } from "./import.ts";
 import { memoryProjectKey, projectChain } from "./project.ts";
 
 export interface MemoryCommandOptions {
+  /** Startup-bound canonical project supplied by a host; no model-facing selector. */
+  project?: string;
   store?: MemoryStore;
   sync?: Omit<SyncOptions, "remote">;
   open: () => MemoryStore;
@@ -13,6 +15,7 @@ export interface MemoryCommandOptions {
   onBridgeStatus?: (status: { skippedRows: number } | undefined) => void;
 }
 export interface GoalCommandOptions {
+  project?: string;
   store?: MemoryStore;
   link?: (goal: string, task: string) => Promise<string>;
   open: () => MemoryStore;
@@ -40,7 +43,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
   const store = opts.store ?? opts.open();
   const actor = "user";
-  const project = memoryProjectKey(cwd);
+  const project = opts.project ?? memoryProjectKey(cwd);
   const need = (v: View | undefined, id: string) => v ?? fail(`no memory entry ${id} (ahub memory list shows the ids)`);
   try {
     switch (sub) {
@@ -108,7 +111,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (rest[0] !== "claude-mem" || rest.length !== 1) fail("usage: ahub memory import claude-mem [--db <path>] [--limit N] [--restart]");
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const isPii = opts.importPolicy();
-        const key = memoryProjectKey(cwd);
+        const key = opts.project ?? memoryProjectKey(cwd);
         const nodes = (text: string) => extractNodes(text, { cwd, project: key, repo: key.startsWith("github.com/") ? key.slice("github.com/".length) : key, checkExists: false });
         const r = importClaudeMem(store, { project: key, chain: projectChain(cwd), nodes, restart, isPii, ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
         if (json) return JSON.stringify(r, null, 2);
@@ -154,7 +157,7 @@ export async function rawGoalCommand(args: string[], cwd: string, opts: GoalComm
   const take = (name: string) => { const out: string[] = []; for (let i = rest.indexOf(name); i >= 0; i = rest.indexOf(name)) { out.push(rest[i + 1] ?? fail(`${name} needs a value`)); rest.splice(i, 2); } return out; };
   const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
   const store = opts.store ?? opts.open();
-  const project = memoryProjectKey(cwd);
+  const project = opts.project ?? memoryProjectKey(cwd);
   const me = store.machine.id;
   // Only this project's long-term tasks and shared ones, like every other lookup an agent may run.
   const need = (id: string | undefined) => store.goalOf(id?.replace(/^goal:/, "") ?? fail(GOAL_USAGE), project) ?? fail(`no long-term task ${id} for this project (ahub goal list shows them)`);

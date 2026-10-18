@@ -51,7 +51,7 @@ for (const order of [[0, 1], [1, 0]]) test(`generation replay all tables converg
 
 test("generation registry binds every enabled op to the real prune schema and retained contract fixtures", async () => {
   const f = await authored(), row = f.prune;
-  expect(Object.keys(GENERATION_OP_CONTRACTS)).toEqual(["prune"]);
+  expect(Object.keys(GENERATION_OP_CONTRACTS)).toEqual(["prune", "vault_link"]);
   expect(PRUNE_GENERATION_CONTRACT.implemented).toBe(true);
   expect(PRUNE_GENERATION_CONTRACT.status).toBe("truth-changing");
   expect(PRUNE_GENERATION_CONTRACT.payloadVersion).toBe(row.schema);

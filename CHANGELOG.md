@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep CLI candidate/vault project aliases consistent with MCP, bound work-list materialization before parsing, and verify held reader leases without repeated process scans (#13 P2).
+
+- Add session-scoped nine-tool MCP, composed standalone privacy policy, candidate-only remember, project work lists and reviewed-alias work-state import (#13 P2).
+- Add read-only vault candidates and exact-entry generation-local vault links without changing shared-v1 operations; measure real MCP R3 budgets on both CI platforms (#13 P2).
+
 - Add person-run curated project/user shard migration with a read-only bridge, selected-generation prune preservation, independent reader admission and shared pruning; requires shard-aware host integration before live use (#15).
 
 ## 0.3.1

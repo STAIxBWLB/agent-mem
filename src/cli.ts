@@ -1,10 +1,15 @@
+import { createMemoryMcp } from "./mcp-memory.ts";
+import { serveMcp } from "./mcp.ts";
+import { createStandalonePolicy } from "./memory/policy.ts";
+import { vaultCandidates } from "./memory/vault.ts";
+import { importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, listAliases, readShardedSelection } from "./memory/shard.ts";
+import { appendAlias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -74,6 +79,11 @@ function curatedStore(project: string, opts: StoreOptions): MemoryStore {
 }
 
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
+  if (argv.length === 1 && argv[0] === "mcp") {
+    const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
+    await serveMcp({ tools: memory.tools, close: memory.close, version: VERSION });
+    return "";
+  }
   if (agentMarked(context.env ?? process.env)) throw new Error(PERSON_ONLY);
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
   if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp();
@@ -97,6 +107,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (definition.policyFree && !policyFree) {
     throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
   }
+  let canonicalProject: string | undefined;
+  const boundProject = () => canonicalProject ??= resolveAlias(memoryHome(), memoryProjectKey(context.cwd ?? process.cwd()));
   if (sub === "migrate") {
     const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
@@ -117,7 +129,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (applying) {
       input = readPrunePlanFile(String(options["--plan"]));
     }
-    const project = memoryProjectKey(context.cwd ?? process.cwd());
+    const project = boundProject();
     if (options["--user"] === true) {
       if (!shardStatePresent()) throw new Error("prune --user requires an active curated shard migration; the default prune command selects the current project");
       readShardedSelection(memoryHome());
@@ -131,11 +143,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     } finally { store.close(); }
   }
   if (review) {
-    if (sub === "accept" && shardStatePresent()) throw new Error("candidate acceptance requires shard-aware review integration after a shard split; the candidate remains pending and no legacy note was written. Retain the candidate until shard-aware review integration is available, then review and accept it through that integration");
-    if (resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use the profile-aware host after its integration");
+    if (sub === "accept" && options["--kind"] !== "memory" && shardStatePresent()) throw new Error("candidate acceptance requires shard-aware review integration; use --kind memory only for a general memory candidate");
+    if (sub === "accept" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use --kind memory only for a general memory candidate");
+    if (sub === "list" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; select --kind memory for the standalone memory candidate surface");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
-    const project = memoryProjectKey(context.cwd ?? process.cwd()), candidates = new CandidateStore();
+    const project = boundProject(), candidates = new CandidateStore();
     try {
       if (sub === "list") {
         const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),
@@ -148,16 +161,27 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       }
       const candidate = candidates.get(id!, project);
       if (!candidate) throw new Error("candidate unavailable");
+      if (options["--kind"] === "memory" && candidate.input.kind !== "memory") throw new Error("--kind memory accepts only a general memory candidate");
       if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use ahub memory demote or forget after review");
+      if (candidate.input.kind !== "memory" && (shardStatePresent() || resolveProfile(memoryHome()).kind === "generation")) throw new Error("candidate acceptance requires shard-aware and profile-aware host integration for this candidate kind; the candidate remains pending");
+      const standalone = createStandalonePolicy();
+      if (!await standalone.screen(candidate.input)) throw new Error("candidate refused by current host policy; current standalone privacy policy declined it");
       // Candidate acceptance uses the actual secret screen; the core defers unrelated automatic promotions.
-      const store = new MemoryStore({ deferPromotions: true, screen: note => looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
+      const store = curatedStore(project, { deferPromotions: true, screen: note => looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
       try {
         const result = candidates.accept(id!, { project, actor: "person", verdict: "public", store,
           policy: (proposal, _target, note) => !looksSecret(JSON.stringify(proposal.input)) && !looksSecret(JSON.stringify(note)),
         });
-        return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ordinary v1 note ${result.noteId}`;
+        return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ordinary note ${result.noteId}`;
       } finally { store.close(); }
     } finally { candidates.close(); }
+  }
+  if (sub === "vault-candidates") {
+    const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
+    try {
+      const result = await vaultCandidates(store, { project, policy: createStandalonePolicy(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+      return JSON.stringify(result, null, 2);
+    } finally { store.close(); }
   }
   if (sub === "capacity") {
     const share = options["--disk-share"];
@@ -203,18 +227,23 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const crosses = definition.policyFree === true && policyFree;
   const cwd = context.cwd ?? process.cwd();
   // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
-  const open = () => curatedStore(memoryProjectKey(cwd), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
+  const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
   // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
-  if (goal) return rawGoalCommand(args, cwd, { open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
+  if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};
-  const output = await rawMemoryCommand(args, cwd, { open, readable: notes => notes, importPolicy: () => () => false,
+  const output = await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => () => false,
     onBridgeStatus: status => { receipt.bridgeStatus = status; } });
+  if (sub === "import" && parsed.path[1] === "claude-mem") {
+    const policy = createStandalonePolicy();
+    const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });
+    return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}`;
+  }
   return !options["--json"] && receipt.bridgeStatus
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  try { console.log(await runCli(argv)); }
+  try { const output = await runCli(argv); if (output) console.log(output); }
   catch (error) { console.error(`amem: ${(error as Error).message}`); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
 }
 

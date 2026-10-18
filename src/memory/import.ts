@@ -5,6 +5,8 @@ import { realPath } from "./platform.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { KINDS, looksSecret, type Kind, type MemoryStore } from "./store.ts";
+import { listAliases, resolveAlias } from "./shard.ts";
+import { WorkListStore, type WorkListFields, type WorkListPolicy } from "./work-lists.ts";
 
 /** The claude-mem store is another program's: opened read-only, never written, its locks waited on briefly. */
 export const CLAUDE_MEM_BUSY_TIMEOUT_MS = 3000;
@@ -12,6 +14,64 @@ export const CLAUDE_MEM_BUSY_TIMEOUT_MS = 3000;
 const MODEL_ANSWER = "ahub ask (model answer)";
 
 export interface ImportResult { read: number; added: number; skipped: { model: number; pii: number; secret: number }; more: boolean; cursor: number }
+export interface WorkStateImportResult { read: number; added: number; skipped: { invalid: number; policy: number }; more: boolean; cursor: number }
+
+/**
+ * Import only the source project names explicitly mapped by the person's D2 alias table. A basename or even
+ * an exact canonical-key match is not permission to adopt another program's project. Source receipts preserve
+ * synced device/id identity across database copies; unsynced rows are scoped to the source's real path.
+ */
+export async function importClaudeMemWorkState(opts: { base: string; project: string; policy: WorkListPolicy; db?: string; limit?: number; restart?: boolean; log?: (line: string) => void }): Promise<WorkStateImportResult> {
+  const file = opts.db ?? join(homedir(), ".claude-mem", "claude-mem.db");
+  if (!existsSync(file)) throw new Error(`no claude-mem store at ${file}`);
+  const limit = opts.limit ?? 10_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("--limit takes a positive integer");
+  const project = resolveAlias(opts.base, opts.project);
+  const aliases = [...new Map(listAliases(opts.base).map(op => [op.alias, op.key]))]
+    .filter(([, key]) => key === project).map(([alias]) => alias).sort();
+  const result: WorkStateImportResult = { read: 0, added: 0, skipped: { invalid: 0, policy: 0 }, more: false, cursor: 0 };
+  if (!aliases.length) return result;
+  const db = new Database(file, { readonly: true });
+  let store: WorkListStore | undefined;
+  let state: string | undefined, key = "", cursor = 0;
+  try {
+    db.run(`PRAGMA busy_timeout = ${CLAUDE_MEM_BUSY_TIMEOUT_MS}`);
+    if (!db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'work_state_entries'").get()) return result;
+    const columns = new Set((db.query("PRAGMA table_info(work_state_entries)").all() as { name: string }[]).map(row => row.name));
+    const origin = columns.has("origin_device_id") && columns.has("origin_local_id");
+    const sourceMachine = createHash("sha256").update(realPath(file)).digest("hex");
+    store = new WorkListStore({ base: opts.base, project, policy: opts.policy });
+    state = join(store.dir, "import-state.json");
+    key = createHash("sha256").update(JSON.stringify([sourceMachine, aliases, project])).digest("hex");
+    cursor = opts.restart ? 0 : readCursors(state)[key] ?? 0;
+    const where = `project IN (${aliases.map(() => "?").join(",")})`;
+    const max = db.query(`SELECT MAX(id) AS id FROM work_state_entries WHERE ${where}`).get(...aliases) as { id: number | null };
+    if ((max.id ?? 0) < cursor) cursor = 0;
+    const rows = db.query(`SELECT id, list_name, fields, created_at_epoch${origin ? ", origin_device_id, origin_local_id" : ", NULL AS origin_device_id, NULL AS origin_local_id"} FROM work_state_entries WHERE ${where} AND id > ? ORDER BY id LIMIT ?`)
+      .all(...aliases, cursor, limit) as { id: number; list_name: string; fields: string; created_at_epoch: number; origin_device_id: string | null; origin_local_id: string | null }[];
+    result.read = rows.length; result.more = rows.length === limit;
+    for (const row of rows) {
+      try {
+        let fields: WorkListFields;
+        try { fields = JSON.parse(row.fields) as WorkListFields; } catch { result.skipped.invalid++; cursor = row.id; continue; }
+        const synced = typeof row.origin_device_id === "string" && !!row.origin_device_id && typeof row.origin_local_id === "string" && !!row.origin_local_id;
+        const written = await store.write(row.list_name, fields, { source: "claude-mem/work_state", id: synced ? row.origin_local_id! : String(row.id), machine: synced ? row.origin_device_id! : sourceMachine, at: row.created_at_epoch });
+        if (!written.already) result.added++;
+      } catch (error) {
+        if (error instanceof Error && error.message === "invalid work-list input") result.skipped.invalid++;
+        else if (error instanceof Error && error.message === "work-list privacy policy refused the write") result.skipped.policy++;
+        else throw error; // Do not advance a receipt conflict or a failed append.
+      }
+      cursor = row.id;
+    }
+  } finally {
+    db.close();
+    result.cursor = cursor;
+    if (state) writeCursor(state, key, cursor, opts.log ?? console.error);
+    store?.close();
+  }
+  return result;
+}
 
 /** Machine-local progress is disposable; malformed/unreadable state simply replays the idempotent import. */
 function readCursors(file: string): Record<string, number> {
