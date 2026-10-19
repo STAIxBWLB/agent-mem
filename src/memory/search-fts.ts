@@ -165,13 +165,13 @@ export class SearchIndex {
    * Best BM25 first (rank is negative: smaller wins). `project` filters inside the MATCH (its own rows plus shared
    * ones), so a busy sibling project can never starve a project's LIMIT. Visibility stays with the caller.
    */
-  query(q: string, limit: number, project?: string): RankedRef[] {
+  query(q: string, limit: number, project?: string, offset = 0): RankedRef[] {
     if (!this.db) return [];
     const match = ftsTerms(q);
     if (!match) return [];
     const where = project ? "docs MATCH ? AND (project = ? OR scope = 'shared')" : "docs MATCH ?";
     const bind = project ? [match, project] : [match];
-    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank LIMIT ?`).all(...bind, limit) as RankedRef[];
+    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
   }
 
   close(): void { this.db?.close(); }

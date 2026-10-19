@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Search no longer recalls a capture row past its shard's retention window before a later append evicts it: the retention cutoff and `since` run inside the capture query. Curated search widens its FTS candidate cap until it has `limit` visible hits or the index is exhausted, so superseded, forgotten or pre-`since` rows can no longer hide a visible match. README records the separate-git-dir worktree key limit (#13 P1 follow-ups).
+- Search no longer recalls a capture row past its shard's retention window before a later append evicts it: the retention cutoff and `since` run inside the capture query. Curated search reads FTS candidates in fixed-size pages until it has `limit` visible hits or the index is exhausted, so superseded, forgotten or pre-`since` rows can no longer hide a visible match and memory stays one page. `SearchFilter.captureRetentionDays` carries a host's capture `retentionDays` override into search. Capture stores each row's time as canonical UTC ISO text and refuses an `at` that does not parse. README records the separate-git-dir worktree key limit (#13 P1 follow-ups).
 - Keep CLI candidate/vault project aliases consistent with MCP, bound work-list materialization before parsing, and verify held reader leases without repeated process scans (#13 P2).
 
 - Add session-scoped nine-tool MCP, composed standalone privacy policy, candidate-only remember, project work lists and reviewed-alias work-state import (#13 P2).

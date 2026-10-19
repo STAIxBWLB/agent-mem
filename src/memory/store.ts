@@ -175,7 +175,11 @@ export interface GoalView {
 }
 export interface Filter { project?: string; tier?: Tier; kind?: Kind; peer?: string; machine?: string; since?: string; q?: string; limit?: number; includeSuperseded?: boolean }
 /** #13 search: `Filter` plus the capture-tier switch (on by default; capture is recall, never curated evidence). */
-export interface SearchFilter extends Filter { includeCapture?: boolean }
+export interface SearchFilter extends Filter {
+  includeCapture?: boolean;
+  /** A host that writes capture with a `retentionDays` override passes the same value here; files decide otherwise. */
+  captureRetentionDays?: number;
+}
 export interface SearchHit { source: "curated" | "capture"; score: number; view?: View; capture?: CaptureRow }
 export interface SearchResult { engine: "fts5" | "substring"; hits: SearchHit[] }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
@@ -914,17 +918,21 @@ export class MemoryStore {
     // starve this project's LIMIT.
     // Superseded, forgotten, expired and `since` rows are filtered after FTS, so a fixed candidate cap could be filled
     // by invisible rows and hide a visible match: widen the cap until `limit` visible hits or the index is exhausted.
-    // ponytail: with almost nothing visible (a narrow kind/tier filter) the widening reads the store's whole match set;
-    // push `since` into SearchIndex.query (docs carries `at`) if that cost shows up.
+    // Pages of fixed size, so memory stays one page plus the hits (#13 R3) however many invisible rows rank first.
+    // ponytail: with almost nothing visible (a selective `since`, many superseded or forgotten rows) the pages walk the
+    // store's whole match set; push `since` into SearchIndex.query (docs carries `at`) if that time shows up.
+    const page = Math.max(limit * 4, 32);
     for (const store of visible.size ? this.readStores() : []) {
-      for (let cap = Math.max(limit * 4, 32); ; cap *= 4) {
-        const ranked = store.searchIndex.query(q, cap, f.project), found = ranked.filter(hit => visible.has(hit.ref));
-        if (found.length < limit && ranked.length === cap) continue;
-        for (const hit of found) {
-          const view = visible.get(hit.ref)!;
+      let found = 0;
+      for (let offset = 0; found < limit; offset += page) {
+        const ranked = store.searchIndex.query(q, page, f.project, offset);
+        for (const hit of ranked) {
+          const view = visible.get(hit.ref);
+          if (!view) continue;
+          found++;
           hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
         }
-        break;
+        if (ranked.length < page) break;
       }
     }
     // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
@@ -932,7 +940,7 @@ export class MemoryStore {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
       // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
       // An out-of-range retention_days gives no cutoff rather than failing the whole search (eviction keeps its own check).
-      const cutoff = new Date(now - readCaptureConfig(shard, this.memoryBaseDir).retentionDays * 24 * 3600_000);
+      const cutoff = new Date(now - (f.captureRetentionDays ?? readCaptureConfig(shard, this.memoryBaseDir).retentionDays) * 24 * 3600_000);
       const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
       const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
       for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {

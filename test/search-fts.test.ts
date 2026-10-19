@@ -221,3 +221,25 @@ test("#165 invisible rows filling the candidate cap never hide a visible curated
   const hits = s.search("cap token", { project, since, limit: 2 }).hits.map((h) => h.view?.text);
   expect(hits).toEqual(["cap token cap token cap token cap token newest strong", "a weak cap token mention that is still visible"]);
 });
+
+test("#165 a host's capture retention override reaches search", () => {
+  if (!fts5Available()) return;
+  const dir = home(), at = Date.parse("2026-06-01T00:00:00.000Z");
+  const capture = new CaptureStore({ home: dir, project, now: () => at, retentionDays: 365 });
+  capture.append({ project, agent: "codex", event: "Stop", excerpt: "override window excerpt" }); capture.close();
+  const s = store(dir, () => at + 100 * 24 * 3600_000);
+  expect(s.search("override window", { project }).hits.some((h) => h.capture)).toBe(false);
+  expect(s.search("override window", { project, captureRetentionDays: 365 }).hits.some((h) => h.capture?.excerpt === "override window excerpt")).toBe(true);
+});
+
+test("#165 capture time is stored as canonical UTC, so `since` compares chronologically", () => {
+  if (!fts5Available()) return;
+  const dir = home(), capture = new CaptureStore({ home: dir, project, now: () => Date.parse("2026-06-02T00:00:00.000Z") });
+  capture.append({ project, agent: "codex", event: "Stop", excerpt: "offset clock excerpt", at: "2026-06-01T01:00:00+02:00" });
+  expect(() => capture.append({ project, agent: "codex", event: "Stop", excerpt: "bad clock", at: "not a time" })).toThrow("valid ISO time");
+  capture.close();
+  const s = store(dir, () => Date.parse("2026-06-02T00:00:00.000Z"));
+  const hit = s.search("offset clock", { project }).hits.find((h) => h.capture);
+  expect(hit?.capture?.at).toBe("2026-05-31T23:00:00.000Z");
+  expect(s.search("offset clock", { project, since: "2026-06-01T00:00:00.000Z" }).hits.some((h) => h.capture)).toBe(false);
+});
