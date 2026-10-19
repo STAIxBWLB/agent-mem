@@ -8,7 +8,7 @@ import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
-import type { CaptureRow } from "./capture.ts";
+import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
@@ -912,16 +912,26 @@ export class MemoryStore {
     const hits: SearchHit[] = [];
     // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
     // starve this project's LIMIT.
-    for (const hit of this.readStores().flatMap(store => store.searchIndex.query(q, Math.max(limit * 4, 32), f.project))) {
-      const view = visible.get(hit.ref);
-      if (!view) continue;
-      hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+    // Superseded, forgotten, expired and `since` rows are filtered after FTS, so a fixed candidate cap could be filled
+    // by invisible rows and hide a visible match: widen the cap until `limit` visible hits or the index is exhausted.
+    for (const store of this.readStores()) {
+      for (let cap = Math.max(limit * 4, 32); ; cap *= 4) {
+        const ranked = store.searchIndex.query(q, cap, f.project), found = ranked.filter(hit => visible.has(hit.ref));
+        if (found.length < limit && ranked.length === cap) continue;
+        for (const hit of found) {
+          const view = visible.get(hit.ref)!;
+          hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+        }
+        break;
+      }
     }
     // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
     if (f.includeCapture !== false && f.project) {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
-      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32))) {
-        if (f.since && Date.parse(row.at) < Date.parse(f.since)) continue;
+      // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
+      const retained = new Date(now - readCaptureConfig(shard, this.memoryBaseDir).retentionDays * 24 * 3600_000).toISOString();
+      const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && since > retained ? since : retained)) {
         hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
       }
     }
