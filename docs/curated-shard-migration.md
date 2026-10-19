@@ -27,7 +27,17 @@ T2 must not ship for agent-hub use until the host integration task switches its 
 - Candidate acceptance refuses before opening or changing its sidecar or the old store. Keep the candidate pending until shard-aware review integration is available.
 - The default durable prune port and CLI select only the project. `amem prune --user` selects the shared/user shard explicitly and preserves person/TTY/current-project authorization. The user-shard library port is `openShardStore({ user: true }).prunePort()`; no implicit merged multi-lock prune is promised.
 - Before marking a split captured, inspect every planned copy append and receipt completion. An unrelated native generation tail stays with the original writer; an unsafe touched tail refuses without changing an active split. Empty bridge directories interrupted before their identity metadata can finish initialization; nonempty or unsafe unproven copied bytes refuse with an inspect hint. A matching partial translation receipt completes only by append.
+- Apply and resume hold every destination shard's `mutation-lock.db` from a last tail check through the copy (#176). This is a second guard behind reader admission: a live store holds a reader lease and is refused earlier ("legacy reader is live"), so the lock catches only writers that hold no lease. Such a writer mid-append makes the migration wait up to the lock timeout and then refuse with the journal unchanged. The locks are released before each shard index is rebuilt; by then the `captured` phase fences shard writers.
 - Dangling immutable lifecycle/suggestion ops are carried as ids-only user metadata and counted separately; later targets retain those operations. Refusal counts distinguish private-cross-project and shared-to-private relations, with ids-only append-only remedies. v1 counts distinguish local and fetched-main realms.
 - An interrupted catalog reports curated availability as false and count/time as null; capture receipts remain available and keep the documented cache lag. Its derived schema can be rebuilt without rewriting source logs.
 
 The reviewer recorded the person's read-only dry run on a copy at `1599fdd`: 505 rows across two shards, zero refused, zero shared-superseded-by-private. That observation is bound to that head (hub memory `848f897e`); it does not authorize or prove a live-home migration. The body-free witness ponytail remains, with no witness work in T2.
+
+## Recovering a torn shard tail
+
+A writer that crashes mid-append leaves an unfinished last row: bytes after the file's last newline. Readers never index such a row; they wait for its newline. When the migration has to append to that file, it cannot tell the unfinished row from data, so apply and resume refuse before any journal change and name the file relative to the memory home. The package never cuts those bytes itself. A person recovers:
+
+1. Stop every amem and agent-hub process that uses this memory home.
+2. Keep a copy of the named file outside the memory home.
+3. Cut the file back to its last newline. The removed bytes are the unfinished row, and the copy keeps them.
+4. Run `amem migrate --shards --resume`. It carries the pending rows and returns the split to active.
