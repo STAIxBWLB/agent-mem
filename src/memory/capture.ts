@@ -270,6 +270,7 @@ export class CaptureStore {
   append(input: CaptureInput): CaptureAppend {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
+    if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a parseable time string");
     const row = this.normalize(input);
     if (this.contended) {
       this.spool(row);
@@ -293,7 +294,8 @@ export class CaptureStore {
   /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
   private normalize(input: CaptureInput): NormalizedCapture {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
-    const at = input.at ?? new Date(this.now()).toISOString();
+    // Canonical UTC ISO text, so text order is time order for eviction (`at < cutoff`) and search (`at >= notBefore`).
+    const at = new Date(input.at === undefined ? this.now() : Date.parse(input.at)).toISOString();
     const tool = str(input.tool, 64) ? input.tool! : null;
     const status = str(input.status, 64) ? input.status! : null;
     const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));

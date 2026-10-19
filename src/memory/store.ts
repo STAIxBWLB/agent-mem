@@ -8,7 +8,7 @@ import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
-import type { CaptureRow } from "./capture.ts";
+import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
@@ -175,7 +175,11 @@ export interface GoalView {
 }
 export interface Filter { project?: string; tier?: Tier; kind?: Kind; peer?: string; machine?: string; since?: string; q?: string; limit?: number; includeSuperseded?: boolean }
 /** #13 search: `Filter` plus the capture-tier switch (on by default; capture is recall, never curated evidence). */
-export interface SearchFilter extends Filter { includeCapture?: boolean }
+export interface SearchFilter extends Filter {
+  includeCapture?: boolean;
+  /** A host that writes capture with a `retentionDays` override passes the same value here; files decide otherwise. */
+  captureRetentionDays?: number;
+}
 export interface SearchHit { source: "curated" | "capture"; score: number; view?: View; capture?: CaptureRow }
 export interface SearchResult { engine: "fts5" | "substring"; hits: SearchHit[] }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
@@ -912,16 +916,37 @@ export class MemoryStore {
     const hits: SearchHit[] = [];
     // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
     // starve this project's LIMIT.
-    for (const hit of this.readStores().flatMap(store => store.searchIndex.query(q, Math.max(limit * 4, 32), f.project))) {
-      const view = visible.get(hit.ref);
-      if (!view) continue;
-      hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+    // Superseded, forgotten, expired and `since` rows are filtered after FTS, so a fixed candidate cap could be filled
+    // by invisible rows and hide a visible match: widen the cap until `limit` visible hits or the index is exhausted.
+    // Pages of fixed size, so memory stays one page plus the hits (#13 R3) however many invisible rows rank first.
+    // ponytail: with almost nothing visible (a selective `since`, many superseded or forgotten rows) the pages walk the
+    // store's whole match set; push `since` into SearchIndex.query (docs carries `at`) if that time shows up.
+    const page = Math.max(limit * 4, 32);
+    for (const store of visible.size ? this.readStores() : []) {
+      let found = 0;
+      const seen = new Set<string>(); // another process's sync between pages can shift offsets and repeat a ref
+      for (let offset = 0; found < limit; offset += page) {
+        const ranked = store.searchIndex.query(q, page, f.project, offset);
+        for (const hit of ranked) {
+          const view = visible.get(hit.ref);
+          if (!view || seen.has(hit.ref)) continue;
+          seen.add(hit.ref);
+          found++;
+          hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+        }
+        if (ranked.length < page) break;
+      }
     }
     // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
     if (f.includeCapture !== false && f.project) {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
-      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32))) {
-        if (f.since && Date.parse(row.at) < Date.parse(f.since)) continue;
+      // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
+      // An out-of-range retention_days gives no cutoff rather than failing the whole search (eviction keeps its own check).
+      const override = f.captureRetentionDays, days = typeof override === "number" && Number.isFinite(override) && override > 0 ? override : readCaptureConfig(shard, this.memoryBaseDir).retentionDays;
+      const cutoff = new Date(now - days * 24 * 3600_000);
+      const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
+      const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {
         hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
       }
     }

@@ -165,13 +165,13 @@ export class SearchIndex {
    * Best BM25 first (rank is negative: smaller wins). `project` filters inside the MATCH (its own rows plus shared
    * ones), so a busy sibling project can never starve a project's LIMIT. Visibility stays with the caller.
    */
-  query(q: string, limit: number, project?: string): RankedRef[] {
+  query(q: string, limit: number, project?: string, offset = 0): RankedRef[] {
     if (!this.db) return [];
     const match = ftsTerms(q);
     if (!match) return [];
     const where = project ? "docs MATCH ? AND (project = ? OR scope = 'shared')" : "docs MATCH ?";
     const bind = project ? [match, project] : [match];
-    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank LIMIT ?`).all(...bind, limit) as RankedRef[];
+    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
   }
 
   close(): void { this.db?.close(); }
@@ -182,8 +182,10 @@ interface RawCaptureRow { id: number; at: string; project: string; agent: string
 /**
  * The capture leg of #13 search: BM25 over the excerpts of one capture shard (`machine/<id>` of a project shard,
  * #15 T1). Empty when FTS5 or the shard is absent; a contended or corrupted shard degrades recall, never the search.
+ * Rows older than `notBefore` (an ISO time) are left out; the store passes the shard's retention cutoff, so an expired
+ * row is not recalled before a later append evicts it.
  */
-export function captureSearch(dir: string, q: string, limit: number): { row: CaptureRow; rank: number }[] {
+export function captureSearch(dir: string, q: string, limit: number, notBefore?: string): { row: CaptureRow; rank: number }[] {
   const match = ftsTerms(q);
   if (!match || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
   let db: Database | undefined;
@@ -191,7 +193,10 @@ export function captureSearch(dir: string, q: string, limit: number): { row: Cap
     db = new Database(join(dir, "capture.db"), { readonly: true });
     db.run("PRAGMA busy_timeout = 3000");
     if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get()) return [];
-    const rows = db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit) as (RawCaptureRow & { rank: number })[];
+    // `notBefore` (retention cutoff, `since`) runs inside the query: rows past it never take a LIMIT slot.
+    const rows = (notBefore === undefined
+      ? db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit)
+      : db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? AND r.at >= ? ORDER BY rank LIMIT ?`).all(match, notBefore, limit)) as (RawCaptureRow & { rank: number })[];
     return rows.map((r) => ({ row: { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt }, rank: r.rank }));
   } catch { return []; }
   finally { db?.close(); }

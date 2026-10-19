@@ -195,3 +195,52 @@ test("AC8: a published v1 reader is unaffected and capture data never enters a v
   cleanup.push(() => legacy.close());
   expect(legacy.list({ project }).map((v) => v.id)).toEqual([expected]); // the v1 reader sees only curated truth
 });
+
+test("#165 a capture row past the shard's retention window is not recalled while no writer has evicted it", () => {
+  if (!fts5Available()) return;
+  const dir = home(), at = Date.parse("2026-06-01T00:00:00.000Z");
+  const capture = new CaptureStore({ home: dir, project, now: () => at });
+  capture.append({ project, agent: "codex", event: "Stop", excerpt: "retention canary excerpt" }); capture.close();
+  const fresh = store(dir, () => at + 24 * 3600_000).search("retention canary", { project });
+  expect(fresh.hits.some((h) => h.capture?.excerpt === "retention canary excerpt")).toBe(true);
+  // 91 days later, past the default 90-day window; nothing appended since, so the row is still in capture.db.
+  const later = store(dir, () => at + 91 * 24 * 3600_000).search("retention canary", { project });
+  expect(later.hits.some((h) => h.capture)).toBe(false);
+});
+
+test("#165 invisible rows filling the candidate cap never hide a visible curated match", () => {
+  if (!fts5Available()) return;
+  const dir = home();
+  let now = Date.parse("2026-10-01T00:00:00.000Z");
+  const s = store(dir, () => now);
+  // Forty strong matches written before `since`, so search filters them after FTS.
+  for (let i = 0; i < 40; i++) { s.note(note(`cap token cap token cap token old ${i}`)); now += 1000; }
+  const since = new Date(now + 1000).toISOString(); now += 60_000;
+  s.note(note("cap token cap token cap token cap token newest strong"));
+  s.note(note("a weak cap token mention that is still visible"));
+  const hits = s.search("cap token", { project, since, limit: 2 }).hits.map((h) => h.view?.text);
+  expect(hits).toEqual(["cap token cap token cap token cap token newest strong", "a weak cap token mention that is still visible"]);
+});
+
+test("#165 a host's capture retention override reaches search", () => {
+  if (!fts5Available()) return;
+  const dir = home(), at = Date.parse("2026-06-01T00:00:00.000Z");
+  const capture = new CaptureStore({ home: dir, project, now: () => at, retentionDays: 365 });
+  capture.append({ project, agent: "codex", event: "Stop", excerpt: "override window excerpt" }); capture.close();
+  const s = store(dir, () => at + 100 * 24 * 3600_000);
+  expect(s.search("override window", { project }).hits.some((h) => h.capture)).toBe(false);
+  expect(s.search("override window", { project, captureRetentionDays: 365 }).hits.some((h) => h.capture?.excerpt === "override window excerpt")).toBe(true);
+  for (const invalid of [0, -1, Number.NaN]) expect(s.search("override window", { project, captureRetentionDays: invalid }).hits.some((h) => h.capture)).toBe(false);
+});
+
+test("#165 capture time is stored as canonical UTC, so `since` compares chronologically", () => {
+  if (!fts5Available()) return;
+  const dir = home(), capture = new CaptureStore({ home: dir, project, now: () => Date.parse("2026-06-02T00:00:00.000Z") });
+  capture.append({ project, agent: "codex", event: "Stop", excerpt: "offset clock excerpt", at: "2026-06-01T01:00:00+02:00" });
+  expect(() => capture.append({ project, agent: "codex", event: "Stop", excerpt: "bad clock", at: "not a time" })).toThrow("parseable time");
+  capture.close();
+  const s = store(dir, () => Date.parse("2026-06-02T00:00:00.000Z"));
+  const hit = s.search("offset clock", { project }).hits.find((h) => h.capture);
+  expect(hit?.capture?.at).toBe("2026-05-31T23:00:00.000Z");
+  expect(s.search("offset clock", { project, since: "2026-06-01T00:00:00.000Z" }).hits.some((h) => h.capture)).toBe(false);
+});
