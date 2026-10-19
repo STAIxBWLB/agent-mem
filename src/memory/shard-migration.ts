@@ -538,7 +538,8 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
     // #176 R1: a shard writer that crashed after preflight could leave a partial row in a file the copy appends to,
     // and writeRoutes would refuse only after the journal says captured. Hold every destination's writer lock from a
     // last tail check through the copy, so that check is what the copy sees. Released before buildShard, which opens
-    // its own store; captured already fences shard writers by then.
+    // its own store; captured already fences shard writers by then. The post-captured tail check in writeRoutes stays
+    // reachable only by writers that bypass both this lock and the reader lease (the mutation.ts ponytail ceiling).
     const releaseShards = lockDestinations(memoryDir, plan.destinations);
     let affected: Set<Destination>;
     try {
