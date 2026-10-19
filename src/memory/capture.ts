@@ -270,7 +270,7 @@ export class CaptureStore {
   append(input: CaptureInput): CaptureAppend {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
-    if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a valid ISO time");
+    if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a parseable time string");
     const row = this.normalize(input);
     if (this.contended) {
       this.spool(row);

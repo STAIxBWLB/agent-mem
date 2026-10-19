@@ -230,13 +230,14 @@ test("#165 a host's capture retention override reaches search", () => {
   const s = store(dir, () => at + 100 * 24 * 3600_000);
   expect(s.search("override window", { project }).hits.some((h) => h.capture)).toBe(false);
   expect(s.search("override window", { project, captureRetentionDays: 365 }).hits.some((h) => h.capture?.excerpt === "override window excerpt")).toBe(true);
+  for (const invalid of [0, -1, Number.NaN]) expect(s.search("override window", { project, captureRetentionDays: invalid }).hits.some((h) => h.capture)).toBe(false);
 });
 
 test("#165 capture time is stored as canonical UTC, so `since` compares chronologically", () => {
   if (!fts5Available()) return;
   const dir = home(), capture = new CaptureStore({ home: dir, project, now: () => Date.parse("2026-06-02T00:00:00.000Z") });
   capture.append({ project, agent: "codex", event: "Stop", excerpt: "offset clock excerpt", at: "2026-06-01T01:00:00+02:00" });
-  expect(() => capture.append({ project, agent: "codex", event: "Stop", excerpt: "bad clock", at: "not a time" })).toThrow("valid ISO time");
+  expect(() => capture.append({ project, agent: "codex", event: "Stop", excerpt: "bad clock", at: "not a time" })).toThrow("parseable time");
   capture.close();
   const s = store(dir, () => Date.parse("2026-06-02T00:00:00.000Z"));
   const hit = s.search("offset clock", { project }).hits.find((h) => h.capture);

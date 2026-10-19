@@ -924,11 +924,13 @@ export class MemoryStore {
     const page = Math.max(limit * 4, 32);
     for (const store of visible.size ? this.readStores() : []) {
       let found = 0;
+      const seen = new Set<string>(); // another process's sync between pages can shift offsets and repeat a ref
       for (let offset = 0; found < limit; offset += page) {
         const ranked = store.searchIndex.query(q, page, f.project, offset);
         for (const hit of ranked) {
           const view = visible.get(hit.ref);
-          if (!view) continue;
+          if (!view || seen.has(hit.ref)) continue;
+          seen.add(hit.ref);
           found++;
           hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
         }
@@ -940,7 +942,8 @@ export class MemoryStore {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
       // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
       // An out-of-range retention_days gives no cutoff rather than failing the whole search (eviction keeps its own check).
-      const cutoff = new Date(now - (f.captureRetentionDays ?? readCaptureConfig(shard, this.memoryBaseDir).retentionDays) * 24 * 3600_000);
+      const override = f.captureRetentionDays, days = typeof override === "number" && Number.isFinite(override) && override > 0 ? override : readCaptureConfig(shard, this.memoryBaseDir).retentionDays;
+      const cutoff = new Date(now - days * 24 * 3600_000);
       const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
       const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
       for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {
