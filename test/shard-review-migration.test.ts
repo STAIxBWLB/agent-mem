@@ -8,6 +8,7 @@ import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { pruneId, pruneRowHash, type PruneRow } from "../src/memory/prune.ts";
 import { shardDir, userShardDir } from "../src/memory/shard.ts";
+import { acquireMutation } from "../src/memory/mutation.ts";
 const A = "github.com/review/a", B = "github.com/review/b";
 const homes: string[] = [];
 afterEach(() => { for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -136,4 +137,48 @@ test("#119 F2 missing copied identity with nonempty rows refuses before deactiva
   await expect(migrateShards(opts(dir, "resume"))).rejects.toThrow(/identity.*inspect|inspect.*identity/i);
   expect(readFileSync(journal)).toEqual(before); expect(readFileSync(copied)).toEqual(copiedBefore);
   expect(existsSync(join(bridge, "machine.json"))).toBe(false);
+});
+
+test("#176 R1 a copy tail torn after preflight refuses before the active journal flips to captured", async () => {
+  const dir = home(), source = seed(dir); await migrateShards(opts(dir, "apply"));
+  const journal = join(source.memory, "shards.json"), before = readFileSync(journal);
+  const copy = join(shardDir(source.memory, A), "legacy", "log", `${source.row.machine}.jsonl`);
+  appendNote(source, "late legacy row planned for the torn copy");
+  // A writer that crashes after preflight leaves a partial row in the very file the copy appends to.
+  const torn = () => { appendFileSync(copy, '{"torn":"after preflight'); };
+  await expect(migrateShards({ ...opts(dir, "resume"), beforeCapture: torn })).rejects.toThrow(/tail/);
+  expect(readFileSync(journal)).toEqual(before);
+  const shard = openShardStore({ home: dir, project: A });
+  try { expect(shard.list({ project: A }).length).toBeGreaterThan(0); } finally { shard.close(); }
+});
+
+test("#176 R1 a shard writer holding its lock makes the migration refuse without changing the active journal", async () => {
+  const dir = home(), source = seed(dir); await migrateShards(opts(dir, "apply"));
+  const journal = join(source.memory, "shards.json"), before = readFileSync(journal);
+  appendNote(source, "late legacy row while a shard writer is mid-append");
+  const release = acquireMutation(shardDir(source.memory, A));
+  expect(release).toBeDefined();
+  try { await expect(migrateShards(opts(dir, "resume"))).rejects.toThrow(/writer lock is busy/); }
+  finally { release!(); }
+  expect(readFileSync(journal)).toEqual(before);
+  await migrateShards(opts(dir, "resume"));
+  expect(JSON.parse(readFileSync(journal, "utf8")).phase).toBe("active");
+});
+
+test("#176 R2 a torn copy tail names its file and the person-run recovery, and that recovery lets resume finish", async () => {
+  const dir = home(), source = seed(dir); await migrateShards(opts(dir, "apply"));
+  const copy = join(shardDir(source.memory, A), "legacy", "log", `${source.row.machine}.jsonl`);
+  const intact = readFileSync(copy);
+  appendFileSync(copy, '{"different":"unfinished');
+  const late = appendNote(source, "late row behind a torn copy tail");
+  const refusal = await migrateShards(opts(dir, "resume")).then(() => "", (error: Error) => error.message);
+  expect(refusal).toContain(join("projects", copy.split("/projects/")[1]!));
+  expect(refusal).toContain("cut it back to its last newline");
+  expect(refusal).toContain("amem migrate --shards --resume");
+  // The person keeps the cut bytes elsewhere and truncates to the last newline.
+  writeFileSync(copy, intact);
+  await migrateShards(opts(dir, "resume"));
+  expect(JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8")).phase).toBe("active");
+  const shard = openShardStore({ home: dir, project: A });
+  try { expect(shard.list({ project: A }).map(row => row.id)).toContain(late.id); } finally { shard.close(); }
 });

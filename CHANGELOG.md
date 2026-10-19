@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Shard migration apply and resume hold each destination shard's writer lock from a last tail check through the copy, so a shard writer that crashes after preflight can no longer leave the split `captured` and unreadable; a busy writer refuses with the journal unchanged. A torn tail refusal names the file and the person-run recovery (docs/curated-shard-migration.md, "Recovering a torn shard tail") (#15 T2 follow-up).
 - Keep CLI candidate/vault project aliases consistent with MCP, bound work-list materialization before parsing, and verify held reader leases without repeated process scans (#13 P2).
 
 - Add session-scoped nine-tool MCP, composed standalone privacy policy, candidate-only remember, project work lists and reviewed-alias work-state import (#13 P2).

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacySegment } from "./bridge.ts";
 import { canonicalJSON, generationDescriptor, generationDir, hashJSON, readProfileJSON, readSelector, validGeneration, validateGeneration, withProfileLock, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLinkRow } from "./generation.ts";
 import { coalesceGenerationSource, explicitExpirySnapshot } from "./generation-index.ts";
@@ -39,6 +39,8 @@ export interface ShardMigrationOptions {
   authorizedPerson: boolean;
   tty: boolean;
   checkpoint?: (stage: "after-shard" | "before-active") => void | Promise<void>;
+  /** Test seam: runs after the last preflight and reader admission, before the destination shard locks are taken. */
+  beforeCapture?: () => void | Promise<void>;
 }
 interface Capture { segments: LegacySegment[]; sources: SourcePrefix[]; legacyCommit?: string; sourceGeneration?: string }
 interface PruneTranslation { schema: "agent-mem.shard-prune-translation/v1"; sourceId: string; sourceHash: string; translatedId: string }
@@ -376,6 +378,9 @@ function receiptRemainder(dir: string, receipts: readonly PruneTranslation[]): B
   return Buffer.concat(pending).subarray(tail.length);
 }
 
+/** #176 R2: the person-run recovery for a shard file whose last row a crashed writer left unfinished (docs/curated-shard-migration.md). */
+const tornTail = (memoryDir: string, file: string) => `curated shard copied tail cannot be completed at ${relative(memoryDir, file)}: a writer stopped mid-row. Recover by hand: stop every amem and agent-hub process using this memory home, keep a copy of the file, cut it back to its last newline (the cut bytes are an unfinished row no reader has indexed), then run amem migrate --shards --resume`;
+
 function assessDestination(memoryDir: string, destination: Destination, plan: RoutePlan, generation: string, machine: { id: string; label: string }) {
   const dir = destinationDir(memoryDir, destination);
   for (const [path, value] of [["generation.json", generationDescriptor(generation)], ["machine.json", machine], ["legacy/machine.json", machine], ["legacy-main/machine.json", machine]] as const) {
@@ -393,7 +398,7 @@ function assessDestination(memoryDir: string, destination: Destination, plan: Ro
     // A native writer's unrelated tail is not a migration-owned append or recovery record.
     if (!next && key.startsWith("generation:")) continue;
     const bytes = next && Buffer.from(next.line + "\n");
-    if (!bytes || tail.length >= bytes.length || !bytes.subarray(0, tail.length).equals(tail)) throw new Error("curated shard copied tail cannot be completed; inspect its original writer recovery before resuming");
+    if (!bytes || tail.length >= bytes.length || !bytes.subarray(0, tail.length).equals(tail)) throw new Error(tornTail(memoryDir, join(realmRoot(dir, key.slice(0, key.indexOf(":"))), key.slice(key.indexOf(":") + 1))));
     completions.set(key, { line: next!, remainder: bytes.subarray(tail.length) });
   }
   const receiptBytes = receiptRemainder(dir, lines.flatMap(line => line.translation ? [line.translation] : []));
@@ -416,7 +421,7 @@ function writeRoutes(memoryDir: string, plan: RoutePlan, generation: string, mac
       const key = sourceKey(line.source, line.path);
       if (!existing.ids.get(key)?.has(line.id)) {
         const target = join(realmRoot(dir, line.source), line.path);
-        if (existsSync(target)) { const current = readFileSync(target); if (current.length && current.at(-1) !== 10) throw new Error("curated shard copied tail is incomplete"); }
+        if (existsSync(target)) { const current = readFileSync(target); if (current.length && current.at(-1) !== 10) throw new Error(tornTail(memoryDir, target)); }
         mkdirSync(dirname(target), { recursive: true, mode: 0o700 }); appendFileSync(target, line.line + "\n", { mode: 0o600 });
         if (!existing.ids.has(key)) existing.ids.set(key, new Set()); existing.ids.get(key)!.add(line.id); affected.add(destination);
       }
@@ -424,6 +429,21 @@ function writeRoutes(memoryDir: string, plan: RoutePlan, generation: string, mac
     if (assessed.receiptBytes.length) appendFileSync(join(dir, "prune-translations.jsonl"), assessed.receiptBytes, { mode: 0o600 });
   }
   return affected;
+}
+
+/** Each destination shard's own writer lock, taken in a fixed order; a busy one refuses before any journal change. */
+function lockDestinations(memoryDir: string, destinations: Iterable<Destination>): () => void {
+  const releases: (() => void)[] = [];
+  const releaseAll = () => { for (const release of releases.splice(0).reverse()) release(); };
+  try {
+    for (const dir of [...destinations].map(destination => destinationDir(memoryDir, destination)).sort()) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const release = acquireMutation(dir);
+      if (!release) throw new Error("curated shard writer lock is busy; retry the shard migration once that writer finishes");
+      releases.push(release);
+    }
+  } catch (error) { releaseAll(); throw error; }
+  return releaseAll;
 }
 
 function buildShard(memoryDir: string, destination: Destination, generation: string, selectorRevision: string): void {
@@ -511,12 +531,22 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
       persist(); // Positive cleanup remains visible even if a later lease refuses this migration.
     } });
     admission();
+    if (options.beforeCapture) await options.beforeCapture();
     const alreadyActive = journal.phase === "active" && plan.lines.length === 0;
     // Existing source checkpoints stay committed only after all affected shards are sealed.
     // A resumed active split must stop serving reads before the first copied append.
-    if (!alreadyActive) journal.phase = "captured";
-    persist();
-    const affected = writeRoutes(memoryDir, plan, generation, machine);
+    // #176 R1: a shard writer that crashed after preflight could leave a partial row in a file the copy appends to,
+    // and writeRoutes would refuse only after the journal says captured. Hold every destination's writer lock from a
+    // last tail check through the copy, so that check is what the copy sees. Released before buildShard, which opens
+    // its own store; captured already fences shard writers by then.
+    const releaseShards = lockDestinations(memoryDir, plan.destinations);
+    let affected: Set<Destination>;
+    try {
+      for (const destination of plan.destinations) assessDestination(memoryDir, destination, plan, generation, machine);
+      if (!alreadyActive) journal.phase = "captured";
+      persist();
+      affected = writeRoutes(memoryDir, plan, generation, machine);
+    } finally { releaseShards(); }
     for (const destination of affected) {
       buildShard(memoryDir, destination, generation, selection.revision);
       if (options.checkpoint) await options.checkpoint("after-shard");
