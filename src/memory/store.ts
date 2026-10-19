@@ -914,7 +914,9 @@ export class MemoryStore {
     // starve this project's LIMIT.
     // Superseded, forgotten, expired and `since` rows are filtered after FTS, so a fixed candidate cap could be filled
     // by invisible rows and hide a visible match: widen the cap until `limit` visible hits or the index is exhausted.
-    for (const store of this.readStores()) {
+    // ponytail: with almost nothing visible (a narrow kind/tier filter) the widening reads the store's whole match set;
+    // push `since` into SearchIndex.query (docs carries `at`) if that cost shows up.
+    for (const store of visible.size ? this.readStores() : []) {
       for (let cap = Math.max(limit * 4, 32); ; cap *= 4) {
         const ranked = store.searchIndex.query(q, cap, f.project), found = ranked.filter(hit => visible.has(hit.ref));
         if (found.length < limit && ranked.length === cap) continue;
@@ -929,9 +931,11 @@ export class MemoryStore {
     if (f.includeCapture !== false && f.project) {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
       // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
-      const retained = new Date(now - readCaptureConfig(shard, this.memoryBaseDir).retentionDays * 24 * 3600_000).toISOString();
+      // An out-of-range retention_days gives no cutoff rather than failing the whole search (eviction keeps its own check).
+      const cutoff = new Date(now - readCaptureConfig(shard, this.memoryBaseDir).retentionDays * 24 * 3600_000);
+      const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
       const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
-      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && since > retained ? since : retained)) {
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {
         hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
       }
     }
