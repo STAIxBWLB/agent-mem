@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { readWindowSql, readRef, type ReadWindow, type ReadRef } from "./read-window.ts";
 import type { CaptureRow } from "./capture.ts";
 
 /**
@@ -172,6 +173,16 @@ export class SearchIndex {
     const where = project ? "docs MATCH ? AND (project = ? OR scope = 'shared')" : "docs MATCH ?";
     const bind = project ? [match, project] : [match];
     return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
+  }
+
+  /** Matching identities in chronological keyset pages; raw-corpus BM25 never selects a private-policy window. */
+  candidates(q: string, window: ReadWindow): ReadRef[] {
+    if (!this.db) return [];
+    const match = ftsTerms(q); if (!match) return [];
+    const { columns, where, bind } = readWindowSql(window, "ref");
+    where.push("docs MATCH ?"); bind.push(match);
+    return (this.db.query(`SELECT ${columns} FROM docs WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
+      .all(...bind, window.limit) as { candidate_id: string; at: string; candidate_position: number }[]).map(readRef);
   }
 
   close(): void { this.db?.close(); }

@@ -238,6 +238,8 @@ A native shard crash tail is left to its original writer's recovery. Migration c
 
 Run `amem mcp` as a stdio child of the agent CLI. It binds the working directory, canonical project key, exact memory home and selected profile once, accepts no project/home overrides in tool arguments, and closes all stores on stdin EOF. It has no listener, daemon, watcher or model call. Ordinary person commands retain their agent-marker refusal and mutation TTY checks; `mcp` is the sole agent entry point.
 
+MCP search, timeline and show remain available above 5,000 rows. Reads page exact-project candidates and screen them before result selection. Search ranks the newest 5,000 permitted matching candidates per tier; `since` narrows that window. Timeline can anchor an older row directly. See [MCP candidate reads](docs/contracts.md#mcp-candidate-reads-13-task-209) for the bounded-window and fallback contract.
+
 The frozen nine-tool contract for dotfiles#255 and maru#458:
 
 | Tool | Purpose |
@@ -252,7 +254,7 @@ The frozen nine-tool contract for dotfiles#255 and maru#458:
 | `amem_vault_candidates` | Read-only screened durable curated notes |
 | `amem_capacity` | Numeric machine capacity proposal; no apply capability |
 
-Search/show/timeline label capture as recall with `evidence: false`; capture never enters the curated graph. Policy screens complete rows before selection, limits or graph construction. The standalone secret screen, private flags, PII patterns and deny paths compose with a host's stricter policy through `createMemoryMcp({cwd, base, policy})`. Screening errors fail closed. `base` is the exact memory root; historical library `home` options still name its parent. Scope and profile changes refuse further access instead of silently reopening another store. Reads refuse above 5,000 rows per curated/capture tier; work-list reads use the same 5,000-entry scan ceiling. Count-first admission refuses an oversized work-list corpus before loading or parsing its fields, rather than returning an incomplete screened result. These are operational ceilings, not exposed counts of unscreened data. Graphs cover curated-note relationships, not goal/suggestion tables.
+Search/show/timeline label capture as recall with `evidence: false`; capture never enters the curated graph. Policy screens complete rows before selection, limits or graph construction. The standalone secret screen, private flags, PII patterns and deny paths compose with a host's stricter policy through `createMemoryMcp({cwd, base, policy})`. Screening errors fail closed. `base` is the exact memory root; historical library `home` options still name its parent. Scope and profile changes refuse further access instead of silently reopening another store. Graph reads retain the 5,000-row curated ceiling; work-list reads keep their 5,000-entry scan ceiling. Count-first admission refuses an oversized work-list corpus before loading or parsing its fields, rather than returning an incomplete screened result. These are operational ceilings, not exposed counts of unscreened data. Graphs cover curated-note relationships, not goal/suggestion tables.
 
 `WorkListStore` writes `projects/<key-hash>/work/` with its own append log, derived index and lock. Scalar fields reduce by latest value, null clears, list status `done` closes, and item status is `todo|doing|done|dropped`. Work lists are outside generation selection and capture eviction. `amem import claude-mem` additionally imports `work_state_entries` only through persisted person-reviewed D2 aliases, preserving source DB bytes and stable replay receipts; JSON keeps observation fields and adds `work` counts/cursor.
 
@@ -262,7 +264,7 @@ Do not record vault links on a home shared with a host using published agent-mem
 
 General memory candidates are separate from curated evidence. `amem review accept <id> --kind memory --policy-free` remains person-only and rechecks the current standalone privacy policy before the accepted note append. Machine capacity reports numeric aggregate use across shards, as R7 requires; it does not return foreign project names or text.
 
-`bun scripts/measure-mcp-budget.ts` exercises an actual stdio session with 200 curated notes, 2,000 capture rows and 2,000 work-list operations reduced into 100 items. It checks the R3 idle RSS limit of 100 MB, peak RSS limit of 200 MB across searches and work-list reads, and child reaping after EOF. CI runs the harness on macOS and Linux. All harness data is synthetic; live P6 measurements remain separate.
+`bun scripts/measure-mcp-budget.ts` exercises an actual stdio session with 5,001 curated notes, 5,001 capture rows and 2,000 work-list operations reduced into 100 items. It checks the R3 idle RSS limit of 100 MB, peak RSS limit of 200 MB across searches, latest/anchored timelines and work-list reads, and child reaping after EOF. CI runs the harness on macOS and Linux. All harness data is synthetic; live P6 measurements remain separate.
 
 ## Development
 

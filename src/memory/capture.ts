@@ -7,7 +7,8 @@ import { isDenied } from "./platform.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
 import { machineId } from "./store.ts";
-import { fts5Available } from "./search-fts.ts";
+import { readWindowSql, readRef, type ReadWindow, type ReadRef } from "./read-window.ts";
+import { ftsTerms, fts5Available } from "./search-fts.ts";
 
 /**
  * #13 design A, tier 2, born sharded (#15 T1): machine-local capture, one shard per project key. A shard lives at
@@ -182,7 +183,7 @@ export class CaptureStore {
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       this.ensureFts();
     } catch (error) {
-      if (!lockError(error)) throw error;
+      if (!lockError(error)) { db.close(); throw error; }
       this.contended = true; // R2: the hook spools and exits instead of waiting out another writer
     }
     this.migrated = this.contended ? 0 : this.migrateLegacy();
@@ -252,6 +253,16 @@ export class CaptureStore {
     this.db.run("CREATE TRIGGER IF NOT EXISTS rows_au AFTER UPDATE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
     // Rows written before FTS existed (or before a platform gained it) are indexed once; triggers keep it level.
     if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (fts) VALUES ('rebuild')");
+    // MCP searches the complete recall body (excerpt, decoded paths and event), independently of the library's excerpt-only index.
+    this.db.transaction(() => {
+      const hadMcp = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
+      const body = (row: string) => `${row}.excerpt || char(10) || COALESCE((SELECT group_concat(value, ' ') FROM json_each(${row}.paths)), '') || char(10) || ${row}.event`;
+      this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS mcp_fts USING fts5(body)");
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_ai AFTER INSERT ON rows BEGIN INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
+      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_mcp_ad AFTER DELETE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; END");
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_au AFTER UPDATE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
+      if (!hadMcp) this.db.run(`INSERT INTO mcp_fts(rowid, body) SELECT rows.id, ${body("rows")} FROM rows`);
+    }).immediate();
   }
 
   private bytes(): number {
@@ -422,6 +433,18 @@ export class CaptureStore {
     if (f.sinceId !== undefined) { where.push("id > ?"); bind.push(f.sinceId); }
     const rows = this.db.query(`SELECT * FROM rows${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id LIMIT ?`).all(...bind, f.limit ?? 1000) as RawRow[];
     return rows.map(toRow);
+  }
+
+  /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
+  readPage(window: ReadWindow & { query?: string }): { rows: CaptureRow[]; next?: ReadRef } {
+    const { columns, where, bind } = readWindowSql(window, "id");
+    if (window.query !== undefined && fts5Available()) {
+      const match = ftsTerms(window.query); if (!match) return { rows: [] };
+      where.push("id IN (SELECT rowid FROM mcp_fts WHERE mcp_fts MATCH ?)"); bind.push(match);
+    }
+    const rows = this.db.query(`SELECT *, ${columns} FROM rows WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
+      .all(...bind, window.limit) as (RawRow & { candidate_id: string; candidate_position: number })[];
+    return { rows: rows.map(toRow), ...(rows.length ? { next: readRef(rows[rows.length - 1]!) } : {}) };
   }
 
   stats(): { rows: number; bytes: number; capMb: number; retentionDays: number; fileBytes: number } {
