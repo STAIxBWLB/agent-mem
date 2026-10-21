@@ -34,8 +34,8 @@ function mcpObjects(db: Database) {
 const schemaVersion = (db: Database) => (db.query("PRAGMA schema_version").get() as { schema_version: number }).schema_version;
 const rowCount = (db: Database, table: "rows" | "mcp_fts") => (db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 
-// R2 uses a deterministic statement-effect check instead of a load-sensitive wall-time threshold.
-// A constructor/append that creates and removes MCP schema still changes schema_version.
+// R2 records real SQL calls instead of using a load-sensitive wall-time threshold.
+// schema_version also catches MCP schema that is created and then removed.
 test("upgrade hook appends to 5001 full-size captures without MCP DDL or backfill; first read catches up", () => {
   const f = fixture();
   let oldest = 0;
@@ -50,15 +50,34 @@ test("upgrade hook appends to 5001 full-size captures without MCP DDL or backfil
   try {
     removeMcpIndex(db); // Existing pre-upgrade shard: excerpt FTS exists, MCP FTS does not.
     const schema = schemaVersion(db);
-    const hook = new CaptureStore(f.options);
+    const statements: string[] = [];
+    const originalRun = Database.prototype.run, originalQuery = Database.prototype.query;
+    let hook: CaptureStore | undefined;
     let justAppended: number;
     try {
+      // Transparent call recorders preserve SQLite execution, bindings and return values.
+      Database.prototype.run = new Proxy(originalRun, { apply(target, receiver, args) {
+        if (typeof args[0] === "string") statements.push(args[0]);
+        return Reflect.apply(target, receiver, args);
+      } });
+      Database.prototype.query = new Proxy(originalQuery, { apply(target, receiver, args) {
+        if (typeof args[0] === "string") statements.push(args[0]);
+        return Reflect.apply(target, receiver, args);
+      } });
+      hook = new CaptureStore(f.options);
       justAppended = append(hook, "duringupgradeneedle");
-      expect(rowCount(db, "rows")).toBe(5002);
-      expect((db.query("SELECT length(excerpt) AS n FROM rows WHERE id = ?").get(oldest) as { n: number }).n).toBe(CAPTURE_MAX_EXCERPT);
-      expect(mcpObjects(db)).toEqual([]);
-      expect(schemaVersion(db)).toBe(schema);
-    } finally { hook.close(); }
+    } finally {
+      Database.prototype.run = originalRun;
+      Database.prototype.query = originalQuery;
+      hook?.close();
+    }
+    // Restore recorders before inspection queries, which intentionally mention MCP schema.
+    expect(statements.some(sql => /INSERT INTO rows/i.test(sql))).toBe(true);
+    expect(statements.filter(sql => /mcp_fts|rows_mcp/i.test(sql))).toEqual([]);
+    expect(rowCount(db, "rows")).toBe(5002);
+    expect((db.query("SELECT length(excerpt) AS n FROM rows WHERE id = ?").get(oldest) as { n: number }).n).toBe(CAPTURE_MAX_EXCERPT);
+    expect(mcpObjects(db)).toEqual([]);
+    expect(schemaVersion(db)).toBe(schema);
     const reader = new CaptureStore(f.options);
     try {
       // An ordinary timeline read also has no reason to build a search index.
