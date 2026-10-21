@@ -7,8 +7,7 @@ import { isDenied } from "./platform.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
 import { machineId } from "./store.ts";
-import { readWindowSql, readRef, type ReadWindow, type ReadRef } from "./read-window.ts";
-import { ftsTerms, fts5Available } from "./search-fts.ts";
+import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Available } from "./search-fts.ts";
 
 /**
  * #13 design A, tier 2, born sharded (#15 T1): machine-local capture, one shard per project key. A shard lives at
