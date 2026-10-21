@@ -238,7 +238,7 @@ A native shard crash tail is left to its original writer's recovery. Migration c
 
 Run `amem mcp` as a stdio child of the agent CLI. It binds the working directory, canonical project key, exact memory home and selected profile once, accepts no project/home overrides in tool arguments, and closes all stores on stdin EOF. It has no listener, daemon, watcher or model call. Ordinary person commands retain their agent-marker refusal and mutation TTY checks; `mcp` is the sole agent entry point.
 
-MCP search, timeline and show remain available above 5,000 rows. Reads page exact-project candidates and screen them before result selection. Search ranks the newest 5,000 permitted matching candidates per tier; `since` narrows that window. Timeline can anchor an older row directly. See [MCP candidate reads](docs/contracts.md#mcp-candidate-reads-13-task-209) for the bounded-window and fallback contract.
+MCP search, timeline and show remain available above 5,000 rows. Reads page exact-project candidates and screen them before result selection. Search ranks the newest 5,000 permitted matching candidates per tier; `since` narrows that window. Timeline can anchor an older row directly. Capture MCP indexing is lazy on queried reads, never hook construction or append. Index contention uses a call-pinned substring fallback; later searches retry. See [MCP candidate reads](docs/contracts.md#mcp-candidate-reads-13-task-209) for the bounded-window and fallback contract.
 
 The frozen nine-tool contract for dotfiles#255 and maru#458:
 

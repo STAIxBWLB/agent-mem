@@ -88,11 +88,13 @@ test("old capture MCP-index backfill rolls back a failure before advertising rea
   const file = join(capture.dir, "capture.db"); capture.close();
   const old = new Database(file);
   try {
-    for (const trigger of ["rows_mcp_ai", "rows_mcp_ad", "rows_mcp_au"]) old.run(`DROP TRIGGER ${trigger}`);
-    old.run("DROP TABLE mcp_fts");
+    for (const trigger of ["rows_mcp_ai", "rows_mcp_ad", "rows_mcp_au"]) old.run(`DROP TRIGGER IF EXISTS ${trigger}`);
+    old.run("DROP TABLE IF EXISTS mcp_fts");
     // A real SQL error during backfill must roll the schema marker back too, so the next open retries.
     old.run("UPDATE rows SET paths = 'not-json'");
-    expect(() => new CaptureStore({ home: f.root, project: f.project })).toThrow();
+    const reader = new CaptureStore({ home: f.root, project: f.project });
+    try { expect(() => reader.readPage({ project: f.project, query: "backfillneedle", limit: 10 })).toThrow(); }
+    finally { reader.close(); }
     expect(old.query("SELECT name FROM sqlite_master WHERE name = 'mcp_fts'").get()).toBeNull();
     old.query("UPDATE rows SET paths = ?").run(JSON.stringify(["public.ts"]));
   } finally { old.close(); }

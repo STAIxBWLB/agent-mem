@@ -252,16 +252,29 @@ export class CaptureStore {
     this.db.run("CREATE TRIGGER IF NOT EXISTS rows_au AFTER UPDATE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
     // Rows written before FTS existed (or before a platform gained it) are indexed once; triggers keep it level.
     if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (fts) VALUES ('rebuild')");
-    // MCP searches the complete recall body (excerpt, decoded paths and event), independently of the library's excerpt-only index.
-    this.db.transaction(() => {
-      const hadMcp = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
-      const body = (row: string) => `${row}.excerpt || char(10) || COALESCE((SELECT group_concat(value, ' ') FROM json_each(${row}.paths)), '') || char(10) || ${row}.event`;
-      this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS mcp_fts USING fts5(body)");
-      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_ai AFTER INSERT ON rows BEGIN INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
-      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_mcp_ad AFTER DELETE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; END");
-      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_au AFTER UPDATE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
-      if (!hadMcp) this.db.run(`INSERT INTO mcp_fts(rowid, body) SELECT rows.id, ${body("rows")} FROM rows`);
-    }).immediate();
+  }
+
+  private mcpReady = false;
+  /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
+  private ensureMcpFts(): boolean {
+    if (!fts5Available()) return false;
+    if (this.mcpReady) return true;
+    try {
+      this.db.transaction(() => {
+        const hadMcp = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
+        const body = (row: string) => `${row}.excerpt || char(10) || COALESCE((SELECT group_concat(value, ' ') FROM json_each(${row}.paths)), '') || char(10) || ${row}.event`;
+        this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS mcp_fts USING fts5(body)");
+        this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_ai AFTER INSERT ON rows BEGIN INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
+        this.db.run("CREATE TRIGGER IF NOT EXISTS rows_mcp_ad AFTER DELETE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; END");
+        this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_mcp_au AFTER UPDATE ON rows BEGIN DELETE FROM mcp_fts WHERE rowid = old.id; INSERT INTO mcp_fts(rowid, body) VALUES (new.id, ${body("new")}); END`);
+        if (!hadMcp) this.db.run(`INSERT INTO mcp_fts(rowid, body) SELECT rows.id, ${body("rows")} FROM rows`);
+      }).immediate();
+      this.mcpReady = true;
+      return true;
+    } catch {
+      // Missing/unavailable derived search is not a capture read failure. Retry on the next independent read.
+      return false;
+    }
   }
 
   private bytes(): number {
@@ -435,15 +448,16 @@ export class CaptureStore {
   }
 
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
-  readPage(window: ReadWindow & { query?: string }): { rows: CaptureRow[]; next?: ReadRef } {
+  readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     const { columns, where, bind } = readWindowSql(window, "id");
-    if (window.query !== undefined && fts5Available()) {
-      const match = ftsTerms(window.query); if (!match) return { rows: [] };
+    const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
+    if (window.query !== undefined && engine === "fts5") {
+      const match = ftsTerms(window.query); if (!match) return { rows: [], engine };
       where.push("id IN (SELECT rowid FROM mcp_fts WHERE mcp_fts MATCH ?)"); bind.push(match);
     }
     const rows = this.db.query(`SELECT *, ${columns} FROM rows WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
       .all(...bind, window.limit) as (RawRow & { candidate_id: string; candidate_position: number })[];
-    return { rows: rows.map(toRow), ...(rows.length ? { next: readRef(rows[rows.length - 1]!) } : {}) };
+    return { rows: rows.map(toRow), ...(engine ? { engine } : {}), ...(rows.length ? { next: readRef(rows[rows.length - 1]!) } : {}) };
   }
 
   stats(): { rows: number; bytes: number; capMb: number; retentionDays: number; fileBytes: number } {

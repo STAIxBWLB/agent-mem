@@ -66,13 +66,13 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
       return screen(rows.filter(row => row.project === project));
     };
-    const readPermitted = async <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef },
-      options: Omit<ReadWindow, "project" | "limit" | "after">, cap: number, matches: (row: T) => boolean = () => true): Promise<T[]> => {
+    const readPermitted = async <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef; engine?: "fts5" | "substring" },
+      options: Omit<ReadWindow, "project" | "limit" | "after">, cap: number, matches: (row: T, engine?: "fts5" | "substring") => boolean = () => true): Promise<T[]> => {
       const result: T[] = []; let after: ReadWindow["after"];
       while (result.length < cap) {
         guard();
         const page = read({ ...options, project, limit: READ_PAGE, after });
-        for (const row of page.rows) if (await policy.screen(row) && matches(row)) {
+        for (const row of page.rows) if (await policy.screen(row) && matches(row, page.engine)) {
           result.push(row); if (result.length === cap) break;
         }
         guard();
@@ -96,23 +96,31 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const index = new SearchIndex(":memory:");
         try {
           const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-          const notes = await readPermitted(window => store.readPage({ ...window, query }), { since }, SEARCH_CANDIDATES,
-            view => index.available || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
-          const recalls = args.includeCapture === false ? [] : await readPermitted(window => capture.readPage({ ...window, query }), { since }, SEARCH_CANDIDATES,
-            row => index.available || words.every(word => `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}`.toLowerCase().includes(word)));
+          const captureState: { engine?: "fts5" | "substring" } = {};
+          const recalls = args.includeCapture === false ? [] : await readPermitted(window => {
+            const page = capture.readPage({ ...window, query, ...(captureState.engine === "substring" ? { match: "substring" as const } : {}) });
+            captureState.engine ??= page.engine;
+            return page;
+          }, { since }, SEARCH_CANDIDATES,
+            (row, engine) => index.available && engine === "fts5" || words.every(word => `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}`.toLowerCase().includes(word)));
+          const useFts = index.available && captureState.engine !== "substring";
+          const notes = await readPermitted(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since }, SEARCH_CANDIDATES,
+            view => useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
           const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
             ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => !since || Date.parse(hit.at) >= Date.parse(since));
-          index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
-          if (index.available && index.needsResync(hits.length)) unavailable();
-          const ranks = new Map(index.query(query, MCP_SCAN_LIMIT * 2, project).map(row => [row.ref, row.rank]));
+          if (useFts) {
+            index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
+            if (index.needsResync(hits.length)) unavailable();
+          }
+          const ranks = new Map((useFts ? index.query(query, MCP_SCAN_LIMIT * 2, project) : []).map(row => [row.ref, row.rank]));
           const selected = hits.flatMap(hit => {
             const rank = ranks.get(hit.ref);
-            if (index.available ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
+            if (useFts ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
             const weight = hit.tier === "long" ? 1 : hit.tier === "capture" ? 0.5 : 0.9;
             const score = -(rank ?? -1) * weight / (1 + Math.max(0, Date.now() - Date.parse(hit.at)) / (30 * 86400_000));
             return [{ source: hit.source, evidence: hit.evidence, ...(hit.source === "curated" ? { view: hit.view } : { capture: hit.capture }), score }];
           }).sort((a, b) => b.score - a.score).slice(0, limit);
-          guard(); return { engine: index.available ? "fts5" : "substring", hits: selected };
+          guard(); return { engine: useFts ? "fts5" : "substring", hits: selected };
         } finally { index.close(); }
       },
       async amem_show(args) {
