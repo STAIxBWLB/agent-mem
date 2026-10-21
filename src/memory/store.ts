@@ -6,7 +6,7 @@ import { isDenied } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
-import { SearchIndex, captureSearch } from "./search-fts.ts";
+import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
@@ -724,13 +724,13 @@ export class MemoryStore {
    * prune. Lifecycle relations still fold globally; SQL selects full rows before View/JSON materialization.
    * ponytail: lifecycle metadata is still scanned on every read; measure before adding a revision cache.
    */
-  private views(expired = false, selection?: Filter, expiredOnly = false): View[] {
+  private views(expired = false, selection?: Filter & { ids?: string[] }, expiredOnly = false): View[] {
     // Metadata, ops and candidate bodies must describe one WAL snapshot, even if another process indexes a copy.
     const read = () => this.viewRows(expired, selection, expiredOnly);
     return this.db.transaction(() => this.userOverlay ? this.userOverlay.db.transaction(read).deferred() : read()).deferred();
   }
 
-  private viewRows(expired: boolean, selection: Filter | undefined, expiredOnly: boolean): View[] {
+  private viewRows(expired: boolean, selection: (Filter & { ids?: string[] }) | undefined, expiredOnly: boolean): View[] {
     const now = this.now(), selecting = selection !== undefined || expiredOnly;
     const pruned = this.generationIndex ? new Set((this.readRows("SELECT id FROM generation_targets") as { id: string }[]).map(row => row.id)) : undefined;
     if (this.generationIndex) this.generationIndex.pruned = new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id));
@@ -826,6 +826,7 @@ export class MemoryStore {
       if (expiredOnly) ids(expiredIds, false); else if (!expired) ids(expiredIds, true);
       if (selection) {
         if (selection.project) { where.push("(project = ? OR scope = 'shared')"); bind.push(selection.project); }
+        if (selection.ids) ids(selection.ids, false);
         if (selection.tier) {
           if (demoted.size) { where.push("CASE WHEN id IN (SELECT value FROM json_each(?)) THEN 'short' ELSE tier END = ?"); bind.push(JSON.stringify([...demoted.keys()]), selection.tier); }
           else { where.push("tier = ?"); bind.push(selection.tier); }
@@ -898,6 +899,26 @@ export class MemoryStore {
       .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
   }
 
+  /** Exact-project body pages for policy-aware callers. Relations still fold over complete metadata. */
+  readPage(window: ReadWindow & { query?: string; includeSuperseded?: boolean }): { rows: View[]; next?: ReadRef } {
+    this.ensureFresh(); this.prune();
+    const refs: ReadRef[] = [];
+    for (const store of this.readStores()) {
+      if (window.query !== undefined && store.searchIndex.available) {
+        store.syncSearchIndex(); refs.push(...store.searchIndex.candidates(window.query, window));
+      } else {
+        const { columns, where, bind } = readWindowSql(window, "id");
+        refs.push(...(store.db.query(`SELECT ${columns} FROM entries WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
+          .all(...bind, window.limit) as { candidate_id: string; at: string; candidate_position: number }[]).map(readRef));
+      }
+    }
+    const page = [...new Map(refs.map(ref => [ref.id, ref])).values()].sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, window.limit);
+    if (!page.length) return { rows: [] };
+    const views = new Map(this.views(false, { project: window.project, ids: page.map(ref => ref.id), includeSuperseded: window.includeSuperseded })
+      .filter(view => view.project === window.project && (window.includeSuperseded || !view.supersededBy)).map(view => [view.id, view]));
+    return { rows: page.flatMap(ref => views.get(ref.id) ?? []), next: page[page.length - 1] };
+  }
+
   /**
    * #13 R5: natural-language search over the curated tier and this machine's capture tier, ranked by BM25 with
    * tier and recency weights (curated outranks capture; a newer row beats an older one at equal text). Visibility
@@ -964,8 +985,12 @@ export class MemoryStore {
     if (!this.searchIndex.available) return;
     const curated = (this.db.query("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
     if (!this.searchIndex.needsResync(curated)) return;
-    this.searchIndex.resync(() => (this.db.query("SELECT id, at, project, tier, scope, title, text, about FROM entries").all() as { id: string; at: string; project: string; tier: string; scope: string; title: string | null; text: string; about: string }[])
-      .map((r) => ({ id: r.id, at: r.at, project: r.project, tier: r.tier, scope: r.scope, body: `${r.title ?? ""}\n${r.text}\n${(JSON.parse(r.about) as string[]).join(" ")}` })));
+    const db = this.db;
+    this.searchIndex.resync(function* () {
+      for (const r of db.query("SELECT id, at, project, tier, scope, title, text, about FROM entries").iterate() as Iterable<{ id: string; at: string; project: string; tier: string; scope: string; title: string | null; text: string; about: string }>) {
+        yield { id: r.id, at: r.at, project: r.project, tier: r.tier, scope: r.scope, body: `${r.title ?? ""}\n${r.text}\n${(JSON.parse(r.about) as string[]).join(" ")}` };
+      }
+    });
   }
 
   /** One entry by id or unique id prefix; with `project`, only one that project may read (its own or shared). */

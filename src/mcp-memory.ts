@@ -10,14 +10,17 @@ import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
-import { SearchIndex } from "./memory/search-fts.ts";
+import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
 import { readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
 
-// ponytail: 5000 rows per tier per operation; above this ceiling refuse rather than select on an incomplete privacy-filtered corpus. Upgrade to screened streaming pagination.
+// Graph retains its complete-corpus ceiling; search/timeline/show page matching bodies instead.
 export const MCP_SCAN_LIMIT = 5000;
+// ponytail: rank the newest 5000 permitted matching candidates per tier; use since to narrow or upgrade to a policy-bound persistent index for global ranking.
+const SEARCH_CANDIDATES = 5000;
+const READ_PAGE = 256;
 export interface MemoryMcpOptions { cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions }
 export interface MemoryMcp { tools: McpHandlers; close(): void }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
@@ -27,7 +30,7 @@ const textOf = (args: Record<string, unknown>, key: string, optional = false): s
   const value = args[key]; if (value === undefined && optional) return undefined;
   return typeof value === "string" && value.trim() && !value.includes("\0") ? value : unavailable();
 };
-const sinceOf = (args: Record<string, unknown>): string | undefined => { const since = textOf(args, "since", true); if (since !== undefined && !Number.isFinite(Date.parse(since))) unavailable(); return since; };
+const sinceOf = (args: Record<string, unknown>): string | undefined => { const since = textOf(args, "since", true); if (since !== undefined && !Number.isFinite(Date.parse(since))) unavailable(); return since === undefined ? undefined : new Date(since).toISOString(); };
 
 /** All identities are resolved once. Per-call arguments cannot change projects, homes, profiles or policy. */
 export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
@@ -63,46 +66,84 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
       return screen(rows.filter(row => row.project === project));
     };
-    const captures = async () => screen(capture.rows({ project, limit: MCP_SCAN_LIMIT + 1 }));
-    const find = (rows: View[], id: string): View | null => { const found = rows.filter(row => row.id === id || row.id.startsWith(id.replace(/^mem:/, ""))); return found.length === 1 ? found[0]! : null; };
+    const readPermitted = async <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef; engine?: "fts5" | "substring" },
+      options: Omit<ReadWindow, "project" | "limit" | "after">, cap: number, matches: (row: T, engine?: "fts5" | "substring") => boolean = () => true): Promise<T[]> => {
+      const result: T[] = []; let after: ReadWindow["after"];
+      while (result.length < cap) {
+        guard();
+        const page = read({ ...options, project, limit: READ_PAGE, after });
+        for (const row of page.rows) if (await policy.screen(row) && matches(row, page.engine)) {
+          result.push(row); if (result.length === cap) break;
+        }
+        guard();
+        if (!page.next) break;
+        after = { position: page.next.position, id: page.next.id };
+      }
+      return result;
+    };
+    const anchorAt = async (id: string): Promise<string | undefined> => {
+      if (/^capture:[1-9][0-9]*$/.test(id)) {
+        return (await readPermitted(window => capture.readPage(window), { id: id.slice(8) }, 1))[0]?.at;
+      }
+      const rows = await readPermitted(window => store.readPage({ ...window, includeSuperseded: true }), { prefix: id.replace(/^mem:/, "") }, 2);
+      return rows.length === 1 ? rows[0]!.at : undefined;
+    };
     const tools: McpHandlers = {
       async amem_search(args) {
         bound(args, ["query", "limit", "since", "includeCapture"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
         if (args.includeCapture !== undefined && typeof args.includeCapture !== "boolean") unavailable();
         if (!await policy.screen({ query })) unavailable();
-        const notes = await curated(), recalls = args.includeCapture === false ? [] : await captures();
-        const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
-          ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => !since || Date.parse(hit.at) >= Date.parse(since));
         const index = new SearchIndex(":memory:");
         try {
-          index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
-          if (index.available && index.needsResync(hits.length)) unavailable();
-          const ranks = new Map(index.query(query, MCP_SCAN_LIMIT * 2, project).map(row => [row.ref, row.rank]));
           const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+          const captureState: { engine?: "fts5" | "substring" } = {};
+          const recalls = args.includeCapture === false ? [] : await readPermitted(window => {
+            const page = capture.readPage({ ...window, query, ...(captureState.engine === "substring" ? { match: "substring" as const } : {}) });
+            captureState.engine ??= page.engine;
+            return page;
+          }, { since }, SEARCH_CANDIDATES,
+            (row, engine) => index.available && engine === "fts5" || words.every(word => `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}`.toLowerCase().includes(word)));
+          const useFts = index.available && captureState.engine !== "substring";
+          const notes = await readPermitted(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since }, SEARCH_CANDIDATES,
+            view => useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
+          const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
+            ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => !since || Date.parse(hit.at) >= Date.parse(since));
+          if (useFts) {
+            index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
+            if (index.needsResync(hits.length)) unavailable();
+          }
+          const ranks = new Map((useFts ? index.query(query, MCP_SCAN_LIMIT * 2, project) : []).map(row => [row.ref, row.rank]));
           const selected = hits.flatMap(hit => {
             const rank = ranks.get(hit.ref);
-            if (index.available ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
+            if (useFts ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
             const weight = hit.tier === "long" ? 1 : hit.tier === "capture" ? 0.5 : 0.9;
             const score = -(rank ?? -1) * weight / (1 + Math.max(0, Date.now() - Date.parse(hit.at)) / (30 * 86400_000));
             return [{ source: hit.source, evidence: hit.evidence, ...(hit.source === "curated" ? { view: hit.view } : { capture: hit.capture }), score }];
           }).sort((a, b) => b.score - a.score).slice(0, limit);
-          guard(); return { engine: index.available ? "fts5" : "substring", hits: selected };
+          guard(); return { engine: useFts ? "fts5" : "substring", hits: selected };
         } finally { index.close(); }
       },
       async amem_show(args) {
         bound(args, ["id"]); guard(); const id = textOf(args, "id")!;
-        if (/^capture:[1-9][0-9]*$/.test(id)) { const row = (await captures()).find(row => `capture:${row.id}` === id); guard(); return row ? { source: "capture", evidence: false, capture: row } : null; }
-        const result = find(await curated(true), id); guard(); return result;
+        if (/^capture:[1-9][0-9]*$/.test(id)) {
+          const row = (await readPermitted(window => capture.readPage(window), { id: id.slice(8) }, 1))[0];
+          guard(); return row ? { source: "capture", evidence: false, capture: row } : null;
+        }
+        const rows = await readPermitted(window => store.readPage({ ...window, includeSuperseded: true }), { prefix: id.replace(/^mem:/, "") }, 2);
+        guard(); return rows.length === 1 ? rows[0]! : null;
       },
       async amem_timeline(args) {
-        bound(args, ["id", "since", "limit"]); const rows = await curated(true), recalls = await captures(), id = textOf(args, "id", true), since = sinceOf(args), limit = limitOf(args);
-        const entries = [...rows.map(row => ({ at: row.at, value: row as unknown })), ...recalls.map(row => ({ at: row.at, value: { source: "capture", evidence: false, capture: row } as unknown }))];
-        let selected = entries.filter(row => !since || Date.parse(row.at) >= Date.parse(since));
-        if (id) {
-          const anchor = id.startsWith("capture:") ? recalls.find(row => `capture:${row.id}` === id) : find(rows, id);
-          if (!anchor) return []; selected = selected.sort((a, b) => Math.abs(Date.parse(a.at) - Date.parse(anchor.at)) - Math.abs(Date.parse(b.at) - Date.parse(anchor.at)));
-        } else selected.sort((a, b) => b.at.localeCompare(a.at));
-        guard(); return selected.slice(0, limit).map(row => row.value);
+        bound(args, ["id", "since", "limit"]);
+        const id = textOf(args, "id", true), since = sinceOf(args), limit = limitOf(args);
+        guard();
+        const anchor = id ? await anchorAt(id) : undefined;
+        if (id && !anchor) { guard(); return []; }
+        const rows = await readPermitted(window => store.readPage({ ...window, includeSuperseded: true }), { since, anchor }, limit);
+        const recalls = await readPermitted(window => capture.readPage(window), { since, anchor }, limit);
+        const entries = [...rows.map(row => ({ at: row.at, ref: row.id, value: row as unknown })),
+          ...recalls.map(row => ({ at: row.at, ref: `capture:${row.id}`, value: { source: "capture", evidence: false, capture: row } as unknown }))];
+        entries.sort((a, b) => (anchor ? Math.abs(Date.parse(a.at) - Date.parse(anchor)) - Math.abs(Date.parse(b.at) - Date.parse(anchor)) : Date.parse(b.at) - Date.parse(a.at)) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+        guard(); return entries.slice(0, limit).map(row => row.value);
       },
       async amem_graph(args) {
         bound(args, ["start", "hops", "limit"]); const start = textOf(args, "start")!, cap = limitOf(args), hops = args.hops ?? 1;

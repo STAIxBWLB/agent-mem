@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Defer capture MCP FTS creation/backfill to queried reads so an upgrade cannot scan a large shard on a hook. Contended reads use a policy-screened, call-pinned substring fallback and retry indexing later; triggers cover pre- and post-initialization appends (#13, agent-hub task #327).
+
+- Keep MCP search, timeline and point reads usable beyond 5,000 rows: page exact-project query candidates in SQL/FTS, screen before the public window, preserve full capture path/event matching, and stream cold curated FTS rebuilds. Measure real stdio R3 on 5,001 curated plus 5,001 capture rows (#13, agent-hub task #209).
+
 ## 0.4.0
 
 - Add the capture tier, born sharded: one capture store per project key at `projects/<key-hash>/machine/<machine-id>/`, deterministic rows only (no network or model call), deny-screened paths, a bounded secret-screened excerpt, a spool on lock contention, and R6 cap and retention bounds resolved per shard. A pre-T1 machine-wide capture store drains into its shards on open (#13 P1, #15 T1).
