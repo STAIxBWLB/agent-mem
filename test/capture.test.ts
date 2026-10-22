@@ -20,6 +20,12 @@ function capture(dir: string, opts: Partial<ConstructorParameters<typeof Capture
 }
 const input = (over: Partial<Parameters<CaptureStore["append"]>[0]> = {}) => ({ project: "proj", agent: "kimi", event: "PostToolUse", tool: "Edit", paths: ["src/a.ts"], status: "ok", excerpt: "edited the storage wiring", ...over });
 
+function spoolLines(dir: string): string[] {
+  const files = ["spool.jsonl", "spool.jsonl.draining"].map(name => join(dir, name));
+  if (existsSync(join(dir, "spool"))) files.push(...readdirSync(join(dir, "spool")).filter(name => name.startsWith("spool-")).map(name => join(dir, "spool", name)));
+  return files.flatMap(file => { try { return readFileSync(file, "utf8").trim().split("\n").filter(Boolean); } catch { return []; } });
+}
+
 test("append stores one bounded, screened capture row in the project shard", () => {
   const dir = home();
   const store = capture(dir);
@@ -115,8 +121,8 @@ test("a contended writer spools and exits; the next uncontended writer drains th
     expect(blocked.append(input({ excerpt: "second spooled row", at: "2026-10-17T01:01:00.000Z" }))).toEqual({ spooled: true });
     // A blocked hook never half-writes: a WAL snapshot read shows only the row committed before the contention.
     expect(blocked.rows().map((r) => r.excerpt)).toEqual(["before the contention"]);
-    // Both rows are in the spool: the blocked writer's bounded drain attempt may already have renamed one aside.
-    const spooled = ["spool.jsonl", "spool.jsonl.draining"].flatMap((n) => { try { return readFileSync(join(capDir, n), "utf8").trim().split("\n").filter(Boolean); } catch { return []; } });
+    // Both complete published segments contain exactly the screened rows.
+    const spooled = spoolLines(capDir);
     expect(spooled).toHaveLength(2);
     expect(spooled.some((line) => line.includes("spooled under contention"))).toBe(true);
     expect(spooled.some((line) => line.includes("second spooled row"))).toBe(true);
@@ -197,7 +203,7 @@ test("P1: the spool holds only the screened, bounded, deny-filtered row; any dra
     const blocked = capture(dir, { screen: () => true });
     const pii = `PATIENT ${"x".repeat(5146)}`;
     expect(blocked.append(input({ excerpt: pii, paths: [".ssh/id_rsa", "src/a.ts"] }))).toEqual({ spooled: true });
-    const spooled = ["spool.jsonl", "spool.jsonl.draining"].flatMap((n) => { try { return readFileSync(join(strict.dir, n), "utf8").trim().split("\n").filter(Boolean); } catch { return []; } });
+    const spooled = spoolLines(strict.dir);
     expect(spooled).toHaveLength(1);
     expect(spooled[0]).not.toContain("PATIENT"); // nothing unscreened reaches the spool
     expect(spooled[0]).not.toContain("id_rsa");
