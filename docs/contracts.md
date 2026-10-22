@@ -153,6 +153,12 @@ Timeline resolves and screens an anchor directly, even outside a recent search w
 The actual stdio resource script seeds 5,001 curated and 5,001 capture rows, plus 10,001 work-list appends reduced to 100 items. It checks search, capture-disabled and capture-only queries, time filters, latest and anchored timelines, work reads, R3 idle/peak RSS and EOF process reaping on both CI platforms. Synthetic homes are used; this is not a live cutover or a new release.
 
 
+### Reviewed alias and curated rows (#27)
+
+`aliases.jsonl` holds two op kinds: `alias` (`alias`, `key`) and `unalias` (`alias`). The latest op per alias key wins and nothing is rewritten, so an older reader that only knows `alias` ignores the removal line and shows its older view. `amem alias remove` refuses a key that is not aliased now.
+
+For an aliased key the CLI and MCP exact-project filter widens to the canonical key plus every key aliased to it, for notes, goals, suggestions, search, timeline, show, vault candidates and links, candidates and counters, and work lists. Rows keep their own project in the log and read as the canonical key. The widening is opt-in through `StoreOptions.reconcile`, `CandidateStore({ reconcile })` and `WorkListStore({ aliases })`: the library default and `amem prune` keep the exact key, so a prune plan never names rows of a key it was not asked about. Under curated shards the aliased key's shard is opened read-and-own beside the canonical one (never created when absent), and a settle, forget, supersede or promote of an aliased row is appended to the shard that holds it. The MCP guard closes the session when the effective alias set changes.
+
 ### Hook upgrade regression (#13, task #327)
 
 `test/capture-mcp-lazy.test.ts` seeds 5,001 maximum-length capture excerpts, removes only the derived MCP index to represent a pre-upgrade shard, and opens/appends through the ordinary hook store. Transparent SQL-call recording observes the real row insert and zero MCP-index statements on that hook path; the unchanged SQLite schema version and absent MCP table/triggers independently verify its effects without a load-sensitive timing assertion. A lazy read then includes both historical and pre-initialization appends; later inserts, updates and deletes retain index parity. A first open under a real SQLite writer lock returns bounded substring pages, and the same handle retries after release. MCP fallback regressions cross the 256-row boundary with denied rows and preserve infix substring matches in curated data, including an empty capture tier.

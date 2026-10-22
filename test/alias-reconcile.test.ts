@@ -68,6 +68,16 @@ for (const sharded of [false, true]) {
     expect(vault.every(row => row.project === f.canonical)).toBe(true);
   });
 
+  test(`forgetting an aliased old-key note through the CLI lands in the shard that holds it and survives a rebuild in ${profile}`, async () => {
+    const f = await fixture(sharded);
+    await f.cli("forget", f.oldNote);
+    expect(ids(await f.cli("list", "--json"))).toEqual([f.canonicalNote]);
+    await f.cli("rebuild");
+    expect(ids(await f.cli("list", "--json"))).toEqual([f.canonicalNote]);
+    await f.cli("alias", "remove", f.raw);                                                      // under its own key again, the row is still forgotten
+    expect(ids(await f.cli("list", "--json"))).toEqual([]);
+  });
+
   test(`candidates stored under the old key are listed, accepted and rejected under the canonical key in ${profile}`, async () => {
     const f = await fixture(sharded);
     const sidecar = new CandidateStore({ memoryDir: f.base });
