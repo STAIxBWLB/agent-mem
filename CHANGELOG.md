@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.0
+
+- Replace the shared capture spool (`spool.jsonl` / `spool.jsonl.draining`) with immutable per-writer segments published by rename and claimed and acknowledged under unique names, so concurrent hook writers and drainers can no longer lose or delete each other's rows; a short leftover byte allowance defers a row to the next drain instead of discarding it. Legacy fixed-name spools are still imported; old-version writers must be quiesced before an upgrade (#13 P3 blocker, agent-hub task #238).
+
 - Keep work-list reads usable beyond 5,000 operations with indexed streaming replay and stable read snapshots across asynchronous policy checks. Preserve latest fields, null clearing, replay order and rebuild parity without rewriting logs; measure real MCP R3 with 10,001 work operations (#13, agent-hub task #210).
 
 - Reconcile a reviewed alias with curated rows (#27): the CLI and MCP project filter covers the canonical key and every key aliased to it (notes, goals, candidates, vault candidates, work lists, in shared-v1 and curated shards), and shows those rows under the canonical key. Add `amem alias remove <from-key>`, an append-only `unalias` op in `aliases.jsonl` (older readers ignore it), and list removals in `amem alias list`. The library `MemoryStore` keeps exact-key reads unless a host passes `reconcile`; prune plans keep the exact key.
