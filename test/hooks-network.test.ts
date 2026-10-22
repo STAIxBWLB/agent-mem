@@ -29,9 +29,9 @@ Bun.connect=()=>trip('Bun.connect');
 // Instrument only the package's fixed worker. Production's child environment remains restricted.
 const nativeSpawn=Bun.spawn.bind(Bun);
 Bun.spawn=(command,options)=>{
- if(Array.isArray(command)&&command[0]===process.execPath&&command[1]===worker){
+ if(Array.isArray(command)&&command[0]===process.execPath&&command[1]==='--smol'&&command[2]===worker){
   appendFileSync(receipt,JSON.stringify({kind:'spawned'})+'\\n');
-  return nativeSpawn([command[0],'--preload',preload,...command.slice(1)],{...options,env:{...options?.env,AMEM_NETWORK_MARKER:marker,AMEM_BRIEF_TRIP_CONTROL:process.env.AMEM_BRIEF_TRIP_CONTROL}});
+  return nativeSpawn([command[0],'--smol','--preload',preload,...command.slice(2)],{...options,env:{...options?.env,AMEM_NETWORK_MARKER:marker,AMEM_BRIEF_TRIP_CONTROL:process.env.AMEM_BRIEF_TRIP_CONTROL}});
  }
  return nativeSpawn(command,options);
 };

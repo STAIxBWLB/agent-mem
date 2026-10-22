@@ -94,6 +94,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (argv[0] === "ingest") {
     // Capture-only native intake: no project/home override, policy bypass or curated write capability.
     const parsed = parseCommand(argv);
+    if (parsed.options["--help"] === true) return commandHelp();
     const kind = parsed.positionals[0];
     if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi [--since ISO] [--json]");
     const { ingestTranscript } = await import("./ingest.ts");

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -134,3 +135,67 @@ test("default discovery progresses beyond its former first 128 sources", async (
     const store=new CaptureStore({memoryDir:f.base,project:memoryProjectKey(f.cwd)});try{expect(store.rows({limit:200})).toHaveLength(130);}finally{store.close();}
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 },20000);
+
+test("oversized native records drain across bounded passes once and do not strand later messages", async () => {
+  const f=fixture(),large=line({type:"image",payload:"A".repeat(5*1024*1024)});
+  writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("before oversized"))+large+line(codexMessage("after oversized")));
+  let imported=0,skipped=0,read=0,last:{remaining:boolean}|undefined;
+  for(let i=0;i<4;i++){
+    const receipt=await ingestTranscript("codex",{...f,files:[f.file]});
+    imported+=receipt.imported;skipped+=receipt.skipped;read+=receipt.read;last=receipt;
+  }
+  expect(rows(f).map(row=>row.excerpt)).toEqual(["before oversized","after oversized"]);
+  expect(imported).toBe(2);expect(read).toBe(4);expect(skipped).toBe(2);expect(last?.remaining).toBe(false);
+});
+
+test("oversized unterminated tails retain skip state until the real newline arrives", async () => {
+  const f=fixture();writeFileSync(f.file,line(codexHeader(f.cwd))+"A".repeat(5*1024*1024));
+  let read=0,skipped=0;
+  for(let i=0;i<3;i++){
+    const receipt=await ingestTranscript("codex",{...f,files:[f.file]});
+    read+=receipt.read;skipped+=receipt.skipped;expect(receipt.remaining).toBe(true);expect(receipt.imported).toBe(0);
+  }
+  // This looks valid in isolation but remains part of the oversized physical record until its newline.
+  appendFileSync(f.file,JSON.stringify(codexMessage("must remain discarded"))+"\n"+line(codexMessage("after actual newline")));
+  const final=await ingestTranscript("codex",{...f,files:[f.file]});read+=final.read;skipped+=final.skipped;
+  expect(rows(f).map(row=>row.excerpt)).toEqual(["after actual newline"]);
+  expect(read).toBe(3);expect(skipped).toBe(2);expect(final.remaining).toBe(false);
+});
+
+test("a broader cutoff clears an in-flight oversized skip before backfilling", async () => {
+  const f=fixture();writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("backfilled before"))+line({type:"image",payload:"A".repeat(5*1024*1024)})+line(codexMessage("backfilled after")));
+  await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T02:00:00Z"});
+  for(let i=0;i<3;i++)await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T00:00:00Z"});
+  expect(rows(f).map(row=>row.excerpt)).toEqual(["backfilled before","backfilled after"]);
+});
+
+
+test("pre-discard cursor schema migrates without replaying an already imported native record", async () => {
+  const f=fixture();writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("already present")));
+  expect((await ingestTranscript("codex",{...f,files:[f.file]})).imported).toBe(1);
+  const store=new CaptureStore({memoryDir:f.base,project:memoryProjectKey(f.cwd)}),dir=join(store.dir,"ingest");store.close();
+  for(const name of readdirSync(dir).filter(name=>name.endsWith(".db"))){
+    const database=new Database(join(dir,name));try{database.run("ALTER TABLE cursor DROP COLUMN skipping");}finally{database.close();}
+  }
+  appendFileSync(f.file,line(codexMessage("after schema migration")));
+  expect((await ingestTranscript("codex",{...f,files:[f.file]})).imported).toBe(1);
+  expect(rows(f).map(row=>row.excerpt)).toEqual(["already present","after schema migration"]);
+});
+
+
+test("ingest help returns guidance before intake, cwd access or any memory write, including agent shells", async () => {
+  const f=fixture(),native=join(f.root,"native"),sessions=join(native,"sessions"),previous=process.env.CODEX_HOME;
+  mkdirSync(sessions,{recursive:true});writeFileSync(join(sessions,"fixture.jsonl"),line(codexHeader(f.cwd))+line(codexMessage("help must not import")));process.env.CODEX_HOME=native;
+  const { runCli, PERSON_ONLY }=await import("../src/cli.ts");
+  try {
+    for(const kind of ["codex","kimi","pi"]){
+      const help=await runCli(["ingest",kind,"--help"],{
+        get cwd(): string {throw new Error("help must not inspect a project or transcript");},
+        env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"},stdinTTY:false,
+      });
+      expect(help).toContain("usage: amem");expect(help).toContain("ingest");expect(existsSync(f.base)).toBe(false);
+    }
+    await expect(runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow(PERSON_ONLY);
+    expect(existsSync(f.base)).toBe(false);
+  } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
+});

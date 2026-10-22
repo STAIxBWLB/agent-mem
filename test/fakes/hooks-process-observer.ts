@@ -11,8 +11,8 @@ export function hookProcessObserver(root: string, stallWorker = false) {
 const worker=${JSON.stringify(worker)},receipt=${JSON.stringify(receipt)},preload=${JSON.stringify(preload)},stallWorker=${stallWorker};
 const original=Bun.spawn.bind(Bun);
 Bun.spawn=(command,options)=>{
- const matched=Array.isArray(command)&&command[0]===process.execPath&&command[1]===worker;
- const argv=matched&&stallWorker?[command[0],'--preload',preload,...command.slice(1)]:command;
+ const matched=Array.isArray(command)&&command[0]===process.execPath&&command[1]==='--smol'&&command[2]===worker;
+ const argv=matched&&stallWorker?[command[0],'--smol','--preload',preload,...command.slice(2)]:command;
  const child=original(argv,options);
  if(matched){
   appendFileSync(receipt,JSON.stringify({pid:child.pid,detached:options?.detached===true,argv:command})+'\\n',{mode:0o600});

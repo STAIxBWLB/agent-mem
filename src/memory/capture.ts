@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
-import { isDenied } from "./platform.ts";
+import { normalizeCaptureFields, type CaptureFields } from "./capture-input.ts";
+export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
 import { machineId } from "./store.ts";
@@ -39,15 +40,12 @@ export const CAPTURE_DEFAULT_CAP_MB = 512;
 export const CAPTURE_DEFAULT_RETENTION_DAYS = 90;
 /** Well under the 150 ms R2 wall budget even with process startup: contention spools instead of waiting. */
 export const CAPTURE_BUSY_TIMEOUT_MS = 25;
-export const CAPTURE_MAX_EXCERPT = 2000;
-export const CAPTURE_MAX_PATHS = 32;
 /** Eviction and drain work per invocation, so a shrunk cap or a long outage is worked off over many hooks. */
 export const CAPTURE_EVICT_BATCH_ROWS = 256;
 export const CAPTURE_EVICT_MAX_BATCHES = 4;
 /** Wall-time bound for one invocation's eviction: with the batch bound, an append stays inside R2 after a cap shrink. */
 export const CAPTURE_EVICT_MAX_MS = 25;
 export const CAPTURE_DRAIN_MAX_LINES = 1000;
-const ROW_OVERHEAD_BYTES = 96;
 const SPOOL = "spool.jsonl";
 const DRAINING = "spool.jsonl.draining";
 const SPOOL_DIR = "spool";
@@ -58,12 +56,7 @@ const segmentName = /^spool-[0-9a-f-]+\.jsonl(?:\.offset-(\d+)(-skip)?)?(?:\.dra
 let spoolSequence = 0;
 const spoolToken = () => `${Date.now().toString(16).padStart(13, "0")}-${process.pid.toString(16).padStart(8, "0")}-${(spoolSequence++).toString(16).padStart(8, "0")}-${randomBytes(12).toString("hex")}`;
 
-export interface CaptureInput {
-  project: string; agent: string; event: string;
-  tool?: string; paths?: string[]; status?: string; excerpt?: string;
-  /** Tests and the spool replay pin the time; hooks leave it to the store clock. */
-  at?: string;
-}
+export interface CaptureInput extends CaptureFields { project: string }
 export interface CaptureRow {
   id: number; at: string; project: string; agent: string; event: string;
   tool: string | null; paths: string[]; status: string | null; excerpt: string;
@@ -344,16 +337,8 @@ export class CaptureStore {
 
   /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
   private normalize(input: CaptureInput): NormalizedCapture {
-    const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
-    // Canonical UTC ISO text, so text order is time order for eviction (`at < cutoff`) and search (`at >= notBefore`).
-    const at = new Date(input.at === undefined ? this.now() : Date.parse(input.at)).toISOString();
-    const tool = str(input.tool, 64) ? input.tool! : null;
-    const status = str(input.status, 64) ? input.status! : null;
-    const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
-    let excerpt = (input.excerpt ?? "").slice(0, CAPTURE_MAX_EXCERPT);
-    if (excerpt && this.screen(excerpt)) excerpt = "[secret-screened]";
-    return { at, project: input.project, agent: input.agent, event: input.event, tool, paths, status, excerpt,
-      bytes: Buffer.byteLength(excerpt) + Buffer.byteLength(JSON.stringify(paths)) + ROW_OVERHEAD_BYTES };
+    const { at, agent, event, tool, paths, status, excerpt, bytes } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text));
+    return { at, project: input.project, agent, event, tool, paths, status, excerpt, bytes };
   }
 
   private spoolLine(row: NormalizedCapture, nonce = randomBytes(12).toString("hex")): string {

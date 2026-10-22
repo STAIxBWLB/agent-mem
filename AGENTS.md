@@ -41,7 +41,7 @@
 
 ## CLI and policy boundaries
 
-- Refuse ordinary CLI commands in agent-marked sessions. The session entrypoints are `amem mcp`, fail-open `amem hook <event>` and capture-only `amem ingest <codex|kimi|pi>`; none writes curated notes. Keep ordinary CLI mutations person-only and require stdin TTY. Hooks never deny, replace a tool call or perform network/model work.
+- Refuse ordinary CLI commands in agent-marked sessions. `amem mcp` writes only candidates and work lists; `amem hook <event>` and `amem ingest <codex|kimi|pi>` append only capture rows; none writes curated notes or goals. Keep ordinary CLI mutations person-only and require stdin TTY. Hooks never deny, replace a tool call or perform network/model work.
 - Require explicit `--policy-free` for promote, import and sync. Keep host privacy policy out of this package; ordinary person reads are unscreened, vault-candidate listings use current policy, and import/promotion retain the secret screen.
 - Resolve data storage with `memoryHome()`: `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. Keep tests isolated through `test/home.ts`.
 

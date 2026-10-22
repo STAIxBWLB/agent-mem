@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { hookCapturePending } from "../src/hook-spool.ts";
 import { hookBin, hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
 
@@ -20,12 +22,18 @@ test("SessionStart never exposes raw private or secret native input in observed 
     });
     expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("");
   }
-  const receipts = observer.read(); expect(receipts).toHaveLength(2);
+  expect(observer.read()).toHaveLength(0); expect(f.rows()).toHaveLength(0);
+  const control = Bun.spawnSync([process.execPath, "--preload", observer.preload, hookBin, "hook", "SessionStart"], {
+    cwd: f.cwd, env: f.env, stdin: Buffer.from(JSON.stringify({ hook_event_name: "SessionStart", cwd: f.cwd, prompt: "public argv observer control" })), stdout: "pipe", stderr: "pipe", timeout: 3000,
+  });
+  expect(control.exitCode).toBe(0);
+  const receipts = observer.read(); expect(receipts).toHaveLength(1);
   for (const receipt of receipts) {
     for (const marker of markers) expect(JSON.stringify(receipt.argv)).not.toContain(marker);
-    expect(receipt.argv).toEqual([process.execPath, observer.worker]);
+    expect(receipt.argv).toEqual([process.execPath, "--smol", observer.worker]);
   }
-  expect(f.rows()).toHaveLength(0);
+  expect(f.rows().filter(row => row.excerpt === "public argv observer control")).toHaveLength(1);
+  for (const marker of markers) expect(JSON.stringify(f.rows())).not.toContain(marker);
 });
 
 for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} timeout terminates its observed owned native descendant and fails open within R2`, async () => {
@@ -50,6 +58,20 @@ for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} time
     while (alive(nativePid) && performance.now() < until) await Bun.sleep(10);
     expect(alive(nativePid)).toBe(false);
     expect(alive(workers[0]!.pid)).toBe(false);
+    const spool = join(f.base, "hook-spool");
+    const retained = readdirSync(spool).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
+      .map(name => ({ name: name.split(".draining-")[0]!, value: JSON.parse(readFileSync(join(spool, name), "utf8")) }));
+    const pending = retained.filter(row => row.value.capture?.event === event && row.value.capture?.excerpt === "public timeout fixture");
+    expect(pending).toHaveLength(1);
+    expect(hookCapturePending(f.base, pending[0]!.name)).toBe(true);
+    expect(f.rows().filter(row => row.excerpt === "public timeout fixture")).toHaveLength(0);
+    for (const marker of ["healthy follow-up", "second healthy follow-up"]) {
+      const healthy = f.run(event, { prompt: marker }); expect(healthy.exitCode).toBe(0);
+      const rows = f.rows();
+      expect(rows.filter(row => row.excerpt === marker && row.event === event && row.project === f.project)).toHaveLength(1);
+      expect(rows.filter(row => row.excerpt === "public timeout fixture" && row.event === event && row.project === f.project)).toHaveLength(1);
+      expect(hookCapturePending(f.base, pending[0]!.name)).toBe(false);
+    }
   } finally {
     if (nativePid === undefined && existsSync(pidFile)) nativePid = Number(readFileSync(pidFile, "utf8").trim());
     if (nativePid !== undefined && Number.isSafeInteger(nativePid) && nativePid > 0 && alive(nativePid)) {

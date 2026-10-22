@@ -23,7 +23,7 @@ export interface IngestReceipt {
 }
 
 type Scope = "own" | "foreign" | "unknown";
-interface Position { identity: string; offset: number; anchor: string; scope: Scope; protocol: string; cutoff: string }
+interface Position { identity: string; offset: number; anchor: string; scope: Scope; protocol: string; cutoff: string; skipping: 0 | 1 }
 interface Cursor extends Position { token: string | null; pid: number | null; signature: string | null }
 const MAX_BYTES = 16 * 1024 * 1024, DEFAULT_BYTES = 4 * 1024 * 1024, MAX_FILES = 128, DEFAULT_FILES = 32;
 const MAX_CURSOR_BYTES = 128 * 1024;
@@ -32,7 +32,7 @@ const MAX_RECORD = 256 * 1024, MAX_RECORDS = 4096, MAX_DISCOVERY = 4096, MAX_DEP
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
 const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
-const blank = (): Position => ({ identity: "", offset: 0, anchor: "", scope: "unknown", protocol: "", cutoff: "" });
+const blank = (): Position => ({ identity: "", offset: 0, anchor: "", scope: "unknown", protocol: "", cutoff: "", skipping: 0 });
 const sourceIdentity = (stat: Stats) => hash(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
 function publicFile(file: string): number {
   // O_NONBLOCK prevents a planted FIFO from hanging before fstat can refuse it.
@@ -74,9 +74,10 @@ function lease(file: string): { position: Position; save(value: Position): void;
     closeSync(fd); fd = undefined;
     db = new Database(file);
     db.run("PRAGMA busy_timeout = 25");
-    db.run("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK (id=1), identity TEXT NOT NULL, offset INTEGER NOT NULL, anchor TEXT NOT NULL, scope TEXT NOT NULL, protocol TEXT NOT NULL, cutoff TEXT NOT NULL DEFAULT '', token TEXT, pid INTEGER, signature TEXT)");
+    db.run("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK (id=1), identity TEXT NOT NULL, offset INTEGER NOT NULL, anchor TEXT NOT NULL, scope TEXT NOT NULL, protocol TEXT NOT NULL, cutoff TEXT NOT NULL DEFAULT '', skipping INTEGER NOT NULL DEFAULT 0 CHECK (skipping IN (0,1)), token TEXT, pid INTEGER, signature TEXT)");
     const columns = db.query("PRAGMA table_info(cursor)").all() as { name: string }[];
     if (!columns.some(column => column.name === "cutoff")) db.run("ALTER TABLE cursor ADD COLUMN cutoff TEXT NOT NULL DEFAULT ''");
+    if (!columns.some(column => column.name === "skipping")) db.run("ALTER TABLE cursor ADD COLUMN skipping INTEGER NOT NULL DEFAULT 0 CHECK (skipping IN (0,1))");
     const signature = processSignature(process.pid);
     if (!signature) { db.close(); return undefined; }
     const token = randomUUID(), database = db;
@@ -85,17 +86,17 @@ function lease(file: string): { position: Position; save(value: Position): void;
       if (current?.token && processLiveness(current.pid, current.signature) !== "gone") return undefined;
       const position = current && /^[0-9a-f]{64}$/.test(current.identity) && Number.isSafeInteger(current.offset) && current.offset >= 0 && /^[0-9a-f]{64}$/.test(current.anchor)
         && ["own", "foreign", "unknown"].includes(current.scope) && typeof current.protocol === "string" && current.protocol.length <= 32 && typeof current.cutoff === "string"
-        && (current.cutoff === "" || Number.isFinite(Date.parse(current.cutoff))) ? current : blank();
-      database.query("INSERT INTO cursor (id,identity,offset,anchor,scope,protocol,cutoff,token,pid,signature) VALUES (1,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,pid=excluded.pid,signature=excluded.signature")
-        .run(position.identity, position.offset, position.anchor, position.scope, position.protocol, position.cutoff, token, process.pid, signature);
+        && (current.cutoff === "" || Number.isFinite(Date.parse(current.cutoff))) && (current.skipping === 0 || current.skipping === 1) ? current : blank();
+      database.query("INSERT INTO cursor (id,identity,offset,anchor,scope,protocol,cutoff,skipping,token,pid,signature) VALUES (1,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,pid=excluded.pid,signature=excluded.signature")
+        .run(position.identity, position.offset, position.anchor, position.scope, position.protocol, position.cutoff, position.skipping, token, process.pid, signature);
       return position;
     }).immediate();
     if (!acquired) { database.close(); return undefined; }
     return {
       position: acquired,
       save(value) {
-        const result = database.query("UPDATE cursor SET identity=?,offset=?,anchor=?,scope=?,protocol=?,cutoff=? WHERE id=1 AND token=?")
-          .run(value.identity, value.offset, value.anchor, value.scope, value.protocol, value.cutoff, token);
+        const result = database.query("UPDATE cursor SET identity=?,offset=?,anchor=?,scope=?,protocol=?,cutoff=?,skipping=? WHERE id=1 AND token=?")
+          .run(value.identity, value.offset, value.anchor, value.scope, value.protocol, value.cutoff, value.skipping, token);
         if (result.changes !== 1) throw new Error("cursor ownership changed");
       },
       close() {
@@ -176,6 +177,8 @@ function extract(kind: IngestKind, raw: Record<string, any>, project: string): C
  * completed and partial files. A stable full tour without unfinished data may report remaining false.
  * Cursors assume append-only native logs, checking the last 1024 committed bytes plus inode/birthtime. In-place
  * historical edits outside that anchor are not tracked; use a new native file identity for rewritten history.
+ * Oversized physical records retain only a discard flag and byte offset until the newline; ordinary partial
+ * records remain uncommitted. Broader cutoff/replacement/truncation resets clear that discard state.
  */
 export async function ingestTranscript(kind: IngestKind, options: IngestOptions): Promise<IngestReceipt> {
   const result: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
@@ -238,7 +241,10 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
         position.cutoff = cutoff;
         if (!position.anchor) position.anchor = anchor(fd, position.offset);
         cursor.save(position); result.files++;
-        if (position.offset === initial.size) continue;
+        if (position.offset === initial.size) {
+          if (position.skipping) { sourceRemaining = true; result.reason ??= "source_bound"; }
+          continue;
+        }
         let metadataGuard = () => {};
         if (kind === "kimi") {
           let metadata: Record<string, any> | undefined;
@@ -261,7 +267,27 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
         let consumed = 0;
         while (consumed < window.length && records < MAX_RECORDS) {
           const end = window.indexOf(10, consumed);
-          if (end < 0) { sourceRemaining = true; if (window.length >= MAX_RECORD) result.reason ??= "source_bound"; break; }
+          if (position.skipping) {
+            // This physical record was already counted and rejected. Persist only its scan offset, never bytes.
+            const next = end < 0 ? window.length : end + 1;
+            position.offset += next - consumed;
+            position.skipping = end < 0 ? 1 : 0;
+            position.anchor = anchor(fd, position.offset); cursor.save(position);
+            consumed = next;
+            if (end < 0) { sourceRemaining = true; result.reason ??= "source_bound"; break; }
+            continue;
+          }
+          if (end < 0) {
+            sourceRemaining = true;
+            const unread = window.length - consumed;
+            if (unread > MAX_RECORD) {
+              // Confirmed oversized without parsing it. Later calls discard bounded chunks through its newline.
+              records++; result.read++; result.skipped++; fail("source_bound");
+              position.offset += unread; position.skipping = 1;
+              position.anchor = anchor(fd, position.offset); cursor.save(position);
+            }
+            break;
+          }
           const offset = position.offset, line = window.subarray(consumed, end), next = offset + line.length + 1;
           records++; result.read++;
           let raw: unknown;
