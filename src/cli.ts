@@ -9,7 +9,7 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -70,12 +70,15 @@ function shardStatePresent(): boolean {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
-function curatedStore(project: string, opts: StoreOptions): MemoryStore {
+/** `reconciled` (#27): the project filter also covers every key aliased to `project`; prune and other planners keep the exact key. */
+function curatedStore(project: string, opts: StoreOptions, reconciled = true): MemoryStore {
+  const aliases = reconciled ? aliasedKeys(memoryHome(), project) : [];
+  const withAliases: StoreOptions = aliases.length ? { ...opts, reconcile: { canonical: project, aliases } } : opts;
   if (shardStatePresent()) {
     readShardedSelection(memoryHome());
-    return openShardStore({ ...opts, project });
+    return openShardStore({ ...withAliases, project });
   }
-  return new MemoryStore(opts);
+  return new MemoryStore(withAliases);
 }
 
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
@@ -136,7 +139,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     const store = options["--user"] === true
       ? openShardStore({ memoryDir: memoryHome(), user: true, deferPromotions: true })
-      : curatedStore(project, { deferPromotions: true });
+      : curatedStore(project, { deferPromotions: true }, false);
     try {
       const auth = { project, actor: "person" as const, authorize: () => true };
       return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
@@ -148,7 +151,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (sub === "list" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; select --kind memory for the standalone memory candidate surface");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
-    const project = boundProject(), candidates = new CandidateStore();
+    const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
     try {
       if (sub === "list") {
         const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),
@@ -219,8 +222,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const op = appendAlias(memoryHome(), { alias: from, key: to, actor: "person", machine: machineId(memoryHome()).id });
       return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} -> ${op.key}`;
     }
+    if (parsed.path[1] === "remove") {
+      // #27 option 2: person only (ordinary CLI refusal of agent markers above, a TTY through `mutates`), append only, the latest op wins.
+      const [from] = parsed.positionals;
+      if (!from || parsed.positionals.length !== 1) throw new Error("usage: amem alias remove <alias-key>");
+      const op = appendUnalias(memoryHome(), { alias: from, actor: "person", machine: machineId(memoryHome()).id });
+      return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} removed`;
+    }
     const ops = listAliases(memoryHome());
-    return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})`).join("\n") : "no aliases recorded";
+    return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => op.op === "alias" ? `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})` : `${op.at}  ${op.alias} removed  (${op.actor})`).join("\n") : "no aliases recorded";
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");

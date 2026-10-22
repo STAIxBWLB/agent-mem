@@ -5,7 +5,7 @@ import { realPath } from "./platform.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { KINDS, looksSecret, type Kind, type MemoryStore } from "./store.ts";
-import { listAliases, resolveAlias } from "./shard.ts";
+import { aliasedKeys, resolveAlias } from "./shard.ts";
 import { WorkListStore, type WorkListFields, type WorkListPolicy } from "./work-lists.ts";
 
 /** The claude-mem store is another program's: opened read-only, never written, its locks waited on briefly. */
@@ -27,8 +27,7 @@ export async function importClaudeMemWorkState(opts: { base: string; project: st
   const limit = opts.limit ?? 10_000;
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("--limit takes a positive integer");
   const project = resolveAlias(opts.base, opts.project);
-  const aliases = [...new Map(listAliases(opts.base).map(op => [op.alias, op.key]))]
-    .filter(([, key]) => key === project).map(([alias]) => alias).sort();
+  const aliases = aliasedKeys(opts.base, project);
   const result: WorkStateImportResult = { read: 0, added: 0, skipped: { invalid: 0, policy: 0 }, more: false, cursor: 0 };
   if (!aliases.length) return result;
   const db = new Database(file, { readonly: true });

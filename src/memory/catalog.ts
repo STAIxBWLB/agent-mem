@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
-import { listAliases, readShardDescriptor, SHARDED_SCHEMA } from "./shard.ts";
+import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA } from "./shard.ts";
 import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
@@ -73,9 +73,8 @@ export function walkShards(base: string): { hash: string; key: string; local: bo
 /** What the shards and the alias log say, before anything is persisted. */
 export function scanCatalog(base: string): CatalogProject[] {
   const captured = capturedSelection(base);
-  // The latest op per alias: an alias lists only under the key it currently points at, never under a past target.
-  const latest = new Map<string, string>();
-  for (const op of listAliases(base)) latest.set(op.alias, op.key);
+  // The latest op per alias (a removal included): an alias lists only under the key it currently points at, never under a past target or after `alias remove`.
+  const latest = effectiveAliases(base);
   const out: CatalogProject[] = [];
   for (const shard of walkShards(base)) {
     let rows = 0, bytes = 0, lastAt: string | null = null;

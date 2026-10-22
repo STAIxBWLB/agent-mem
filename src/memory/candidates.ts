@@ -76,7 +76,11 @@ export class CandidateStore {
   readonly path: string;
   private readonly db: Database;
   private readonly now: () => number;
-  constructor(options: { home?: string; memoryDir?: string; now?: () => number } = {}) {
+  /** #27: the keys aliased to the canonical project; its candidates read, accept and reject under the canonical key. Absent in the library default. */
+  private readonly reconcile?: { canonical: string; aliases: readonly string[] };
+  private scope(project: string): string { return JSON.stringify(this.reconcile && project === this.reconcile.canonical ? [project, ...this.reconcile.aliases] : [project]); }
+  constructor(options: { home?: string; memoryDir?: string; now?: () => number; reconcile?: { canonical: string; aliases: readonly string[] } } = {}) {
+    if (options.reconcile?.aliases.length) this.reconcile = { canonical: options.reconcile.canonical, aliases: [...options.reconcile.aliases] };
     if (options.memoryDir !== undefined && options.home !== undefined) throw new Error("choose a home or an exact memory directory");
     this.dir = options.memoryDir ?? (options.home === undefined ? memoryHome() : join(options.home, "memory"));
     this.now = options.now ?? Date.now;
@@ -112,7 +116,7 @@ export class CandidateStore {
   get(id: string, project: string): Candidate | undefined {
     if (!candidateId(id) || !text(project, 400)) throw new Error("invalid candidate identity");
     this.prune();
-    const row = this.db.query("SELECT * FROM candidates WHERE id = ? AND project = ?").get(id, project) as Parameters<CandidateStore["decode"]>[0] | null;
+    const row = this.db.query("SELECT * FROM candidates WHERE id = ? AND project IN (SELECT value FROM json_each(?))").get(id, this.scope(project)) as Parameters<CandidateStore["decode"]>[0] | null;
     return row ? this.decode(row) : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
@@ -120,7 +124,7 @@ export class CandidateStore {
     const limit = filter.limit ?? CANDIDATE_RETENTION.count;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANDIDATE_RETENTION.count) throw new Error("candidate limit must be 1..500");
     this.prune();
-    const where = ["project = ?"], bind: (string | number)[] = [filter.project];
+    const where = ["project IN (SELECT value FROM json_each(?))"], bind: (string | number)[] = [this.scope(filter.project)];
     if (filter.status === undefined) where.push("status IN ('pending', 'accepting')"); else if (filter.status !== "all") { where.push("status = ?"); bind.push(filter.status); }
     if (filter.kind) { where.push("kind = ?"); bind.push(filter.kind); }
     return (this.db.query(`SELECT * FROM candidates WHERE ${where.join(" AND ")} ORDER BY at DESC, rowid DESC LIMIT ?`).all(...bind, limit) as Parameters<CandidateStore["decode"]>[0][]).map(row => this.decode(row));
@@ -137,7 +141,7 @@ export class CandidateStore {
   counters(project: string, entry?: string): Counter[] {
     if (!text(project, 400) || entry !== undefined && !entryId(entry)) throw new Error("invalid counter filter");
     this.prune();
-    const rows = this.db.query("SELECT * FROM counters WHERE project = ? ORDER BY at DESC, rowid DESC").all(project) as { id: string; payload: string; at: number; rendered: number | null; delivered: number | null; cited: number | null }[];
+    const rows = this.db.query("SELECT * FROM counters WHERE project IN (SELECT value FROM json_each(?)) ORDER BY at DESC, rowid DESC").all(this.scope(project)) as { id: string; payload: string; at: number; rendered: number | null; delivered: number | null; cited: number | null }[];
     return rows.map(row => ({ id: row.id, key: JSON.parse(row.payload) as CounterKey, createdAt: new Date(row.at).toISOString(), rendered: row.rendered, delivered: row.delivered, cited: row.cited })).filter(row => !entry || row.key.entryId === entry);
   }
   reject(id: string, context: { project: string; actor: "person" | "agent"; verdict: CandidateVerdict }): void {
@@ -146,7 +150,7 @@ export class CandidateStore {
       const candidate = this.get(id, context.project);
       if (!candidate) throw new Error("candidate unavailable");
       if (candidate.status === "accepted" || candidate.status === "accepting") throw new Error("candidate acceptance already started; inspect its ordinary note before any further action");
-      this.db.query("UPDATE candidates SET status = 'rejected' WHERE id = ? AND project = ? AND status = 'pending'").run(id, context.project);
+      this.db.query("UPDATE candidates SET status = 'rejected' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'pending'").run(id, this.scope(context.project));
     }).immediate();
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
@@ -185,7 +189,7 @@ export class CandidateStore {
         if (!current) throw new Error("candidate unavailable");
         if (current.status === "accepted") return current.acceptedNoteId!;
         if (current.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
-        this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project = ?").run(id, context.project);
+        this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(id, this.scope(context.project));
         return undefined;
       }).immediate();
       if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
@@ -193,7 +197,7 @@ export class CandidateStore {
       // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
       const noteId = append();
       if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
-      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project = ?").run(noteId, id, context.project);
+      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, id, this.scope(context.project));
       return { candidateId: id, noteId, alreadyAccepted: false };
     });
   }

@@ -4,6 +4,8 @@
 
 - Keep work-list reads usable beyond 5,000 operations with indexed streaming replay and stable read snapshots across asynchronous policy checks. Preserve latest fields, null clearing, replay order and rebuild parity without rewriting logs; measure real MCP R3 with 10,001 work operations (#13, agent-hub task #210).
 
+- Reconcile a reviewed alias with curated rows (#27): the CLI and MCP project filter covers the canonical key and every key aliased to it (notes, goals, candidates, vault candidates, work lists, in shared-v1 and curated shards), and shows those rows under the canonical key. Add `amem alias remove <from-key>`, an append-only `unalias` op in `aliases.jsonl` (older readers ignore it), and list removals in `amem alias list`. The library `MemoryStore` keeps exact-key reads unless a host passes `reconcile`; prune plans keep the exact key.
+
 - Defer capture MCP FTS creation/backfill to queried reads so an upgrade cannot scan a large shard on a hook. Contended reads use a policy-screened, call-pinned substring fallback and retry indexing later; triggers cover pre- and post-initialization appends (#13, agent-hub task #327).
 
 - Keep MCP search, timeline and point reads usable beyond 5,000 rows: page exact-project query candidates in SQL/FTS, screen before the public window, preserve full capture path/event matching, and stream cold curated FTS rebuilds. Measure real stdio R3 on 5,001 curated plus 5,001 capture rows (#13, agent-hub task #209).

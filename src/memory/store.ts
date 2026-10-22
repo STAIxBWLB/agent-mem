@@ -194,10 +194,12 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
 export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
+  /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
+  reconcile?: { canonical: string; aliases: readonly string[] };
 }
 
 const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
-interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits?: readonly LegacyCheckpoint[]; commit?: string; authoring?: boolean; userOverlay?: MemoryStore }
+interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundProfile; limits?: readonly LegacyCheckpoint[]; commit?: string; authoring?: boolean; userOverlay?: MemoryStore; aliasStores?: MemoryStore[] }
 export class MemoryStore {
   readonly dir: string;
   readonly profile: BoundProfile;
@@ -215,6 +217,9 @@ export class MemoryStore {
   private readonly memoryBaseDir: string;
   private releaseReaderLease?: () => void;
   private readonly userOverlay?: MemoryStore;
+  /** #27: the other keys' shards of a reconciled read (curated shards); shared-v1 reads them from its own index. */
+  private readonly aliasStores: MemoryStore[];
+  private readonly reconcile?: { canonical: string; aliases: readonly string[] };
   /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
   private rebuildingSearch = false;
 
@@ -222,6 +227,8 @@ export class MemoryStore {
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
     this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
     this.userOverlay = bootstrap?.userOverlay;
+    this.aliasStores = bootstrap?.aliasStores ?? [];
+    this.reconcile = opts.reconcile && opts.reconcile.aliases.length ? { canonical: opts.reconcile.canonical, aliases: [...opts.reconcile.aliases] } : undefined;
     if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
     const home = bootstrap?.profile.home ?? opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
     if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
@@ -290,9 +297,9 @@ export class MemoryStore {
     if (!project.trim() || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw new Error("vault project does not match the bound store");
     this.withDeferredPromotions(() => this.ensureFresh());
     const scanLimit = 5000;
-    const own = this.db.query("SELECT id FROM entries WHERE project=? LIMIT ?").all(project, scanLimit + 1) as { id: string }[];
+    const own = this.db.query("SELECT id FROM entries WHERE project IN (SELECT value FROM json_each(?)) LIMIT ?").all(JSON.stringify(this.scopeKeys(project)), scanLimit + 1) as { id: string }[];
     if (own.length > scanLimit) throw new Error("vault scan budget exceeded; refine the store before retrying");
-    const overlay = new Map(this.userOverlay?.vaultEntries(project).map(entry => [entry.view.id, entry.rowHash]));
+    const overlay = new Map([...(this.userOverlay?.vaultEntries(project) ?? []), ...this.aliasStores.flatMap(store => store.vaultEntries(store.profile.shardKey!))].map(entry => [entry.view.id, entry.rowHash]));
     if (new Set([...own.map(row => row.id), ...overlay.keys()]).size > scanLimit) throw new Error("vault scan budget exceeded; refine the store before retrying");
     const authored = this.generationIndex?.vaultWitnesses(own.map(row => row.id));
     return this.views(false, { project }).filter(view => view.project === project).map(view => {
@@ -305,20 +312,24 @@ export class MemoryStore {
   vaultLinks(project: string): VaultLink[] {
     this.ensureFresh();
     if (!project.trim() || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw new Error("vault project does not match the bound store");
-    return [...(this.generationIndex?.vaultLinks(project) ?? []), ...(this.userOverlay?.vaultLinks(project) ?? [])];
+    return [...this.scopeKeys(project).flatMap(key => this.generationIndex?.vaultLinks(key) ?? []), ...(this.userOverlay?.vaultLinks(project) ?? []), ...this.aliasStores.flatMap(store => store.vaultLinks(store.profile.shardKey!))];
   }
   /** Exact id/hash recheck under the existing mutation fence; never follows promoted/superseded aliases. */
   recordVaultLink(id: string, path: string, project: string, rowHash: string): string {
     if (this.bootstrapOnly || !this.generationIndex) throw new Error("vault links require an active generation handle");
     if (this.userOverlay?.vaultEntries(project).some(entry => entry.view.id === id)) return this.userOverlay.recordVaultLink(id, path, project, rowHash);
+    const aliased = this.aliasStores.find(store => store.vaultEntries(store.profile.shardKey!).some(entry => entry.view.id === id));
+    if (aliased) return aliased.recordVaultLink(id, path, aliased.profile.shardKey!, rowHash);
     return this.withMutation(() => {
       this.refresh();
       const entry = this.vaultEntries(project).find(row => row.view.id === id && row.rowHash === rowHash);
       if (!entry || entry.view.tier !== "long" || entry.view.local || entry.view.supersededBy) throw new Error("exact vault entry changed or unavailable");
+      // A link names the key the row was written under (never the canonical label a reconciled read shows), so a raw-key reader still finds it.
+      const written = this.rawProject(entry.view);
       const prior = this.vaultLinks(project).find(row => row.target === id && row.rowHash === rowHash && row.path === path);
       if (prior) return prior.id;
       const body = { schema: "agent-mem.vault-link/v1", op: "vault_link", generation: this.profile.generation!,
-        at: new Date(this.now()).toISOString(), machine: this.machine.id, actor: "person", placement: "local", target: id, rowHash, project, path } as const;
+        at: new Date(this.now()).toISOString(), machine: this.machine.id, actor: "person", placement: "local", target: id, rowHash, project: written, path } as const;
       const row: VaultLinkRow = { ...body, id: vaultLinkId(body) };
       validateVaultLinkRow(row, this.profile.generation, "local");
       this.generationIndex!.assertAppendable(true, this.machine.id);
@@ -345,7 +356,7 @@ export class MemoryStore {
     const release = this.releaseReaderLease;
     this.releaseReaderLease = undefined;
     try { this.db.close(); this.mutationDb.close(); this.searchIndex.close(); }
-    finally { try { this.userOverlay?.close(); } finally { release?.(); } }
+    finally { try { this.userOverlay?.close(); } finally { try { for (const store of this.aliasStores) store.close(); } finally { release?.(); } } }
   }
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
@@ -400,10 +411,8 @@ export class MemoryStore {
 
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot author memory");
-    if (this.userOverlay) {
-      if ((body.op === "note" || body.op === "goal") && "scope" in body && body.scope === "shared") return this.userOverlay.appendBody(body, local);
-      if ("target" in body && body.op !== "settle" && this.userOverlay.ownsTarget(body.target as string)) return this.userOverlay.appendBody(body, local);
-    }
+    if (this.userOverlay && (body.op === "note" || body.op === "goal") && "scope" in body && body.scope === "shared") return this.userOverlay.appendBody(body, local);
+    if ("target" in body && body.op !== "settle") { const owner = this.ownerOf(body.target as string); if (owner) return owner.appendBody(body, local); }
     if (this.profile.sharded && (body.op === "note" || body.op === "goal") && "scope" in body && "project" in body) {
       if (this.profile.shardUser ? body.scope !== "shared" : body.scope !== "project" || body.project !== this.profile.shardKey) throw new Error("entry does not belong to this curated shard");
     }
@@ -522,7 +531,8 @@ export class MemoryStore {
    */
   promote(id: string, actor: string, project?: string, auto = false): string | undefined {
     const v = this.get(id, project);
-    if (v && this.userOverlay?.ownsTarget(v.id)) return this.userOverlay.promote(v.id, actor, project, auto);
+    const owner = v ? this.ownerOf(v.id) : undefined;
+    if (v && owner) return owner.promote(v.id, actor, owner.profile.shardKey ?? project, auto);
     if (v && this.generationIndex && !this.generationIndex.own(v.id)) return undefined;
     if (!v || v.tier !== "short") return v?.id;
     if (v.supersededBy) return undefined;
@@ -533,7 +543,7 @@ export class MemoryStore {
     // ponytail: the check and the append are not one step across processes: a person forgetting or replacing this entry
     // at the very moment another process promotes it can leave the copy current on other machines. A per-machine lock
     // around local mutations (like sync's) would close it.
-    return this.append({ op: "note", project: v.project, scope: v.scope, tier: "long", kind: v.kind, peer: v.peer, ...(v.title ? { title: v.title } : {}), text: v.text,
+    return this.append({ op: "note", project: this.rawProject(v), scope: v.scope, tier: "long", kind: v.kind, peer: v.peer, ...(v.title ? { title: v.title } : {}), text: v.text,
       ...(v.task ? { task: v.task } : {}), about: v.about, promotedFrom: v.id, source: v.source as NoteEntry["source"] }, false,
       // Dated as its source, from its source's machine and with its fields, whoever promotes and wherever: two processes or
       // two machines promoting the same entry write one id, which the index keeps once.
@@ -548,9 +558,11 @@ export class MemoryStore {
     try {
       const entry = { op: "settle", target: task, actor, by: this.until() } as const;
       const at = new Date(this.now()).toISOString();
-      this.append(entry, true, at);
+      // #27: a task key `<key>#...` belongs to the shard of `<key>`. In a reconciled sharded store that can be an aliased key's shard, which refuses a settlement of any other key.
+      const owner = this.aliasStores.find(store => store.profile.shardKey !== undefined && task.startsWith(`${store.profile.shardKey}#`));
+      (owner ?? this).append(entry, true, at, owner ? this.machine.id : undefined);
       if (this.userOverlay) this.userOverlay.append(entry, true, at, this.machine.id);
-      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0);
+      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0) + this.aliasStores.reduce((n, store) => n + store.promoteSettled(task, actor), 0);
     } finally { this.promoting = false; }
   }
   private promoteSettled(task: string, actor: string): number {
@@ -705,7 +717,23 @@ export class MemoryStore {
   }
 
   /** Only the bound project and user overlay participate; never scan another project's private shard. */
-  private readStores(): MemoryStore[] { return this.userOverlay ? [this, this.userOverlay] : [this]; }
+  private readStores(): MemoryStore[] { return [this, ...(this.userOverlay ? [this.userOverlay] : []), ...this.aliasStores]; }
+  /** #27: the keys a project filter covers: the project, and with a reconciled read every key aliased to it. */
+  private scopeKeys(project: string): string[] { return this.reconcile && project === this.reconcile.canonical ? [project, ...this.reconcile.aliases] : [project]; }
+  private inScope(rowProject: string, project: string): boolean { return this.scopeKeys(project).includes(rowProject); }
+  /** The key a row was written under. A reconciled read labels aliased rows with the canonical key, but every write that copies a row keeps its own key (#27). */
+  private rawProject(view: View): string {
+    if (!this.reconcile || !this.reconcile.aliases.length) return view.project;
+    for (const store of this.readStores()) {
+      const row = store.db.query("SELECT project FROM entries WHERE id = ?").get(view.id) as { project: string } | null;
+      if (row) return row.project;
+    }
+    return view.project;
+  }
+  /** A row of an aliased key reads under the canonical key. */
+  private label(project: string): string { return this.reconcile?.aliases.includes(project) ? this.reconcile.canonical : project; }
+  /** The store that holds the log line of `id`, when it is not this one: the user overlay or an aliased key's shard. */
+  private ownerOf(id: string): MemoryStore | undefined { return [...(this.userOverlay ? [this.userOverlay] : []), ...this.aliasStores].find(store => store.ownsTarget(id)); }
 
   private readRows(sql: string, ...bind: string[]): Record<string, unknown>[] {
     const rows = this.readStores().flatMap(store => store.db.query(sql).all(...bind) as Record<string, unknown>[]);
@@ -727,7 +755,8 @@ export class MemoryStore {
   private views(expired = false, selection?: Filter & { ids?: string[] }, expiredOnly = false): View[] {
     // Metadata, ops and candidate bodies must describe one WAL snapshot, even if another process indexes a copy.
     const read = () => this.viewRows(expired, selection, expiredOnly);
-    return this.db.transaction(() => this.userOverlay ? this.userOverlay.db.transaction(read).deferred() : read()).deferred();
+    const nest = (stores: MemoryStore[]): View[] => stores.length ? stores[0]!.db.transaction(() => nest(stores.slice(1))).deferred() : read();
+    return nest(this.readStores());
   }
 
   private viewRows(expired: boolean, selection: (Filter & { ids?: string[] }) | undefined, expiredOnly: boolean): View[] {
@@ -825,7 +854,12 @@ export class MemoryStore {
       ids(hidden, true);
       if (expiredOnly) ids(expiredIds, false); else if (!expired) ids(expiredIds, true);
       if (selection) {
-        if (selection.project) { where.push("(project = ? OR scope = 'shared')"); bind.push(selection.project); }
+        if (selection.project) {
+          // The exact-key form is unchanged unless a reconciled read widens it (#27).
+          const keys = this.scopeKeys(selection.project);
+          if (keys.length === 1) { where.push("(project = ? OR scope = 'shared')"); bind.push(selection.project); }
+          else { where.push("(project IN (SELECT value FROM json_each(?)) OR scope = 'shared')"); bind.push(JSON.stringify(keys)); }
+        }
         if (selection.ids) ids(selection.ids, false);
         if (selection.tier) {
           if (demoted.size) { where.push("CASE WHEN id IN (SELECT value FROM json_each(?)) THEN 'short' ELSE tier END = ?"); bind.push(JSON.stringify([...demoted.keys()]), selection.tier); }
@@ -846,7 +880,7 @@ export class MemoryStore {
       const tier: Tier = demoted.has(id) ? "short" : r.tier as Tier;
       const expiresAt = expiry(r);
       if (!expired && expiresAt !== null && Date.parse(expiresAt) <= now) continue;
-      out.push({ id, at: r.at!, machine: r.machine!, project: r.project!, scope: r.scope as Scope, tier, kind: r.kind as Kind, peer: r.peer!, title: r.title ?? null, text: r.text!,
+      out.push({ id, at: r.at!, machine: r.machine!, project: this.label(r.project!), scope: r.scope as Scope, tier, kind: r.kind as Kind, peer: r.peer!, title: r.title ?? null, text: r.text!,
         task: r.task ?? null, about: JSON.parse(r.about!), source: r.source!, supersededBy: superseded.get(id) ?? null, supersedes: supersedes.get(id) ?? [], promotedFrom: r.promoted_from ?? null, expiresAt, local: r.tier === "short" });
     }
     return out;
@@ -874,6 +908,7 @@ export class MemoryStore {
   /** Index deferred writes before any note, goal or suggestion read. */
   private ensureFresh(): void {
     this.userOverlay?.ensureFresh();
+    for (const store of this.aliasStores) store.ensureFresh();
     if (this.generationIndex) { this.generationIndex.refresh(); return; }
     // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
     if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
@@ -885,7 +920,7 @@ export class MemoryStore {
    */
   private live(selection?: Filter): View[] {
     this.ensureFresh();
-    this.prune(); this.userOverlay?.promoteHeld(); this.promoteHeld(); return this.views(false, selection);
+    this.prune(); this.userOverlay?.promoteHeld(); for (const store of this.aliasStores) store.promoteHeld(); this.promoteHeld(); return this.views(false, selection);
   }
   /** A write whose index update failed: the next read refreshes first. */
   private stale = false;
@@ -893,7 +928,7 @@ export class MemoryStore {
   /** Entries visible from `project` (its own, and `shared` ones of any project), newest first, filtered. */
   list(f: Filter = {}): View[] {
     const q = f.q?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
-    return this.live(f).filter((v) => (!f.project || v.project === f.project || v.scope === "shared") && (!f.tier || v.tier === f.tier) && (!f.kind || v.kind === f.kind)
+    return this.live(f).filter((v) => (!f.project || this.inScope(v.project, f.project) || v.scope === "shared") && (!f.tier || v.tier === f.tier) && (!f.kind || v.kind === f.kind)
       && (!f.peer || v.peer === f.peer) && (!f.machine || v.machine === f.machine) && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)
       && q.every((w) => `${v.title ?? ""}\n${v.text}\n${v.about.join(" ")}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
@@ -905,9 +940,9 @@ export class MemoryStore {
     const refs: ReadRef[] = [];
     for (const store of this.readStores()) {
       if (window.query !== undefined && store.searchIndex.available) {
-        store.syncSearchIndex(); refs.push(...store.searchIndex.candidates(window.query, window));
+        store.syncSearchIndex(); refs.push(...store.searchIndex.candidates(window.query, this.reconcile ? { ...window, projects: this.scopeKeys(window.project) } : window));
       } else {
-        const { columns, where, bind } = readWindowSql(window, "id");
+        const { columns, where, bind } = readWindowSql(this.reconcile ? { ...window, projects: this.scopeKeys(window.project) } : window, "id");
         refs.push(...(store.db.query(`SELECT ${columns} FROM entries WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
           .all(...bind, window.limit) as { candidate_id: string; at: string; candidate_position: number }[]).map(readRef));
       }
@@ -929,7 +964,7 @@ export class MemoryStore {
   search(q: string, f: SearchFilter = {}): SearchResult {
     const limit = f.limit ?? 200;
     if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map((view) => ({ source: "curated" as const, score: 0, view })) };
-    const visible = new Map(this.live(f).filter((v) => (!f.project || v.project === f.project || v.scope === "shared")
+    const visible = new Map(this.live(f).filter((v) => (!f.project || this.inScope(v.project, f.project) || v.scope === "shared")
       && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)).map((v) => [v.id, v]));
     for (const store of this.readStores()) store.syncSearchIndex();
     const now = this.now();
@@ -947,7 +982,7 @@ export class MemoryStore {
       let found = 0;
       const seen = new Set<string>(); // another process's sync between pages can shift offsets and repeat a ref
       for (let offset = 0; found < limit; offset += page) {
-        const ranked = store.searchIndex.query(q, page, f.project, offset);
+        const ranked = store.searchIndex.query(q, page, f.project === undefined ? undefined : this.scopeKeys(f.project), offset);
         for (const hit of ranked) {
           const view = visible.get(hit.ref);
           if (!view || seen.has(hit.ref)) continue;
@@ -996,7 +1031,7 @@ export class MemoryStore {
   /** One entry by id or unique id prefix; with `project`, only one that project may read (its own or shared). */
   get(id: string, project?: string): View | undefined {
     id = id.replace(/^mem:/, ""); // briefs and recall print `mem:<id>`
-    const all = this.live().filter((v) => !project || v.project === project || v.scope === "shared");
+    const all = this.live().filter((v) => !project || this.inScope(v.project, project) || v.scope === "shared");
     const pick = <T extends { id: string }>(rows: T[]) => rows.find((v) => v.id === id) ?? (id.length >= 6 ? (() => { const m = rows.filter((v) => v.id.startsWith(id)); return m.length === 1 ? m[0] : undefined; })() : undefined);
     if (this.generationIndex?.pruned.has(id)) return undefined;
     const found = pick(all);
@@ -1124,7 +1159,7 @@ export class MemoryStore {
     const now = this.now();
     const rows = this.readRows("SELECT * FROM goals") as { id: string; at: string; machine: string; project: string; scope: string; title: string; milestones: string; depends: string }[];
     const ops = this.readRows("SELECT id, op, at, machine, target, by FROM ops WHERE op IN ('goal_state', 'goal_link', 'lease', 'lease_force') ORDER BY at, id") as { op: string; at: string; machine: string; target: string; by: string | null }[];
-    return rows.filter((r) => !project || r.project === project || r.scope === "shared").map((r): GoalView => {
+    return rows.filter((r) => !project || this.inScope(r.project, project) || r.scope === "shared").map((r): GoalView => {
       const mine = ops.filter((o) => o.target === r.id);
       const states = mine.filter((o) => o.op === "goal_state" && (GOAL_STATES as readonly string[]).includes(o.by ?? ""));
       const links = mine.filter((o) => o.op === "goal_link" && o.by).map((o) => ({ task: o.by!, at: o.at, machine: o.machine }));
@@ -1142,7 +1177,7 @@ export class MemoryStore {
       const active = [...latest].filter(([, until]) => Date.parse(until) > now).sort((a, b) => first.get(a[0])!.localeCompare(first.get(b[0])!) || a[0].localeCompare(b[0]));
       const last = fresh.at(-1);
       // One line whatever another machine wrote: titles are rendered into agents' context.
-      return { id: r.id, at: r.at, machine: r.machine, project: r.project, scope: r.scope as Scope, title: oneLine(r.title), milestones: (JSON.parse(r.milestones) as string[]).map(oneLine), dependsOn: JSON.parse(r.depends),
+      return { id: r.id, at: r.at, machine: r.machine, project: this.label(r.project), scope: r.scope as Scope, title: oneLine(r.title), milestones: (JSON.parse(r.milestones) as string[]).map(oneLine), dependsOn: JSON.parse(r.depends),
         state: (states.at(-1)?.by as GoalState | undefined) ?? "open", links,
         lease: active.length ? { holder: active[0]![0], until: active[0]![1], conflict: active.slice(1).map(([m]) => m), expired: false }
           : { holder: null, until: last?.by ?? null, conflict: [], expired: !!last, lastHolder: last?.machine ?? null } };
@@ -1238,9 +1273,20 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   const missing = !existsSync(join(dir, "generation.json"));
   if (missing) initializeShard(home, opts);
   const profile = resolveShardProfile(home, opts);
-  const userOverlay = opts.user === true ? undefined : openShardStore({ ...opts, project: undefined, user: true });
-  try { return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true, userOverlay }); }
-  catch (error) { userOverlay?.close(); throw error; }
+  const { reconcile, ...plain } = opts;
+  const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });
+  const aliasStores: MemoryStore[] = [];
+  try {
+    // #27: an aliased key that has a shard of its own is read beside this one; one that never had a shard has nothing to read and is not created.
+    if (opts.user !== true && reconcile && reconcile.canonical === opts.project) {
+      for (const alias of reconcile.aliases) {
+        if (alias === opts.project || !existsSync(join(shardDir(home, alias), "generation.json"))) continue;
+        assertCuratedShardPaths(home, { project: alias });
+        aliasStores.push(new MemoryStore(plain, { token: MIGRATION_BOOTSTRAP, profile: resolveShardProfile(home, { project: alias }), authoring: true }));
+      }
+    }
+    return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true, userOverlay, aliasStores });
+  } catch (error) { for (const store of aliasStores) store.close(); userOverlay?.close(); throw error; }
 }
 
 /** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */

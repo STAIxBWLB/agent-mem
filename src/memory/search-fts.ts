@@ -165,12 +165,12 @@ export class SearchIndex {
    * Best BM25 first (rank is negative: smaller wins). `project` filters inside the MATCH (its own rows plus shared
    * ones), so a busy sibling project can never starve a project's LIMIT. Visibility stays with the caller.
    */
-  query(q: string, limit: number, project?: string, offset = 0): RankedRef[] {
+  query(q: string, limit: number, project?: string | readonly string[], offset = 0): RankedRef[] {
     if (!this.db) return [];
     const match = ftsTerms(q);
     if (!match) return [];
-    const where = project ? "docs MATCH ? AND (project = ? OR scope = 'shared')" : "docs MATCH ?";
-    const bind = project ? [match, project] : [match];
+    const where = project ? "docs MATCH ? AND (project IN (SELECT value FROM json_each(?)) OR scope = 'shared')" : "docs MATCH ?";
+    const bind = project ? [match, JSON.stringify(typeof project === "string" ? [project] : project)] : [match];
     return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
   }
 
@@ -215,6 +215,8 @@ export function captureSearch(dir: string, q: string, limit: number, notBefore?:
 /** Internal keyset pages: bounds apply to row bodies, never to the total corpus. */
 export interface ReadWindow {
   project: string;
+  /** #27: every key the page covers; `project` alone when absent. */
+  projects?: readonly string[];
   limit: number;
   since?: string;
   anchor?: string;
@@ -229,7 +231,7 @@ export function readWindowSql(window: ReadWindow, id: "id" | "ref") {
   const bind: (string | number)[] = [];
   const position = window.anchor ? (bind.push(window.anchor), "abs(julianday(at) - julianday(?))") : "-julianday(at)";
   const columns = `CAST(${id} AS TEXT) AS candidate_id, at, ${position} AS candidate_position`;
-  const where = ["project = ?"]; bind.push(window.project);
+  const where = ["project IN (SELECT value FROM json_each(?))"]; bind.push(JSON.stringify(window.projects ?? [window.project]));
   if (window.since) { where.push("julianday(at) >= julianday(?)"); bind.push(window.since); }
   if (window.id !== undefined) { where.push(`${id} = ?`); bind.push(window.id); }
   if (window.prefix !== undefined) { where.push(`substr(${id}, 1, length(?)) = ?`); bind.push(window.prefix, window.prefix); }
