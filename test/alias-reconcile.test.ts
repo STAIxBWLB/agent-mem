@@ -97,6 +97,26 @@ for (const sharded of [false, true]) {
     }
   });
 
+  test(`settling a task of an aliased old key through a reconciled store routes to that key's shard and promotes its held note in ${profile}`, async () => {
+    const f = await fixture(sharded);
+    const task = `${f.raw}#1@1`;
+    const own = sharded ? openShardStore({ memoryDir: f.base, project: f.raw, deferPromotions: true }) : new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    let held: string;
+    try { held = own.note({ op: "note", project: f.raw, scope: "project", tier: "short", kind: "decision", text: "held until the task settles", peer: "person", source: "person", about: [], task }); } finally { own.close(); }
+    const reconcile = { canonical: f.canonical, aliases: [f.raw] };
+    const store = sharded ? openShardStore({ memoryDir: f.base, project: f.canonical, screen: () => "promote", reconcile }) : new MemoryStore({ memoryDir: f.base, screen: () => "promote", reconcile });
+    try {
+      expect(store.list({ project: f.canonical }).map(view => view.id)).toContain(held!);           // visible through the canonical project
+      expect(store.settle(task, "person")).toBe(1);                                                // not "settlement does not belong to this curated shard"
+    } finally { store.close(); }
+    const reader = sharded ? openShardStore({ memoryDir: f.base, project: f.raw, deferPromotions: true }) : new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    try {
+      const copies = reader.list({ project: f.raw, includeSuperseded: true }).filter(view => view.text === "held until the task settles" && view.tier === "long");
+      expect(copies).toHaveLength(1);
+      expect(copies[0]!.project).toBe(f.raw);                                                      // the synced copy keeps its own key
+    } finally { reader.close(); }
+  });
+
   test(`candidates stored under the old key are listed, accepted and rejected under the canonical key in ${profile}`, async () => {
     const f = await fixture(sharded);
     const sidecar = new CandidateStore({ memoryDir: f.base });

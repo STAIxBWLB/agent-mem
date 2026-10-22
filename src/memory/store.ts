@@ -558,9 +558,11 @@ export class MemoryStore {
     try {
       const entry = { op: "settle", target: task, actor, by: this.until() } as const;
       const at = new Date(this.now()).toISOString();
-      this.append(entry, true, at);
+      // #27: a task key `<key>#...` belongs to the shard of `<key>`. In a reconciled sharded store that can be an aliased key's shard, which refuses a settlement of any other key.
+      const owner = this.aliasStores.find(store => store.profile.shardKey !== undefined && task.startsWith(`${store.profile.shardKey}#`));
+      (owner ?? this).append(entry, true, at, owner ? this.machine.id : undefined);
       if (this.userOverlay) this.userOverlay.append(entry, true, at, this.machine.id);
-      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0);
+      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0) + this.aliasStores.reduce((n, store) => n + store.promoteSettled(task, actor), 0);
     } finally { this.promoting = false; }
   }
   private promoteSettled(task: string, actor: string): number {
