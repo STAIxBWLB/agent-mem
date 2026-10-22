@@ -28,7 +28,7 @@ const readings = (over: Partial<{ freeBytes: number; metrics: MetricSample[] }> 
   now: () => NOW,
 });
 
-test("the advisor reports load and keeps current bounds when nothing binds", () => {
+test("the advisor reports load and, with ample disk, proposes growth to the disk-share bound and the retention ceiling", () => {
   const dir = home();
   seed(dir, "proj", 70, iso(NOW - DAY)); // 10 rows/day, about 11 KB/day
   const report = capacityReport({ home: dir, ...readings() });
@@ -39,8 +39,51 @@ test("the advisor reports load and keeps current bounds when nothing binds", () 
   expect(report.projected.bytes).toBeGreaterThan(report.capture.bytes);
   expect(report.disk.totalBytes).toBe(1024 * 1024 * MB);
   expect(report.memory.totalBytes).toBeGreaterThan(0);
-  expect(report.proposal).toMatchObject({ capMb: 512, retentionDays: 90 });
-  expect(report.proposal.reason).toContain("none");
+  // Reanchored for agent-mem#152 (owner decision 2026-10-17, item 2): this pinned shrink-only "512 MB, 90 days, none". With 500 GB free the 2% share is about 10 GB,
+  // so the cap grows to the share and the retention to the 365-day ceiling, and the reason names what stopped the growth.
+  const budgetMb = Math.floor(0.02 * 500 * 1024);
+  expect(report.proposal.capMb).toBe(budgetMb);
+  expect(report.proposal.capMb).toBeGreaterThan(report.current.capMb);
+  expect(report.proposal.retentionDays).toBe(365);
+  expect(report.proposal.reason).toContain("retention ceiling");
+  expect(report.proposal.reason).toContain("disk-share cap");
+});
+
+test("growth is capped by the disk share: the proposal never projects past it, and the reason names the share", () => {
+  const dir = home();
+  seed(dir, "proj", 70, iso(NOW - DAY), 1000);
+  const probe = capacityReport({ home: dir, ...readings() });
+  // A share that holds about 200 days of the measured growth, larger than the 90-day default and smaller than the 365-day ceiling.
+  const freeBytes = Math.ceil((probe.capture.bytesPerDay * 200) / 0.02);
+  const grown = capacityReport({ home: dir, ...readings({ freeBytes }) });
+  const budget = 0.02 * freeBytes;
+  expect(grown.proposal.retentionDays).toBe(Math.floor(budget / grown.capture.bytesPerDay));
+  expect(grown.proposal.retentionDays).toBeGreaterThan(90);                                   // above the current value: growth
+  expect(grown.proposal.retentionDays).toBeLessThan(365);
+  expect(grown.proposal.retentionDays * grown.capture.bytesPerDay).toBeLessThanOrEqual(budget); // and still inside the share
+  expect(grown.proposal.reason).toContain("disk-share retention");
+  expect(grown.proposal.capMb * MB).toBeLessThanOrEqual(budget);
+});
+
+test("growth never exceeds the share even when no growth is measured, and a quiet home reaches the ceiling", () => {
+  const dir = home();
+  const report = capacityReport({ home: dir, ...readings({ freeBytes: 50 * 1024 * MB }) });
+  expect(report.capture.bytesPerDay).toBe(0);
+  expect(report.proposal.retentionDays).toBe(365);
+  expect(report.proposal.capMb).toBe(Math.floor(0.02 * 50 * 1024));
+  expect(report.proposal.reason).toContain("retention ceiling");
+});
+
+test("R2/R3 halving applies to the grown proposal", () => {
+  const dir = home();
+  seed(dir, "proj", 7, iso(NOW - DAY));
+  const free = readings().inject.disk.freeBytes, grownCap = Math.floor(0.02 * free / MB);
+  const r2 = capacityReport({ home: dir, ...readings({ metrics: [{ at: iso(NOW), kind: "hook", wallMs: 60, rssMB: 140 }] }) });
+  expect(r2.proposal.capMb).toBe(Math.floor(grownCap / 2));
+  expect(r2.proposal.reason).toContain("R2 hook cost");
+  const r3 = capacityReport({ home: dir, ...readings({ metrics: [{ at: iso(NOW), kind: "search", rssMB: 250 }] }) });
+  expect(r3.proposal.retentionDays).toBe(Math.floor(365 / 2));
+  expect(r3.proposal.reason).toContain("R3 search RSS");
 });
 
 test("a tight disk share binds retention, and a smaller cap binds the cap", () => {
@@ -66,10 +109,10 @@ test("measured R2/R3 breaches shrink the proposal and name the constraint", () =
   const dir = home();
   seed(dir, "proj", 7, iso(NOW - DAY));
   const r3 = capacityReport({ home: dir, ...readings({ metrics: [{ at: iso(NOW), kind: "search", rssMB: 250 }] }) });
-  expect(r3.proposal.retentionDays).toBe(45);
+  expect(r3.proposal.retentionDays).toBeLessThan(365);
   expect(r3.proposal.reason).toContain("R3 search RSS");
   const r2 = capacityReport({ home: dir, ...readings({ metrics: [{ at: iso(NOW), kind: "hook", wallMs: 60, rssMB: 140 }] }) });
-  expect(r2.proposal.capMb).toBe(256);
+  expect(r2.proposal.capMb).toBeLessThan(Math.floor(0.02 * 500 * 1024));
   expect(r2.proposal.reason).toContain("R2 hook cost");
   const p95 = capacityReport({ home: dir, ...readings({ metrics: [{ at: iso(NOW), kind: "hook", wallMs: 200, rssMB: 30 }] }) });
   expect(p95.proposal.reason).toContain("R2 hook cost");
