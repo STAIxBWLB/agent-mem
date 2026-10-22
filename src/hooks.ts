@@ -42,7 +42,7 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>): Promise<string
 async function hookWorker(options: HookOptions, base: string, deadline: number, input: unknown, event: string): Promise<{ context: string; rssKB: number; captured: boolean; valid: boolean }> {
   if (options.policy?.host || deadline - performance.now() < 5) return { context: unavailable, rssKB: 0, captured: false, valid: false };
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-  const payload = JSON.stringify({ cwd: options.cwd, base, input, event, maxTokens,
+  const payload = JSON.stringify({ cwd: options.cwd, base, input, event, maxTokens, deadlineAt: performance.timeOrigin + deadline,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });

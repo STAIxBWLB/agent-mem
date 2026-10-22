@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readMetrics } from "../src/memory/capacity.ts";
+import { runHook } from "../src/hooks.ts";
 import { hookBin, hookEvents, hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -78,4 +79,21 @@ test("packaged plugin wires exactly the supported hooks through the actual CLI",
   }
   const files: string[] = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).files;
   expect(files).toContain(".claude-plugin/"); expect(files).toContain("hooks/");
+});
+
+
+test("library hook intake preserves the policy boundary and skips unsupported host callbacks", async () => {
+  const f = fixture(), oldHome = process.env.HOME;
+  process.env.HOME = f.env.HOME;
+  try {
+    const captured = await runHook("PostToolUse", { tool_name: "Read", tool_response: "public library capture" }, { cwd: f.cwd, base: f.base });
+    expect(captured).toEqual({ captured: true, skipped: false });
+    const before = f.rows().length;
+    const skipped = await runHook("SessionStart", { prompt: "public host fixture" }, { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => true } } });
+    expect(skipped).toEqual({ captured: false, skipped: true });
+    let getterCalls = 0;
+    const input = Object.defineProperty({}, "prompt", { enumerable: true, get() { getterCalls++; return "private getter"; } });
+    expect((await runHook("PostToolUse", input, { cwd: f.cwd, base: f.base })).skipped).toBe(true);
+    expect(getterCalls).toBe(0); expect(f.rows()).toHaveLength(before);
+  } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; }
 });

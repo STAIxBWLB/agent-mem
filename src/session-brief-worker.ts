@@ -23,7 +23,7 @@ async function readOptions(): Promise<string> {
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
 if (import.meta.main) {
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { input: unknown; event: string };
+    const options = JSON.parse(await readOptions()) as BriefOptions & { input: unknown; event: string; deadlineAt: number };
     const policy = createStandalonePolicy(options.policy), event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) process.exit(0);
     if (!await policy.screen(options.input) || !options.input || typeof options.input !== "object" || Array.isArray(options.input)) process.exit(0);
@@ -41,7 +41,8 @@ if (import.meta.main) {
     const store = new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0 });
     try { store.append(candidate); } finally { store.close(); }
     if (event === "SessionStart") {
-      const result = await sessionStartBrief({ ...options, project });
+      const result = await sessionStartBrief({ ...options, project,
+        timeRemaining: () => options.deadlineAt - (performance.timeOrigin + performance.now()) });
       console.log(JSON.stringify({ ...result, captured: true, valid: await policy.screen({ context: result.context }) }));
     } else console.log(JSON.stringify({ context: "", captured: true, valid: true }));
   } catch { process.exitCode = 1; }

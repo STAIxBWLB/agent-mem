@@ -76,8 +76,11 @@ test("AC3 actual SessionStart brief child tripwire observes a swallowed fetch at
 test("AC3 actual executable hooks and SessionStart context do not attempt network or provider commands", async () => {
   const f = fixture(); await f.seed();
   for (const event of hookEvents) {
+    const receiptCount = f.receipts().length, captureIds = new Set(f.rows().map(row => row.id));
     const result = f.child([hookBin, "hook", event], JSON.stringify({ hook_event_name: event, cwd: f.cwd, session_id: "network-fixture", prompt: "public fixture", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: "public result" }));
     expect(result.exitCode).toBe(0);
+    expect(f.receipts().slice(receiptCount)).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);
+    expect(f.rows().some(row => !captureIds.has(row.id) && row.event === event)).toBe(true);
     if (event === "SessionStart") {
       expect(JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext).toContain(workMarker);
       expect(f.receipts()).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);

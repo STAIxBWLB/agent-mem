@@ -10,7 +10,7 @@ import type { StandalonePolicyOptions } from "../src/memory/policy.ts";
 
 type Coverage = "complete" | "partial" | "unavailable";
 interface Result { context: string; tokens: number; partial: boolean; coverage: { curated: Coverage; work: Coverage; capture: Coverage } }
-interface Options { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions }
+interface Options { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions; timeRemaining?: () => number }
 const load = async () => {
   const modulePath = "../src/session-brief.ts";
   const module = await import(modulePath).catch(() => undefined);
@@ -131,4 +131,18 @@ test("one unavailable store retains prior screened sections with explicit unavai
   expect(result.context).toContain("retained public work");
   expect(result.coverage.capture).toBe("unavailable"); expect(result.partial).toBe(true);
   expect(result.context).not.toContain("sqlite"); expect(result.context).not.toContain(captureDir);
+});
+
+
+test("a short remaining budget returns screened work and labels later stores unavailable", async () => {
+  const brief = await load(), f = fixture();
+  await f.work("queue", { task: "budget-preserved public work", status: "todo" });
+  f.note("optional note must wait"); f.capture("optional capture must wait");
+  let probes = 0;
+  const result = await brief({ ...options(f), timeRemaining: () => ++probes === 1 ? 100 : 0 });
+  expect(probes).toBeGreaterThan(1);
+  expect(result.context).toContain("budget-preserved public work");
+  expect(result.context).not.toContain("optional note must wait"); expect(result.context).not.toContain("optional capture must wait");
+  expect(result.coverage).toEqual({ work: "complete", curated: "unavailable", capture: "unavailable" });
+  expect(result.partial).toBe(true); expect(result.tokens).toBeLessThanOrEqual(1200);
 });

@@ -12,7 +12,10 @@ import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.
 import { MemoryStore, openShardStore, type View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
-export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions }
+export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
+  /** Host-only monotonic budget probe. The native hook still owns the hard child deadline. */
+  timeRemaining?: () => number;
+}
 type Coverage = "complete" | "partial" | "unavailable";
 export interface BriefResult {
   context: string;
@@ -112,7 +115,13 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     };
     const run = async (section: Section, work: () => Promise<void>) => {
       const firstLine = lines.length, priorRemaining = remaining;
-      try { guard(); await work(); guard(); }
+      try {
+        guard();
+        // ponytail: keep cleanup/serialization headroom instead of starting another cold store.
+        // A future paged deadline port can refine this section-level cutoff; the parent remains the hard stop.
+        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 30)) { coverage[section] = "unavailable"; return; }
+        await work(); guard();
+      }
       catch (error) {
         if (error instanceof BindingChanged || drifted) throw new BindingChanged();
         lines.splice(firstLine); remaining = priorRemaining; coverage[section] = "unavailable";
