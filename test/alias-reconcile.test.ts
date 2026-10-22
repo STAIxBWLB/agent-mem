@@ -9,7 +9,8 @@ import { memoryGitSync } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { appendAlias } from "../src/memory/shard.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { migrate } from "../src/memory/migrate.ts";
+import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 
 // agent-mem#27, option 1: after `amem alias add <old> <canonical>`, the CLI and MCP project filter for curated rows covers the canonical key AND every key aliased
 // to it, so the old key's private notes, goals, candidates, vault candidates and work lists appear under the canonical project. The library MemoryStore keeps reading
@@ -78,6 +79,24 @@ for (const sharded of [false, true]) {
     expect(ids(await f.cli("list", "--json"))).toEqual([]);
   });
 
+  test(`promoting an aliased old-key note writes the long copy under its own key, not the canonical label, in ${profile}`, async () => {
+    const f = await fixture(sharded);
+    const writer = sharded ? openShardStore({ memoryDir: f.base, project: f.raw, deferPromotions: true }) : new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    let short: string;
+    try { short = writer.note({ op: "note", project: f.raw, scope: "project", tier: "short", kind: "finding", text: "short note of the old key", peer: "person", source: "person", about: [] }); } finally { writer.close(); }
+    await f.cli("promote", short!, "--policy-free");
+    const reader = sharded ? openShardStore({ memoryDir: f.base, project: f.raw, deferPromotions: true }) : new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    try {
+      const copies = reader.list({ project: f.raw, includeSuperseded: true }).filter(view => view.text === "short note of the old key");
+      expect(copies.map(view => view.tier)).toEqual(["long"]);
+      expect(copies.every(view => view.project === f.raw)).toBe(true);                         // the synced row keeps the key it was written under
+    } finally { reader.close(); }
+    if (!sharded) {
+      const other = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+      try { expect(other.list({ project: f.canonical, includeSuperseded: true }).some(view => view.text === "short note of the old key")).toBe(false); } finally { other.close(); }
+    }
+  });
+
   test(`candidates stored under the old key are listed, accepted and rejected under the canonical key in ${profile}`, async () => {
     const f = await fixture(sharded);
     const sidecar = new CandidateStore({ memoryDir: f.base });
@@ -106,6 +125,19 @@ for (const sharded of [false, true]) {
     } finally { mcp.close(); }
   });
 }
+
+test("a vault link of an aliased old-key note records under its own key in a non-sharded generation home (#27)", async () => {
+  const f = await fixture(false);
+  await migrate({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+  const store = new MemoryStore({ memoryDir: f.base, deferPromotions: true, reconcile: { canonical: f.canonical, aliases: [f.raw] } });
+  try {
+    expect(store.profile.kind).toBe("generation");
+    const entry = store.vaultEntries(f.canonical).find(row => row.view.id === f.oldNote);
+    expect(entry, "the old key's note is a vault entry of the canonical project").toBeDefined();
+    const id = store.recordVaultLink(f.oldNote, "notes/old.md", f.canonical, entry!.rowHash);
+    expect(store.vaultLinks(f.canonical).some(link => link.id === id && link.project === f.raw)).toBe(true);   // the link names the key the row was written under
+  } finally { store.close(); }
+});
 
 test("a note stays on its own key in the library: MemoryStore raw-key reads are unchanged by an alias (#27)", async () => {
   const f = await fixture(false);

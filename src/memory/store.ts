@@ -322,15 +322,14 @@ export class MemoryStore {
     if (aliased) return aliased.recordVaultLink(id, path, aliased.profile.shardKey!, rowHash);
     return this.withMutation(() => {
       this.refresh();
-      // A link names the key the row was written under, so a canonical-key read of an aliased row still matches it.
-      const raw = (this.db.query("SELECT project FROM entries WHERE id = ?").get(id) as { project: string } | null)?.project;
-      if (raw !== undefined && raw !== project && this.inScope(raw, project)) project = raw;
       const entry = this.vaultEntries(project).find(row => row.view.id === id && row.rowHash === rowHash);
       if (!entry || entry.view.tier !== "long" || entry.view.local || entry.view.supersededBy) throw new Error("exact vault entry changed or unavailable");
+      // A link names the key the row was written under (never the canonical label a reconciled read shows), so a raw-key reader still finds it.
+      const written = this.rawProject(entry.view);
       const prior = this.vaultLinks(project).find(row => row.target === id && row.rowHash === rowHash && row.path === path);
       if (prior) return prior.id;
       const body = { schema: "agent-mem.vault-link/v1", op: "vault_link", generation: this.profile.generation!,
-        at: new Date(this.now()).toISOString(), machine: this.machine.id, actor: "person", placement: "local", target: id, rowHash, project, path } as const;
+        at: new Date(this.now()).toISOString(), machine: this.machine.id, actor: "person", placement: "local", target: id, rowHash, project: written, path } as const;
       const row: VaultLinkRow = { ...body, id: vaultLinkId(body) };
       validateVaultLinkRow(row, this.profile.generation, "local");
       this.generationIndex!.assertAppendable(true, this.machine.id);
@@ -544,7 +543,7 @@ export class MemoryStore {
     // ponytail: the check and the append are not one step across processes: a person forgetting or replacing this entry
     // at the very moment another process promotes it can leave the copy current on other machines. A per-machine lock
     // around local mutations (like sync's) would close it.
-    return this.append({ op: "note", project: v.project, scope: v.scope, tier: "long", kind: v.kind, peer: v.peer, ...(v.title ? { title: v.title } : {}), text: v.text,
+    return this.append({ op: "note", project: this.rawProject(v), scope: v.scope, tier: "long", kind: v.kind, peer: v.peer, ...(v.title ? { title: v.title } : {}), text: v.text,
       ...(v.task ? { task: v.task } : {}), about: v.about, promotedFrom: v.id, source: v.source as NoteEntry["source"] }, false,
       // Dated as its source, from its source's machine and with its fields, whoever promotes and wherever: two processes or
       // two machines promoting the same entry write one id, which the index keeps once.
@@ -720,6 +719,15 @@ export class MemoryStore {
   /** #27: the keys a project filter covers: the project, and with a reconciled read every key aliased to it. */
   private scopeKeys(project: string): string[] { return this.reconcile && project === this.reconcile.canonical ? [project, ...this.reconcile.aliases] : [project]; }
   private inScope(rowProject: string, project: string): boolean { return this.scopeKeys(project).includes(rowProject); }
+  /** The key a row was written under. A reconciled read labels aliased rows with the canonical key, but every write that copies a row keeps its own key (#27). */
+  private rawProject(view: View): string {
+    if (!this.reconcile || !this.reconcile.aliases.length) return view.project;
+    for (const store of this.readStores()) {
+      const row = store.db.query("SELECT project FROM entries WHERE id = ?").get(view.id) as { project: string } | null;
+      if (row) return row.project;
+    }
+    return view.project;
+  }
   /** A row of an aliased key reads under the canonical key. */
   private label(project: string): string { return this.reconcile?.aliases.includes(project) ? this.reconcile.canonical : project; }
   /** The store that holds the log line of `id`, when it is not this one: the user overlay or an aliased key's shard. */
