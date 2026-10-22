@@ -11,11 +11,11 @@ import { captureShardGrowth, captureShardStats, readCaptureConfigFile, CAPTURE_D
  * `amem capacity` CLI renders it and `amem capacity apply` writes the home default config after a preview. An
  * agent may read the proposal through this library function; applying stays person-only at the CLI.
  *
- * Proposal rule (owner decision, 2026-10-17): P1 is shrink-only — the proposed cap and retention are the largest
- * values not exceeding the current ones whose projection stays within the disk-share bound (default 2% of free
- * space, configurable) and whose measured search and hook readings stay within R2/R3. Growth proposals are a
- * follow-up after the agent-hub release; growing in P1 is the person's explicit `amem capacity apply --cap-mb N`.
- * The reason names the binding constraint: `disk-share retention`, `disk-share cap`, `R3 search RSS`, `R2 hook cost`, or `none`.
+ * Proposal rule (owner decision, 2026-10-17, item 2): the proposed cap and retention are the largest values whose projection stays within the
+ * disk-share bound (default 2% of free space, configurable) and whose measured search and hook readings stay within R2/R3, and they may be above
+ * the current ones. The cap is the disk-share bound itself; retention is the share over the daily growth, up to a 365-day ceiling. R2 halves the cap
+ * and R3 halves the retention. The reason names every binding constraint: `disk-share retention` or `retention ceiling`, `disk-share cap`,
+ * `R3 search RSS`, `R2 hook cost`. The advisor never writes: applying stays person-only, preview first.
  *
  * Metrics: a small rolling `metrics.jsonl` in the memory home (not a memory log: it is trimmed, never synced).
  * `scripts/measure-budget.ts` writes only to its synthetic home; the P3 hooks will append real samples per invocation.
@@ -93,6 +93,8 @@ export interface CapacityReport {
 }
 
 const MB = 1048576, GROWTH_DAYS = 7, PROJECT_DAYS = 30;
+// ponytail: the advisor never proposes more than a year of retention. The ceiling keeps a quiet home's proposal finite; the upgrade path is a person setting (a configured ceiling) once someone wants longer.
+const RETENTION_CEILING_DAYS = 365;
 
 export function capacityReport(opts: {
   home?: string; memoryDir?: string; diskShare?: number; now?: () => number;
@@ -133,16 +135,20 @@ export function capacityReport(opts: {
   // ponytail: the 2026-10-17 owner decision keeps R6 caps per shard in P1, while the disk-share budget is
   // machine-wide; #15 T5 (D7) owns the machine-total split. Until then a home with N shards can hold N x cap.
   const budgetBytes = diskShare * disk.freeBytes;
-  let { capMb, retentionDays } = current;
+  // Growth (owner decision 2026-10-17, item 2): propose the largest cap and retention that fit the disk share, above the current values when there is room.
+  // The cap's ceiling is the disk-share bound itself. A person's own setting above the retention ceiling is never proposed down for the ceiling alone.
+  const retentionCeiling = Math.max(RETENTION_CEILING_DAYS, current.retentionDays);
+  let capMb = Math.max(1, Math.floor(budgetBytes / MB));
+  let retentionDays = retentionCeiling;
   const binding: string[] = [];
-  if (bytesPerDay > 0 && bytesPerDay * retentionDays > budgetBytes) {
-    retentionDays = Math.max(1, Math.floor(budgetBytes / bytesPerDay));
-    binding.push("disk-share retention: steady-state capture at the current growth exceeds the disk-share bound");
+  const fitDays = bytesPerDay > 0 ? Math.floor(budgetBytes / bytesPerDay) : Infinity;
+  if (fitDays < retentionCeiling) {
+    retentionDays = Math.max(1, fitDays);
+    binding.push("disk-share retention: steady-state capture at the current growth fills the disk-share bound");
+  } else {
+    binding.push(`retention ceiling: ${retentionCeiling} days fit the disk share, so the ceiling stops growth`);
   }
-  if (capMb * MB > budgetBytes) {
-    capMb = Math.max(1, Math.floor(budgetBytes / MB));
-    binding.push("disk-share cap: the cap exceeds the disk-share bound");
-  }
+  binding.push("disk-share cap: the cap is the largest size the disk-share bound allows");
   if (metrics.searchRssMB !== null && metrics.searchRssMB > 200) {
     retentionDays = Math.max(1, Math.floor(retentionDays / 2));
     binding.push("R3 search RSS: measured peak search memory exceeds 200 MB");
@@ -151,7 +157,7 @@ export function capacityReport(opts: {
     capMb = Math.max(1, Math.floor(capMb / 2));
     binding.push("R2 hook cost: measured hook latency or RSS exceeds the budget");
   }
-  const reason = binding.length ? binding.join("; ") : "none: current bounds fit the disk share and the measured R2/R3 readings";
+  const reason = binding.join("; ");
   return {
     at: new Date(now()).toISOString(),
     capture: { shards: shards.length, bytes, rows, rowsPerDay, bytesPerDay },
