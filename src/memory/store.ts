@@ -844,7 +844,12 @@ export class MemoryStore {
       ids(hidden, true);
       if (expiredOnly) ids(expiredIds, false); else if (!expired) ids(expiredIds, true);
       if (selection) {
-        if (selection.project) { where.push("(project IN (SELECT value FROM json_each(?)) OR scope = 'shared')"); bind.push(JSON.stringify(this.scopeKeys(selection.project))); }
+        if (selection.project) {
+          // The exact-key form is unchanged unless a reconciled read widens it (#27).
+          const keys = this.scopeKeys(selection.project);
+          if (keys.length === 1) { where.push("(project = ? OR scope = 'shared')"); bind.push(selection.project); }
+          else { where.push("(project IN (SELECT value FROM json_each(?)) OR scope = 'shared')"); bind.push(JSON.stringify(keys)); }
+        }
         if (selection.ids) ids(selection.ids, false);
         if (selection.tier) {
           if (demoted.size) { where.push("CASE WHEN id IN (SELECT value FROM json_each(?)) THEN 'short' ELSE tier END = ?"); bind.push(JSON.stringify([...demoted.keys()]), selection.tier); }
