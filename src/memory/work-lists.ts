@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readSync, readdirSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { canonicalJSON, hashJSON } from "./generation.ts";
@@ -111,11 +111,13 @@ export class WorkListStore {
   private readonly now: () => number;
   private readonly readers = new Set<() => void>();
   private closed = false;
+  /** #27: the work logs of keys aliased to this project that already have one; read beside this log through their own snapshot cursors, never written. */
+  private readonly aliased: WorkListStore[] = [];
 
-  constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number }) {
+  constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number; aliases?: readonly string[]; exact?: boolean }) {
     if (!bounded(options.project, 1000) || typeof options.policy !== "function") throw new Error("invalid work-list input");
     const base = canonicalPath(options.base);
-    this.project = resolveAlias(base, options.project);
+    this.project = options.exact === true ? options.project : resolveAlias(base, options.project);
     regular(join(base, "projects"), true); regular(shardDir(base, this.project), true);
     ensureShardDescriptor(base, this.project);
     this.dir = join(shardDir(base, this.project), "work");
@@ -140,13 +142,17 @@ export class WorkListStore {
       if (!columns.some(column => column.name === "replay")) this.db.run("ALTER TABLE work_ops ADD COLUMN replay TEXT NOT NULL DEFAULT ''");
       this.db.run("CREATE INDEX IF NOT EXISTS work_replay ON work_ops(replay)");
     }).immediate();
+    for (const alias of options.exact === true ? [] : options.aliases ?? []) {
+      if (alias === this.project || !existsSync(join(shardDir(base, alias), "work", "log"))) continue;
+      this.aliased.push(new WorkListStore({ base, project: alias, policy: options.policy, ...(options.now ? { now: options.now } : {}), exact: true }));
+    }
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
     let failure: unknown;
-    for (const close of [...this.readers, () => this.db.close(), () => this.mutation.close()]) {
+    for (const close of [...this.readers, () => this.db.close(), () => this.mutation.close(), ...this.aliased.map(store => () => store.close())]) {
       try { close(); } catch (error) { failure ??= error; }
     }
     if (failure !== undefined) throw failure;
@@ -239,6 +245,33 @@ export class WorkListStore {
     };
   }
 
+  /** #27: this log and the aliased keys' logs as one stream in replay order. Each store streams its own snapshot cursor ordered by the derived replay key, so a k-way merge needs no sort and no ceiling. The merge ends the cursors it opened. */
+  private merged(): IterableIterator<IndexedRow> {
+    if (!this.aliased.length) return this.operations();
+    const cursors: IterableIterator<IndexedRow>[] = [];
+    try { for (const store of [this, ...this.aliased]) cursors.push(store.operations()); }
+    catch (error) { for (const cursor of cursors) cursor.return?.(); throw error; }
+    const heads = cursors.map(cursor => cursor.next());
+    const end = () => { for (const cursor of cursors) { try { cursor.return?.(); } catch { /* the first failure is the one reported */ } } };
+    return {
+      next: () => {
+        try {
+          let pick = -1;
+          for (let i = 0; i < heads.length; i++) {
+            const head = heads[i]!;
+            if (!head.done && (pick < 0 || head.value.order < (heads[pick]! as IteratorYieldResult<IndexedRow>).value.order)) pick = i;
+          }
+          if (pick < 0) { end(); return { done: true, value: undefined }; }
+          const out = heads[pick]! as IteratorYieldResult<IndexedRow>;
+          heads[pick] = cursors[pick]!.next();
+          return { done: false, value: out.value };
+        } catch (error) { end(); throw error; }
+      },
+      return: () => { end(); return { done: true, value: undefined }; },
+      [Symbol.iterator]() { return this; },
+    };
+  }
+
   async write(list: string, input: WorkListFields, source?: WorkListSource): Promise<{ id: string; already: boolean }> {
     if (!bounded(list, 300)) return invalid();
     const fields = fieldsOf(input), origin = sourceOf(source);
@@ -273,7 +306,7 @@ export class WorkListStore {
 
   async read(list?: string, includeClosed = false): Promise<WorkListView[]> {
     if (list !== undefined && !bounded(list, 300) || typeof includeClosed !== "boolean") return invalid();
-    const rows = this.operations();
+    const rows = this.merged();
     const views = new Map<string, { fields: WorkListFields; items: Map<string, WorkListFields> }>();
     // ponytail: memory scales with the current distinct lists/items/fields, not historical operations. A caller
     // requesting an enormous current result still needs that result's memory; paged views are the upgrade path.

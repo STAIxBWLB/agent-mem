@@ -11,7 +11,7 @@ import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/p
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
-import { readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
@@ -43,15 +43,17 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const selection = readSelector(base).revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
     const shardSelection = sharded ? JSON.stringify(readShardedSelection(base)) : undefined;
-    const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true }) : new MemoryStore({ memoryDir: base, deferPromotions: true });
+    // #27: the project filter covers the canonical key and every key aliased to it; the keys are fixed with the project, so a later alias change fails the guard below.
+    const aliases = aliasedKeys(base, project), reconcile = aliases.length ? { canonical: project, aliases } : undefined;
+    const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true, ...(reconcile ? { reconcile } : {}) }) : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
     closers.push(() => store.close());
     const capture = new CaptureStore({ memoryDir: base, project }); closers.push(() => capture.close());
-    const candidates = new CandidateStore({ memoryDir: base }); closers.push(() => candidates.close());
-    const work = new WorkListStore({ base, project, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
+    const candidates = new CandidateStore({ memoryDir: base, ...(reconcile ? { reconcile } : {}) }); closers.push(() => candidates.close());
+    const work = new WorkListStore({ base, project, aliases, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
     const guard = () => {
       if (closed) unavailable();
       release.verify();
-      if (resolveAlias(base, requested) !== project || readSelector(base).revision !== selection) unavailable();
+      if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n") || readSelector(base).revision !== selection) unavailable();
       const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
       if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) unavailable();
     };

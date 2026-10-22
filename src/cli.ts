@@ -9,7 +9,7 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -70,12 +70,15 @@ function shardStatePresent(): boolean {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
-function curatedStore(project: string, opts: StoreOptions): MemoryStore {
+/** `reconciled` (#27): the project filter also covers every key aliased to `project`; prune and other planners keep the exact key. */
+function curatedStore(project: string, opts: StoreOptions, reconciled = true): MemoryStore {
+  const aliases = reconciled ? aliasedKeys(memoryHome(), project) : [];
+  const withAliases: StoreOptions = aliases.length ? { ...opts, reconcile: { canonical: project, aliases } } : opts;
   if (shardStatePresent()) {
     readShardedSelection(memoryHome());
-    return openShardStore({ ...opts, project });
+    return openShardStore({ ...withAliases, project });
   }
-  return new MemoryStore(opts);
+  return new MemoryStore(withAliases);
 }
 
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
@@ -136,7 +139,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     const store = options["--user"] === true
       ? openShardStore({ memoryDir: memoryHome(), user: true, deferPromotions: true })
-      : curatedStore(project, { deferPromotions: true });
+      : curatedStore(project, { deferPromotions: true }, false);
     try {
       const auth = { project, actor: "person" as const, authorize: () => true };
       return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
@@ -148,7 +151,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (sub === "list" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; select --kind memory for the standalone memory candidate surface");
     const id = parsed.positionals[0];
     if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
-    const project = boundProject(), candidates = new CandidateStore();
+    const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
     try {
       if (sub === "list") {
         const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),

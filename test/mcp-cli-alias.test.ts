@@ -46,11 +46,13 @@ for (const sharded of [false, true]) {
     try {
       expect(sidecar.get(accepted, f.canonical)?.input.project).toBe(f.canonical);
       expect(sidecar.get(accepted, f.raw)).toBeUndefined();
-      rawOnly = sidecar.put({ project: f.raw, kind: "memory", text: "Old unmapped namespace must stay separate", noteKind: "finding" }, "public");
+      rawOnly = sidecar.put({ project: f.raw, kind: "memory", text: "Old-key candidate read under the canonical project (#27)", noteKind: "finding" }, "public");
     } finally { sidecar.close(); }
     const listed = JSON.parse(await runCli(["review", "list", "--kind", "memory", "--json"], f.context)) as { id: string }[];
-    expect(listed.map(row => row.id).sort()).toEqual([accepted, rejected].sort());
-    expect(listed.map(row => row.id)).not.toContain(rawOnly!);
+    // Reanchored for agent-mem#27: this pinned "an old unmapped namespace stays separate". Since the alias maps it, the old key's candidate lists with the canonical project's.
+    expect(listed.map(row => row.id).sort()).toEqual([accepted, rejected, rawOnly!].sort());
+    const exact = new CandidateStore({ memoryDir: f.base });
+    try { expect(exact.get(rawOnly!, f.canonical)).toBeUndefined(); } finally { exact.close(); }   // the library keeps its exact-key reads: only the CLI and MCP widen
     const receipt = JSON.parse(await runCli(["review", "accept", accepted, "--kind", "memory", "--policy-free", "--json"], f.context)) as { candidateId: string; noteId: string; alreadyAccepted: boolean };
     expect(receipt).toMatchObject({ candidateId: accepted, alreadyAccepted: false });
     const store = f.open();
