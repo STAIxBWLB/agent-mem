@@ -35,7 +35,7 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
   const wallMs = performance.now() - start;
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
-  if (workers.length !== (event === "SessionStart" ? 1 : 0)) throw new Error("fixed-worker observation did not match the executable event");
+  if (workers.length !== 1) throw new Error("fixed-worker observation did not match the executable event");
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);

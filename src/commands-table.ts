@@ -1,3 +1,4 @@
+import { HOOK_EVENTS } from "./hook-contract.ts";
 import { GOAL_STATES, KINDS } from "./memory/store.ts";
 
 export interface OptionDefinition { description: string; value?: "text" | "path" | readonly string[] }
@@ -22,7 +23,7 @@ export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
-  hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"] }] },
+  hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi"] }] },
   "vault-candidates": { description: "List screened durable curated vault candidates", options: { ...json, "--limit": text("Maximum candidates (1..100)") } },
   list: { description: "List memory", options: filters },

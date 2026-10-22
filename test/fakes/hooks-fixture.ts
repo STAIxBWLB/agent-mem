@@ -10,12 +10,16 @@ import { realPath } from "../../src/memory/platform.ts";
 export const hookEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"] as const;
 export const hookBin = resolve(import.meta.dir, "../../bin/amem.js");
 export const workMarker = "p3-work-marker";
-export function hookFixture() {
+export function hookFixture(remote?: string) {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-hooks-"))), cwd = join(root, "project"), base = join(root, "memory");
   const home = join(root, "home"); mkdirSync(cwd); mkdirSync(home);
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, AMEM_HOME: base, AGENTHUB_HOME: root, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0", CLAUDECODE: "1", CODEX_HOME: join(home, ".codex") };
   const git = Bun.spawnSync(["git", "init", "--quiet", cwd], { env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
   if (git.exitCode !== 0) throw new Error("fixture git init failed");
+  if (remote) {
+    const configured = Bun.spawnSync(["git", "-C", cwd, "remote", "add", "origin", remote], { env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    if (configured.exitCode !== 0) throw new Error("fixture remote configuration failed");
+  }
   const project = memoryProjectKey(cwd);
   return { root, cwd, base, env, project,
     close: () => rmSync(root, { recursive: true, force: true }),

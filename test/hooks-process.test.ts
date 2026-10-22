@@ -28,14 +28,14 @@ test("SessionStart never exposes raw private or secret native input in observed 
   expect(f.rows()).toHaveLength(0);
 });
 
-test("SessionStart timeout terminates its observed owned native descendant and fails open within R2", async () => {
+for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} timeout terminates its observed owned native descendant and fails open within R2`, async () => {
   const f = fixture(), observer = hookProcessObserver(f.root, true);
   const pidFile = observer.nativePidFile, entered = observer.entered;
   let nativePid: number | undefined, ownedGroup: number | undefined;
   try {
     const start = performance.now();
-    const result = Bun.spawnSync([process.execPath, "--preload", observer.preload, hookBin, "hook", "SessionStart"], {
-      cwd: f.cwd, env: f.env, stdin: Buffer.from(JSON.stringify({ hook_event_name: "SessionStart", cwd: f.cwd, prompt: "public timeout fixture" })), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000,
+    const result = Bun.spawnSync([process.execPath, "--preload", observer.preload, hookBin, "hook", event], {
+      cwd: f.cwd, env: f.env, stdin: Buffer.from(JSON.stringify({ hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" })), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000,
     });
     const wallMs = performance.now() - start;
     const workers = observer.read(); expect(workers).toHaveLength(1);

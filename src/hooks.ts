@@ -1,15 +1,11 @@
 import { fileURLToPath } from "node:url";
-import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { appendMetrics } from "./memory/capacity.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
-import { memoryProjectKey } from "./memory/project.ts";
-import { resolveAlias } from "./memory/shard.ts";
 
-export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"] as const;
-export type HookEvent = typeof HOOK_EVENTS[number];
-export const HOOK_INPUT_BYTES = 64 * 1024, HOOK_CONTEXT_BYTES = 1200, HOOK_OUTPUT_BYTES = 8192;
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES } from "./hook-contract.ts";
+export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
 const HANDLER_MS = 140;
 export interface HookOptions { cwd: string; base?: string; policy?: StandalonePolicyOptions; maxTokens?: number; startedAt?: number }
@@ -41,12 +37,12 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>): Promise<string
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** The brief can encounter a cold index: bound that work in a short-lived owned child, never a resident worker.
+/** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function brief(options: HookOptions, capture: Omit<CaptureInput, "project"> | undefined, base: string, deadline: number, input?: unknown): Promise<{ context: string; rssKB: number; captured: boolean; valid: boolean }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, input: unknown, event: string): Promise<{ context: string; rssKB: number; captured: boolean; valid: boolean }> {
   if (options.policy?.host || deadline - performance.now() < 5) return { context: unavailable, rssKB: 0, captured: false, valid: false };
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-  const payload = JSON.stringify({ cwd: options.cwd, base, capture, input, maxTokens,
+  const payload = JSON.stringify({ cwd: options.cwd, base, input, event, maxTokens,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
@@ -95,25 +91,13 @@ export async function runHook(event: string, input: unknown, options: HookOption
     const value = structuredClone(input) as Record<string, unknown>;
     if (!value || Array.isArray(value) || typeof value !== "object" || Buffer.byteLength(JSON.stringify(value)) > HOOK_INPUT_BYTES || !await publicBefore(policy, value, deadline)) return { captured, skipped: true };
     if (value.hook_event_name !== undefined && value.hook_event_name !== event) return { captured, skipped: true };
-    const cwd = realPath(options.cwd);
-    if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return { captured, skipped: true };
-    const toolInput = value.tool_input && typeof value.tool_input === "object" && !Array.isArray(value.tool_input) ? value.tool_input as Record<string, unknown> : {};
-    const paths = [toolInput.file_path, toolInput.path, ...(Array.isArray(toolInput.paths) ? toolInput.paths : [])].filter((p): p is string => typeof p === "string");
-    const content = value.prompt ?? value.last_assistant_message ?? value.tool_response ?? "";
-    const candidate: Omit<CaptureInput, "project"> = { agent: "claude", event,
-      ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), paths,
-      status: event === "PostToolUseFailure" ? "failed" : "ok", excerpt: typeof content === "string" ? content : JSON.stringify(content) };
-    if (!await publicBefore(policy, candidate, deadline)) return { captured, skipped: true };
-    // SessionStart resolves project identity and captures inside the same bounded child as its brief.
-    // Avoid duplicating cold git identity work in the parent before the child's budget starts.
-    if (event !== "SessionStart" || options.policy?.host) {
-      const project = resolveAlias(base, memoryProjectKey(cwd, { repositoryIsolation: true }));
-      const store = new CaptureStore({ memoryDir: base, project });
-      try { store.append({ ...candidate, project }); captured = true; } finally { store.close(); }
-      if (event !== "SessionStart") return { captured, skipped: false };
-    }
-    const result = await brief({ ...options, cwd }, candidate, base, deadline - 3);
-    childRssKB = result.rssKB; captured ||= result.captured;
+    // Native hook work always uses the same owned, deadline-bound process group. In-process
+    // host callbacks cannot cross it; callers needing them compose the library stores/brief directly.
+    if (options.policy?.host) return { captured, skipped: true };
+    const result = await hookWorker({ ...options, cwd: realPath(options.cwd) }, base, deadline - 3, value, event);
+    childRssKB = result.rssKB; captured = result.captured;
+    if (!result.valid) return { captured, skipped: true };
+    if (event !== "SessionStart") return { captured, skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, skipped: false };
     return { captured, skipped: false, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } } };
   } catch { return { captured, skipped: true }; }
@@ -126,7 +110,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
 /** Bounded stdin and a fixed overall handler budget; failures produce no native decision and exit successfully. */
 export async function hookMain(args: readonly string[], startedAt = performance.now()): Promise<string> {
   let cleanup: (() => Promise<void>) | undefined;
-  let metricWritten = false, childRssKB = 0;
+  let childRssKB = 0;
   try {
     if (args.length !== 1) return "";
     const reader = Bun.stdin.stream().getReader();
@@ -142,21 +126,18 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
     // JSON stdin has no getters or proxies. Keep the parent lean: the owned child screens the
     // complete native record before identity lookup, capture or context, under the same hard deadline.
-    if (args[0] === "SessionStart") {
+    if ((HOOK_EVENTS as readonly string[]).includes(args[0]!)) {
       const base = canonicalPath(memoryHome());
-      const result = await brief({ cwd: process.cwd() }, undefined, base, startedAt + HANDLER_MS - 3, input);
+      const result = await hookWorker({ cwd: process.cwd() }, base, startedAt + HANDLER_MS - 3, input, args[0]!);
       childRssKB = result.rssKB;
-      if (!result.valid) return "";
+      if (!result.valid || args[0] !== "SessionStart") return "";
       return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
-    const receipt = await runHook(args[0]!, input, { cwd: process.cwd(), startedAt });
-    metricWritten = true; // runHook owns its best-effort metric, including policy refusals.
-    const output = receipt.output ? JSON.stringify(receipt.output) : "";
-    return Buffer.byteLength(output) <= HOOK_OUTPUT_BYTES ? output : "";
+    return "";
   } catch { return ""; }
   finally {
     await cleanup?.();
-    if (!metricWritten) try {
+    try {
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
         rssMB: (process.resourceUsage().maxRSS + childRssKB) / 1024 }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }

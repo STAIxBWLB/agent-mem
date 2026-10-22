@@ -6,7 +6,9 @@ import { hookBin, hookEvents, hookFixture, workMarker } from "./fakes/hooks-fixt
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
 function fixture() {
-  const f = hookFixture(); fixtures.push(f);
+  // This suite measures network attempts, with expensive builtin instrumentation in both processes.
+  // The independent R2 script retains its no-remote identity workload and actual clocks.
+  const f = hookFixture("https://example.invalid/p3/offline-fixture.git"); fixtures.push(f);
   const bin = join(f.root, "tripwire-bin"), marker = join(f.root, "network-attempts.jsonl"), preload = join(f.root, "tripwire.ts");
   const receipt = join(f.root, "brief-instrumentation.jsonl"), worker = join(import.meta.dir, "../src/session-brief-worker.ts");
   mkdirSync(bin);
@@ -65,6 +67,7 @@ test("AC3 actual SessionStart brief child tripwire observes a swallowed fetch at
   const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: f.cwd, session_id: "brief-network-control" });
   const result = f.child([hookBin, "hook", "SessionStart"], input, { AMEM_BRIEF_TRIP_CONTROL: "1" });
   expect(result.exitCode).toBe(0);
+  expect(result.stdout.length, JSON.stringify({ attempts: f.attempts(), receipts: f.receipts(), stderr: result.stderr.toString() })).toBeGreaterThan(0);
   expect(JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext).toContain(workMarker);
   expect(f.receipts()).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);
   expect(f.attempts()).toEqual([{ name: "fetch" }]);
