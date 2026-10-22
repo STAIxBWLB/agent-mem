@@ -11,6 +11,7 @@ import { appendAlias } from "../src/memory/shard.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
+import { WorkListStore } from "../src/memory/work-lists.ts";
 
 // agent-mem#27, option 1: after `amem alias add <old> <canonical>`, the CLI and MCP project filter for curated rows covers the canonical key AND every key aliased
 // to it, so the old key's private notes, goals, candidates, vault candidates and work lists appear under the canonical project. The library MemoryStore keeps reading
@@ -145,6 +146,28 @@ for (const sharded of [false, true]) {
     } finally { mcp.close(); }
   });
 }
+
+test("work lists of an aliased key merge with the canonical key's by replay order, past 5,000 operations, and release every cursor (#27 on #210)", async () => {
+  const f = await fixture(false, { alias: false });
+  const policy = async () => true;
+  const old = new WorkListStore({ base: f.base, project: f.raw, policy, exact: true }), canonical = new WorkListStore({ base: f.base, project: f.canonical, policy, exact: true });
+  try {
+    // interleaved scalar writes: the newest value wins whichever log holds it
+    await old.write("plan", { goal: "old first" }, { machine: "m1", source: "s", id: "1", at: 1000 });
+    await canonical.write("plan", { goal: "canonical second" }, { machine: "m1", source: "s", id: "2", at: 2000 });
+    await old.write("plan", { note: "old third" }, { machine: "m1", source: "s", id: "3", at: 3000 });
+    for (let i = 0; i < 2600; i++) { await old.write("bulk", { task: `o${i}`, n: i }, { machine: "m1", source: "s", id: `o${i}`, at: 4000 + i }); await canonical.write("bulk", { task: `c${i}`, n: i }, { machine: "m1", source: "s", id: `c${i}`, at: 8000 + i }); }
+  } finally { old.close(); canonical.close(); }
+  appendAlias(f.base, { alias: f.raw, key: f.canonical, actor: "person", machine: "fixture" });
+  const merged = new WorkListStore({ base: f.base, project: f.canonical, aliases: [f.raw], policy });
+  try {
+    const lists = await merged.read(undefined, true);
+    const plan = lists.find(list => list.list === "plan")!;
+    expect(plan.fields).toEqual({ goal: "canonical second", note: "old third" });
+    expect(lists.find(list => list.list === "bulk")!.items).toHaveLength(5200);                    // more than the old 5,000-operation ceiling, from both logs
+    expect(await merged.read(undefined, true)).toEqual(lists);                                    // a second read is the same and the first released its cursors
+  } finally { merged.close(); }
+}, 60_000);
 
 test("a vault link of an aliased old-key note records under its own key in a non-sharded generation home (#27)", async () => {
   const f = await fixture(false);
