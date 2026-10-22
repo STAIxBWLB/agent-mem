@@ -15,7 +15,7 @@ import { migrateShards } from "../src/memory/shard-migration.ts";
 
 const home = mkdtempSync(join(tmpdir(), "amem-mcp-budget-"));
 const cwd = join(home, "project"), base = join(home, "memory"), reportPath = join(home, "rss.json");
-const CURATED = 5001, CAPTURE = 5001, SEARCHES = 10, TIMELINES = 4, WORK_ROWS = 2000, WORK_ITEMS = 100;
+const CURATED = 5001, CAPTURE = 5001, SEARCHES = 10, TIMELINES = 4, WORK_ROWS = 10001, WORK_ITEMS = 100;
 const mb = (bytes: number) => Math.round(bytes / 1048576 * 100) / 100;
 let child: ReturnType<typeof spawn> | undefined;
 let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -153,6 +153,13 @@ try {
     if (result.isError || typeof text !== "string") throw new Error("work-list MCP read failed");
     const lists = JSON.parse(text) as { list: string; items: { task: string; fields: { progress: number } }[] }[];
     if (lists.length !== 1 || lists[0]?.list !== "budget-work" || lists[0].items.length !== WORK_ITEMS || !lists[0].items.some(item => item.fields.progress === WORK_ROWS - 1)) throw new Error("work-list MCP read did not reduce the complete seeded history");
+    const seen = new Set<string>();
+    for (const item of lists[0].items) {
+      const index = Number(item.task.slice("item-".length));
+      const latest = index + Math.floor((WORK_ROWS - 1 - index) / WORK_ITEMS) * WORK_ITEMS;
+      if (!Number.isInteger(index) || index < 0 || index >= WORK_ITEMS || item.task !== `item-${index}` || seen.has(item.task) || item.fields.progress !== latest) throw new Error("work-list MCP read lost a per-item latest update");
+      seen.add(item.task);
+    }
   }
   proc.stdin!.end(); // The stdio session's EOF, not a shutdown RPC or a kill, must close and reap the child.
   const exitCode = await reaped;
