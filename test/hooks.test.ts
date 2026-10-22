@@ -45,6 +45,7 @@ test("hook failure and invalid input fail open without capture or control fields
     const result = f.run(event, input); expect(result.exitCode).toBe(0); contextOnly(result.stdout.toString());
   }
   expect(f.rows()).toHaveLength(0);
+  expect(readMetrics(f.base).filter(row => row.kind === "hook")).toHaveLength(7);
   const blocker = join(f.root, "not-directory"); writeFileSync(blocker, "fixture");
   const result = f.run("PostToolUse", {}, { AMEM_HOME: blocker }); expect(result.exitCode).toBe(0); contextOnly(result.stdout.toString());
 });

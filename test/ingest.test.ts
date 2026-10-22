@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -50,7 +50,7 @@ test("Pi accepts native session/message entries but never foreign, untimed, priv
     + line({ type: "message", id: "four", message: { role: "user", content: "missing time" } })
     + line({ type: "message", id: "five", timestamp: at, cwd: f.other, message: { role: "user", content: "foreign answer" } }));
   let screens = 0;
-  const receipt = await ingestTranscript("pi", { ...f, files: [f.file], policy: { host: { async screen(value) { screens++; return !JSON.stringify(value).includes("never-retain"); } } } });
+  const receipt = await ingestTranscript("pi", { ...f, files: [f.file], policy: { host: { async screen(value: unknown) { screens++; return !JSON.stringify(value).includes("never-retain"); } } } });
   expect(receipt.imported).toBe(1); expect(receipt.errors).toBeGreaterThan(0); expect(screens).toBeGreaterThan(1); expect(rows(f).map(r => r.excerpt)).toEqual(["public pi answer"]);
 });
 
@@ -79,3 +79,58 @@ test("project aliases are resolved at startup and since never fabricates timesta
   const unknown=join(f.root,"unknown.jsonl");writeFileSync(unknown,line(codexMessage("no session scope")));
   const r=await ingestTranscript("codex",{...f,files:[unknown]});expect(r.imported).toBe(0);expect(r.errors).toBeGreaterThan(0);expect(JSON.stringify(r)).not.toContain(f.root);
 });
+
+
+test("absent native discovery roots are unavailable, never an observed empty history", async () => {
+  const f=fixture(), previous=process.env.CODEX_HOME; process.env.CODEX_HOME=join(f.root,"missing-codex-home");
+  try { const receipt=await ingestTranscript("codex",{cwd:f.cwd,base:f.base}); expect(receipt.errors).toBeGreaterThan(0); expect(receipt.reason).toBe("source_unavailable"); }
+  finally { if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous; }
+});
+
+test("cursor files are private and oversized or linked sidecar state is refused", async () => {
+  const f=fixture();writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("initial")));
+  await ingestTranscript("codex",{...f,files:[f.file]});
+  const store=new CaptureStore({memoryDir:f.base,project:memoryProjectKey(f.cwd)}),dir=join(store.dir,"ingest");store.close();
+  const file=join(dir,readdirSync(dir).find(name=>name.endsWith(".db"))!);chmodSync(file,0o644);
+  appendFileSync(f.file,line(codexMessage("next")));await ingestTranscript("codex",{...f,files:[f.file]});expect(statSync(file).mode&0o777).toBe(0o600);
+  const canary=join(f.root,"canary");writeFileSync(canary,"unchanged");symlinkSync(canary,file+"-journal");
+  appendFileSync(f.file,line(codexMessage("not imported")));
+  expect((await ingestTranscript("codex",{...f,files:[f.file]})).errors).toBeGreaterThan(0);expect(readFileSync(canary,"utf8")).toBe("unchanged");rmSync(file+"-journal");
+  writeFileSync(file,Buffer.alloc(129*1024));expect((await ingestTranscript("codex",{...f,files:[f.file]})).errors).toBeGreaterThan(0);expect(rows(f).map(r=>r.excerpt)).toEqual(["initial","next"]);
+});
+
+test("invalid UTF-8 native records are skipped rather than imported with replacement text", async () => {
+  const f=fixture(),prefix='{"timestamp":"'+at+'","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"';
+  writeFileSync(f.file,Buffer.concat([Buffer.from(line(codexHeader(f.cwd))+prefix),Buffer.from([255]),Buffer.from('"}]}}\n')]));
+  const receipt=await ingestTranscript("codex",{...f,files:[f.file]});expect(receipt.imported).toBe(0);expect(receipt.errors).toBe(1);expect(rows(f)).toHaveLength(0);
+});
+
+
+test("lowering or removing since backfills older records without recapturing newer ones", async () => {
+  const f=fixture(),newer={...codexMessage("newer"),timestamp:"2026-10-23T03:00:00Z"};
+  writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("older"))+line(newer));
+  expect((await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T02:00:00Z"})).imported).toBe(1);
+  expect((await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T00:00:00Z"})).imported).toBe(1);
+  expect((await ingestTranscript("codex",{...f,files:[f.file]})).imported).toBe(0);expect(rows(f).map(r=>r.excerpt).sort()).toEqual(["newer","older"]);
+});
+
+test("default discovery rotates past a perpetually partial first source", async () => {
+  const f=fixture(),native=join(f.root,"native"),sessions=join(native,"sessions"),previous=process.env.CODEX_HOME;mkdirSync(sessions,{recursive:true});process.env.CODEX_HOME=native;
+  try {
+    writeFileSync(join(sessions,"a.jsonl"),line(codexHeader(f.cwd))+JSON.stringify(codexMessage("still partial")));
+    for(const name of ["b","c"])writeFileSync(join(sessions,name+".jsonl"),line(codexHeader(f.cwd))+line(codexMessage("public "+name)));
+    for(let i=0;i<4;i++)await ingestTranscript("codex",{cwd:f.cwd,base:f.base,maxFiles:1});
+    expect(rows(f).map(r=>r.excerpt).sort()).toEqual(["public b","public c"]);
+  } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
+});
+
+test("default discovery progresses beyond its former first 128 sources", async () => {
+  const f=fixture(),native=join(f.root,"native"),sessions=join(native,"sessions"),previous=process.env.CODEX_HOME;mkdirSync(sessions,{recursive:true});process.env.CODEX_HOME=native;
+  try {
+    for(let i=0;i<130;i++)writeFileSync(join(sessions,String(i).padStart(3,"0")+".jsonl"),line(codexHeader(f.cwd))+line(codexMessage("source "+i)));
+    let last: { remaining: boolean } | undefined;
+    for(let i=0;i<3;i++)last=await ingestTranscript("codex",{cwd:f.cwd,base:f.base,maxFiles:64});
+    expect(last?.remaining).toBe(false);
+    const store=new CaptureStore({memoryDir:f.base,project:memoryProjectKey(f.cwd)});try{expect(store.rows({limit:200})).toHaveLength(130);}finally{store.close();}
+  } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
+},20000);

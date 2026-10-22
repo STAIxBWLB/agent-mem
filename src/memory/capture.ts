@@ -83,7 +83,11 @@ export interface CaptureOptions {
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
 }
-export type CaptureAppend = { id: number } | { spooled: true };
+export interface CaptureAppendOptions {
+  /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */
+  receipt?: string;
+}
+export type CaptureAppend = { id: number; already?: true } | { spooled: true };
 
 /** One row after validation, deny-filtering, bounding and screening: what both the insert and the spool carry. */
 interface NormalizedCapture {
@@ -303,26 +307,37 @@ export class CaptureStore {
    * and a later drainer — under any screen — inserts exactly that row. On lock contention the row goes to the spool
    * and the caller exits fast (R2); the next uncontended writer replays it with its original timestamp.
    */
-  append(input: CaptureInput): CaptureAppend {
+  append(input: CaptureInput, options: CaptureAppendOptions = {}): CaptureAppend {
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
     if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a parseable time string");
+    const receipt = options.receipt;
+    if (receipt !== undefined && (typeof receipt !== "string" || !/^[a-f0-9]{64}$/.test(receipt) || input.at === undefined)) throw new Error("capture receipt needs a stable time and a 64-hex digest");
     const row = this.normalize(input);
+    // Reuse the immutable spool format and its existing unique index: a crash between capture and cursor
+    // advance replays exactly the same screened line, whether first written directly or under contention.
+    const spoolId = receipt === undefined ? null : createHash("sha256").update(this.spoolLine(row, receipt)).digest("hex");
     if (this.contended) {
-      this.spool(row);
+      this.spool(row, receipt);
       return { spooled: true };
     }
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
       // The row and its running byte count commit or roll back together: a lock after the INSERT cannot spool a duplicate.
-      const id = this.db.transaction(() => this.insertRow(row, null)).immediate();
+      const result = this.db.transaction((): CaptureAppend => {
+        const id = this.insertRow(row, spoolId);
+        if (id !== undefined) return { id };
+        const prior = this.db.query("SELECT id FROM rows WHERE spool_id = ?").get(spoolId) as { id: number } | null;
+        if (!prior) throw new Error("capture receipt lookup failed");
+        return { id: prior.id, already: true };
+      }).immediate();
       try { this.evict(); } catch (error) {
         if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
       }
-      return { id: id! };
+      return result;
     } catch (error) {
       if (!lockError(error)) throw error;
-      this.spool(row);
+      this.spool(row, receipt);
       return { spooled: true };
     }
   }
@@ -341,8 +356,12 @@ export class CaptureStore {
       bytes: Buffer.byteLength(excerpt) + Buffer.byteLength(JSON.stringify(paths)) + ROW_OVERHEAD_BYTES };
   }
 
-  private spool(row: NormalizedCapture): void {
-    this.spoolRaw(JSON.stringify({ ...row, nonce: randomBytes(12).toString("hex") }));
+  private spoolLine(row: NormalizedCapture, nonce = randomBytes(12).toString("hex")): string {
+    return JSON.stringify({ ...row, nonce });
+  }
+
+  private spool(row: NormalizedCapture, nonce?: string): void {
+    this.spoolRaw(this.spoolLine(row, nonce));
   }
 
   /**

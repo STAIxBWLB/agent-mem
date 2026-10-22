@@ -28,6 +28,8 @@
   "files": [
     "src/",
     "bin/",
+    ".claude-plugin/",
+    "hooks/",
     "README.md",
     "LICENSE"
   ],

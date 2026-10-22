@@ -3,6 +3,7 @@
 ## Unreleased
 
 - The R7 capacity advisor may propose growth (#13, owner decision 2026-10-17): the proposed cap is the disk-share bound and the retention is the share over the daily growth up to a 365-day ceiling, above the current values when there is room. R2 hook cost still halves the cap, R3 search memory still halves the retention, and the reason names every binding constraint. The advisor never writes: `amem capacity apply` is person-only with a preview first. The proposal for an untouched home changes from 512 MB and 90 days to the disk-share bound and 365 days.
+- Add fail-open, context-only Claude Code plugin hooks, a bounded project SessionStart brief, and incremental Codex/Kimi/Pi transcript ingestion with durable cursors and capture receipts. Keep capture deterministic and offline, with no resident worker (#13 P3).
 
 ## 0.5.0
 
