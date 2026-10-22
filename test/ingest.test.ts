@@ -2,10 +2,18 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ingestTranscript } from "../src/ingest.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { appendAlias } from "../src/memory/shard.ts";
+
+// Resolve the optional new module inside each named test, so the red-first receipt is an assertion failure.
+async function ingestTranscript(kind: "codex" | "kimi" | "pi", options: Record<string, unknown>): Promise<any> {
+  const target = "../src/ingest.ts";
+  let api: { ingestTranscript?: (...args: any[]) => Promise<any> } = {};
+  try { api = await import(target); } catch { /* The named assertion reports the absent feature. */ }
+  expect(typeof api.ingestTranscript).toBe("function");
+  return api.ingestTranscript!(kind, options);
+}
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

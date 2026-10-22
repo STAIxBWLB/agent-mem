@@ -87,7 +87,7 @@ test("full-row and composed-work policy screening precedes selection and rendere
   const result = await brief({ ...options(f), policy: { denyPaths: ["hidden.ts"], host: { screen: async value => {
     const text = JSON.stringify(value);
     return !text.includes("HOST BLOCKED CAPTURE") && !(text.includes("left-canary") && text.includes("right-canary"));
-  } } });
+  } } } });
   expect(result.context).toContain("safe curated"); expect(result.context).toContain("public task");
   for (const forbidden of ["DENIED NOTE", "person@example.com", "left-canary", "right-canary", "PRIVATE FLAG CANARY", "HOST BLOCKED CAPTURE"]) expect(result.context).not.toContain(forbidden);
 });
@@ -117,7 +117,7 @@ for (const drift of ["alias", "selector"] as const) test(`a ${drift} change duri
       else writeFileSync(join(f.base, "profile.json"), JSON.stringify({ schema: "agent-mem.profile/v1", kind: "shared-v1" }));
     }
     return true;
-  } } });
+  } } } });
   expect(changed).toBe(true);
   expect(result).toEqual({ context: "", tokens: 0, partial: true, coverage: { curated: "unavailable", work: "unavailable", capture: "unavailable" } });
 });
