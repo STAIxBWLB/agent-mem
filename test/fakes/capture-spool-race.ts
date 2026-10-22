@@ -6,6 +6,7 @@ import { mock } from "bun:test";
 const native = { ...fs };
 const [root, mode, barrier] = process.argv.slice(2) as [string, string, string];
 let stopped = false;
+const descriptors = new Map<number, string>();
 function pause() {
   native.writeFileSync(join(root, `${barrier}.ready`), "ready");
   const limit = Date.now() + 10000;
@@ -16,6 +17,14 @@ function pause() {
 }
 const isSpool = (value: unknown) => typeof value === "string" && basename(value).startsWith("spool");
 mock.module("node:fs", () => ({ ...native,
+  openSync(...args: Parameters<typeof fs.openSync>) {
+    const fd = native.openSync(...args); descriptors.set(fd, String(args[0])); return fd;
+  },
+  readSync(...args: Parameters<typeof fs.readSync>) {
+    const value = native.readSync(...args);
+    if (mode === "drain" && !stopped && descriptors.get(args[0])?.includes("draining")) { stopped = true; pause(); }
+    return value;
+  },
   readFileSync(...args: Parameters<typeof fs.readFileSync>) {
     const value = native.readFileSync(...args);
     if (mode === "drain" && !stopped && isSpool(args[0]) && String(args[0]).includes("draining")) { stopped = true; pause(); }
