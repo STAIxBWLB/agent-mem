@@ -11,13 +11,12 @@ import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./store.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
-const READ_ROW_CEILING = 5000;
 export type WorkListFields = Record<string, string | number | boolean | null>;
 export type WorkListPolicy = (row: unknown) => boolean | Promise<boolean>;
 export interface WorkListSource { source: string; id: string; machine?: string; at?: number }
 export interface WorkListView { list: string; fields: WorkListFields; items: { task: string; fields: WorkListFields }[]; closed: boolean }
 interface WorkRow { schema: typeof SCHEMA; project: string; machine: string; at: number; nonce: string; list: string; fields: WorkListFields; source?: WorkListSource; id: string }
-interface IndexedRow { row: WorkRow; position: number }
+interface IndexedRow { row: WorkRow; position: number; order: string }
 interface Head { file: string; bytes: number; hash: string }
 const forbidden = new Set(["__proto__", "constructor", "prototype"]);
 const bounded = (value: unknown, max: number): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
@@ -48,31 +47,29 @@ function sourceOf(input: unknown): WorkListSource | undefined {
 }
 const receipt = (row: Pick<WorkRow, "source">): string | null => row.source ? hashJSON({ source: row.source.source, id: row.source.id, machine: row.source.machine ?? null }) : null;
 const importPayload = (row: Pick<WorkRow, "list" | "fields" | "source">): string => hashJSON({ list: row.list, fields: row.fields, source: row.source });
-const lexical = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
-/** Source row ids retain their numeric sequence, including ids such as work-9 and work-10. */
-function sourceOrder(a: string, b: string): number {
-  const left = a.match(/\d+|\D+/g) ?? [], right = b.match(/\d+|\D+/g) ?? [];
-  for (let i = 0; i < Math.min(left.length, right.length); i++) {
-    const x = left[i]!, y = right[i]!;
-    if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
-      const n = BigInt(x), m = BigInt(y); if (n !== m) return n < m ? -1 : 1;
-    } else { const order = lexical(x, y); if (order) return order; }
-  }
-  return left.length - right.length || lexical(a, b);
+/** SQLite BINARY sorts UTF-8, unlike the existing JS UTF-16 replay order. Hex code units retain that order,
+ * and the terminator sorts before another code unit so a string prefix still comes first. */
+function lexicalKey(value: string): string {
+  let out = "";
+  for (let i = 0; i < value.length; i++) out += value.charCodeAt(i).toString(16).padStart(4, "0");
+  return out + "!";
 }
-/**
- * Equal epochs have no causal order across origins: imports sort before authored rows, then by source device and
- * source identity (lexically). Within one import origin, source ids use numeric order. Authored same-machine ties
- * retain physical append position. Position is derived, never added to or changed inside the screened/hash row.
- */
-function replayOrder(a: IndexedRow, b: IndexedRow): number {
-  const x = a.row, y = b.row;
-  if (x.at !== y.at) return x.at - y.at;
-  const groupX = x.source ? ["import", x.source.machine ?? "", x.source.source] : ["native", x.machine, ""];
-  const groupY = y.source ? ["import", y.source.machine ?? "", y.source.source] : ["native", y.machine, ""];
-  for (let i = 0; i < groupX.length; i++) { const order = lexical(groupX[i]!, groupY[i]!); if (order) return order; }
-  if (x.source && y.source) { const order = sourceOrder(x.source.id, y.source.id); if (order) return order; }
-  return lexical(x.machine, y.machine) || a.position - b.position || lexical(x.id, y.id);
+/** Numeric source components compare by value; leading zeroes only break an otherwise equal full source id. */
+function sourceKey(value: string): string {
+  const parts = (value.match(/\d+|\D+/g) ?? []).map(part => {
+    if (!/^\d+$/.test(part)) return lexicalKey(part);
+    const digits = part.replace(/^0+(?=\d)/, "");
+    return `0030${digits.length.toString().padStart(3, "0")}${digits}!`;
+  });
+  return parts.join("") + " " + lexicalKey(value);
+}
+/** Derived only: timestamp, import/native origin, natural source id, machine, append position, row hash.
+ * Fixed-width safe integers and encoded strings let the persisted index supply the legacy replay order. */
+function replayKey(row: WorkRow, position: number): string {
+  if (!Number.isSafeInteger(position) || position < 0) throw new Error("work index has an invalid append position");
+  const source = row.source;
+  return [String(row.at).padStart(16, "0"), source ? "0" : "1", lexicalKey(source ? source.machine ?? "" : row.machine),
+    lexicalKey(source?.source ?? ""), source ? sourceKey(source.id) : "", row.machine, String(position).padStart(16, "0"), row.id].join(" ");
 }
 
 /** Stream log bytes with bounded carry; neither a long history nor an invalid oversized row is loaded at once. */
@@ -112,6 +109,7 @@ export class WorkListStore {
   private readonly machine: string;
   private readonly policy: WorkListPolicy;
   private readonly now: () => number;
+  private readonly readers = new Set<() => void>();
   private closed = false;
 
   constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number }) {
@@ -134,12 +132,25 @@ export class WorkListStore {
     // The index is disposable. An older derived schema is replayed without changing a log row.
     const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
     if (columns.length && !columns.some(column => column.name === "position")) { this.db.run("DROP TABLE work_ops"); this.db.run("DROP TABLE IF EXISTS work_heads"); }
-    this.db.run("CREATE TABLE IF NOT EXISTS work_ops (id TEXT PRIMARY KEY, at INTEGER NOT NULL, machine TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT, position INTEGER NOT NULL)");
+    this.db.run("CREATE TABLE IF NOT EXISTS work_ops (id TEXT PRIMARY KEY, at INTEGER NOT NULL, machine TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT, position INTEGER NOT NULL, replay TEXT NOT NULL DEFAULT '')");
     this.db.run("CREATE INDEX IF NOT EXISTS work_receipts ON work_ops(receipt)");
     this.db.run("CREATE TABLE IF NOT EXISTS work_heads (file TEXT PRIMARY KEY, bytes INTEGER NOT NULL, hash TEXT NOT NULL)");
+    this.db.transaction(() => {
+      const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
+      if (!columns.some(column => column.name === "replay")) this.db.run("ALTER TABLE work_ops ADD COLUMN replay TEXT NOT NULL DEFAULT ''");
+      this.db.run("CREATE INDEX IF NOT EXISTS work_replay ON work_ops(replay)");
+    }).immediate();
   }
 
-  close(): void { if (!this.closed) { this.closed = true; this.db.close(); this.mutation.close(); } }
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    let failure: unknown;
+    for (const close of [...this.readers, () => this.db.close(), () => this.mutation.close()]) {
+      try { close(); } catch (error) { failure ??= error; }
+    }
+    if (failure !== undefined) throw failure;
+  }
   private locked<T>(run: () => T): T {
     if (this.closed) throw new Error("work-list store is closed");
     return this.mutation.transaction(run).immediate();
@@ -156,10 +167,10 @@ export class WorkListStore {
   }
   private index(row: WorkRow, position: number): void {
     const key = receipt(row);
-    if (key) for (const prior of this.db.query("SELECT payload FROM work_ops WHERE receipt = ?").all(key) as { payload: string }[]) {
+    if (key) for (const prior of this.db.query("SELECT payload FROM work_ops WHERE receipt = ?").iterate(key) as Iterable<{ payload: string }>) {
       if (importPayload(this.decode(prior.payload)) !== importPayload(row)) throw new Error("work log contains conflicting source receipts");
     }
-    this.db.query("INSERT OR IGNORE INTO work_ops (id, at, machine, payload, receipt, position) VALUES (?, ?, ?, ?, ?, ?)").run(row.id, row.at, row.machine, canonicalJSON(row), key, position);
+    this.db.query("INSERT OR IGNORE INTO work_ops (id, at, machine, payload, receipt, position, replay) VALUES (?, ?, ?, ?, ?, ?, ?)").run(row.id, row.at, row.machine, canonicalJSON(row), key, position, replayKey(row, position));
   }
   private refresh(force = false): void {
     const files = readdirSync(join(this.dir, "log")).sort();
@@ -174,6 +185,15 @@ export class WorkListStore {
         if (old !== current.bytes) scan(join(this.dir, "log", file), (line, end) => { if (end > old) this.index(this.decode(line), end); });
         this.db.query("INSERT OR REPLACE INTO work_heads (file, bytes, hash) VALUES (?, ?, ?)").run(file, current.bytes, current.hash);
       }
+      // Old readers may rebuild/append this disposable index without the additive replay column. Backfill one
+      // row at a time, including on an otherwise unchanged refresh; no payload history is materialized.
+      const missing = this.db.query("SELECT id, payload, position FROM work_ops WHERE replay = '' LIMIT 1");
+      const update = this.db.query("UPDATE work_ops SET replay = ? WHERE id = ?");
+      for (;;) {
+        const old = missing.get() as { id: string; payload: string; position: number } | null;
+        if (!old) break;
+        update.run(replayKey(this.decode(old.payload), old.position), old.id);
+      }
     }).immediate();
   }
   rebuild(): void { this.locked(() => this.refresh(true)); }
@@ -181,6 +201,42 @@ export class WorkListStore {
     if (looksSecret(canonicalJSON(row))) return false;
     const copy = structuredClone(row); Object.freeze(copy.fields); if (copy.source) Object.freeze(copy.source); Object.freeze(copy);
     try { return await this.policy(copy) === true; } catch { return false; }
+  }
+
+  /** An ordered, stable read snapshot. The separate read-only connection never holds the mutation lock across
+   * a host policy await, so a concurrent append succeeds without changing this read's history frontier. */
+  private operations(): IterableIterator<IndexedRow> {
+    const state = this.locked(() => {
+      this.refresh();
+      regular(join(this.dir, "index.db"));
+      const db = new Database(join(this.dir, "index.db"), { readonly: true });
+      try {
+        db.run("PRAGMA busy_timeout = 3000"); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
+        db.run("BEGIN");
+        const rows = db.query("SELECT payload, position, replay FROM work_ops ORDER BY replay").iterate() as IterableIterator<{ payload: string; position: number; replay: string }>;
+        return { db, rows, first: rows.next() }; // Establish the snapshot before releasing the writer lock.
+      } catch (error) { db.close(); throw error; }
+    });
+    let first = true, closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      this.readers.delete(close);
+      try { state.rows.return?.(); } finally { try { state.db.run("ROLLBACK"); } finally { state.db.close(); } }
+    };
+    this.readers.add(close);
+    return {
+      next: () => {
+        if (closed) return { done: true, value: undefined };
+        try {
+          const next = first ? state.first : state.rows.next(); first = false;
+          if (next.done) { close(); return { done: true, value: undefined }; }
+          return { done: false, value: { row: this.decode(next.value.payload), position: next.value.position, order: next.value.replay } };
+        } catch (error) { close(); throw error; }
+      },
+      return: () => { close(); return { done: true, value: undefined }; },
+      [Symbol.iterator]() { return this; },
+    };
   }
 
   async write(list: string, input: WorkListFields, source?: WorkListSource): Promise<{ id: string; already: boolean }> {
@@ -217,24 +273,23 @@ export class WorkListStore {
 
   async read(list?: string, includeClosed = false): Promise<WorkListView[]> {
     if (list !== undefined && !bounded(list, 300) || typeof includeClosed !== "boolean") return invalid();
-    const rows = this.locked(() => {
-      this.refresh();
-      // ponytail: 5000 persisted operations per project read, including named-list reads. Refuse before payload
-      // materialization; append truth is never truncated. Upgrade to bounded streaming reduction for longer histories.
-      const count = this.db.query("SELECT count(*) AS count FROM work_ops").get() as { count: number };
-      if (count.count > READ_ROW_CEILING) throw new Error("work-list read exceeds 5000-row ceiling");
-      return (this.db.query("SELECT payload, position FROM work_ops").all() as { payload: string; position: number }[]).map(row => ({ row: this.decode(row.payload), position: row.position })).sort(replayOrder);
-    });
+    const rows = this.operations();
     const views = new Map<string, { fields: WorkListFields; items: Map<string, WorkListFields> }>();
-    for (const { row } of rows) {
-      if (!await this.permitted(row)) continue;
-      if (list !== undefined && row.list !== list) continue;
-      let view = views.get(row.list); if (!view) { view = { fields: {}, items: new Map() }; views.set(row.list, view); }
-      const task = row.fields.task;
-      const target = typeof task === "string" ? view.items.get(task) ?? {} : view.fields;
-      if (typeof task === "string") view.items.set(task, target);
-      for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
-    }
+    // ponytail: memory scales with the current distinct lists/items/fields, not historical operations. A caller
+    // requesting an enormous current result still needs that result's memory; paged views are the upgrade path.
+    try {
+      for (const { row } of rows) {
+        const allowed = await this.permitted(row);
+        if (this.closed) throw new Error("work-list store is closed");
+        if (!allowed) continue;
+        if (list !== undefined && row.list !== list) continue;
+        let view = views.get(row.list); if (!view) { view = { fields: {}, items: new Map() }; views.set(row.list, view); }
+        const task = row.fields.task;
+        const target = typeof task === "string" ? view.items.get(task) ?? {} : view.fields;
+        if (typeof task === "string") view.items.set(task, target);
+        for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
+      }
+    } finally { rows.return?.(); }
     return [...views].sort(([a], [b]) => a.localeCompare(b)).flatMap(([name, view]) => {
       const closed = view.fields.status === "done";
       return closed && !includeClosed ? [] : [{ list: name, fields: view.fields, items: [...view.items].sort(([a], [b]) => a.localeCompare(b)).map(([task, fields]) => ({ task, fields })), closed }];

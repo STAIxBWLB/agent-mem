@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep work-list reads usable beyond 5,000 operations with indexed streaming replay and stable read snapshots across asynchronous policy checks. Preserve latest fields, null clearing, replay order and rebuild parity without rewriting logs; measure real MCP R3 with 10,001 work operations (#13, agent-hub task #210).
+
 - Defer capture MCP FTS creation/backfill to queried reads so an upgrade cannot scan a large shard on a hook. Contended reads use a policy-screened, call-pinned substring fallback and retry indexing later; triggers cover pre- and post-initialization appends (#13, agent-hub task #327).
 
 - Keep MCP search, timeline and point reads usable beyond 5,000 rows: page exact-project query candidates in SQL/FTS, screen before the public window, preserve full capture path/event matching, and stream cold curated FTS rebuilds. Measure real stdio R3 on 5,001 curated plus 5,001 capture rows (#13, agent-hub task #209).

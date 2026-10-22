@@ -104,3 +104,45 @@ test("same-epoch imports retain numeric leading-zero ties and UTF-16 source orde
     for (const log of logs) expect(readFileSync(log.file, "utf8")).toBe(log.text);
   } finally { f.close(); }
 });
+
+test("a legacy derived index and later legacy-writer rows regain replay metadata without changing logs", async () => {
+  const f = fixture(), machine = "f".repeat(16);
+  const log = segment(f, machine, Array.from({ length: 30 }, (_, index) => row(f.project, machine, index, { progress: index })));
+  let reopened: WorkListStore | undefined;
+  try {
+    const expected = [{ list: "release", fields: { progress: 29 }, items: [], closed: false }];
+    expect(await f.store.read()).toEqual(expected);
+    f.store.close();
+    const legacy = new Database(join(f.store.dir, "index.db"));
+    try { legacy.run("DROP INDEX work_replay"); legacy.run("ALTER TABLE work_ops DROP COLUMN replay"); } finally { legacy.close(); }
+    reopened = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+    expect(await reopened.read()).toEqual(expected);
+    const oldWriter = new Database(join(f.store.dir, "index.db"));
+    try { oldWriter.run("UPDATE work_ops SET replay = ''"); } finally { oldWriter.close(); }
+    expect(await reopened.read()).toEqual(expected);
+    reopened.rebuild();
+    expect(await reopened.read()).toEqual(expected);
+    expect(readFileSync(log.file, "utf8")).toBe(log.text);
+  } finally { reopened?.close(); f.close(); }
+});
+
+test("closing a store releases a policy-held WAL reader and rejects rather than returning a partial view", async () => {
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const allowed = new Promise<boolean>(resolve => { release = () => resolve(true); });
+  const f = fixture(() => { enter(); return allowed; }), machine = "9".repeat(16);
+  segment(f, machine, [row(f.project, machine, 0, { progress: 0 }), row(f.project, machine, 1, { progress: 1 })]);
+  const reading = f.store.read().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+  const checkpoint = new Database(join(f.store.dir, "index.db"));
+  checkpoint.run("PRAGMA busy_timeout = 0");
+  try {
+    await entered;
+    expect((checkpoint.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as { busy: number }).busy).toBe(1);
+    f.store.close();
+    expect((checkpoint.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as { busy: number }).busy).toBe(0);
+    release();
+    const result = await reading;
+    expect(result.value).toBeUndefined();
+    expect(result.error?.message).toContain("closed");
+  } finally { release(); await reading; checkpoint.close(); f.close(); }
+});
