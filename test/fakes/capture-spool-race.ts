@@ -15,8 +15,12 @@ function pause() {
     Bun.sleepSync(2);
   }
 }
-const isSpool = (value: unknown) => typeof value === "string" && basename(value).startsWith("spool");
+const isSpool = (value: unknown): value is string => typeof value === "string" && basename(value).startsWith("spool");
 mock.module("node:fs", () => ({ ...native,
+  rmSync(...args: Parameters<typeof fs.rmSync>) {
+    if (mode === "ack" && !stopped && String(args[0]).includes("draining")) { stopped = true; pause(); }
+    return native.rmSync(...args);
+  },
   openSync(...args: Parameters<typeof fs.openSync>) {
     const fd = native.openSync(...args); descriptors.set(fd, String(args[0])); return fd;
   },
@@ -30,13 +34,13 @@ mock.module("node:fs", () => ({ ...native,
     if (mode === "drain" && !stopped && isSpool(args[0]) && String(args[0]).includes("draining")) { stopped = true; pause(); }
     return value;
   },
-  appendFileSync(file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) {
+  appendFileSync(file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) {
     if (mode !== "writer" || stopped || !isSpool(file)) return native.appendFileSync(file, data, options);
     stopped = true;
     const fd = native.openSync(file, "a", 0o600);
     try { pause(); native.writeFileSync(fd, data, options); } finally { native.closeSync(fd); }
   },
-  writeFileSync(file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) {
+  writeFileSync(file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) {
     if (mode !== "writer" || stopped || !isSpool(file)) return native.writeFileSync(file, data, options);
     stopped = true;
     const fd = native.openSync(file, "w", 0o600);
@@ -46,6 +50,6 @@ mock.module("node:fs", () => ({ ...native,
 const { CaptureStore } = await import("../../src/memory/capture.ts");
 const store = new CaptureStore({ home: root, project: "proj", machine: "race-machine", busyTimeoutMs: 1 });
 try {
-  if (mode === "writer") store.append({ project: "proj", agent: "race", event: "Stop", excerpt: "open writer row" });
+  if (mode === "writer" || mode === "publish") store.append({ project: "proj", agent: "race", event: "Stop", excerpt: "open writer row" });
   else store.drain();
 } finally { store.close(); }

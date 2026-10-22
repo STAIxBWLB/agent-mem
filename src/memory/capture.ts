@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
 import { isDenied } from "./platform.ts";
@@ -25,10 +25,10 @@ import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Av
  * ponytail: the cap counts row payload bytes, not the sqlite file's page slack or WAL; a VACUUM blocks writers and
  * stays out of the hook path, so file size can exceed the cap until pages are reused.
  *
- * R2 contention: a writer that cannot take its shard's lock within `busyTimeoutMs` appends the row to the
- * append-only `spool.jsonl` and exits instead of blocking the agent. The next uncontended writer (or an explicit
- * `drain()`) replays the spool; replay is idempotent per spooled line, so a crash between insert and truncation
- * never doubles a row.
+ * R2 contention: a writer that cannot take its shard's lock within `busyTimeoutMs` closes a private segment
+ * before publishing it atomically in `spool/`. The next uncontended writer (or explicit `drain()`) replays it
+ * under a unique claim name. Segments are immutable; a claim's byte offset advances only after the rows commit.
+ * Replay is idempotent per spooled line, so a crash between insert and acknowledgement never doubles a row.
  *
  * Migration: the pre-T1 machine-wide `capture/` (this branch never shipped) is drained per project on open —
  * each project key's rows move into its shard with their original timestamps, and the legacy store is removed
@@ -50,6 +50,13 @@ export const CAPTURE_DRAIN_MAX_LINES = 1000;
 const ROW_OVERHEAD_BYTES = 96;
 const SPOOL = "spool.jsonl";
 const DRAINING = "spool.jsonl.draining";
+const SPOOL_DIR = "spool";
+const SPOOL_MAX_FILES = 32;
+const SPOOL_MAX_BYTES = 256 * 1024;
+const SPOOL_MAX_MS = 25;
+const segmentName = /^spool-[0-9a-f-]+\.jsonl(?:\.offset-(\d+)(-skip)?)?(?:\.draining-[0-9a-f]+)?$/;
+let spoolSequence = 0;
+const spoolToken = () => `${Date.now().toString(16).padStart(13, "0")}-${process.pid.toString(16).padStart(8, "0")}-${(spoolSequence++).toString(16).padStart(8, "0")}-${randomBytes(12).toString("hex")}`;
 
 export interface CaptureInput {
   project: string; agent: string; event: string;
@@ -239,7 +246,13 @@ export class CaptureStore {
 
   /** A line moved from the legacy spool, byte for byte: the shard's drain normalizes whatever format it holds. */
   private spoolRaw(line: string): void {
-    appendFileSync(join(this.dir, SPOOL), line + "\n", { mode: 0o600 });
+    const directory = join(this.dir, SPOOL_DIR), writing = join(directory, ".writing");
+    mkdirSync(writing, { recursive: true, mode: 0o700 });
+    const name = `spool-${spoolToken()}.jsonl`, temporary = join(writing, name);
+    try {
+      writeFileSync(temporary, line + "\n", { mode: 0o600, flag: "wx" }); // closes before readers can see it
+      renameSync(temporary, join(directory, name));
+    } finally { rmSync(temporary, { force: true }); }
   }
 
   /** External-content FTS5 over the excerpts, kept in sync by triggers, so capture search needs no catch-up pass. */
@@ -329,35 +342,78 @@ export class CaptureStore {
   }
 
   private spool(row: NormalizedCapture): void {
-    appendFileSync(join(this.dir, SPOOL), JSON.stringify({ ...row, nonce: randomBytes(4).toString("hex") }) + "\n", { mode: 0o600 });
+    this.spoolRaw(JSON.stringify({ ...row, nonce: randomBytes(12).toString("hex") }));
   }
 
   /**
-   * Replay the spool, finishing a leftover draining file from a crash first. Idempotent per spooled line and bounded
-   * per invocation; malformed or incomplete lines are skipped and counted instead of poisoning every later append.
-   * ponytail: the shared spool/draining names cannot fully close multi-process replacement and already-open-writer
-   * races. Per-writer spool files with unique drain names are the upgrade path if that hard guarantee is required.
+   * Immutable segments with unique claims: a stale drainer can remove only its own old name. Recovery may
+   * steal a live claim; both readers can replay it safely because row ids dedupe and neither mutates its inode.
+   * Offset acknowledgement is another rename, after commit, so a crash always leaves replayable evidence.
+   * ponytail: unpublished files left in .writing by a killed writer are not replayed (they may be partial).
+   * Quiescent maintenance may remove them; durable recovery of an interrupted append needs a journal/fsync.
+   * Legacy fixed names are accepted for upgrade, but old-version writers must stop before upgrading: their
+   * already-open shared inode cannot be made immutable by a newer reader.
    */
   drain(): { drained: number; skipped: number } {
-    let budget = CAPTURE_DRAIN_MAX_LINES, drained = 0, skipped = 0;
+    let budget = CAPTURE_DRAIN_MAX_LINES, byteBudget = SPOOL_MAX_BYTES, drained = 0, skipped = 0;
     if (this.contended) return { drained, skipped };
+    const started = performance.now();
+    const directory = join(this.dir, SPOOL_DIR);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const candidates: { file: string; name: string; offset: number; skip: boolean }[] = [];
+    // Fixed-name imports are only compatibility inputs; all acknowledgements use unique names thereafter.
+    for (const name of [DRAINING, SPOOL]) {
+      if (existsSync(join(this.dir, name))) candidates.push({ file: join(this.dir, name), name: `spool-${spoolToken()}.jsonl`, offset: 0, skip: false });
+    }
+    const entries = opendirSync(directory);
+    try {
+      for (let scanned = 0; scanned < 256 && candidates.length < SPOOL_MAX_FILES; scanned++) {
+        const entry = entries.readSync();
+        if (!entry) break;
+        const match = segmentName.exec(entry.name);
+        if (entry.isFile() && match) candidates.push({ file: join(directory, entry.name), name: entry.name.split(".offset-")[0]!.split(".draining-")[0]!,
+          offset: Number(match[1] ?? 0), skip: !!match[2] });
+      }
+    } finally { entries.closeSync(); }
     const validRow = (row: Partial<NormalizedCapture>): row is NormalizedCapture =>
       typeof row.at === "string" && row.at.length > 0 && typeof row.project === "string" && row.project.length > 0
       && typeof row.agent === "string" && row.agent.length > 0 && typeof row.event === "string" && row.event.length > 0
       && (row.tool === null || typeof row.tool === "string") && Array.isArray(row.paths) && row.paths.every((p) => typeof p === "string")
       && (row.status === null || typeof row.status === "string") && typeof row.excerpt === "string"
       && typeof row.bytes === "number" && Number.isFinite(row.bytes) && row.bytes >= 0;
-    for (const renameFirst of [false, true]) {
-      const file = join(this.dir, DRAINING);
-      if (renameFirst && existsSync(join(this.dir, SPOOL))) {
-        if (budget <= 0) break;
-        // link+remove, not rename: a draining file another process owns is never clobbered at claim time.
-        try { linkSync(join(this.dir, SPOOL), file); rmSync(join(this.dir, SPOOL)); } catch { continue; }
+    candidates.sort((a, b) => a.name.localeCompare(b.name));
+    for (const source of candidates) {
+      if (budget <= 0 || byteBudget <= 0 || performance.now() - started >= SPOOL_MAX_MS) break;
+      const file = join(directory, `${source.name}.offset-${source.offset}${source.skip ? "-skip" : ""}.draining-${randomBytes(12).toString("hex")}`);
+      try { renameSync(source.file, file); } catch { continue; } // another drainer claimed this exact name
+      let bytes: Buffer, size: number;
+      try {
+        const fd = openSync(file, "r");
+        try {
+          size = statSync(file).size;
+          bytes = Buffer.alloc(Math.min(byteBudget, Math.max(0, size - source.offset)));
+          bytes = bytes.subarray(0, readSync(fd, bytes, 0, bytes.length, source.offset));
+        } finally { closeSync(fd); }
+      } catch { continue; } // a recovery reader may already have moved our unique claim
+      byteBudget -= bytes.length;
+      let consumed = 0, skipping = source.skip;
+      const batch: string[] = [];
+      while (consumed < bytes.length && batch.length < budget) {
+        const newline = bytes.indexOf(10, consumed);
+        if (newline < 0) {
+          if (source.offset + bytes.length < size) {
+            if (consumed === 0) { consumed = bytes.length; skipping = true; } // oversize malformed line: discard until newline
+            break;
+          }
+          if (!skipping) batch.push(bytes.subarray(consumed).toString("utf8"));
+          else skipped++;
+          consumed = bytes.length; skipping = false; break;
+        }
+        const line = bytes.subarray(consumed, newline).toString("utf8");
+        consumed = newline + 1;
+        if (skipping) { skipped++; skipping = false; }
+        else if (line) batch.push(line);
       }
-      if (!existsSync(file)) continue;
-      const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-      if (!lines.length) { rmSync(file, { force: true }); continue; }
-      const batch = lines.slice(0, Math.max(0, budget));
       try {
         this.db.transaction(() => {
           for (const line of batch) {
@@ -379,8 +435,12 @@ export class CaptureStore {
         break; // still contended: the spool stays for the next invocation
       }
       budget -= batch.length;
-      if (batch.length === lines.length) rmSync(file, { force: true });
-      else { writeFileSync(file, lines.slice(batch.length).join("\n") + "\n", { mode: 0o600 }); break; }
+      const next = source.offset + consumed;
+      if (next >= size) rmSync(file, { force: true });
+      else {
+        // Never rewrite a shared inode. Only the owner of this exact claim can acknowledge its prefix.
+        try { renameSync(file, join(directory, `${source.name}.offset-${next}${skipping ? "-skip" : ""}`)); } catch { /* recovered elsewhere */ }
+      }
     }
     return { drained, skipped };
   }

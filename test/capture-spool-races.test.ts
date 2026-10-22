@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -70,3 +70,71 @@ test("a writer opened before a drain publishes a complete recoverable segment", 
     expect(f.store.rows().map(row => row.excerpt)).toEqual(["open writer row"]);
   } finally { if (f.lock.inTransaction) f.lock.run("ROLLBACK"); f.lock.close(); f.store.close(); }
 }, 15000);
+
+test("two contended subprocess writers and two drainers retain identical events exactly once", async () => {
+  const f = fixture();
+  try {
+    f.lock.run("BEGIN IMMEDIATE");
+    const writers = [child(f.root, "publish", "one"), child(f.root, "publish", "two")];
+    expect(await Promise.all(writers.map(proc => proc.exited))).toEqual([0, 0]);
+    f.lock.run("ROLLBACK");
+    const drainers = [child(f.root, "recover", "one"), child(f.root, "recover", "two")];
+    expect(await Promise.all(drainers.map(proc => proc.exited))).toEqual([0, 0]);
+    f.store.drain();
+    expect(f.store.rows().map(row => row.excerpt)).toEqual(["open writer row", "open writer row"]);
+    expect(f.store.drain()).toEqual({ drained: 0, skipped: 0 });
+  } finally { if (f.lock.inTransaction) f.lock.run("ROLLBACK"); f.lock.close(); f.store.close(); }
+}, 15000);
+
+const legacyLine = (excerpt: string, index: number) => JSON.stringify({ project: "proj", agent: "race", event: "Stop", excerpt,
+  at: "2026-10-22T01:00:00.000Z", nonce: String(index) });
+
+test("legacy backlog advances immutable offsets across line and byte budgets without duplicates", () => {
+  const f = fixture();
+  try {
+    const lines = Array.from({ length: 1205 }, (_, i) => legacyLine(`row ${i} ` + "한".repeat(120), i));
+    writeFileSync(join(f.store.dir, "spool.jsonl"), lines.join("\n") + "\n");
+    const first = f.store.drain();
+    expect(first.drained).toBeGreaterThan(0);
+    expect(first.drained).toBeLessThanOrEqual(1000);
+    expect(first.drained).toBeLessThan(1205);
+    expect(readdirSync(join(f.store.dir, "spool")).some(name => name.includes(".offset-"))).toBe(true);
+    for (let i = 0; i < 20 && f.store.rows({ limit: 2000 }).length < 1205; i++) f.store.drain();
+    expect(f.store.rows({ limit: 2000 }).map(row => row.excerpt)).toEqual(lines.map((_, i) => `row ${i} ` + "한".repeat(120)));
+    expect(f.store.drain()).toEqual({ drained: 0, skipped: 0 });
+  } finally { f.lock.close(); f.store.close(); }
+});
+
+test("an oversized malformed legacy line cannot hide a later valid row across byte windows", () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.store.dir, "spool.jsonl.draining"), "x".repeat(600000) + "\n" + legacyLine("after oversized line", 0) + "\n");
+    let skipped = 0;
+    for (let i = 0; i < 8 && f.store.rows().length === 0; i++) skipped += f.store.drain().skipped;
+    expect(skipped).toBe(1);
+    expect(f.store.rows().map(row => row.excerpt)).toEqual(["after oversized line"]);
+  } finally { f.lock.close(); f.store.close(); }
+});
+
+test("a crash after commit before acknowledgement replays without doubling the row", async () => {
+  const f = fixture();
+  try {
+    spool(f.store, f.lock, "committed before crash");
+    const drainer = child(f.root, "ack", "ack");
+    await ready(f.root, "ack");
+    expect(f.store.rows().map(row => row.excerpt)).toEqual(["committed before crash"]);
+    drainer.kill(); await drainer.exited;
+    expect(f.store.drain()).toEqual({ drained: 0, skipped: 0 });
+    expect(f.store.rows().map(row => row.excerpt)).toEqual(["committed before crash"]);
+  } finally { f.lock.close(); f.store.close(); }
+}, 15000);
+
+test("the line budget acknowledges exactly its prefix and resumes the same immutable legacy file", () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.store.dir, "spool.jsonl"), Array.from({ length: 1005 }, (_, i) => legacyLine(`short ${i}`, i)).join("\n") + "\n");
+    expect(f.store.drain()).toEqual({ drained: 1000, skipped: 0 });
+    expect(f.store.drain()).toEqual({ drained: 5, skipped: 0 });
+    expect(f.store.rows({ limit: 2000 })).toHaveLength(1005);
+  } finally { f.lock.close(); f.store.close(); }
+});
