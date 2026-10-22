@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -137,4 +137,50 @@ test("the line budget acknowledges exactly its prefix and resumes the same immut
     expect(f.store.drain()).toEqual({ drained: 5, skipped: 0 });
     expect(f.store.rows({ limit: 2000 })).toHaveLength(1005);
   } finally { f.lock.close(); f.store.close(); }
+});
+
+function paddedSpoolLine(excerpt: string, index: number, bytes: number): string {
+  const row = { project: "proj", agent: "race", event: "Stop", excerpt, at: "2026-10-22T01:00:00.000Z", nonce: String(index), padding: "" };
+  const paddingBytes = bytes - 1 - Buffer.byteLength(JSON.stringify(row));
+  if (paddingBytes < 0) throw new Error("fixture line is too short");
+  const line = JSON.stringify({ ...row, padding: " ".repeat(paddingBytes) }) + "\n";
+  expect(Buffer.byteLength(line)).toBe(bytes);
+  return line;
+}
+
+test("a leftover byte window defers a complete multibyte row instead of marking it oversized", () => {
+  const f = fixture();
+  const clock = spyOn(performance, "now").mockReturnValue(0);
+  try {
+    const directory = join(f.store.dir, "spool");
+    mkdirSync(directory);
+    writeFileSync(join(directory, "spool-0001.jsonl"), Array.from({ length: 100 }, (_, index) => paddedSpoolLine(`before ${index}`, index, 2620)).join(""));
+    const target = "leftover 한글🙂 row";
+    writeFileSync(join(directory, "spool-0002.jsonl"), paddedSpoolLine(target, 100, 600));
+    const first = f.store.drain();
+    expect(first).toEqual({ drained: 100, skipped: 0 });
+    let skipped = first.skipped;
+    for (let invocation = 0; invocation < 3; invocation++) skipped += f.store.drain().skipped;
+    expect(skipped).toBe(0);
+    expect(f.store.rows({ limit: 2000 }).map(row => row.excerpt)).toEqual([...Array.from({ length: 100 }, (_, index) => `before ${index}`), target]);
+  } finally { clock.mockRestore(); f.lock.close(); f.store.close(); }
+});
+
+test("the 32-file claim cap includes both legacy inputs as well as ready segments", () => {
+  const f = fixture();
+  const clock = spyOn(performance, "now").mockReturnValue(0);
+  try {
+    const directory = join(f.store.dir, "spool");
+    mkdirSync(directory);
+    writeFileSync(join(f.store.dir, "spool.jsonl"), "");
+    writeFileSync(join(f.store.dir, "spool.jsonl.draining"), "");
+    for (let index = 0; index < 40; index++) writeFileSync(join(directory, `spool-${index.toString(16).padStart(4, "0")}.jsonl`), "");
+    expect(f.store.drain()).toEqual({ drained: 0, skipped: 0 });
+    const remaining = readdirSync(directory).length
+      + Number(existsSync(join(f.store.dir, "spool.jsonl")))
+      + Number(existsSync(join(f.store.dir, "spool.jsonl.draining")));
+    expect(42 - remaining).toBe(32);
+    expect(f.store.drain()).toEqual({ drained: 0, skipped: 0 });
+    expect(readdirSync(directory)).toEqual([]);
+  } finally { clock.mockRestore(); f.lock.close(); f.store.close(); }
 });

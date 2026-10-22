@@ -29,6 +29,7 @@ mock.module("node:fs", () => ({ ...native,
     if (mode === "drain" && !stopped && descriptors.get(args[0])?.includes("draining")) { stopped = true; pause(); }
     return value;
   },
+  // readFileSync/appendFileSync retain the old shared-spool baseline for red-first race proofs.
   readFileSync(...args: Parameters<typeof fs.readFileSync>) {
     const value = native.readFileSync(...args);
     if (mode === "drain" && !stopped && isSpool(args[0]) && String(args[0]).includes("draining")) { stopped = true; pause(); }
