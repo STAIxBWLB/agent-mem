@@ -402,7 +402,8 @@ export class CaptureStore {
         const newline = bytes.indexOf(10, consumed);
         if (newline < 0) {
           if (source.offset + bytes.length < size) {
-            if (consumed === 0) { consumed = bytes.length; skipping = true; } // oversize malformed line: discard until newline
+            // A short window may only be the allowance left after another file, not an oversized row.
+            if (consumed === 0 && bytes.length === SPOOL_MAX_BYTES) { consumed = bytes.length; skipping = true; }
             break;
           }
           if (!skipping) batch.push(bytes.subarray(consumed).toString("utf8"));
