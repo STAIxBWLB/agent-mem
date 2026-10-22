@@ -75,6 +75,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   alias: { description: "Person-reviewed project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
     list: { description: "List alias ops" },
     add: { description: "Map one key onto its canonical key (append-only op)", args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
+    remove: { description: "Remove an alias so the key resolves to itself again (append-only op, the latest wins)", args: [{ name: "alias-key" }], mutates: true },
   } },
   completion: { description: "Print static shell completion", args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
   help: { description: "Show help" }, version: { description: "Show version" },

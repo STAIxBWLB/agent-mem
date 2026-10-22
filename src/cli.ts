@@ -9,7 +9,7 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, type CandidateFilter } from "./memory/candidates.ts";
-import { appendAlias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -219,8 +219,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const op = appendAlias(memoryHome(), { alias: from, key: to, actor: "person", machine: machineId(memoryHome()).id });
       return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} -> ${op.key}`;
     }
+    if (parsed.path[1] === "remove") {
+      // #27 option 2: person only (ordinary CLI refusal of agent markers above, a TTY through `mutates`), append only, the latest op wins.
+      const [from] = parsed.positionals;
+      if (!from || parsed.positionals.length !== 1) throw new Error("usage: amem alias remove <alias-key>");
+      const op = appendUnalias(memoryHome(), { alias: from, actor: "person", machine: machineId(memoryHome()).id });
+      return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} removed`;
+    }
     const ops = listAliases(memoryHome());
-    return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})`).join("\n") : "no aliases recorded";
+    return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => op.op === "alias" ? `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})` : `${op.at}  ${op.alias} removed  (${op.actor})`).join("\n") : "no aliases recorded";
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");

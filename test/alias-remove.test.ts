@@ -68,11 +68,12 @@ test("listAliases keeps the history and an older reader's view: the unalias line
   expect(resolveAlias(base, "x")).toBe("x");
 });
 
-test("the catalog lists an alias only while it is in force (#27)", () => {
+test("the catalog lists an alias only while it is in force (#27)", async () => {
   const { base } = home();
   const store = new MemoryStore({ memoryDir: base, deferPromotions: true });
   store.note({ op: "note", project: "canonical/key", scope: "project", tier: "long", kind: "finding", text: "a canonical row", peer: "person", source: "person", about: [] });
   store.close();
+  await migrateShards({ memoryDir: base, mode: "apply", authorizedPerson: true, tty: true });                 // the catalog walks shards: it needs the canonical key's shard
   appendAlias(base, { alias: "old/key", key: "canonical/key", actor: "person", machine: "m1" });
   expect(scanCatalog(base).find(p => p.key === "canonical/key")?.aliases ?? []).toEqual(["old/key"]);
   appendUnalias(base, { alias: "old/key", actor: "person", machine: "m1" });
