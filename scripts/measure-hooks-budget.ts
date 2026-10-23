@@ -3,13 +3,14 @@
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
+import { verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming } from "./hook-timing-check.ts";
 
 const RUNS = { plain: 40, contention: 15, sessionStart: 20 }, WALL_MS = 150, RSS_MB = 100;
@@ -18,6 +19,7 @@ const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
+const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
 let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 function members(pgid: number): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -27,8 +29,22 @@ function members(pgid: number): number[] {
     return match && Number(match[2]) === pgid ? [Number(match[1])] : [];
   });
 }
-function invoke(event: "PostToolUse" | "SessionStart"): Sample {
-  const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length;
+function pendingInvocation(event: string, excerpt: string): boolean {
+  const dir = join(f.base, "hook-spool");
+  for (const folder of [dir, join(dir, ".capacity")]) for (const name of existsSync(folder) ? readdirSync(folder) : []) {
+    if (!/^hook-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
+    try {
+      const file = join(folder, name), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.mode & 0o077 || stat.size > 72 * 1024) continue;
+      const row = JSON.parse(readFileSync(file, "utf8")), after = lstatSync(file);
+      if (stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) continue;
+      if (row.schema === "agent-mem.hook-capture/v1" && row.cwd === f.cwd && row.capture?.agent === "claude" && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
+    } catch { /* Incomplete/unreadable evidence is never the positive deferral exception. */ }
+  }
+  return false;
+}
+function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers): Sample {
+  const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
   const start = performance.now();
   // Observe each fixed owned child as well as the outer CLI group; native metadata supervisors also own detached groups.
@@ -37,10 +53,20 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
   const wallMs = performance.now() - start;
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
-  const buns = workers.filter(child => child.kind === "worker"), native = workers.filter(child => child.kind === "native");
-  if (event === "SessionStart" ? buns.length !== 0 || native.length < 1 || native.length > 65 : buns.length !== 1 || native.length !== 0)
-    throw new Error("owned-process observation did not match the single-boot executable event");
+  // Register every observed group before any assertion, including a malformed/extra-worker observation.
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
+  const evidence = observer.evidence().slice(beforeEvidence).filter(row => row.pid === result.pid);
+  const pending = workers.length === 0 && pendingInvocation(event, input.tool_response);
+  try {
+    const observation = verifyHookProcessObservation(event, workers, evidence, pending);
+    if (observation.deferred) {
+      deferredWorkers[group]++;
+      if (group === "plain") verifyPlainHookDeferrals(deferredWorkers.plain, RUNS.plain);
+    }
+  } catch (error) {
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+    throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
+  }
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);
   ownedGroups.delete(result.pid);
@@ -77,12 +103,12 @@ try {
   await f.seed();
   const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
   const dir = capture.dir, baseline = capture.stats().rows; capture.close();
-  const plain = Array.from({ length: RUNS.plain }, () => invoke("PostToolUse"));
+  const plain = Array.from({ length: RUNS.plain }, () => invoke("PostToolUse", "plain"));
   const holder = new Database(join(dir, "capture.db"));
   let contended: Sample[];
   try {
     holder.run("PRAGMA busy_timeout=0"); holder.run("BEGIN IMMEDIATE");
-    contended = Array.from({ length: RUNS.contention }, () => invoke("PostToolUse"));
+    contended = Array.from({ length: RUNS.contention }, () => invoke("PostToolUse", "spoolAndExit"));
     const spool = join(dir, "spool");
     // A drainer claims a segment before its SQLite transaction; contention retains the renamed immutable receipt.
     const segmentName = /^spool-[0-9a-f-]+\.jsonl(?:\.offset-\d+(?:-skip)?)?(?:\.draining-[0-9a-f]+)?$/;
@@ -96,7 +122,7 @@ try {
   // Capture is durable before optional work; a bounded series of real invocations observes replay.
   // Every barrier is included in R1 and R2, and every accepted event must appear exactly once.
   for (let pass = 0; pass < 4; pass++) {
-    drains.push(invoke("PostToolUse"));
+    drains.push(invoke("PostToolUse", "drain"));
     const check = new CaptureStore({ memoryDir: f.base, project: f.project });
     let rows: number[];
     try { rows = check.rows().flatMap(row => {
@@ -107,7 +133,7 @@ try {
     if (rows.length === acceptedWorkload) break;
     if (pass === 3) throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
   }
-  const sessionStart = Array.from({ length: RUNS.sessionStart }, () => invoke("SessionStart"));
+  const sessionStart = Array.from({ length: RUNS.sessionStart }, () => invoke("SessionStart", "sessionStart"));
   const finalStore = new CaptureStore({ memoryDir: f.base, project: f.project });
   const recorded = new Map<number, string>(), pending = new Map<number, string>();
   try {
@@ -144,10 +170,13 @@ try {
       timeoutPaths.push({ ...numeric, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
     } finally { timeoutFixture.close(); }
   }
-  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   console.log(JSON.stringify(report, null, 2));
   if (!report.pass) process.exitCode = 1;
 } finally {
+  const deferralReport = { diagnostic: "R1-worker-deferrals", ...deferredWorkers, maxPlain: MAX_PLAIN_DEFERRED };
+  console.error(JSON.stringify(deferralReport));
+  if (process.env.GITHUB_STEP_SUMMARY) try { appendFileSync(process.env.GITHUB_STEP_SUMMARY, `R1 optional-worker deadline deferrals: plain ${deferredWorkers.plain}/${RUNS.plain} (maximum ${MAX_PLAIN_DEFERRED}), contention ${deferredWorkers.spoolAndExit}, drain ${deferredWorkers.drain}, SessionStart ${deferredWorkers.sessionStart}.\n`); } catch { /* The console retains the same numeric receipt if the summary is unavailable. */ }
   // Only groups created by this script, and only while a fresh process-table read still shows members.
   for (const group of ownedGroups) if (members(group).length) try { process.kill(-group, "SIGKILL"); } catch { /* an already-ended group is clean */ }
   for (const [pid, detached] of ownedWorkers) {
