@@ -241,3 +241,24 @@ test("--to at a filesystem root or an empty name is refused with an error about 
   await expect(exportProject(base, "github.com/o/a", { to: "/" })).rejects.toThrow(/names a file/);
   await expect(exportProject(base, "github.com/o/a", { to: "   " })).rejects.toThrow(/--to/);
 });
+
+// #15 T5 review (codex-connector P2): the bundle holds what the project's own reads show, so a work log kept under a reviewed old key is in it.
+test("export includes the work lists of a key aliased to the project, also when only the alias has a work log, and never another project's", async () => {
+  const { dir, base } = home();
+  const A = "github.com/o/a", OLD = "old-a", OTHER = "github.com/o/other";
+  capture(dir, A, ["alpha"]); capture(dir, OLD, ["old row"]); capture(dir, OTHER, ["other row"]);
+  for (const [project, title] of [[OLD, "checklist of the earlier name"], [OTHER, "checkchecklist of another project"]] as const) {
+    const work = new WorkListStore({ base, project, policy: () => true }); await work.write("checklist", { title }); work.close();
+  }
+  appendAlias(base, { alias: OLD, key: A, actor: "person", machine: "m1" });
+  const onlyAlias = await exportProject(base, A, { to: out(dir, "only-alias") });
+  const text = readFileSync(onlyAlias.file, "utf8");
+  expect(text).toContain("checklist of the earlier name"); expect(text).not.toContain("checkchecklist of another project");
+  expect(onlyAlias.counts.workLists).toBe(1);
+
+  const work = new WorkListStore({ base, project: A, policy: () => true }); await work.write("current", { title: "checklist of the current name" }); work.close();
+  const both = await exportProject(base, A, { to: out(dir, "both") });
+  const bothText = readFileSync(both.file, "utf8");
+  expect(bothText).toContain("checklist of the earlier name"); expect(bothText).toContain("checklist of the current name");
+  expect(both.counts.workLists).toBe(2);
+});

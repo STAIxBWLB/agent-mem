@@ -102,8 +102,10 @@ export async function exportProject(base: string, key: string, opts: { to: strin
     }
     out(`],"workLists":[`);
     first = true;
-    if (existsSync(join(shardDir(base, project), "work"))) {
-      const work = new WorkListStore({ base, project, policy: allowed, exact: true });
+    // The bundle holds what the project's own reads show: the canonical work log and that of every key aliased to it (the same reconciliation the CLI, MCP and brief use).
+    const workKeys = [project, ...aliasedKeys(base, project)];
+    if (workKeys.some(key => existsSync(join(shardDir(base, key), "work")))) {
+      const work = new WorkListStore({ base, project, policy: allowed, aliases: workKeys.slice(1) });
       stores.push({ close: () => work.close() });
       for (const list of await work.read(undefined, true)) { out(`${first ? "" : ","}${JSON.stringify(list)}`); first = false; counts.workLists++; }
     }
