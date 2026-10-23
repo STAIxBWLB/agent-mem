@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stageHookCapture, drainHookCaptures, hookCapturePending } from "../src/hook-spool.ts";
+import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
@@ -84,7 +85,7 @@ test("wrong scope never replays reserve and policy retirement never becomes ordi
   } finally { store.close(); }
 });
 
-test("stale cwd reserve records stay pending and exhaustion refuses without deleting accepted work", async () => {
+test("removed cwd reserve records retire only the needed slot with a counted body deletion", async () => {
   const f = fixture(), foreign = fixture();
   const stale = await stageHookCapture("PostToolUse", { prompt: "removed cwd reserve" }, { cwd: foreign.cwd, base: f.base });
   mkdirSync(capacity(f), { mode: 0o700 }); renameSync(join(active(f), stale!.name), join(capacity(f), stale!.name));
@@ -95,8 +96,8 @@ test("stale cwd reserve records stay pending and exhaustion refuses without dele
   }
   rmSync(foreign.cwd, { recursive: true, force: true });
   await full(f);
-  await expect(stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true })).rejects.toThrow("hook storage full");
-  expect(hookCapturePending(f.base, stale!.name)).toBe(true);
+  await expect(stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true })).resolves.toMatchObject({ deferred: true });
+  expect(readMetrics(f.base).filter(row => row.captureDropReason === "cwd_removed").reduce((n,row) => n + (row.captureDrops ?? 0), 0)).toBe(1);
   expect(names(capacity(f))).toHaveLength(32);
   expect(names(join(active(f), ".quarantine"))).toHaveLength(0);
 });

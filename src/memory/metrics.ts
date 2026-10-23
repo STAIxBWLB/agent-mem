@@ -1,8 +1,8 @@
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; idleMB?: number; captureDrops?: number }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {
@@ -35,3 +35,29 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
   return out;
 }
 
+
+export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown";
+const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown"];
+/** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. */
+export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
+  const counts: Partial<Record<CaptureDropReason, number>> = {};
+  let fd: number | undefined;
+  try {
+    fd = openSync(metricsPath(base), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd); if (!stat.isFile()) return counts;
+    const start = Math.max(0, stat.size - METRICS_MAX_BYTES), bytes = Buffer.alloc(stat.size - start);
+    const length = readSync(fd, bytes, 0, bytes.length, start);
+    let text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+    if (start) text = text.slice(text.indexOf("\n") + 1);
+    for (const line of text.split("\n").filter(Boolean).slice(-METRICS_KEEP)) {
+      try {
+        const sample = JSON.parse(line) as MetricSample;
+        if (sample.kind !== "hook" || !DROP_REASONS.includes(sample.captureDropReason!) || !Number.isSafeInteger(sample.captureDrops) || sample.captureDrops! <= 0) continue;
+        const reason = sample.captureDropReason!;
+        counts[reason] = (counts[reason] ?? 0) + sample.captureDrops!;
+      } catch { /* A malformed metric is never a notice. */ }
+    }
+  } catch { /* Metric availability never denies the native call. */ }
+  finally { if (fd !== undefined) closeSync(fd); }
+  return counts;
+}

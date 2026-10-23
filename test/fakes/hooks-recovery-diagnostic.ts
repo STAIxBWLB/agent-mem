@@ -14,9 +14,9 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  if(path.endsWith('/hooks.ts')){
  add('  let pending: PendingHookCapture | undefined, full = false;', 'globalThis.__recoveryNote(1);');
  add('  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);','globalThis.__recoveryNote(2,deadline-performance.now());');
- add('    const signature = await hookProcessSignature','globalThis.__recoveryNote(3,remaining());');
+ add('    const project = resolveAlias(base, identity.value);','globalThis.__recoveryNote(3,remaining());');
  add('    if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','globalThis.__recoveryNote(4,remaining(),Number(full));');
- add('    const { sessionStartBrief } = await import','globalThis.__recoveryNote(5,remaining());');
+ add('    const losses = captureDropSummary(base);','globalThis.__recoveryNote(5,remaining());');
  add('    result.pending = !!pending && !result.captured;','globalThis.__recoveryNote(6,remaining());');
  add('  const workDeadline = deadline - WORKER_CLEANUP_MS;','globalThis.__recoveryNote(7,deadline-performance.now());');
  add('    if (!answer || !answer[1]) return result;','globalThis.__recoveryNote(8,workDeadline-performance.now(),Number(!!answer),answer?.[1]?.length??0);');
@@ -27,9 +27,9 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  }else{
  add('  if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp)','globalThis.__recoveryNote(20,options.timeRemaining?.()??-1,Number(!!stamp),Number(options.expectedScope===undefined||options.expectedScope===stamp));');
  add('  const policy = createStandalonePolicy(options.policy), dir = directory(base);','let __seen=0,__cwd=0,__stamp=0;');
- const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && (m[3] === stamp || m[3] === "0".repeat(64));';
+ const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;';
  if(contents.split(filter).length!==2)throw new Error('recovery stamp anchor changed');
- contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(m[3]===stamp)__stamp++;}return m&&m[2]===hash(cwd)&&(m[3]===stamp||m[3]==="0".repeat(64));');
+ contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(m[3]===stamp)__stamp++;}return m&&m[2]===hash(cwd)&&m[3]===stamp;');
  add('  let remaining = DRAIN_BYTES, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
  add('    if (options.timeRemaining && options.timeRemaining() < 8','globalThis.__recoveryNote(21,options.timeRemaining?.()??-1,captured.length,blocked);');
  add('      append(input, hash(record.bytes));','globalThis.__recoveryNote(22,options.timeRemaining?.()??-1);');

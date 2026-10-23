@@ -11,17 +11,20 @@ afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
   for (const fixture of fixtures.splice(0)) fixture.close();
 });
+function unsupportedConfig(fixture: ReturnType<typeof hookFixture>) {
+  const home = fixture.env.HOME!;
+  for (let n = 1; n <= 5; n++) writeFileSync(join(home, `deep-${n}.gitconfig`), n === 5 ? "[user]\n name = Deep\n" : `[include]\n path = deep-${n + 1}.gitconfig\n`);
+  writeFileSync(join(home, ".gitconfig"), "[include]\n path = deep-1.gitconfig\n");
+}
 function includedConfig() {
   const fixture = hookFixture("https://example.invalid/unknown-scope/native-project.git"); fixtures.push(fixture);
   process.env.HOME = fixture.env.HOME;
-  const included = join(fixture.env.HOME!, "included.gitconfig");
-  writeFileSync(included, "[user]\n  name = Fixture Include\n");
-  writeFileSync(join(fixture.env.HOME!, ".gitconfig"), `[include]\n  path = ${included}\n`);
+  unsupportedConfig(fixture);
   return fixture;
 }
 const cacheFiles = (base: string) => existsSync(join(base, "hook-project")) ? readdirSync(join(base, "hook-project")) : [];
 
-test("unknown included Git configuration resolves natively without publishing or trusting a cache", async () => {
+test("unknown over-depth included Git configuration resolves natively without publishing or trusting a cache", async () => {
   const fixture = includedConfig();
   expect(hookCaptureScope(fixture.cwd, fixture.base)).toBeUndefined();
   const options = { cwd: fixture.cwd, base: fixture.base, scope: undefined, timeRemaining: () => 3000 };
@@ -48,6 +51,7 @@ test("an unknown scope never reuses a formerly valid cache after an included rem
   const included = join(fixture.env.HOME!, "remote.gitconfig");
   writeFileSync(included, '[remote "origin"]\n  url = https://example.invalid/cache/new-project.git\n');
   appendFileSync(join(fixture.cwd, ".git", "config"), `\n[include]\n  path = ${included}\n`);
+  unsupportedConfig(fixture);
   expect(hookCaptureScope(fixture.cwd, fixture.base)).toBeUndefined();
   expect(await resolveHookProjectAsync(options, { rssKB: 0, rawRssKB: 0 })).toBe("example.invalid/cache/new-project");
   expect(cacheFiles(fixture.base)).toHaveLength(1);

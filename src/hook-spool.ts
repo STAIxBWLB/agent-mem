@@ -6,6 +6,7 @@ import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
 import { normalizeCaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 
 const SCHEMA = "agent-mem.hook-capture/v1";
@@ -39,9 +40,9 @@ function entries(base: string, capacity = false): { name: string; size: number; 
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   const reader = opendirSync(dir), rows: { name: string; size: number; modified: number }[] = [];
   try {
-    for (let scanned = 0; scanned <= maximum + 3; scanned++) {
+    for (let scanned = 0; scanned <= maximum + 4; scanned++) {
       const entry = reader.readSync(); if (!entry) return rows;
-      if ([".writing", ".quarantine", ".capacity"].includes(entry.name) && entry.isDirectory()) continue;
+      if ([".writing", ".quarantine", ".capacity", ".maintenance"].includes(entry.name) && entry.isDirectory()) continue;
       if (rows.length === maximum) return rows;
       const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
       if (item) rows.push({ name: entry.name, size: item.size, modified: item.mtimeMs });
@@ -65,9 +66,9 @@ function validateConfigValue(value: string): void {
   if (quoted) throw new Error("unclosed Git config quote");
 }
 
-/** Strict subset, not a substitute Git parser. Relevant escapes, continuations, includes and ambiguous origins
- * remain unknown; silently guessing one could bind a pending private event to another project. */
-function identityConfig(text: string): [string, string][] {
+/** Strict subset, not a substitute Git parser. Native Git decides include conditions and values;
+ * this parser discovers bounded candidate dependencies without applying them as active config. */
+function identityConfig(text: string, include?: (path: string, condition?: string) => void): [string, string][] {
   const relevant: [string, string][] = [];
   let section = "", subsection = "";
   for (const raw of text.split(/\r?\n/)) {
@@ -77,7 +78,6 @@ function identityConfig(text: string): [string, string][] {
       const match = /^\[([a-zA-Z0-9-]+)(?:\s+"([^"\\]*)")?\]\s*(?:[#;].*)?$/.exec(line);
       if (!match) throw new Error("unsupported Git config section");
       section = match[1]!.toLowerCase(); subsection = match[2] ?? "";
-      if (section === "include" || section === "includeif") throw new Error("unsupported Git config include");
       continue;
     }
     const match = /^([a-zA-Z][a-zA-Z0-9-]*)(?:\s*=\s*(.*))?$/.exec(line);
@@ -85,7 +85,8 @@ function identityConfig(text: string): [string, string][] {
     const key = match[1]!.toLowerCase();
     let value = match[2] ?? "true";
     validateConfigValue(value);
-    const deciding = section === "remote" && subsection === "origin" && key === "url"
+    const includePath = (section === "include" || section === "includeif") && key === "path";
+    const deciding = includePath || section === "remote" && subsection === "origin" && key === "url"
       || section === "url" && key === "insteadof"
       || section === "core" && ["bare", "worktree"].includes(key)
       || section === "extensions" && key === "worktreeconfig";
@@ -99,7 +100,10 @@ function identityConfig(text: string): [string, string][] {
       if (value.includes('"')) throw new Error("unsupported Git config value");
       value = value.split(/[#;]/, 1)[0]!.trim();
     }
-    if (section === "remote" && subsection === "origin" && key === "url") relevant.push(["origin", value]);
+    if (includePath) {
+      if (!value || section === "includeif" && !subsection) throw new Error("unsupported Git include path");
+      include?.(value, section === "includeif" ? subsection : undefined);
+    } else if (section === "remote" && subsection === "origin" && key === "url") relevant.push(["origin", value]);
     else if (section === "url" && key === "insteadof") relevant.push([`rewrite:${subsection}`, value]);
     else if (section === "core" && ["bare", "worktree"].includes(key) || section === "extensions" && key === "worktreeconfig") {
       if (key !== "worktree") {
@@ -145,8 +149,36 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
     // The fixed worker keeps HOME but strips inherited Git routing/override environment. Check the ordinary
     // system locations conservatively too; unsupported identity-affecting configuration refuses resolution.
     const configuration: [string, string][] = [];
-    for (const file of new Set(["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig", ...(cacheValidity && extraGitConfig ? [extraGitConfig] : [])])) configuration.push(...identityConfig(content(file)));
-    for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) configuration.push(...identityConfig(content(file)));
+    let hasIncludes = false, branchConditional = false;
+    const includedFiles = new Map<string, string>(), configurationBytes = new Map<string, string>(), includeDepths = new Map<string, number>();
+    // ponytail: at most four nested include levels and sixteen candidate files (64 KiB each).
+    // Conditions are not interpreted here; broader Git syntax needs a bounded native dependency receipt.
+    const configurationFile = (file: string, depth = 0, ancestors = new Set<string>()): [string, string][] => {
+      const text = content(file); configurationBytes.set(file, hash(text));
+      if (ancestors.has(file)) throw new Error("cyclic Git config include");
+      const next = new Set(ancestors).add(file);
+      let nesting = 0;
+      const relevant = identityConfig(text, (candidate, condition) => {
+        hasIncludes = true;
+        if (depth >= 4 || candidate.startsWith("~") && !candidate.startsWith("~/") || candidate.includes("%(")) throw new Error("unsupported Git config include");
+        if (condition?.toLowerCase().startsWith("onbranch:")) branchConditional = true;
+        const target = candidate.startsWith("~/") ? resolve(home, candidate.slice(2)) : resolve(dirname(file), candidate);
+        if (next.has(target)) throw new Error("cyclic Git config include");
+        const seen = includedFiles.get(target);
+        if (seen === undefined && includedFiles.size >= 16) throw new Error("Git config include file bound");
+        const digest = seen ?? hash(content(target));
+        // Every candidate is bound even when its condition does not match. Its origin and
+        // rewrite values are never promoted to active configuration or ambiguity checks.
+        parts.push(`include:${condition ?? ""}:${target}:${digest}`);
+        if (seen === undefined) { includedFiles.set(target, digest); configurationFile(target, depth + 1, next); }
+        nesting = Math.max(nesting, 1 + (includeDepths.get(target) ?? 0));
+        if (depth + nesting > 4) throw new Error("Git config include depth bound");
+      });
+      includeDepths.set(file, nesting);
+      return relevant;
+    };
+    for (const file of new Set(["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig", ...(cacheValidity && extraGitConfig ? [extraGitConfig] : [])])) configuration.push(...configurationFile(file));
+    for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) configuration.push(...configurationFile(file));
     let found = false, reachedRoot = false;
     for (let folder = cwd, depth = 0; depth < 32; depth++) {
       const git = join(folder, ".git"), stat = lstatSync(git, { throwIfNoEntry: false });
@@ -174,14 +206,22 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
           const file = join(dir, legacy, "origin");
           parts.push(`${file}:${hash(content(file))}`);
         }
-        configuration.push(...identityConfig(content(join(commonDir, "config"))));
+        configuration.push(...configurationFile(join(commonDir, "config")));
         const worktreeConfig = configuration.filter(([key]) => key === "extensions.worktreeconfig").at(-1)?.[1];
-        if (worktreeConfig === "true") configuration.push(...identityConfig(content(join(gitDir, "config.worktree"))));
+        if (worktreeConfig === "true") configuration.push(...configurationFile(join(gitDir, "config.worktree")));
+        else if (hasIncludes) {
+          // An included candidate may enable this source; bind it without guessing whether it does.
+          const file = join(gitDir, "config.worktree"); parts.push(`worktree-candidate:${hash(content(file))}`); configurationFile(file);
+        }
+        if (branchConditional) parts.push(`include-branch:${hash(content(join(gitDir, "HEAD"), 4096))}`);
         break;
       }
       const parent = dirname(folder); if (parent === folder) { reachedRoot = true; break; } folder = parent;
     }
     if (!found && (!reachedRoot || cacheValidity)) return undefined;
+    // hasconfig:remote.*.url conditions can depend on a non-origin remote ignored by the
+    // ordinary semantic projection. Bind all source bytes whenever includes are present.
+    if (hasIncludes) parts.push(`include-sources:${JSON.stringify([...configurationBytes])}`);
     if (configuration.filter(([key]) => key === "origin").length > 1) return undefined;
     const scalars = new Map(configuration.filter(([key]) => !key.startsWith("rewrite:")));
     const rewrites = configuration.filter(([key]) => key.startsWith("rewrite:"));
@@ -297,41 +337,71 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
   return true;
 }
 
-/** Inspect at most the bounded active inventory before admission. Malformed matching publications cannot
- * occupy active capacity forever; current-policy rejection during drain uses the same retirement boundary. */
-function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, sharedBatch?: QuarantineBatch): Set<string> {
-  // One synchronous admission shares its inventories. Concurrent publishers can still
-  // overshoot the documented soft caps; every destructive operation rechecks ownership.
-  const batch: QuarantineBatch = sharedBatch ?? {}, retired = new Set<string>();
+const RETIRE_AFTER_MS = 7 * 24 * 3600_000;
+/** Private numeric maintenance cursor: each invocation inspects a different bounded slice. */
+function retirementCursor(base: string, capacity: boolean, length: number): { start: number; save(n: number): void } {
+  const dir = join(directory(base), ".maintenance"); privateDirectory(dir);
+  const name = join(dir, capacity ? "reserve" : "active");
+  let start = 0, file: OwnedFile | undefined;
+  try {
+    file = openOwned(name);
+    if (file.initial.size <= 16) {
+      const bytes = Buffer.alloc(file.initial.size);
+      if (readSync(file.fd, bytes, 0, bytes.length, 0) === bytes.length && owns(file) && /^\d+$/.test(bytes.toString())) start = Number(bytes.toString()) % Math.max(1, length);
+    }
+  } catch { /* A missing or invalid derived cursor starts at the first slice. */ }
+  finally { if (file) closeSync(file.fd); }
+  return { start, save(n) {
+    const temporary = join(dir, `.cursor-${randomBytes(12).toString("hex")}`);
+    try { writeFileSync(temporary, String(n % Math.max(1, length)), { mode: 0o600, flag: "wx" }); renameSync(temporary, name); }
+    finally { rmSync(temporary, { force: true }); }
+  } };
+}
+/** ponytail: remove undrainable data after seven days (removed cwd immediately), at
+ * most32 files/256KiB per admission. Count loss before deleting bodies. Upgrade:
+ * a person-visible durable dead-letter export and coordinated maintenance accounting. */
+function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, _sharedBatch?: QuarantineBatch): Set<string> {
+  const retired = new Set<string>();
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
   const fits = () => count < (capacity ? CAPACITY_FILES : MAX_FILES) && bytes + incomingBytes <= (capacity ? CAPACITY_BYTES : MAX_BYTES);
-  if (minimal && fits()) return retired;
+  const due = inventory.some(row => Date.now() - row.modified >= RETIRE_AFTER_MS);
+  if (!inventory.length || minimal && fits() && !due) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
-  const removed = (row: typeof active[number]) => { retired.add(row.name); count--; bytes -= row.size; };
-  let remaining = DRAIN_BYTES;
-  for (const row of active.slice(0, DRAIN_FILES)) {
-    if (minimal && fits()) break; // Keep the brief's time for context, not unnecessary retirement.
-    const match = namePattern.exec(row.name); if (!match) continue;
-    if (row.size <= RECORD_BYTES && row.size > remaining) break;
-    let file: OwnedFile | undefined;
-    try {
-      file = openOwned(join(capacity ? join(directory(base), ".capacity") : directory(base), row.name));
-      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
-      if (row.size <= RECORD_BYTES) remaining -= row.size;
-      const record = decoded(file);
-      if (record && (hash(record.value.cwd) !== match[2] || record.value.nonce !== match[4]
-        || (record.value.scope ?? "0".repeat(64)) !== match[3])) {
-        const claim = claimOwned(base, row.name, file); if (claim && retireClaim(base, claim, false, batch)) removed(row);
-        continue;
-      }
-      // A valid foreign, stale-scoped or temporarily unresolvable record is still data.
-      // Keep it pending; only malformed publications and explicit policy refusals retire.
-      if (record) continue;
-      const claim = claimOwned(base, row.name, file);
-      if (claim && retireClaim(base, claim, false, batch)) removed(row);
-    } catch { /* Transient I/O and changed evidence remain retryable; capture bodies never enter logs. */ }
-    finally { if (file) closeSync(file.fd); }
-  }
+  let cursor: ReturnType<typeof retirementCursor>;
+  try { cursor = retirementCursor(base, capacity, active.length); } catch { return retired; }
+  let remaining = DRAIN_BYTES, scanned = 0;
+  try {
+    for (; scanned < Math.min(DRAIN_FILES, active.length); scanned++) {
+      if (minimal && fits() && !due) break;
+      const row = active[(cursor.start + scanned) % active.length]!;
+      const match = namePattern.exec(row.name); if (!match) continue;
+      if (row.size <= RECORD_BYTES && row.size > remaining) break;
+      let file: OwnedFile | undefined;
+      try {
+        file = openOwned(join(capacity ? join(directory(base), ".capacity") : directory(base), row.name));
+        if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
+        if (row.size <= RECORD_BYTES) remaining -= row.size;
+        const record = decoded(file);
+        const valid = record && hash(record.value.cwd) === match[2] && record.value.nonce === match[4] && (record.value.scope ?? "0".repeat(64)) === match[3];
+        let reason: CaptureDropReason | undefined;
+        if (valid) {
+          try { const cwd = lstatSync(record.value.cwd); if (!cwd.isDirectory() || cwd.isSymbolicLink()) reason = "cwd_removed"; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; else if (Date.now() - Date.parse(record.value.capture.at) < RETIRE_AFTER_MS) continue; }
+          if (!reason && Date.now() - Date.parse(record.value.capture.at) >= RETIRE_AFTER_MS) {
+            if (record.value.scope === null) reason = "scope_unknown";
+            else if (record.value.cwd !== admittingCwd || hookCaptureScope(record.value.cwd, base) !== record.value.scope) reason = "undrainable_expired";
+          }
+          if (!reason) continue;
+        }
+        const claim = claimOwned(base, row.name, file);
+        if (!claim || !owns(claim)) continue;
+        // Failure to persist this numeric receipt keeps the body pending, never silently lost.
+        if (reason) appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: reason }]);
+        if (retireClaim(base, claim, false)) { retired.add(row.name); count--; bytes -= row.size; }
+      } catch { /* Transient I/O and changed evidence stay pending. */ }
+      finally { if (file) closeSync(file.fd); }
+    }
+  } finally { try { cursor.save(cursor.start + Math.max(1, scanned)); } catch { /* Derived cursor failure never deletes data. */ } }
   return retired;
 }
 
@@ -389,7 +459,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // admits this project's event without erasing that backlog or rebinding its project.
   // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
   const quarantineBatch: QuarantineBatch = {};
-  const retired = retireUnresolved(base, full ? cwd : undefined, inventory, Buffer.byteLength(bytes), event === "SessionStart", false, quarantineBatch);
+  const retired = retireUnresolved(base, cwd, inventory, Buffer.byteLength(bytes), event === "SessionStart", false, quarantineBatch);
   const queued = inventory.filter(row => !retired.has(row.name));
   let reserved = entries(base, true), destination = dir, deferred = false;
   const backlog = queued.length > 0 || reserved.length > 0;
@@ -398,7 +468,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
     if (options.deferAtCapacity !== true) throw new HookSpoolFull();
     destination = join(dir, ".capacity"); privateDirectory(destination);
-    const retiredCapacity = retireUnresolved(base, undefined, reserved, Buffer.byteLength(bytes), true, true, quarantineBatch);
+    const retiredCapacity = retireUnresolved(base, cwd, reserved, Buffer.byteLength(bytes), true, true, quarantineBatch);
     reserved = reserved.filter(row => !retiredCapacity.has(row.name));
     if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
     deferred = true;
@@ -424,7 +494,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
   const policy = createStandalonePolicy(options.policy), dir = directory(base);
   const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
-    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && (m[3] === stamp || m[3] === "0".repeat(64));
+    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
   const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
@@ -444,9 +514,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         retireClaim(base, claim, false); blocked++; continue;
       }
       const value = record.value, c = value.capture;
-      // Legacy null-scope rows have no physical receipt: keep them pending rather than
-      // guessing a replacement cwd. New rows can adopt a later positively resolved scope.
-      if (value.scope === null && (!value.root || value.root !== physicalRoot(cwd))) { blocked++; continue; }
+      if (value.scope === null) { blocked++; continue; }
       const input: CaptureInput = { project: options.project, agent: c.agent, event: c.event, at: c.at, paths: c.paths,
         ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }

@@ -13,7 +13,7 @@ const original=Bun.spawn.bind(Bun);
 Bun.spawn=(command,options)=>{
  const matched=Array.isArray(command)&&command[0]===process.execPath&&command[1]==='--smol'&&command[2]===worker;
  const native=Array.isArray(command)&&command[0]==='/bin/sh'&&command[3]==='amem-hook-native';
- const sleeper='sleep 30 & child=$!; printf \"%s\\n\" \"$child\" > \"$1\"; printf entered > \"$2\"; wait';
+ const sleeper='sleep 30 & child=$!; printf \"%s\\n\" \"$child\" >> \"$1\"; printf entered > \"$2\"; wait';
  const argv=matched&&stallWorker?[command[0],'--smol','--preload',preload,...command.slice(2)]:native&&stallWorker?[...command.slice(0,6),'/bin/sh','-c',sleeper,'fixture',${JSON.stringify(nativePidFile)},${JSON.stringify(entered)}]:command;
  const child=original(argv,options);
  if(matched||native){

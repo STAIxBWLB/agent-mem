@@ -3,7 +3,7 @@ import { resolveHookProjectAsync } from "./hook-project.ts";
 import { hookProcessSignature } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
-import { appendMetrics } from "./memory/metrics.ts";
+import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
 import { stageHookCapture, hookCaptureScope, drainHookCaptures, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -116,8 +116,22 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
   const result = { context: unavailable, captured: false, valid: false, pending: !!pending, dropped: false, ...usage };
   if (remaining() <= 0) { result.dropped = !pending; return result; }
   try {
-    const project = resolveAlias(base, await resolveHookProjectAsync({ cwd, base, scope, timeRemaining: remaining }, usage));
-    const signature = await hookProcessSignature(remaining, usage);
+    // Independent native reads and module loading share the same deadline, not three serial cold starts.
+    // Separate usage ports conservatively sum concurrent helper peaks instead of hiding overlap.
+    const projectUsage = { rssKB: 0, rawRssKB: 0 }, signatureUsage = { rssKB: 0, rawRssKB: 0 };
+    const metadata = await Promise.allSettled([
+      resolveHookProjectAsync({ cwd, base, scope, timeRemaining: remaining }, projectUsage),
+      hookProcessSignature(remaining, signatureUsage),
+      import("./session-brief.ts"),
+    ] as const);
+    usage.rssKB = projectUsage.rssKB + signatureUsage.rssKB;
+    usage.rawRssKB = projectUsage.rawRssKB + signatureUsage.rawRssKB;
+    const [identity, owner, briefModule] = metadata;
+    if (identity.status !== "fulfilled" || owner.status !== "fulfilled" || briefModule.status !== "fulfilled") throw new Error("hook metadata unavailable");
+    const project = resolveAlias(base, identity.value);
+    const signature = owner.value;
+    const { sessionStartBrief } = briefModule.value;
+    if (remaining() <= 0) return result;
     // Make bounded capture progress before optional brief work can consume its slice.
     // The reserve belongs to known work/serialization; recovery failure never refuses it.
     if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5) {
@@ -134,13 +148,16 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
       try { if (!pending) pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base, deferAtCapacity: true }); }
       catch (error) { if (!(error instanceof HookSpoolFull)) throw error; }
     }
-    const { sessionStartBrief } = await import("./session-brief.ts");
-    const dropNotice = !pending ? "capture dropped: spool full (1)\n" : "";
+    const losses = captureDropSummary(base);
+    if (!pending) losses.spool_full = (losses.spool_full ?? 0) + 1;
+    const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
     const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, Math.min(HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? options.maxTokens! : HOOK_CONTEXT_BYTES)) - Buffer.byteLength(dropNotice)), cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
     result.pending = !!pending && !result.captured;
     result.dropped = !pending;
     if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;
-    result.context = dropNotice + brief.context; result.valid = true;
+    const firstLine = brief.context.indexOf("\n");
+    result.context = !dropNotice ? brief.context : firstLine < 0 ? `${brief.context}\n${dropNotice}` : `${brief.context.slice(0, firstLine)}\n${dropNotice}${brief.context.slice(firstLine)}`;
+    result.valid = true;
     return result;
   } catch { result.dropped = !pending; return result; }
   finally { result.rssKB = usage.rssKB; result.rawRssKB = usage.rawRssKB; }
@@ -191,7 +208,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
     if (base) try { appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
-      rssMB: (hookPeakRssKB() + childRssKB) / 1024, rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1 } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      rssMB: (hookPeakRssKB() + childRssKB) / 1024, rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
@@ -219,8 +236,8 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + deadlineMs - 3);
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; dropped = "dropped" in result && result.dropped === true;
-      if (!result.valid || args[0] !== "SessionStart") return dropped ? JSON.stringify({ captured: false, dropped: true, dropReason: "spool_full", dropCount: 1 }) : "";
-      return JSON.stringify({ ...(dropped ? { dropped: true, dropReason: "spool_full", dropCount: 1 } : {}), hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
+      if (!result.valid || args[0] !== "SessionStart") return "";
+      return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
     return "";
   } catch { return ""; }
@@ -228,7 +245,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     await cleanup?.();
     try {
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
-        rssMB: (hookPeakRssKB() + childRssKB) / 1024, rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1 } : {}) }]);
+        rssMB: (hookPeakRssKB() + childRssKB) / 1024, rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }
