@@ -116,10 +116,10 @@ test("an already expired hook deadline still publishes durable capture before op
 });
 
 
-test("native hooks recover a full pending tier before publishing the next event", async () => {
+for (const event of ["PostToolUse", "SessionStart"] as const) test(event === "PostToolUse" ? "native hooks recover a full pending tier before publishing the next event" : "native SessionStart recovers a full pending tier before publishing the next event", async () => {
   const f = fixture();
   for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `backlog ${i}` }, f.options);
-  const result = f.run("PostToolUse", { prompt: "full queue follow-up" });
+  const result = f.run(event, { prompt: "full queue follow-up" });
   expect(result.exitCode).toBe(0);
   const rows = f.rows(), pending = f.pending();
   expect(rows.length).toBeGreaterThan(0); expect(pending.length).toBeLessThanOrEqual(256);

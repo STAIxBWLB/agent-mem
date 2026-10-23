@@ -3,7 +3,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readMetrics } from "../src/memory/capacity.ts";
 import { runHook } from "../src/hooks.ts";
-import { stageHookCapture } from "../src/hook-spool.ts";
+import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
 import { hookBin, hookEvents, hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -165,5 +166,16 @@ test("SessionStart preserves known open work while a durable capture backlog awa
   expect(context).toMatch(/coverage/); expect(Buffer.byteLength(context)).toBeLessThanOrEqual(1200);
   expect(readMetrics(f.base).filter(row => row.kind === "hook")).toHaveLength(1);
   accepted.push({ event: "SessionStart", excerpt });
+  // Every original must be retained by the native call before the explicit replay barrier.
+  const retained = f.rows();
+  for (const item of accepted) expect(retained.filter(row => row.event === item.event && row.excerpt === item.excerpt).length + pendingCaptures(f, item).length).toBe(1);
+  // This is a correctness test, not a promise that four scheduler-limited hooks drain 65 rows.
+  // Await the same production drain; the actual executable's R2 workload remains separately strict.
+  process.env.HOME = f.env.HOME;
+  let store: CaptureStore | undefined;
+  try {
+    store = new CaptureStore({ memoryDir: f.base, project: f.project });
+    for (let pass = 0; pass < 3; pass++) await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project }, (input, receipt) => store!.append(input, { receipt }));
+  } finally { store?.close(); if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; }
   replayThroughHooks(f, accepted);
 });

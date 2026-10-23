@@ -117,9 +117,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       const firstLine = lines.length, priorRemaining = remaining;
       try {
         guard();
-        // ponytail: keep cleanup/serialization headroom instead of starting another cold store.
+        // ponytail: reserve cold-store variance plus cleanup/serialization before optional work.
         // A future paged deadline port can refine this section-level cutoff; the parent remains the hard stop.
-        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 45)) { coverage[section] = "unavailable"; return; }
+        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 80)) { coverage[section] = "unavailable"; return; }
         await work(); guard();
       }
       catch (error) {

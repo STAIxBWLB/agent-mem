@@ -1,5 +1,5 @@
 import type { BriefOptions } from "./session-brief.ts";
-import { CaptureStore } from "./memory/capture.ts";
+import type { CaptureStore } from "./memory/capture.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { hookGit } from "./hook-git.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
@@ -53,15 +53,20 @@ if (import.meta.main) {
       quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
       project = stop();
     }
-    let store: CaptureStore | undefined;
     let captured = false;
-    try {
-      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: event === "SessionStart" ? () => remaining() - 80 : remaining }, (input, receipt) => {
-        store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0 });
-        return store.append(input, { receipt });
-      });
-      captured = drained.captured.includes(options.current);
-    } finally { store?.close(); }
+    // Normal SessionStart keeps the parent's durable stage for later replay and spends
+    // its short-lived worker on context. An empty current name is mandatory full-tier recovery.
+    if (event !== "SessionStart" || !options.current) {
+      const { CaptureStore } = await import("./memory/capture.ts");
+      let store: CaptureStore | undefined;
+      try {
+        const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining }, (input, receipt) => {
+          store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0 });
+          return store.append(input, { receipt });
+        });
+        captured = drained.captured.includes(options.current);
+      } finally { store?.close(); }
+    }
     if (event === "SessionStart") {
       const { sessionStartBrief } = await import("./session-brief.ts");
       const result = await sessionStartBrief({ ...options, project,
