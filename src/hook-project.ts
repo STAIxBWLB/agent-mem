@@ -15,7 +15,7 @@ function read(file: string): Binding | undefined {
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > CACHE_BYTES || stat.mode & 0o077 || stat.uid !== process.getuid()) return undefined;
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > CACHE_BYTES || stat.mode & 0o077 || stat.uid !== process.getuid?.()) return undefined;
     const bytes = Buffer.alloc(stat.size);
     if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) return undefined;
     const after = lstatSync(file);
