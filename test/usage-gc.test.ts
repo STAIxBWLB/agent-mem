@@ -69,9 +69,15 @@ test("a cap shrink trims oldest rows first, in bounded batches, and the report s
   cleanup.push(() => store.close());
   expect(store.rows({ limit: 9000 }).at(-1)!.excerpt.startsWith("row 5999 ")).toBe(true);
   expect(store.rows({ limit: 9000 })[0]!.excerpt.startsWith("row 0 ")).toBe(false);
-  // repeated runs converge under the cap, and the last one reports it
-  let last = row, guard = 0;
-  while (last.remainingOverCap && guard++ < 40) last = runGc(base, { now: () => NOW, maxBatchesPerShard: 1 }).shards[0]!;
+  // repeated runs converge under the cap, and the last one reports it. Each evict() window is also bounded by 25 ms of wall time, so a loaded machine trims
+  // fewer rows per call: the loop is bounded by progress (rows left), never by a fixed number of calls that speed could exhaust.
+  let last = row, guard = 0, rowsLeft = rowsOf(base, "github.com/o/big");
+  while (last.remainingOverCap && guard++ < 2000) {
+    last = runGc(base, { now: () => NOW, maxBatchesPerShard: 1 }).shards[0]!;
+    const now = rowsOf(base, "github.com/o/big");
+    if (last.remainingOverCap) expect(now).toBeLessThan(rowsLeft);        // every call that leaves the shard over its cap still removed something
+    rowsLeft = now;
+  }
   expect(last.remainingOverCap).toBe(false);
   expect(captureShardStats(machineDirOf(base, "github.com/o/big")).bytes).toBeLessThanOrEqual(1024 * 1024);
 });
