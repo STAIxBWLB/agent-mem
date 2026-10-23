@@ -100,12 +100,12 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
       // A concurrent publisher can refill the soft tier. Capture admission cannot discard
       // a brief already computed by recovery; leave the finite-cap refusal capture-only.
       if (!(retryError instanceof HookSpoolFull)) throw retryError;
-      return result;
+      return { ...result, pending: false };
     }
   }
-  if (!pending) return undefined;
+  if (!pending) return result ? { ...result, pending: false } : undefined;
   result ??= await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);
-  return result;
+  return { ...result, pending: !result.captured };
 }
 
 /** Context/capture intake only. It never supplies a permission decision or replaces native tool arguments. */
@@ -120,7 +120,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
     // Persist screened capture before the optional worker can exhaust its time slice.
     const result = await captureAndWork(event, input, options, base, deadline - 3);
     if (!result) return { captured, ...(pending ? { pending: true as const } : {}), skipped: true };
-    captured = result.captured; pending = !captured;
+    captured = result.captured; pending = result.pending;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB;
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), skipped: false };

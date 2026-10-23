@@ -44,5 +44,12 @@ Bun.plugin({name:'repeat-full-admission',setup(b){b.onLoad({filter:/hook-spool\\
     expect(result.exitCode).toBe(0);
     expect(result.stdout.length).toBeGreaterThan(0);
     expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
+    const hooks = resolve(import.meta.dir, "../src/hooks.ts");
+    const script = `import {runHook} from ${JSON.stringify(hooks)};console.log(JSON.stringify(await runHook('SessionStart',{cwd:${JSON.stringify(f.cwd)},prompt:'repeat capacity library'},{cwd:${JSON.stringify(f.cwd)},base:${JSON.stringify(f.base)}})));`;
+    const library = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(library.exitCode, library.stderr.toString()).toBe(0);
+    const receipt = JSON.parse(library.stdout.toString());
+    expect(receipt.output.hookSpecificOutput.additionalContext).toContain(workMarker);
+    expect(receipt.captured).toBe(false); expect(receipt).not.toHaveProperty("pending");
   } finally { f.close(); }
 });
