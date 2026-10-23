@@ -18,8 +18,9 @@ function fixture(remote?: string) {
   return { ...f, options,
     pending() {
       const dir = join(f.base, "hook-spool");
-      return existsSync(dir) ? readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
-        .map(name => ({ name, value: JSON.parse(readFileSync(join(dir, name), "utf8")) })) : [];
+      return [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder)
+        .filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
+        .map(name => ({ name, value: JSON.parse(readFileSync(join(folder, name), "utf8")) })) : []);
     },
   };
 }
@@ -117,17 +118,58 @@ test("an already expired hook deadline still publishes durable capture before op
 });
 
 
-for (const event of ["PostToolUse", "SessionStart"] as const) test(event === "PostToolUse" ? "native hooks recover a full pending tier before publishing the next event" : "native SessionStart recovers a full pending tier before publishing the next event", async () => {
+for (const event of ["PostToolUse", "SessionStart"] as const) test(`native ${event} retains a full-tier event and drains its backlog exactly once within 24 following invocations`, async () => {
   const f = fixture();
-  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `backlog ${i}` }, f.options);
-  const result = f.run(event, { prompt: "full queue follow-up" }, hookRecoveryDiagnostic(f.root));
+  const accepted = Array.from({ length: 256 }, (_, i) => `backlog ${i}`);
+  for (const prompt of accepted) await stageHookCapture("PostToolUse", { prompt }, f.options);
+  accepted.push("full queue follow-up");
+  const probe = hookRecoveryDiagnostic(f.root);
+  const result = f.run(event, { prompt: "full queue follow-up" }, probe);
   expect(result.exitCode).toBe(0);
-  const diagnostic = result.stderr.toString(), codes = diagnostic.trim().split("\n").map(line => JSON.parse(line) as number[]);
-  expect(codes.every(row => Array.isArray(row) && row.every(Number.isFinite)), diagnostic).toBe(true);
-  expect(codes.some(row => row[0] === 25), diagnostic).toBe(true); // Admission was actually instrumented.
-  const rows = f.rows(), pending = f.pending();
-  expect(rows.length, `numeric recovery diagnostic: ${result.stderr.toString()}`).toBeGreaterThan(0); expect(pending.length).toBeLessThanOrEqual(256);
-  expect(rows.filter(row => row.excerpt === "full queue follow-up").length + pending.filter(row => row.value.capture.excerpt === "full queue follow-up").length).toBe(1);
+  const traces = [result.stderr.toString()];
+  const codes = traces[0]!.trim().split("\n").map(line => JSON.parse(line) as number[]);
+  expect(codes.every(row => Array.isArray(row) && row.every(Number.isFinite)), traces[0]).toBe(true);
+  expect(codes.some(row => row[0] === 25), traces[0]).toBe(true);
+  let rows = f.rows(), pending = f.pending();
+  const retained = rows.filter(row => row.excerpt === accepted.at(-1)), held = pending.filter(row => row.value.capture.excerpt === accepted.at(-1));
+  expect(Math.max(retained.length, held.length), traces.join("\n")).toBe(1);
+  if (retained.length && held.length) expect(retained[0]!.at).toBe(held[0]!.value.capture.at);
+  // 256 ordinary slots remain bounded; only already-screened native intake uses the separate 32-slot reserve.
+  expect(readdirSync(join(f.base, "hook-spool")).filter(name => /^hook-/.test(name)).length).toBeLessThanOrEqual(256);
+  expect(pending.length).toBeLessThanOrEqual(288);
+  for (let invocation = 0; invocation < 24; invocation++) {
+    const complete = accepted.every(prompt => rows.filter(row => row.excerpt === prompt).length === 1 && !pending.some(row => row.value.capture.excerpt === prompt));
+    if (complete) break;
+    const next = f.run("PostToolUse", { prompt: `replay barrier ${invocation}` }, probe);
+    traces.push(next.stderr.toString()); expect(next.exitCode).toBe(0);
+    rows = f.rows(); pending = f.pending();
+  }
+  for (const prompt of accepted) {
+    expect(rows.filter(row => row.excerpt === prompt), traces.join("\n")).toHaveLength(1);
+    expect(pending.filter(row => row.value.capture.excerpt === prompt), traces.join("\n")).toHaveLength(0);
+  }
+});
+
+test("an expired full-tier hook still retains its next event in the bounded native reserve", async () => {
+  const f = fixture();
+  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `expired backlog ${i}` }, f.options);
+  const { runHook } = await import("../src/hooks.ts");
+  const result = await runHook("PostToolUse", { prompt: "expired full-tier current" }, { ...f.options, startedAt: performance.now() - 1000 });
+  expect(result).toMatchObject({ captured: false, pending: true });
+  expect(f.pending().filter(row => row.value.capture.excerpt === "expired full-tier current")).toHaveLength(1);
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    const noTime = await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 0 }, (input, receipt) => store.append(input, { receipt }));
+    expect(noTime.captured).toHaveLength(0);
+    // The same bounded replay consumes reserve plus backlog; constant 8ms proves progress at the threshold.
+    for (let invocation = 0; invocation < 9; invocation++) {
+      const next = await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 8 }, (input, receipt) => store.append(input, { receipt }));
+      expect(next.captured.length).toBeGreaterThan(0);
+    }
+    expect(store.rows()).toHaveLength(257); expect(f.pending()).toHaveLength(0);
+    expect(store.rows().filter(row => row.excerpt === "expired full-tier current")).toHaveLength(1);
+    expect((await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 8 }, (input, receipt) => store.append(input, { receipt }))).captured).toHaveLength(0);
+  } finally { store.close(); }
 });
 
 test("a project resolution stamp cannot admit newer stages after an origin changes", async () => {

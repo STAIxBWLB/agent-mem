@@ -97,7 +97,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
  * only native metadata uses an owned, deadline-reaped shell supervisor. */
 async function sessionInParent(input: unknown, options: HookOptions, base: string, deadline: number) {
   let pending: PendingHookCapture | undefined, full = false;
-  try { pending = await stageHookCapture("SessionStart", input, { ...options, base }); }
+  try { pending = await stageHookCapture("SessionStart", input, { ...options, base, deferAtCapacity: true }); full = pending?.deferred === true; }
   catch (error) { if (!(error instanceof HookSpoolFull)) throw error; full = true; }
   if (!pending && !full) return undefined;
   const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);
@@ -109,22 +109,23 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     const signature = await hookProcessSignature(remaining, usage);
     // Make bounded capture progress before optional brief work can consume its slice.
     // The reserve belongs to known work/serialization; recovery failure never refuses it.
-    if (full && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5) {
+    if ((full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5) {
       let store: import("./memory/capture.ts").CaptureStore | undefined;
       try {
         const { CaptureStore } = await import("./memory/capture.ts");
-        await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - FULL_TIER_BRIEF_RESERVE_MS }, (value, receipt) => {
+        const drained = await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - FULL_TIER_BRIEF_RESERVE_MS }, (value, receipt) => {
           store ??= new CaptureStore({ memoryDir: base, project, busyTimeoutMs: 0 });
           return store.append(value, { receipt });
         });
+        result.captured = !!pending && drained.captured.includes(pending.name);
       } catch { /* Optional capture recovery never discards completed context. */ }
       finally { store?.close(); }
-      try { pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base }); }
+      try { if (!pending) pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base, deferAtCapacity: true }); }
       catch (error) { if (!(error instanceof HookSpoolFull)) throw error; }
     }
     const { sessionStartBrief } = await import("./session-brief.ts");
     const brief = await sessionStartBrief({ ...options, cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
-    result.pending = !!pending;
+    result.pending = !!pending && !result.captured;
     if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;
     result.context = brief.context; result.valid = true;
     return result;
@@ -138,12 +139,12 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
   let result: Awaited<ReturnType<typeof hookWorker>> | undefined;
   let pending: PendingHookCapture | undefined;
-  try { pending = await stageHookCapture(event, input, { ...options, base }); }
+  try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
   catch (error) {
     if (!(error instanceof HookSpoolFull)) throw error;
     const cwd = realPath(options.cwd);
     result = await hookWorker({ ...options, cwd }, base, deadline, { name: "", receipt: "", cwd }, event);
-    try { pending = await stageHookCapture(event, input, { ...options, base }); }
+    try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
     catch (retryError) {
       // A concurrent publisher can refill the soft tier. Capture admission cannot discard
       // a brief already computed by recovery; leave the finite-cap refusal capture-only.

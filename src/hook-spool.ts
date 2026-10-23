@@ -11,12 +11,15 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 const SCHEMA = "agent-mem.hook-capture/v1";
 const RECORD_BYTES = HOOK_INPUT_BYTES + 8192, MAX_FILES = 256, MAX_BYTES = 2 * 1024 * 1024;
 const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
+// ponytail: a finite native admission reserve covers deferred replay, not unlimited locked intake.
+// Upgrade: coordinated append-only capacity accounting and observable backpressure at exhaustion.
+const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 interface Record { schema: typeof SCHEMA; cwd: string; scope: string | null; nonce: string; capture: NormalizedCaptureFields }
-export interface PendingHookCapture { name: string; cwd: string; receipt: string }
+export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
-interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions }
+interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true }
 const directory = (base: string) => join(base, "hook-spool");
 
 function privateDirectory(dir: string): void {
@@ -25,16 +28,16 @@ function privateDirectory(dir: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   chmodSync(dir, 0o700);
 }
-function entries(base: string): { name: string; size: number; modified: number }[] {
-  const dir = directory(base), stat = lstatSync(dir, { throwIfNoEntry: false });
+function entries(base: string, capacity = false): { name: string; size: number; modified: number }[] {
+  const dir = capacity ? join(directory(base), ".capacity") : directory(base), maximum = capacity ? CAPACITY_FILES : MAX_FILES, stat = lstatSync(dir, { throwIfNoEntry: false });
   if (!stat) return [];
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   const reader = opendirSync(dir), rows: { name: string; size: number; modified: number }[] = [];
   try {
-    for (let scanned = 0; scanned <= MAX_FILES + 2; scanned++) {
+    for (let scanned = 0; scanned <= maximum + 3; scanned++) {
       const entry = reader.readSync(); if (!entry) return rows;
-      if ([".writing", ".quarantine"].includes(entry.name) && entry.isDirectory()) continue;
-      if (rows.length === MAX_FILES) return rows;
+      if ([".writing", ".quarantine", ".capacity"].includes(entry.name) && entry.isDirectory()) continue;
+      if (rows.length === maximum) return rows;
       const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
       if (item) rows.push({ name: entry.name, size: item.size, modified: item.mtimeMs });
     }
@@ -205,7 +208,7 @@ function openOwned(file: string): OwnedFile {
 function claimOwned(base: string, name: string, file: OwnedFile): OwnedFile | undefined {
   const match = namePattern.exec(name);
   if (!match || !owns(file)) return undefined;
-  const claim = join(directory(base), `${match[1]}.draining-${randomBytes(12).toString("hex")}`);
+  const claim = join(dirname(file.file), `${match[1]}.draining-${randomBytes(12).toString("hex")}`);
   renameSync(file.file, claim);
   const owned = { ...file, file: claim };
   return owns(owned) ? owned : undefined;
@@ -289,13 +292,13 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
 
 /** Inspect at most the bounded active inventory before admission. Malformed matching publications cannot
  * occupy active capacity forever; current-policy rejection during drain uses the same retirement boundary. */
-function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean): Set<string> {
+function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, sharedBatch?: QuarantineBatch): Set<string> {
   // One synchronous admission shares its inventories. Concurrent publishers can still
   // overshoot the documented soft caps; every destructive operation rechecks ownership.
-  const batch: QuarantineBatch = {}, retired = new Set<string>();
-  trimQuarantine(base, 0, 0, batch);
+  const batch: QuarantineBatch = sharedBatch ?? {}, retired = new Set<string>();
+  if (!batch.held) trimQuarantine(base, 0, 0, batch);
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
-  const fits = () => count < MAX_FILES && bytes + incomingBytes <= MAX_BYTES;
+  const fits = () => count < (capacity ? CAPACITY_FILES : MAX_FILES) && bytes + incomingBytes <= (capacity ? CAPACITY_BYTES : MAX_BYTES);
   if (minimal && fits()) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
   const removed = (row: typeof active[number]) => { retired.add(row.name); count--; bytes -= row.size; };
@@ -306,7 +309,7 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
     if (row.size <= RECORD_BYTES && row.size > remaining) break;
     let file: OwnedFile | undefined;
     try {
-      file = openOwned(join(directory(base), row.name));
+      file = openOwned(join(capacity ? join(directory(base), ".capacity") : directory(base), row.name));
       if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
       if (row.size <= RECORD_BYTES) remaining -= row.size;
       const record = decoded(file);
@@ -382,19 +385,30 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // A healthy foreign cwd cannot monopolize the home-wide active tier. Preserve its
   // oldest bounded records privately, without rebinding them to this project's capture.
   // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
-  const retired = retireUnresolved(base, full ? cwd : undefined, inventory, Buffer.byteLength(bytes), event === "SessionStart");
+  const quarantineBatch: QuarantineBatch = {};
+  const retired = retireUnresolved(base, full ? cwd : undefined, inventory, Buffer.byteLength(bytes), event === "SessionStart", false, quarantineBatch);
   const queued = inventory.filter(row => !retired.has(row.name));
-  // Soft per-home cap: concurrent publishers can exceed it by their already in-flight records.
-  if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) throw new HookSpoolFull();
+  let reserved = entries(base, true), destination = dir, deferred = false;
+  const backlog = queued.length > 0 || reserved.length > 0;
+  // A bounded cwd/scope-bound reserve admits the already-screened current event before
+  // project resolution or optional replay. It is not privacy quarantine and is replayable.
+  if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
+    if (options.deferAtCapacity !== true) throw new HookSpoolFull();
+    destination = join(dir, ".capacity"); privateDirectory(destination);
+    const retiredCapacity = retireUnresolved(base, undefined, reserved, Buffer.byteLength(bytes), true, true, quarantineBatch);
+    reserved = reserved.filter(row => !retiredCapacity.has(row.name));
+    if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
+    deferred = true;
+  }
   const name = `hook-${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
-  try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(dir, name)); }
+  try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
   finally { rmSync(temporary, { force: true }); }
-  return { name, cwd, receipt: hash(bytes) };
+  return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
 }
 
 export function hookCapturePending(base: string, name: string): boolean {
   try {
-    if (entries(base).some(row => row.name === name || row.name.startsWith(name + "."))) return true;
+    if ([...entries(base), ...entries(base, true)].some(row => row.name === name || row.name.startsWith(name + "."))) return true;
     const quarantine = join(directory(base), ".quarantine");
     if (!lstatSync(quarantine, { throwIfNoEntry: false })) return false;
     return quarantineEntries(quarantine).some(row => row.name === name || row.name.startsWith(name + "."));
@@ -406,16 +420,18 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), stamp = hookCaptureScope(cwd, base), captured: string[] = [];
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
   const policy = createStandalonePolicy(options.policy), dir = directory(base);
-  const rows = entries(base).filter(row => {
+  const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
     const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;
-  }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
+  }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
+  const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
+    .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let remaining = DRAIN_BYTES, blocked = 0;
   for (const row of rows.slice(0, DRAIN_FILES)) {
     if (options.timeRemaining && options.timeRemaining() < 8 || row.size <= RECORD_BYTES && row.size > remaining) break;
     const match = namePattern.exec(row.name)!, name = match[1]!;
     let file: OwnedFile | undefined;
     try {
-      file = openOwned(join(dir, row.name));
+      file = openOwned(join(row.capacity ? join(dir, ".capacity") : dir, row.name));
       if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) { blocked++; continue; }
       const claim = claimOwned(base, row.name, file);
       if (!claim) { blocked++; continue; }

@@ -1,6 +1,19 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **acceptance remains open**. At candidate `1016db8a82496a1d9255f6fb992b98f8cf4dde15`, actual [run 39939860463](https://github.com/STAIxBWLB/agent-mem/actions/runs/39939860463) passes Ubuntu but fails three macOS tests: native hook full-tier recovery, native SessionStart full-tier recovery, and direct CaptureStore contention replay. Local repeated passes did not establish runner recovery. PR #34 remains unmergeable pending both-platform exact-head CI, two successful actual macOS runs and the held reviewer verdict.
+Status: **acceptance remains open**. Actual [run 39941995704](https://github.com/STAIxBWLB/agent-mem/actions/runs/39941995704) at `5aa183e0b4c3bcdb4de3e9c6e278ad33d756c1b8` passes macOS but fails two Ubuntu full-tier progress assertions. The full multiline diagnostic proves a budget stop, not a stamp or admission failure: `[25,256,0]`, `[4,52.47,1]`, `[20,6.17,1,1]`, `[26,256,256,256]`, `[21,2.93,0,0]`, then the brief completes with 21.07 ms remaining. The first row check has 2.93 ms, below the unchanged 8 ms minimum, and no append/lock stage occurs. This evidence activates the reviewer's eventual-drain ruling; it does not establish green acceptance.
+
+## Bounded durable full-tier intake
+
+The next native event is now published before optional replay even when the ordinary tier is full, through a private cwd/scope-bound 32-file/256 KiB `.capacity/` reserve. No project is guessed and no accepted matching backlog is evicted. Reserve replay uses the same stamp, policy, stable receipt and owned inode/claim checks, globally oldest-first with active records. A failed append retains its claim in the source tier. Privacy quarantine remains non-replayable. The finite combined-capacity ceiling and upgrade path are explicit in contracts.md.
+
+The native tests retain numeric failure diagnostics and assert no loss, no duplicates, ordinary/reserve bounds, and exactly-once acknowledgement of all 256 backlog records plus the next event within 24 following invocations. An already-expired full-tier hook proves its next event remains durable without any recovery time; this assertion fails on the preceding hook implementation. A zero-budget drain changes nothing; nine threshold-budget passes drain the 257-record snapshot and another pass adds nothing. Separate leaf tests require progress when 8 ms is available, and preserve current-policy and scope refusals. The late-brief regression uses deterministic host-only identity and clock ports to prove ordering rather than assuming a native cold boot left a recovery slice. Actual CLI budget/reaper tests retain the unchanged 140/150/100 limits.
+
+The earlier standalone CaptureStore contention test has no new production change. Its 25 ms between-file guard is already on main; its latest actual Ubuntu and macOS results pass. Its numeric failure-only diagnostics remain for another recurrence. No causal claim about its one earlier failure is made.
+
+
+Pinned Bun 1.4.2 local macOS validation for this capacity-reserve candidate: typecheck clean; boundary OK (48 source files); 684 pass / 2 Linux-only skips / 0 fail, 12,782 assertions across 686 tests and 88 files (139.83 seconds); npm pack dry-run OK (54 files). The expired-full-tier assertion is red against the preceding hook source and green with reserve admission. The leaf admission regression is red against the preceding spool source. No test requires a same-invocation drain when its allocated slice is below 8 ms.
+
+Local R1: 76 invocations, 56 Bun workers and 20 owned native supervisors, zero leftovers. All 76 invocation captures were acknowledged, including all 55 original workload records; pending acknowledgements were zero. Local R2 p95 / own-combined peak / raw-combined peak: plain 41.51 ms / 73.53 MB / 73.55 MB; contention 39.09 / 68.45 / 68.47; SessionStart 49.51 / 45.95 / 45.95; drain 47.24 / 67.53 / 67.55. The cold trace returns 429 bytes of known work at 67.91 ms, and the foreign-full-tier trace at 81.93 ms. These are local receipts only. Actual runner acceptance still requires two consecutive green runs on both OSes at the new exact head, plus the held review verdict.
 
 ## Runner recovery diagnostics
 
@@ -25,11 +38,12 @@ Records are numeric arrays, with the first value identifying the stage:
 | 24 | Append/drain failure class: 1 lock/busy, 2 other |
 | 25 | Active inventory count; records retired during admission |
 | 26 | Scanned records; cwd matches; stamp matches |
+| 27 | Reserve inventory count; reserve-admission flag; prior-backlog flag |
 
 Unknown or absent budgets use -1; non-finite numeric observations use -999. These records are evidence for the next runner result, not evidence that recovery succeeded. Direct CaptureStore contention replay has its own numeric diagnostic because it does not call hookWorker and cannot be attributed to the latest worker reserve without further evidence. In the failed runner log the first spooled row was present and only the second was missing. The between-file 25 ms guard first appeared in `995a00bf79d6417999d06bdd21903eda7645031b` and is also present on main; neither capture.ts nor this test changed between 0162265f and 1016db8a. The wrapper reports total drain elapsed time and a 25-minus-elapsed estimate, plus this fixture's known lock state; it does not claim to observe a lock swallowed internally. A budget stop between files is a hypothesis pending the new runner diagnostic, not a verified cause.
 
 
-The diagnostic-only candidate passed its isolated-HOME native macOS gate on pinned Bun 1.4.2: typecheck clean, boundary OK (48 source files), 675 pass / 2 Linux-only skips / 0 fail, 9,768 assertions across 677 tests and 87 files (138.10 seconds), and npm pack dry-run OK (54 files). This does not replace actual runner evidence. Production source is identical to 1016db8a.
+The diagnostic-only candidate passed its isolated-HOME native macOS gate on pinned Bun 1.4.2: typecheck clean, boundary OK (48 source files), 675 pass / 2 Linux-only skips / 0 fail, 9,768 assertions across 677 tests and 87 files (138.10 seconds), and npm pack dry-run OK (54 files). This does not replace actual runner evidence. That diagnostic-only head had production source identical to 1016db8a; the later capacity-reserve candidate described above changes intake/replay and still needs fresh runner acceptance.
 
 ## CI follow-up after the parent-only candidate
 

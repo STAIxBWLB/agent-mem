@@ -15,9 +15,9 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  add('  let pending: PendingHookCapture | undefined, full = false;', 'globalThis.__recoveryNote(1);');
  add('  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);','globalThis.__recoveryNote(2,deadline-performance.now());');
  add('    const signature = await hookProcessSignature','globalThis.__recoveryNote(3,remaining());');
- add('    if (full && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','globalThis.__recoveryNote(4,remaining(),Number(full));');
+ add('    if ((full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','globalThis.__recoveryNote(4,remaining(),Number(full));');
  add('    const { sessionStartBrief } = await import','globalThis.__recoveryNote(5,remaining());');
- add('    result.pending = !!pending;','globalThis.__recoveryNote(6,remaining());');
+ add('    result.pending = !!pending && !result.captured;','globalThis.__recoveryNote(6,remaining());');
  add('  const workDeadline = deadline - WORKER_CLEANUP_MS;','globalThis.__recoveryNote(7,deadline-performance.now());');
  add('    if (!answer || !answer[1]) return result;','globalThis.__recoveryNote(8,workDeadline-performance.now(),Number(!!answer),answer?.[1]?.length??0);');
  }else if(path.endsWith('/session-brief-worker.ts')){
@@ -38,6 +38,7 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  if(contents.split(caught).length!==2)throw new Error('recovery catch anchor changed');
  contents=contents.replace(caught,'    } catch(error) { globalThis.__recoveryNote(24, /lock|busy/i.test(error?.message??"")?1:2); blocked++; } // Transient failure');
  add('  const queued = inventory.filter(row => !retired.has(row.name));','globalThis.__recoveryNote(25,inventory.length,retired.size);');
+ add('  const name = \`hook-\${hash(cwd)}-\${scope ?? \"0\".repeat(64)}-\${nonce}.json\`, temporary = join(writing, name);','globalThis.__recoveryNote(27,reserved.length,Number(deferred),Number(backlog));');
  }
  return {loader:'ts',contents};});}});
 const spawn=Bun.spawn.bind(Bun);

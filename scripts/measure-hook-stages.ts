@@ -27,8 +27,8 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('    const signature = await hookProcessSignature','parent-project-done');
   mark('    const { sessionStartBrief } = await import','parent-full-recovery-done');
   mark('    const brief = await sessionStartBrief','parent-brief-start');
-  mark('    if (full && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
-  mark('    result.pending = !!pending;','parent-brief-done');
+  mark('    if ((full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
+  mark('    result.pending = !!pending && !result.captured;','parent-brief-done');
   mark('    result.context = brief.context','parent-context-ready');
  }else if(path.endsWith('/hook-native.ts')){
   mark('  const child = Bun.spawn','native-spawn');
