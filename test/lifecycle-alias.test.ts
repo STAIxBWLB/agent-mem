@@ -94,6 +94,4 @@ test("the gate refuses before the shard is initialized and lifecycle ignore pass
   expect(existsSync(join(shardDir(base, key), "generation.json"))).toBe(false);   // refused before initializeShard wrote anything
   // lifecycle "ignore" passes the gate: this unsplit home then fails on the missing migration, which is not the lifecycle refusal
   expect(() => openShardStore({ memoryDir: base, project: key, lifecycle: "ignore" })).toThrow(/no active curated shard migration/);
-}); open.close();
-  expect(existsSync(join(shardDir(base, key), "generation.json"))).toBe(true);
 });
