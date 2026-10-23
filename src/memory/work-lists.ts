@@ -63,6 +63,9 @@ function sourceKey(value: string): string {
   });
   return parts.join("") + " " + lexicalKey(value);
 }
+// ponytail: the key spells machine, source and id as 4 hex digits a UTF-16 unit, and the source id twice
+// (sourceKey keeps the full id as its tie-break), so a row at the 500-character input limits carries a key
+// of several KB. Upgrade path: past a length, replace the full-id tie-break with a fixed-width hash of it.
 /** Derived only: timestamp, import/native origin, natural source id, machine, append position, row hash.
  * Fixed-width safe integers and encoded strings let the persisted index supply the legacy replay order. */
 function replayKey(row: WorkRow, position: number): string {
@@ -137,7 +140,11 @@ export class WorkListStore {
     this.db.run("CREATE TABLE IF NOT EXISTS work_ops (id TEXT PRIMARY KEY, at INTEGER NOT NULL, machine TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT, position INTEGER NOT NULL, replay TEXT NOT NULL DEFAULT '')");
     this.db.run("CREATE INDEX IF NOT EXISTS work_receipts ON work_ops(receipt)");
     this.db.run("CREATE TABLE IF NOT EXISTS work_heads (file TEXT PRIMARY KEY, bytes INTEGER NOT NULL, hash TEXT NOT NULL)");
-    this.db.transaction(() => {
+    // Take the write transaction only when the replay column or its index is missing, so an ordinary open never
+    // waits on another process's refresh or rebuild (#383). The check repeats inside the transaction.
+    const migrated = () => (this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[]).some(column => column.name === "replay")
+      && (this.db.query("PRAGMA index_list(work_ops)").all() as { name: string }[]).some(index => index.name === "work_replay");
+    if (!migrated()) this.db.transaction(() => {
       const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
       if (!columns.some(column => column.name === "replay")) this.db.run("ALTER TABLE work_ops ADD COLUMN replay TEXT NOT NULL DEFAULT ''");
       this.db.run("CREATE INDEX IF NOT EXISTS work_replay ON work_ops(replay)");
@@ -212,17 +219,21 @@ export class WorkListStore {
   /** An ordered, stable read snapshot. The separate read-only connection never holds the mutation lock across
    * a host policy await, so a concurrent append succeeds without changing this read's history frontier. */
   private operations(): IterableIterator<IndexedRow> {
-    const state = this.locked(() => {
+    let opened: Database | undefined;
+    let state: { db: Database; rows: IterableIterator<{ payload: string; position: number; replay: string }>; first: IteratorResult<{ payload: string; position: number; replay: string }> };
+    try { state = this.locked(() => {
       this.refresh();
       regular(join(this.dir, "index.db"));
-      const db = new Database(join(this.dir, "index.db"), { readonly: true });
+      const db = opened = new Database(join(this.dir, "index.db"), { readonly: true });
       try {
         db.run("PRAGMA busy_timeout = 3000"); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
         db.run("BEGIN");
         const rows = db.query("SELECT payload, position, replay FROM work_ops ORDER BY replay").iterate() as IterableIterator<{ payload: string; position: number; replay: string }>;
         return { db, rows, first: rows.next() }; // Establish the snapshot before releasing the writer lock.
-      } catch (error) { db.close(); throw error; }
-    });
+      } catch (error) { opened = undefined; db.close(); throw error; }
+    }); }
+    // The mutation transaction's COMMIT can fail after the snapshot connection opened; close it then (#383).
+    catch (error) { opened?.close(); throw error; }
     let first = true, closed = false;
     const close = () => {
       if (closed) return;
