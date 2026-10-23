@@ -529,6 +529,41 @@ test("a git worktree of the repository (same project key) reads its own checkout
   expect(await runCli(["search", "concurrent"], { ...r.person, cwd: wt })).not.toContain("repo scope (.amem/log.jsonl):");
 });
 
+// ---- review findings (codex-connector, round 0)
+
+test("the writer and the reader agree on limits: a multibyte title over the BYTE limit is refused at promotion, and whatever is appended is read back", async () => {
+  const r = rig("https://github.com/o/a.git");
+  const wide = r.note("body is fine", { title: "한".repeat(100) });       // 100 characters, 300 UTF-8 bytes: over the 200-byte reader limit
+  const message = await refusal(promote(r, wide, "--confirm"));
+  expect(message).toContain("title 200 bytes");
+  expect(r.log()).toBe("");
+  const edge = r.note("body is fine", { title: "한".repeat(66) });         // 198 bytes: allowed, and must be readable
+  await promote(r, edge, "--confirm");
+  const read = await readRepoScope(r.repo, policy);
+  expect(read.views).toHaveLength(1); expect(read.skipped.malformed).toBe(0);
+  // the planner also refuses anything the reader's own parser rejects, even when no single named limit was crossed: one over-long link (reader limit 300 bytes) has no check of its own
+  const store = new MemoryStore({ home: r.dir, deferPromotions: true });
+  try {
+    const id = store.note({ op: "note", project: r.project, scope: "project", tier: "long", kind: "decision", peer: "person", text: "x", about: [`path:${"d/".repeat(200)}f.ts`], source: "person" });
+    const plan = await planRepoPromotion(r.repo, store.get(id, r.project)!);
+    expect("error" in parseRepoLine(plan.text)).toBe(true);                          // the premise: this line is one the reader rejects
+    expect(plan.refusals.join(" ")).toContain("repo reader's own validation");
+  } finally { store.close(); }
+});
+
+test("MCP search on the FTS engine lets FTS pick repo candidates, like curated ones: punctuation and extra words do not drop a repo entry", async () => {
+  const r = rig(); writeLog(r, [repoLine("sqlite writer lease per shard")]);
+  const mcp = createMemoryMcp({ cwd: r.repo, base: r.base, project: r.project });
+  try {
+    const engine = (await mcp.tools.amem_search({ query: "sqlite" }) as { engine: string }).engine;
+    for (const query of ["sqlite?", "sqlite concurrency", "sqlite writer", "Sqlite, WRITER!"]) {
+      const out = await mcp.tools.amem_search({ query }) as { hits: { source: string }[] };
+      expect(out.hits.filter(h => h.source === "repo"), `query ${JSON.stringify(query)} on ${engine}`).toHaveLength(1);
+    }
+    expect((await mcp.tools.amem_search({ query: "zzz" }) as { hits: unknown[] }).hits).toHaveLength(0);
+  } finally { mcp.close(); }
+});
+
 test("planRepoPromotion asks no remote and writes nothing; the plan's line id is the hash of its content", async () => {
   const r = rig(); const store = new MemoryStore({ home: r.dir, deferPromotions: true });
   try {

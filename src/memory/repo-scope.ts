@@ -243,13 +243,15 @@ export async function planRepoPromotion(root: string, note: View): Promise<Promo
   if (note.tier !== "long" || note.local) refusals.push("only a long-term note enters repo scope: promote it to long-term first");
   if (note.supersededBy) refusals.push(`replaced by ${note.supersededBy.slice(0, 8)}: promote that one instead`);
   if (!REPO_KINDS.includes(note.kind as RepoKind)) refusals.push(`a ${note.kind} stays private: repo scope holds ${REPO_KINDS.join(", ")}`);
-  if (Buffer.byteLength(note.text) > MAX_TEXT || (note.title?.length ?? 0) > MAX_TITLE) refusals.push("the note is longer than a repo entry may be");
+  if (Buffer.byteLength(note.text) > MAX_TEXT || Buffer.byteLength(note.title ?? "") > MAX_TITLE) refusals.push(`the note is longer than a repo entry may be (title ${MAX_TITLE} bytes, text ${MAX_TEXT} bytes)`);
   const flat = `${note.title ?? ""}\n${note.text}\n${about.join("\n")}`;
   if (namesPrivatePath(flat)) refusals.push("it names a private path (a home directory or a credential location)");
   let policy: MemoryPolicy | undefined;
   try { policy = createStandalonePolicy(repoPolicyOptions(root)); } catch (error) { refusals.push((error as Error).message); }
   // The policy's shape check refuses `undefined` values, so the screened value is exactly the committed line's own fields.
   const { id: _lineId, ...committed } = line;
+  // The writer and every reader must agree: a line the reader's own parser rejects (a byte limit, a shape) is never appended, whatever the checks above said.
+  if (!refusals.length && "error" in parseRepoLine(JSON.stringify(line))) refusals.push("the line it would write does not pass the repo reader's own validation (a title, text or link over a limit, or an empty field); shorten it first");
   if (policy && !await policy.screen(committed)) refusals.push("the screen declined it: a secret, personal data, a private path or a local.deny entry");
   const read = readLog(root);
   if ("unsafe" in read) refusals.push(read.unsafe);

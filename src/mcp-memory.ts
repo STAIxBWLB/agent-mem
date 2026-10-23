@@ -120,7 +120,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const useFts = index.available && captureState.engine !== "substring";
           const notes = await readPermitted(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since }, SEARCH_CANDIDATES,
             view => useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
-          const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
+          const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
             ...repoNotes.map(view => ({ source: "repo" as const, evidence: false, view, ref: `repo:${view.id}`, at: view.at, tier: "long", body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
             ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => !since || Date.parse(hit.at) >= Date.parse(since));
