@@ -15,7 +15,7 @@ const samples=[];const note=(stage)=>{if(samples.length>=256)throw new Error('di
 process.on('exit',()=>appendFileSync(file,samples.map(row=>JSON.stringify(row)).join('\\n')+'\\n'));
 globalThis.__amemHookStage=note;
 Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-worker|hook-project|session-brief|hooks|hook-native)\\.ts$|[/]bin[/]amem\\.js$/},({path})=>{
- let contents=readFileSync(path,'utf8'); const mark=(needle,name)=>{if(contents.split(needle).length!==2)throw new Error('diagnostic anchor changed');contents=contents.replace(needle,"globalThis.__amemHookStage('"+name+"');"+needle);};
+ let contents=readFileSync(path,'utf8'); const mark=(needle,name)=>{if(contents.split(needle).length!==2){note('anchor-missing-'+name);throw new Error('diagnostic anchor changed');}contents=contents.replace(needle,"globalThis.__amemHookStage('"+name+"');"+needle);};
  if(path.endsWith('/bin/amem.js')){
   contents=contents.replace(/^#![^\\n]*\\n/,'');
   const output='if (output) console.log(output);';
@@ -29,9 +29,9 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('    const signature = await hookProcessSignature','parent-project-done');
   mark('    const { sessionStartBrief } = await import','parent-full-recovery-done');
   mark('    const brief = await sessionStartBrief','parent-brief-start');
-  mark('    if ((full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
+  mark('    if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
   mark('    result.pending = !!pending && !result.captured;','parent-brief-done');
-  mark('    result.context = brief.context','parent-context-ready');
+  mark('    result.context = dropNotice + brief.context','parent-context-ready');
  }else if(path.endsWith('/hook-native.ts')){
   mark('  const child = Bun.spawn','native-spawn');
  }else if(path.endsWith('/session-brief-worker.ts')){
@@ -42,8 +42,8 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('const { sessionStartBrief } = await import','brief-import-start');mark('const result = await sessionStartBrief','brief-import-done');
   mark('await emit({ ...result, captured','brief-done');
  }else if(path.endsWith('/hook-project.ts')){
-  mark('const cwd = realPath','git-path-start');mark('if (!options.scope','git-path-done');
-  mark('const validity = hookCaptureScope','project-validity-start');mark('const dir = join(base','project-validity-done');
+  mark('const cwd = realPath','git-path-start');mark('if (scope !== undefined && (!scope','git-path-done');
+  mark('const validity = scope === undefined ? undefined : hookCaptureScope','project-validity-start');mark('const dir = join(base','project-validity-done');
   mark('const currentValidity = hookCaptureScope','project-completion-start');mark('if (currentValidity !== validity','project-completion-read-done');
   mark('const scan = opendirSync(dir);','cache-maintenance-start');mark('const text = JSON.stringify(value);','cache-publication-start');
   mark('return cached.project;','project-cache-hit');mark('const project = memoryProjectKey','project-cache-miss');

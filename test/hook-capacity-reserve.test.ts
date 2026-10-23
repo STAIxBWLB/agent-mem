@@ -84,7 +84,7 @@ test("wrong scope never replays reserve and policy retirement never becomes ordi
   } finally { store.close(); }
 });
 
-test("stale cwd records leave the bounded reserve privately and cannot block new reserve admission", async () => {
+test("stale cwd reserve records stay pending and exhaustion refuses without deleting accepted work", async () => {
   const f = fixture(), foreign = fixture();
   const stale = await stageHookCapture("PostToolUse", { prompt: "removed cwd reserve" }, { cwd: foreign.cwd, base: f.base });
   mkdirSync(capacity(f), { mode: 0o700 }); renameSync(join(active(f), stale!.name), join(capacity(f), stale!.name));
@@ -95,10 +95,10 @@ test("stale cwd records leave the bounded reserve privately and cannot block new
   }
   rmSync(foreign.cwd, { recursive: true, force: true });
   await full(f);
-  const admitted = await stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true });
-  expect(admitted).toMatchObject({ deferred: true }); expect(hookCapturePending(f.base, admitted!.name)).toBe(true);
+  await expect(stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true })).rejects.toThrow("hook storage full");
+  expect(hookCapturePending(f.base, stale!.name)).toBe(true);
   expect(names(capacity(f))).toHaveLength(32);
-  expect(names(join(active(f), ".quarantine"))).toHaveLength(1);
+  expect(names(join(active(f), ".quarantine"))).toHaveLength(0);
 });
 
 

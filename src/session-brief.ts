@@ -179,7 +179,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       });
       await run("capture", async () => {
         const { CaptureStore } = await import("./memory/capture.ts");
-        const capture = new CaptureStore({ memoryDir: base, project, ...(options.nativeSession ? { readOnly: true, busyTimeoutMs: 0, maxReadRows: 128 } : {}) }); closers.push(() => capture.close());
+        const capture = new CaptureStore({ memoryDir: base, project, ...(options.nativeSession ? { readOnly: true, busyTimeoutMs: 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
+        if (capture.recentReadTruncated) coverage.capture = "partial";
         await recent("capture", window => capture.readPage(window), captureDisplay);
       });
       guard();

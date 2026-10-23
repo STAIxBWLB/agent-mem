@@ -1,6 +1,6 @@
 import type { BriefOptions } from "./session-brief.ts";
 import type { CaptureStore } from "./memory/capture.ts";
-import { resolveHookProject } from "./hook-project.ts";
+import { resolveHookProjectAsync } from "./hook-project.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
@@ -24,15 +24,17 @@ async function readOptions(): Promise<string> {
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
 if (import.meta.main) {
   let owned = false;
+  const nativeUsage = { rssKB: 0, rawRssKB: 0 };
   const stop = (): never => {
-    // This leader is still alive in the detached group created by hookWorker, so its
-    // native descendants cannot outlive a timeout, transport failure or normal completion.
+    // This leader is still alive in the detached group created by hookWorker.
+    // Native Git uses a separate owned async supervisor with its own native watchdog;
+    // a blocked Git cannot prevent this worker's JS deadline from firing.
     if (owned) try { process.kill(-process.pid, "SIGKILL"); } catch { /* No group exists in a direct, non-owned invocation. */ }
     process.exit(0);
   };
   const emit = async (result: unknown) => {
     const body = JSON.stringify({ ...(result as object), complete: true });
-    const rssKB = hookPeakRssKB();
+    const rssKB = hookPeakRssKB() + nativeUsage.rssKB;
     await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
     stop();
   };
@@ -45,17 +47,17 @@ if (import.meta.main) {
     setTimeout(stop, remaining()).unref();
     const policy = createStandalonePolicy(options.policy), event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
-    const expectedScope = hookCaptureScope(options.cwd, options.base!) ?? stop();
+    const expectedScope = hookCaptureScope(options.cwd, options.base!);
     let project: string;
-    try { project = resolveAlias(options.base!, resolveHookProject({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining, maintainCache: event !== "SessionStart" })); }
+    try { project = resolveAlias(options.base!, await resolveHookProjectAsync({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining, maintainCache: event !== "SessionStart" }, nativeUsage)); }
     catch {
-      quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
+      if (expectedScope !== undefined) quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
       project = stop();
     }
     let captured = false;
     // Normal SessionStart keeps the parent's durable stage for later replay and spends
     // its short-lived worker on context. An empty current name is mandatory full-tier recovery.
-    if (event !== "SessionStart" || !options.current) {
+    if (expectedScope !== undefined && (event !== "SessionStart" || !options.current)) {
       const { CaptureStore } = await import("./memory/capture.ts");
       let store: CaptureStore | undefined;
       try {
@@ -66,11 +68,14 @@ if (import.meta.main) {
         captured = drained.captured.includes(options.current);
       } finally { store?.close(); }
     }
+    if (hookCaptureScope(options.cwd, options.base!) !== expectedScope) stop();
     if (event === "SessionStart") {
       const { sessionStartBrief } = await import("./session-brief.ts");
       const result = await sessionStartBrief({ ...options, project,
         timeRemaining: () => options.deadlineAt - (performance.timeOrigin + performance.now()) });
-      await emit({ ...result, captured, valid: await policy.screen({ context: result.context }) });
+      const valid = await policy.screen({ context: result.context });
+      if (hookCaptureScope(options.cwd, options.base!) !== expectedScope) stop();
+      await emit({ ...result, captured, valid });
     } else await emit({ context: "", captured, valid: true });
   } catch { if (owned) stop(); process.exitCode = 1; }
 }

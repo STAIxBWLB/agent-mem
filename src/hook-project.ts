@@ -63,7 +63,7 @@ function publish(dir: string, file: string, value: Binding, maintain: boolean): 
   } catch { /* Derived cache I/O never changes a successfully resolved identity. */ }
   finally { if (temporary) try { rmSync(temporary, { force: true }); } catch { /* Cache cleanup stays advisory too. */ } }
 }
-interface ResolverOptions { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean; gitRead?: ProjectGitRead; assertComplete?: () => void; env?: NodeJS.ProcessEnv }
+interface ResolverOptions { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean; gitRead?: ProjectGitRead; assertComplete?: () => void; env?: NodeJS.ProcessEnv }
 
 /** Prepare filesystem/cache binding once; suspended native reads replay only the shared resolver. */
 function prepareHookProject(options: ResolverOptions) {
@@ -73,13 +73,17 @@ function prepareHookProject(options: ResolverOptions) {
   };
   checkDeadline();
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), binary = hookGitBinary(options.env);
-  if (!options.scope || hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
+  const scope = options.scope;
+  if (scope !== undefined && (!scope || hookCaptureScope(cwd, base) !== scope)) throw new Error("project scope changed");
+  const cwdStat = lstatSync(cwd);
   const prefixConfig = join(dirname(dirname(binary.file)), "etc", "gitconfig");
-  const validity = hookCaptureScope(cwd, base, true, prefixConfig);
+  // Unknown semantic scope cannot certify a reusable identity, but native Git can still
+  // resolve the current project for a read-only brief. Never read or publish cache in this case.
+  const validity = scope === undefined ? undefined : hookCaptureScope(cwd, base, true, prefixConfig);
   const dir = join(base, "hook-project"), named = lstatSync(dir, { throwIfNoEntry: false });
   const file = join(dir, `${hash(cwd)}.json`);
-  const cached = !named || named.isDirectory() && !named.isSymbolicLink() && !(named.mode & 0o077) ? read(file) : undefined;
-  const hit = cached?.cwd === cwd && cached.scope === options.scope && validity && cached.validity === validity && cached.binary === binary.revision && cacheableLocal(cwd, cached.project);
+  const cached = scope !== undefined && (!named || named.isDirectory() && !named.isSymbolicLink() && !(named.mode & 0o077)) ? read(file) : undefined;
+  const hit = cached?.cwd === cwd && cached.scope === scope && validity && cached.validity === validity && cached.binary === binary.revision && cacheableLocal(cwd, cached.project);
   const verifyBinary = () => {
     checkDeadline();
     const currentBinary = hookGitBinary(options.env);
@@ -90,8 +94,13 @@ function prepareHookProject(options: ResolverOptions) {
     verifyBinary();
     // A known strong binding includes every semantic field. Only the uncached,
     // unknown-validity case also needs its independent semantic scope check.
-    const currentValidity = hookCaptureScope(cwd, base, true, prefixConfig);
-    if (currentValidity !== validity || !validity && hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
+    if (scope === undefined) {
+      const currentCwd = lstatSync(cwd);
+      if (realPath(options.cwd) !== cwd || currentCwd.dev !== cwdStat.dev || currentCwd.ino !== cwdStat.ino) throw new Error("project cwd changed");
+    } else {
+      const currentValidity = hookCaptureScope(cwd, base, true, prefixConfig);
+      if (currentValidity !== validity || !validity && hookCaptureScope(cwd, base) !== scope) throw new Error("project scope changed");
+    }
     checkDeadline();
   };
   return { binary, verifyBinary, resolve(gitRead: ProjectGitRead, assertComplete?: () => void): string {
@@ -104,9 +113,9 @@ function prepareHookProject(options: ResolverOptions) {
     // The synchronous resolver can catch an unknown native read internally. Fence that
     // suspended pass before any completion checks, cache publication or returned key.
     assertComplete?.(); verify();
-    if (validity && cacheableLocal(cwd, project)) {
+    if (scope !== undefined && validity && cacheableLocal(cwd, project)) {
       checkDeadline();
-      publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project }, options.maintainCache === true);
+      publish(dir, file, { schema: SCHEMA, cwd, scope, validity, binary: binary.revision, project }, options.maintainCache === true);
     }
     checkDeadline();
     return project;
@@ -137,7 +146,7 @@ function cacheableLocal(cwd: string, project: string): boolean {
 
 /** Replay the shared synchronous resolver only after every requested native read is known.
  * A suspended/partially resolved pass can never publish a cache entry or return a guessed key. */
-export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope: string; timeRemaining: () => number }, usage: HookNativeUsage): Promise<string> {
+export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean }, usage: HookNativeUsage): Promise<string> {
   const reads = new Map<string, ReturnType<ProjectGitRead>>();
   const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: options.base };
   const prepared = prepareHookProject({ ...options, env });

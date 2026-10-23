@@ -1,6 +1,43 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **acceptance remains open**. At `aced641e5d895825a13d84abfa0218a6b4dab661`, actual [run 39946668776](https://github.com/STAIxBWLB/agent-mem/actions/runs/39946668776) passes the dedicated R1/R2 workload and cold attempt 0 on both runners, but bun test fails three macOS functional branches under the real short deadline and one Ubuntu immediate descendant-PID assertion. Whole-job acceptance is still red, not inferred from passing budget steps. The reviewer's strategy ruling separates functional branch coverage from real executable budgets; both OSes still require two consecutive green exact-head runs and the held verdict.
+Status: **acceptance remains open**. The previous head `dec75e009c40b84c7858e581313e099742029d4c` passed both OSes in [run 39949588047](https://github.com/STAIxBWLB/agent-mem/actions/runs/39949588047), but independent source review found pending-capture loss and worker-watchdog gaps. This candidate fixes those findings. Its exact head still needs two consecutive green runs on both GitHub runners and the held source verdict. Local/container results are not runner acceptance.
+
+## Current rework after the pending-retention review
+
+This candidate changes the pending-record contract, not the R2 limits. Valid accepted data remains in its original active/reserved tier when its cwd is removed, its project is foreign or its identity evidence is stale, changed, unsupported or temporarily unreadable. There is no automatic expiry and no scope-based quarantine. Nullable initial scope can replay only after positive current scope evidence is available; a stored non-null scope must match. Alias/profile/shard metadata belongs to cache validity and current reader authority, not pending scope. Persistent unknown scope bypasses caching; positively resolved fresh native identity may still provide known work while capture remains pending. Malformed records may be removed; an explicit current-policy refusal retains a metadata-only numeric quarantine receipt, never its body.
+
+The ordinary 256-file/2 MiB tier and 32-file/256 KiB reserve are unchanged. If both fill with retained valid data, the current event may be dropped rather than displacing an accepted record. Its receipt explicitly reports `{dropped:true,dropReason:"spool_full",dropCount:1}`, its metric records `captureDrops:1`, and SessionStart adds a fixed notice while retaining its brief. This is a finite-capacity loss, not a claim of lossless intake. Existing owned descriptor/inode fences, stable replay receipts and append-before-acknowledgement remain required.
+
+Native optional capture now selects the newest 128 ids from the existing time index, bounds body paging to those ids and marks excluded history partial. A larger capture store no longer permanently disables the section. Missing indexes and plans needing an unbounded temporary sort defer without FTS/schema repair. The standalone library brief keeps every original source. The worker now awaits owned asynchronous native Git, retaining its independent native watchdog when its caller is killed; the focused parent-death regression and the native measurements below cover that leg.
+
+The native `AMEM_HOOK_BOOT_AT` value is solely an exec clock handoff. `Math.min` binds it to the actual start, so an inherited value can only shorten the deadline. It is cleared before hook import or child launch. No environment or CLI argument can select the programmatic functional-test deadline. Handler 140 ms, R2 p95 150 ms and combined peak 100 MB remain unchanged.
+
+`dec75e0` supplied one prior-head green run on each OS. It is not evidence that this new pending-retention/capture-window/watchdog candidate is green, nor does it complete any requirement for consecutive exact-head runner passes. The new exact head, both-OS results and current resource numbers remain to be reported after validation. No real plugin install, provider/account turn or live-week cutover is claimed.
+
+## Current native Mac measurements
+
+Pinned Bun 1.4.2, isolated HOME/AMEM_HOME/AGENTHUB_HOME. These are local native observations, not GitHub-runner acceptance. No resource limit or handler deadline changed.
+
+| Workload | p95 ms | Combined peak MB |
+| --- | ---: | ---: |
+| Plain hook, 40 runs | 45.81 | 77.33 |
+| Contended capture, 15 runs | 41.61 | 68.52 |
+| SessionStart, 20 runs | 51.26 | 46.64 |
+| Drain | 47.80 | 68.27 |
+
+The actual CLI cold attempt 0 returned known work in 72.15 ms; the full-foreign-tier case returned it in 94.01 ms. Both remain below 140 ms. R1 observed 76 normal invocations, 56 Bun workers and 20 native supervisors, with zero leftovers and all 76 captures acknowledged. The two additional real deadline paths returned in 146.25 ms (SessionStart) and 118.38 ms (PreToolUse), with combined peaks 39.30/50.23 MB and zero observed children. They are reported separately from the 76 normal invocations.
+
+The worker-parent-death regression blocks native Git, SIGKILLs its caller and observes the worker, native supervisor group, Git wrapper and sleep descendant all gone. The old synchronous worker fails the named absence assertion; the async owned-native path passes. This proves the Git leg, not preemption of arbitrary synchronous filesystem or SQLite work.
+
+## Current package gate
+
+Pinned Bun 1.4.2 in the workspace's remote Linux container, with isolated HOME/AMEM_HOME/AGENTHUB_HOME: typecheck clean; `boundary: OK (48 source files)`; `699 pass, 5 skip, 0 fail`, 12,749 assertions across 704 tests/93 files (161.97 s); `npm pack --dry-run` succeeds with 54 files. This is portable package verification, not GitHub-runner R2 acceptance.
+
+The local Mac full run found two test-contract issues after the runtime budget passed: a source-instrumentation anchor moved with the token clamp, and one reserve test still expected the now-rejected eviction of valid stale records. The corrected focused tests pass (13 tests, 2,179 assertions). Local admission then deferred the full rerun on uncovered system/dotfiles heavyweight work; no other process was killed or bypassed. The complete package gate above ran remotely instead. A clean exact-head Mac CI job remains required.
+
+## Earlier candidate history
+
+The remaining sections preserve earlier measurements and diagnoses. Their retired quarantine/expiry or admission descriptions explain those historical candidates only; the current retention and drop contract is the section above and `contracts.md`.
 
 ## Functional strategy and R1 observation
 
@@ -79,7 +116,7 @@ For macOS, the original worker could spend the full work slice and then overrun 
 
 Status: **macOS acceptance remains open**. The privacy fix at `1e4ec025e0359d05d515988b50da632f5a1545a8` passed Ubuntu but regressed SessionStart on actual macOS [run 39909819878](https://github.com/STAIxBWLB/agent-mem/actions/runs/39909819878), including a failed-job rerun. The preceding `b797a99b` passed both OSes but had the legacy-remote privacy finding. No passing local result below supersedes those runner failures. PR #34 remains unmergeable pending both-platform exact-head CI and the held privacy/performance verdict.
 
-## Current candidate, parent-only native SessionStart
+## Historical parent-only native SessionStart candidate
 
 The previous `e07af3fa` candidate still failed actual macOS CI: the cold/noisy trace spent 45-70 ms on the second Bun startup before useful work. The current Option A candidate removes that startup from native SessionStart: work and only safe optional sections run in the parent CLI. Curated refresh is named unavailable, existing small capture indexes use a bounded read-only path, and the standalone library brief keeps all sources. Native metadata retains the shared Git identity and cache/privacy fences through owned asynchronous supervisors. An adversarial caller-SIGKILL probe found the initial supervisor could outlive its deadline; an armed native self-watchdog now reaps its nonce/PGID-verified group even without the caller. No second Bun boot or deadline increase was used.
 

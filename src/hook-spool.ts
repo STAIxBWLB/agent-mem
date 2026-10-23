@@ -16,11 +16,16 @@ const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
-interface Record { schema: typeof SCHEMA; cwd: string; scope: string | null; nonce: string; capture: NormalizedCaptureFields }
+interface Record { schema: typeof SCHEMA; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
 interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true }
 const directory = (base: string) => join(base, "hook-spool");
+function physicalRoot(cwd: string): string {
+  const stat = lstatSync(cwd);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook root unavailable");
+  return hash(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
+}
 
 function privateDirectory(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -183,7 +188,7 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
     parts.push(found ? "git" : "no-git", JSON.stringify([...scalars].sort()), JSON.stringify(rewrites));
     // Opaque bounded binding only. Actual schema/project interpretation stays with the worker's core readers;
     // importing those here would load SQLite in the low-RSS parent. File replacement alone is irrelevant.
-    for (const file of ["aliases.jsonl", "profile.json", "shards.json"]) parts.push(`${file}:${hash(content(join(base, file)))}`);
+    if (cacheValidity) for (const file of ["aliases.jsonl", "profile.json", "shards.json"]) parts.push(`${file}:${hash(content(join(base, file)))}`);
     return hash(parts.join("\n"));
   } catch { return undefined; }
 }
@@ -219,8 +224,9 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer } | undefined 
   if (readSync(file.fd, bytes, 0, bytes.length, 0) !== bytes.length || !owns(file)) throw new Error("hook record changed");
   try {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record;
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 5
-      || Object.keys(value).some(key => !["schema", "cwd", "scope", "nonce", "capture"].includes(key))
+    if (!value || typeof value !== "object" || Array.isArray(value) || ![5, 6].includes(Object.keys(value).length)
+      || Object.keys(value).some(key => !["schema", "cwd", "scope", "root", "nonce", "capture"].includes(key))
+      || value.root !== undefined && (typeof value.root !== "string" || !/^[a-f0-9]{64}$/.test(value.root))
       || value.schema !== SCHEMA || typeof value.cwd !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
       || value.scope !== null && (typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope))) return undefined;
     const c = value.capture;
@@ -271,20 +277,21 @@ function trimQuarantine(base: string, files = 0, bytes = 0, batch?: QuarantineBa
   }
   return count + files <= MAX_FILES && size + bytes <= MAX_BYTES;
 }
-/** Only this exact owned unique claim is retired. Invalid/oversized records age out without retaining a raw
- * body. Valid normalized rows are held privately outside active admission and never read as brief context.
- * ponytail: active and quarantine each have a 2MiB/256-file soft cap plus already in-flight publications;
- * cross-process hard admission accounting is the upgrade path. Bounded trims run on healthy admission too. */
+/** Policy refusals retain only a bounded numeric receipt, never the rejected capture body. */
 function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: QuarantineBatch): boolean {
   if (!owns(file)) return false;
   if (!preserve) { rmSync(file.file); return true; }
   const quarantine = join(directory(base), ".quarantine"); privateDirectory(quarantine);
-  if (!trimQuarantine(base, 1, file.initial.size, batch) || !owns(file)) return false;
+  const body = JSON.stringify({ schema: "agent-mem.hook-quarantine/v1", reason: "policy", bytes: file.initial.size, at: Date.now() });
+  if (!trimQuarantine(base, 1, Buffer.byteLength(body), batch) || !owns(file)) return false;
   const name = `${file.file.slice(file.file.lastIndexOf("/") + 1)}.quarantined-${randomBytes(12).toString("hex")}`;
   const destination = join(quarantine, name);
-  renameSync(file.file, destination); chmodSync(destination, 0o600);
+  writeFileSync(destination, body, { mode: 0o600, flag: "wx" });
+  if (!owns(file)) { rmSync(destination); return false; }
+  rmSync(file.file);
   if (batch) {
-    batch.held!.push({ name, size: file.initial.size, modified: file.initial.mtimeMs, dev: file.initial.dev, ino: file.initial.ino });
+    const stat = lstatSync(destination);
+    batch.held!.push({ name, size: stat.size, modified: stat.mtimeMs, dev: stat.dev, ino: stat.ino });
     batch.held!.sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   }
   return true;
@@ -296,11 +303,10 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   // One synchronous admission shares its inventories. Concurrent publishers can still
   // overshoot the documented soft caps; every destructive operation rechecks ownership.
   const batch: QuarantineBatch = sharedBatch ?? {}, retired = new Set<string>();
-  if (!batch.held) trimQuarantine(base, 0, 0, batch);
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
   const fits = () => count < (capacity ? CAPACITY_FILES : MAX_FILES) && bytes + incomingBytes <= (capacity ? CAPACITY_BYTES : MAX_BYTES);
   if (minimal && fits()) return retired;
-  const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
+  const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   const removed = (row: typeof active[number]) => { retired.add(row.name); count--; bytes -= row.size; };
   let remaining = DRAIN_BYTES;
   for (const row of active.slice(0, DRAIN_FILES)) {
@@ -318,22 +324,19 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
         const claim = claimOwned(base, row.name, file); if (claim && retireClaim(base, claim, false, batch)) removed(row);
         continue;
       }
-      if (record) {
-        const value = record.value;
-        if (!scopes.has(value.cwd)) scopes.set(value.cwd, hookCaptureScope(value.cwd, base));
-        if (value.scope !== null && value.scope === scopes.get(value.cwd)
-          && (admittingCwd === undefined || value.cwd === admittingCwd)) continue;
-      }
+      // A valid foreign, stale-scoped or temporarily unresolvable record is still data.
+      // Keep it pending; only malformed publications and explicit policy refusals retire.
+      if (record) continue;
       const claim = claimOwned(base, row.name, file);
-      if (claim && retireClaim(base, claim, !!record, batch)) removed(row);
+      if (claim && retireClaim(base, claim, false, batch)) removed(row);
     } catch { /* Transient I/O and changed evidence remain retryable; capture bodies never enter logs. */ }
     finally { if (file) closeSync(file.fd); }
   }
   return retired;
 }
 
-/** INTERNAL worker recovery after a known fatal native Git resolution. No project is inferred and no
- * capture is appended here: bounded matching publications leave active admission through the same guard. */
+/** INTERNAL malformed-publication maintenance. A native Git failure is not permission to
+ * discard a valid pending record; only positively invalid publications leave admission. */
 export function quarantineHookScope(options: { cwd: string; base: string; scope: string }): { retired: number } {
   let retired = 0;
   if (!/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
@@ -353,7 +356,7 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim), match = namePattern.exec(row.name)!;
       const valid = !!record && record.value.cwd === cwd && record.value.scope === options.scope && record.value.nonce === match[4];
-      if (retireClaim(base, claim, valid)) retired++;
+      if (!valid && retireClaim(base, claim, false)) retired++;
     } catch { /* A transient failure or foreign replacement is never treated as acknowledgement. */ }
     finally { if (file) closeSync(file.fd); }
   }
@@ -377,13 +380,13 @@ export async function stageHookCapture(event: string, input: unknown, options: O
     ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt: typeof content === "string" ? content : JSON.stringify(content) });
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
-  const record: Record = { schema: SCHEMA, cwd, scope, nonce, capture }, bytes = JSON.stringify(record);
+  const record: Record = { schema: SCHEMA, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   const inventory = entries(base);
   const full = inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES;
-  // A healthy foreign cwd cannot monopolize the home-wide active tier. Preserve its
-  // oldest bounded records privately, without rebinding them to this project's capture.
+  // Valid foreign data stays pending in the active tier. The separate bounded reserve
+  // admits this project's event without erasing that backlog or rebinding its project.
   // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
   const quarantineBatch: QuarantineBatch = {};
   const retired = retireUnresolved(base, full ? cwd : undefined, inventory, Buffer.byteLength(bytes), event === "SessionStart", false, quarantineBatch);
@@ -421,7 +424,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
   const policy = createStandalonePolicy(options.policy), dir = directory(base);
   const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
-    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;
+    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && (m[3] === stamp || m[3] === "0".repeat(64));
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
   const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
@@ -437,10 +440,13 @@ export async function drainHookCaptures(options: Options & { project: string; ex
       if (!claim) { blocked++; continue; }
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim);
-      if (!record || record.value.cwd !== cwd || record.value.scope !== stamp || record.value.nonce !== match[4]) {
+      if (!record || record.value.cwd !== cwd || record.value.scope !== null && record.value.scope !== stamp || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;
       }
       const value = record.value, c = value.capture;
+      // Legacy null-scope rows have no physical receipt: keep them pending rather than
+      // guessing a replacement cwd. New rows can adopt a later positively resolved scope.
+      if (value.scope === null && (!value.root || value.root !== physicalRoot(cwd))) { blocked++; continue; }
       const input: CaptureInput = { project: options.project, agent: c.agent, event: c.event, at: c.at, paths: c.paths,
         ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }

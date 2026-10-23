@@ -5,10 +5,10 @@ import { realPath } from "./memory/platform.ts";
 import { memoryGitArgv, memoryGitEnv } from "./memory/platform.ts";
 import type { ProjectGitRead } from "./memory/project.ts";
 
-/** Internal port for the owned hook worker. Keep Git hardening shared while avoiding the
- * Node process compatibility module on this Bun-only, short-lived path. The parent's deadline
- * reaps the whole worker group, including a blocked Git descendant; a per-Git leader-only
- * timeout would let a wrapper's descendants survive after the worker exits. */
+/** Synchronous compatibility port for library callers, with shared Git hardening and
+ * bounded output. Its deadline check precedes each read but cannot interrupt a blocked
+ * spawnSync. Native hook workers use resolveHookProjectAsync and hookNative instead,
+ * keeping the JS deadline responsive and the native self-watchdog independent of Bun. */
 export function hookGit(timeRemaining: () => number, binary?: string): ProjectGitRead {
   return (args, env) => {
     const remaining = timeRemaining();

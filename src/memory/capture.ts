@@ -77,6 +77,8 @@ export interface CaptureOptions {
   readOnly?: boolean;
   /** Host-only row ceiling for the read-only snapshot; overflow is unavailable, never empty. */
   maxReadRows?: number;
+  /** Host-only optional brief: retain the newest maxReadRows ids, with explicit partial coverage. */
+  recentReadRows?: boolean;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
 }
@@ -160,12 +162,16 @@ export class CaptureStore {
   /** Set when the schema setup itself met the lock: appends spool without touching the database again. */
   private contended = false;
   private readonly readOnly: boolean;
+  private recentReadIds?: number[];
+  /** True when the optional recent snapshot excludes older capture rows. */
+  readonly recentReadTruncated: boolean = false;
 
   constructor(opts: CaptureOptions) {
     if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
     if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
     this.readOnly = opts.readOnly === true;
     if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("invalid capture read-only option");
+    if (opts.recentReadRows !== undefined && (typeof opts.recentReadRows !== "boolean" || !this.readOnly)) throw new Error("recent capture rows require a read-only store");
     const maxReadRows = opts.maxReadRows ?? 128;
     if (this.readOnly && (!Number.isSafeInteger(maxReadRows) || maxReadRows < 1 || maxReadRows >= Number.MAX_SAFE_INTEGER)) throw new Error("invalid capture read row bound");
     this.base = opts.memoryDir ?? memoryBase(opts.home);
@@ -208,8 +214,19 @@ export class CaptureStore {
       try {
         db.run(`PRAGMA busy_timeout = ${timeout}`); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
         db.run("BEGIN");
-        const count = (db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT ?)").get(maxReadRows + 1) as { n: number }).n;
-        if (count > maxReadRows) throw new Error("capture brief row bound exceeded");
+        if (opts.recentReadRows) {
+          // The existing rows_at index supplies the reverse time/id walk; retain ids only.
+          // One sentinel records excluded history without counting or loading its bodies.
+          const sql = "SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC, id DESC LIMIT ?";
+          const plan = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(maxReadRows + 1) as { detail: string }[];
+          if (plan.some(row => row.detail.includes("TEMP B-TREE"))) throw new Error("capture recent index unavailable");
+          const recent = db.query(sql).all(maxReadRows + 1) as { id: number }[];
+          this.recentReadIds = recent.slice(0, maxReadRows).map(row => row.id);
+          this.recentReadTruncated = recent.length > maxReadRows;
+        } else {
+          const count = (db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT ?)").get(maxReadRows + 1) as { n: number }).n;
+          if (count > maxReadRows) throw new Error("capture brief row bound exceeded");
+        }
         if (resolveAlias(this.base, this.requestedKey) !== this.key) throw new Error("capture alias binding changed");
       } catch (error) { db.close(); throw error; }
       this.migrated = 0;
@@ -567,6 +584,7 @@ export class CaptureStore {
   rows(f: { project?: string; sinceId?: number; limit?: number } = {}): CaptureRow[] {
     this.checkReadBinding();
     const where: string[] = [], bind: (string | number)[] = [];
+    if (this.recentReadIds) { where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds)); }
     if (f.project) { where.push("project = ?"); bind.push(f.project); }
     if (f.sinceId !== undefined) { where.push("id > ?"); bind.push(f.sinceId); }
     const rows = this.db.query(`SELECT * FROM rows${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id LIMIT ?`).all(...bind, f.limit ?? 1000) as RawRow[];
@@ -577,6 +595,10 @@ export class CaptureStore {
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     this.checkReadBinding();
     const { columns, where, bind } = readWindowSql(window, "id");
+    if (this.recentReadIds) {
+      if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");
+      where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds));
+    }
     const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
     if (window.query !== undefined && engine === "fts5") {
       const match = ftsTerms(window.query); if (!match) return { rows: [], engine };

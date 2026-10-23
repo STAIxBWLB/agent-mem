@@ -221,24 +221,18 @@ test("rewriting config with the same origin and unrelated settings does not stra
   } finally { store.close(); }
 });
 
-test("removed cwd records leave the active cap privately and cannot become a replacement project's capture", async () => {
+test("removed cwd records remain pending and cannot become a replacement project's capture", async () => {
   const f = fixture(), removed = join(f.cwd, "removed-worktree"); mkdirSync(removed);
   const staged = await stageHookCapture("PostToolUse", { cwd: removed, prompt: "removed cwd private canary" }, { ...f.options, cwd: removed });
   expect(staged).toBeDefined(); rmSync(removed, { recursive: true });
-  const current = await stageHookCapture("PostToolUse", { prompt: "healthy current marker" }, f.options);
-  expect(current).toBeDefined();
-  expect(f.pending().some(row => row.value.cwd === removed)).toBe(false);
-  const quarantine = join(f.base, "hook-spool", ".quarantine");
-  expect(existsSync(quarantine)).toBe(true);
-  expect(statSync(quarantine).mode & 0o777).toBe(0o700);
-  const held = readdirSync(quarantine);
-  expect(held.length).toBeGreaterThan(0); expect(held.length).toBeLessThanOrEqual(256);
-  expect(held.reduce((bytes, name) => bytes + statSync(join(quarantine, name)).size, 0)).toBeLessThanOrEqual(2 * 1024 * 1024);
-  for (const name of held) expect(statSync(join(quarantine, name)).mode & 0o777).toBe(0o600);
+  expect(await stageHookCapture("PostToolUse", { prompt: "healthy current marker" }, f.options)).toBeDefined();
+  expect(f.pending().some(row => row.value.cwd === removed)).toBe(true);
+  expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
   const store = new CaptureStore({ memoryDir: f.base, project: f.project });
   try {
     await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt }));
     expect(store.rows().map(row => row.excerpt)).toEqual(["healthy current marker"]);
+    expect(hookCapturePending(f.base, staged!.name)).toBe(true);
   } finally { store.close(); }
 });
 
@@ -256,10 +250,8 @@ test("256 orphaned cwd records cannot disable actual hooks in another healthy cw
   }
   expect(f.rows().filter(row => row.excerpt === "healthy after orphan cap")).toHaveLength(1);
   expect(f.rows().some(row => row.excerpt.startsWith("orphan canary"))).toBe(false);
-  expect(f.pending().length).toBeLessThan(256);
-  const held = readdirSync(join(f.base, "hook-spool", ".quarantine"));
-  expect(held.length).toBeGreaterThan(0); expect(held.length).toBeLessThanOrEqual(256);
-  expect(held.reduce((bytes, name) => bytes + statSync(join(f.base, "hook-spool", ".quarantine", name)).size, 0)).toBeLessThanOrEqual(2 * 1024 * 1024);
+  expect(f.pending().filter(row => row.value.cwd === removed)).toHaveLength(256);
+  expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
 }, 20000);
 
 test("oldest pending records progress when each drain deadline permits only one append", async () => {
@@ -308,6 +300,7 @@ test("resolved records denied by current policy retire outside the active queue"
   expect(f.pending()).toEqual([]);
   const quarantine = join(f.base, "hook-spool", ".quarantine");
   expect(readdirSync(quarantine)).toHaveLength(1);
+  expect(readFileSync(join(quarantine, readdirSync(quarantine)[0]!), "utf8")).not.toContain("denied-later-canary");
   expect(hookCapturePending(f.base, staged!.name)).toBe(true);
 });
 
@@ -404,7 +397,7 @@ test("identical home config bytes do not erase HOME-dependent project scope", as
   expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
 });
 
-test("fatal native-resolution quarantine retires only a bounded matching scope without appending", async () => {
+test("native-resolution maintenance removes malformed records and retains every valid pending row", async () => {
   const f = fixture();
   for (let index = 0; index < 40; index++) await stageHookCapture("PostToolUse", { prompt: `native-failure marker ${index}` }, f.options);
   const scope = hookCaptureScope(f.cwd, f.base); expect(scope).toBeDefined();
@@ -412,14 +405,12 @@ test("fatal native-resolution quarantine retires only a bounded matching scope w
   writeFileSync(join(f.base, "hook-spool", original[0]!.name), "RAW_INVALID_RETIREMENT_CANARY");
   utimesSync(join(f.base, "hook-spool", original[0]!.name), new Date(0), new Date(0));
   const result = quarantineHookScope({ ...f.options, scope: scope! });
-  expect(result.retired).toBe(32); expect(f.pending()).toHaveLength(8);
+  expect(result.retired).toBe(1); expect(f.pending()).toHaveLength(39);
   expect(f.rows()).toEqual([]);
-  const quarantine = join(f.base, "hook-spool", ".quarantine");
-  const retained = readdirSync(quarantine); expect(retained).toHaveLength(31);
-  for (const name of retained) expect(readFileSync(join(quarantine, name), "utf8")).not.toContain("RAW_INVALID_RETIREMENT_CANARY");
+  expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
-test("native fatal Git resolution quarantines remote-bound pending instead of using a local fallback", async () => {
+test("native fatal Git resolution retains pending for retry and never uses a local fallback", async () => {
   const f = fixture("https://github.com/fixture/native-fatal"), config = join(f.cwd, ".git", "config");
   const original = readFileSync(config, "utf8"), scope = hookCaptureScope(f.cwd, f.base);
   const staged = await stageHookCapture("PostToolUse", { cwd: f.cwd, prompt: "remote-bound pending" }, f.options);
@@ -427,9 +418,9 @@ test("native fatal Git resolution quarantines remote-bound pending instead of us
   appendFileSync(config, "\n[core]\nrepositoryformatversion = 999\n");
   expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
   for (let i = 0; i < 3 && f.pending().length; i++) expect(f.runFunctional("PostToolUse", { prompt: "fatal admission" }).exitCode).toBe(0);
-  expect(f.pending()).toHaveLength(0);
-  const quarantine = join(f.base, "hook-spool", ".quarantine");
-  expect(readdirSync(quarantine).map(name => readFileSync(join(quarantine, name), "utf8")).join("\n")).toContain("remote-bound pending");
+  expect(f.pending()).toHaveLength(4);
+  expect(f.pending().filter(row => row.value.capture.excerpt === "remote-bound pending")).toHaveLength(1);
+  expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
   expect(f.rows()).toHaveLength(0);
   const fallback = memoryProjectKey(f.cwd, { repositoryIsolation: true });
   const store = new CaptureStore({ memoryDir: f.base, project: fallback });
@@ -437,7 +428,7 @@ test("native fatal Git resolution quarantines remote-bound pending instead of us
   writeFileSync(config, original);
   for (let i = 0; i < 4 && !f.rows().some(row => row.excerpt === "healthy recovery"); i++) expect(f.runFunctional("PostToolUse", { prompt: i === 0 ? "healthy recovery" : "replay barrier" }).exitCode).toBe(0);
   expect(f.rows().filter(row => row.excerpt === "healthy recovery")).toHaveLength(1);
-  expect(f.rows().some(row => row.excerpt === "remote-bound pending")).toBe(false);
+  expect(f.rows().filter(row => row.excerpt === "remote-bound pending")).toHaveLength(1);
 });
 
 test("a full tier from another valid project retains this SessionStart and returns its known work", async () => {
@@ -455,18 +446,18 @@ test("a full tier from another valid project retains this SessionStart and retur
     expect(a.rows().filter(row => row.excerpt === marker).length + a.pending().filter(row => row.value.capture.excerpt === marker).length).toBe(1);
   }
   expect(a.rows().some(row => row.excerpt.startsWith("foreign valid"))).toBe(false);
-  const quarantined = readdirSync(join(a.base, "hook-spool", ".quarantine"));
-  expect(quarantined.length).toBeGreaterThan(0); expect(quarantined.length).toBeLessThanOrEqual(256);
+  expect(a.pending().filter(row => row.value.cwd === b.cwd)).toHaveLength(256);
+  expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
-test("SessionStart retires only the foreign capacity its own event needs", async () => {
+test("SessionStart reserves its own slot without retiring valid foreign records", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `minimum foreign ${i}` }, { cwd: b.cwd, base: a.base });
-  const staged = await stageHookCapture("SessionStart", { prompt: "one reserved brief slot" }, a.options);
+  const staged = await stageHookCapture("SessionStart", { prompt: "one reserved brief slot" }, { ...a.options, deferAtCapacity: true });
   expect(staged).toBeDefined();
-  expect(a.pending().filter(row => row.value.cwd === b.cwd)).toHaveLength(255);
+  expect(a.pending().filter(row => row.value.cwd === b.cwd)).toHaveLength(256);
   expect(a.pending().filter(row => row.value.capture.excerpt === "one reserved brief slot")).toHaveLength(1);
-  expect(readdirSync(join(a.base, "hook-spool", ".quarantine"))).toHaveLength(1);
+  expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
 test("SessionStart defers unrelated retirement when its capture already fits", async () => {
@@ -476,11 +467,11 @@ test("SessionStart defers unrelated retirement when its capture already fits", a
   expect(await stageHookCapture("SessionStart", { prompt: "brief first" }, a.options)).toBeDefined();
   expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(1);
   expect(await stageHookCapture("PostToolUse", { prompt: "ordinary retirement boundary" }, a.options)).toBeDefined();
-  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(0);
-  expect(readdirSync(join(a.base, "hook-spool", ".quarantine"))).toHaveLength(1);
+  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(1);
+  expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
-test("minimal SessionStart retirement frees enough bytes as well as a file slot", async () => {
+test("SessionStart byte exhaustion uses its reserve without erasing foreign records", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   const foreign = { cwd: b.cwd, base: a.base };
   const input = { prompt: "b".repeat(2000), tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"p".repeat(370)}`) } };
@@ -491,7 +482,7 @@ test("minimal SessionStart retirement frees enough bytes as well as a file slot"
   }
   expect(staged).toBeGreaterThan(0); expect(staged).toBeLessThan(256);
   const payload = { prompt: "current byte-bound event", tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"가".repeat(350)}`) } };
-  await expect(stageHookCapture("SessionStart", payload, a.options)).resolves.toBeDefined();
+  await expect(stageHookCapture("SessionStart", payload, { ...a.options, deferAtCapacity: true })).resolves.toBeDefined();
   expect(a.pending().filter(row => row.value.capture.excerpt === "current byte-bound event")).toHaveLength(1);
-  expect(readdirSync(join(a.base, "hook-spool", ".quarantine")).length).toBeGreaterThan(1);
+  expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });

@@ -16,6 +16,8 @@ if (args[0] === "hook") {
       process.execve(process.execPath, [process.execPath, "--smol", ...process.execArgv, import.meta.path, ...args],
         { ...process.env, AMEM_HOOK_BOOT_AT: String(absoluteStart) });
     }
+    // Exec-only clock handoff: untrusted inherited values can only shorten via Math.min below.
+    // Clear it before any hook/store code or child launch; it cannot select a longer deadline.
     const inheritedStart = Number(process.env.AMEM_HOOK_BOOT_AT);
     delete process.env.AMEM_HOOK_BOOT_AT;
     const now = performance.timeOrigin + performance.now();
