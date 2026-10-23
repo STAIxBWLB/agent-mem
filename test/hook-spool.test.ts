@@ -5,6 +5,7 @@ import { drainHookCaptures, hookCapturePending, hookCaptureScope, quarantineHook
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
+import { hookRecoveryDiagnostic } from "./fakes/hooks-recovery-diagnostic.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [], originalHome = process.env.HOME;
 afterEach(() => {
@@ -119,10 +120,13 @@ test("an already expired hook deadline still publishes durable capture before op
 for (const event of ["PostToolUse", "SessionStart"] as const) test(event === "PostToolUse" ? "native hooks recover a full pending tier before publishing the next event" : "native SessionStart recovers a full pending tier before publishing the next event", async () => {
   const f = fixture();
   for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `backlog ${i}` }, f.options);
-  const result = f.run(event, { prompt: "full queue follow-up" });
+  const result = f.run(event, { prompt: "full queue follow-up" }, hookRecoveryDiagnostic(f.root));
   expect(result.exitCode).toBe(0);
+  const diagnostic = result.stderr.toString(), codes = diagnostic.trim().split("\n").map(line => JSON.parse(line) as number[]);
+  expect(codes.every(row => Array.isArray(row) && row.every(Number.isFinite)), diagnostic).toBe(true);
+  expect(codes.some(row => row[0] === 25), diagnostic).toBe(true); // Admission was actually instrumented.
   const rows = f.rows(), pending = f.pending();
-  expect(rows.length).toBeGreaterThan(0); expect(pending.length).toBeLessThanOrEqual(256);
+  expect(rows.length, `numeric recovery diagnostic: ${result.stderr.toString()}`).toBeGreaterThan(0); expect(pending.length).toBeLessThanOrEqual(256);
   expect(rows.filter(row => row.excerpt === "full queue follow-up").length + pending.filter(row => row.value.capture.excerpt === "full queue follow-up").length).toBe(1);
 });
 

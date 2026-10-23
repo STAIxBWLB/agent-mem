@@ -1,6 +1,35 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **acceptance remains open on both OSes**. Candidate `0162265f54ee57c71a3b4805e7fd02811cc0a419` failed actual [run 39937543153](https://github.com/STAIxBWLB/agent-mem/actions/runs/39937543153): Ubuntu added SQLite bookkeeping files during readonly open; macOS exceeded the timeout fixture wall bound once and made no full-tier capture progress once. The new phase-reserve/fixture rework below is not a GitHub-runner pass. PR #34 remains unmergeable pending both-platform exact-head CI, two successful actual macOS runs and the held reviewer verdict.
+Status: **acceptance remains open**. At candidate `1016db8a82496a1d9255f6fb992b98f8cf4dde15`, actual [run 39939860463](https://github.com/STAIxBWLB/agent-mem/actions/runs/39939860463) passes Ubuntu but fails three macOS tests: native hook full-tier recovery, native SessionStart full-tier recovery, and direct CaptureStore contention replay. Local repeated passes did not establish runner recovery. PR #34 remains unmergeable pending both-platform exact-head CI, two successful actual macOS runs and the held reviewer verdict.
+
+## Runner recovery diagnostics
+
+This follow-up changes diagnostics only, leaving the production implementation, original success assertions and 140 ms / 150 ms / 100 MB limits unchanged. The two native full-tier tests install a test-only preload and include numeric stderr records in a failed assertion. A worker inherits that preload explicitly; its numeric records survive a deadline kill. No path, project id, stamp, capture text, native input or exception message is emitted.
+
+Records are numeric arrays, with the first value identifying the stage:
+
+| Code | Remaining values |
+| --- | --- |
+| 1 | Parent SessionStart entered |
+| 2 | Remaining handler milliseconds after initial admission |
+| 3 | Remaining milliseconds after project identity |
+| 4 | Remaining milliseconds at recovery check; full-tier flag (0/1) |
+| 5, 6 | Remaining milliseconds before and after brief |
+| 7 | Remaining milliseconds before worker launch |
+| 8 | Worker remaining milliseconds; answer flag; answer bytes |
+| 10, 11 | Worker remaining milliseconds at input and resolved identity |
+| 12 | Worker remaining milliseconds; drained count; blocked count |
+| 20 | Remaining milliseconds; stamp present flag; expected stamp match flag |
+| 21 | Remaining milliseconds at each drain budget check; drained count; blocked count |
+| 22, 23 | Remaining milliseconds before and after append (23 proves lock/write succeeded) |
+| 24 | Append/drain failure class: 1 lock/busy, 2 other |
+| 25 | Active inventory count; records retired during admission |
+| 26 | Scanned records; cwd matches; stamp matches |
+
+Unknown or absent budgets use -1; non-finite numeric observations use -999. These records are evidence for the next runner result, not evidence that recovery succeeded. Direct CaptureStore contention replay has its own numeric diagnostic because it does not call hookWorker and cannot be attributed to the latest worker reserve without further evidence. In the failed runner log the first spooled row was present and only the second was missing. The between-file 25 ms guard first appeared in `995a00bf79d6417999d06bdd21903eda7645031b` and is also present on main; neither capture.ts nor this test changed between 0162265f and 1016db8a. The wrapper reports total drain elapsed time and a 25-minus-elapsed estimate, plus this fixture's known lock state; it does not claim to observe a lock swallowed internally. A budget stop between files is a hypothesis pending the new runner diagnostic, not a verified cause.
+
+
+The diagnostic-only candidate passed its isolated-HOME native macOS gate on pinned Bun 1.4.2: typecheck clean, boundary OK (48 source files), 675 pass / 2 Linux-only skips / 0 fail, 9,768 assertions across 677 tests and 87 files (138.10 seconds), and npm pack dry-run OK (54 files). This does not replace actual runner evidence. Production source is identical to 1016db8a.
 
 ## CI follow-up after the parent-only candidate
 

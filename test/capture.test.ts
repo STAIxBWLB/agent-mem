@@ -108,33 +108,55 @@ test("capture writes and eviction never touch the curated store", () => {
 });
 
 test("a contended writer spools and exits; the next uncontended writer drains the spool once", () => {
-  const dir = home();
-  const first = capture(dir);
+  const dir = home(), began = performance.now();
+  let fixtureLockHeld = 0;
+  const drains: { instance: number; stage: number; atMs: number; elapsedMs: number; remainingMs: number; fixtureLockHeld: number; drained: number; skipped: number; errorCode: number }[] = [];
+  // Numeric, failure-only diagnostics. A returned result does not expose any lock
+  // swallowed inside drain; fixtureLockHeld records only this test's own lock.
+  const diagnostic = () => JSON.stringify({ captureDrain: drains });
+  const observed = (store: CaptureStore, instance: number) => {
+    const drain = store.drain.bind(store);
+    store.drain = () => {
+      const start = performance.now();
+      try {
+        const result = drain(), elapsed = performance.now() - start;
+        drains.push({ instance, stage: 1, atMs: start - began, elapsedMs: elapsed, remainingMs: 25 - elapsed, fixtureLockHeld, ...result, errorCode: 0 });
+        return result;
+      } catch (error) {
+        const elapsed = performance.now() - start, value = error && typeof error === "object" ? error as { errno?: unknown; code?: unknown } : {};
+        const errorCode = typeof value.errno === "number" && Number.isFinite(value.errno) ? value.errno : value.code === "SQLITE_BUSY" ? 5 : value.code === "SQLITE_LOCKED" ? 6 : -1;
+        drains.push({ instance, stage: 2, atMs: start - began, elapsedMs: elapsed, remainingMs: 25 - elapsed, fixtureLockHeld, drained: -1, skipped: -1, errorCode });
+        throw error;
+      }
+    };
+    return store;
+  };
+  const first = observed(capture(dir), 1);
   first.append(input({ excerpt: "before the contention" }));
   const capDir = first.dir;
   const holder = new Database(join(capDir, "capture.db"));
   holder.run("PRAGMA busy_timeout = 0");
-  holder.run("BEGIN EXCLUSIVE");
+  holder.run("BEGIN EXCLUSIVE"); fixtureLockHeld = 1;
   try {
-    const blocked = capture(dir);
-    expect(blocked.append(input({ excerpt: "spooled under contention", at: "2026-10-17T01:00:00.000Z" }))).toEqual({ spooled: true });
-    expect(blocked.append(input({ excerpt: "second spooled row", at: "2026-10-17T01:01:00.000Z" }))).toEqual({ spooled: true });
+    const blocked = observed(capture(dir), 2);
+    expect(blocked.append(input({ excerpt: "spooled under contention", at: "2026-10-17T01:00:00.000Z" })), diagnostic()).toEqual({ spooled: true });
+    expect(blocked.append(input({ excerpt: "second spooled row", at: "2026-10-17T01:01:00.000Z" })), diagnostic()).toEqual({ spooled: true });
     // A blocked hook never half-writes: a WAL snapshot read shows only the row committed before the contention.
-    expect(blocked.rows().map((r) => r.excerpt)).toEqual(["before the contention"]);
+    expect(blocked.rows().map((r) => r.excerpt), diagnostic()).toEqual(["before the contention"]);
     // Both complete published segments contain exactly the screened rows.
     const spooled = spoolLines(capDir);
-    expect(spooled).toHaveLength(2);
-    expect(spooled.some((line) => line.includes("spooled under contention"))).toBe(true);
-    expect(spooled.some((line) => line.includes("second spooled row"))).toBe(true);
-  } finally { holder.run("ROLLBACK"); holder.close(); }
-  const late = capture(dir);
+    expect(spooled, diagnostic()).toHaveLength(2);
+    expect(spooled.some((line) => line.includes("spooled under contention")), diagnostic()).toBe(true);
+    expect(spooled.some((line) => line.includes("second spooled row")), diagnostic()).toBe(true);
+  } finally { holder.run("ROLLBACK"); fixtureLockHeld = 0; holder.close(); }
+  const late = observed(capture(dir), 3);
   late.append(input({ excerpt: "after the contention" })); // an uncontended append drains the spool first
-  expect(late.rows().map((r) => r.excerpt)).toEqual(["before the contention", "spooled under contention", "second spooled row", "after the contention"]);
-  expect(late.rows()[1]!.at).toBe("2026-10-17T01:00:00.000Z"); // the original hook time, not the drain time
-  expect(existsSync(join(capDir, "spool.jsonl"))).toBe(false);
-  expect(existsSync(join(capDir, "spool.jsonl.draining"))).toBe(false);
-  expect(late.drain().drained).toBe(0); // replay is idempotent: no row is doubled
-  expect(late.rows()).toHaveLength(4);
+  expect(late.rows().map((r) => r.excerpt), diagnostic()).toEqual(["before the contention", "spooled under contention", "second spooled row", "after the contention"]);
+  expect(late.rows()[1]!.at, diagnostic()).toBe("2026-10-17T01:00:00.000Z"); // the original hook time, not the drain time
+  expect(existsSync(join(capDir, "spool.jsonl")), diagnostic()).toBe(false);
+  expect(existsSync(join(capDir, "spool.jsonl.draining")), diagnostic()).toBe(false);
+  expect(late.drain().drained, diagnostic()).toBe(0); // replay is idempotent: no row is doubled
+  expect(late.rows(), diagnostic()).toHaveLength(4);
 });
 
 test("a leftover draining file from a crashed drain is finished without doubling rows", () => {
