@@ -150,7 +150,7 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     if (!pending) losses.spool_full = (losses.spool_full ?? 0) + 1;
     const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
     const contextLimit = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
-    const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, contextLimit - Buffer.byteLength(dropNotice) - (dropNotice ? 1 : 0)), cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
+    const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, contextLimit - Buffer.byteLength(dropNotice) - (dropNotice ? 1 : 0)), cwd, base, project, nativeSession: { signature }, projectFromCwd: true, timeRemaining: remaining });
     result.pending = !!pending && !result.captured;
     result.dropped = !pending;
     if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;

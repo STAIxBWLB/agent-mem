@@ -686,6 +686,34 @@ test("brief: a 1 MiB log is read as the newest handful only and never past the d
   expect(cut.views).toHaveLength(20); expect(cut.partial).toBe(true);                // the 21st check saw the deadline: 20 rows, not the ~270 the window holds
 });
 
+test("brief: the hook path (projectFromCwd) finds the repository's log with lstat alone and spawns no git; a subdirectory, a worktree `.git` file and a nested repository resolve to the nearest root, and a log above a nested repository is not its own", async () => {
+  const r = rig(); const { processSignature } = await import("../src/memory/platform.ts");
+  const real = Bun.spawnSync(["which", "git"]).stdout.toString().trim(), shim = join(r.dir, "shim"), seen = join(r.dir, "git-calls.log");
+  mkdirSync(shim); writeFileSync(join(shim, "git"), `#!/bin/sh\nprintf 'GIT %s\\n' "$*" >> '${seen}'\nexec '${real}' "$@"\n`); chmodSync(join(shim, "git"), 0o755);
+  process.env.PATH = `${shim}:${oldPath}`;
+  const calls = () => existsSync(seen) ? readFileSync(seen, "utf8").split("\n").filter(Boolean) : [];
+  writeLog(r, [repoLine("a quartz decision")]);
+  const native = { signature: processSignature(process.pid)! };
+  const deep = join(r.repo, "src", "deep"); mkdirSync(deep, { recursive: true });
+  for (const cwd of [r.repo, deep]) {
+    rmSync(seen, { force: true });
+    const brief = await sessionStartBrief({ cwd, base: r.base, project: r.project, nativeSession: native, projectFromCwd: true, timeRemaining: () => 2000 });
+    expect(brief.context, cwd).toContain("quartz"); expect(brief.context).toContain("repo=complete");
+    expect(calls(), "the hook path must not spawn git for the repo section").toEqual([]);
+  }
+  const { nearestRepoRootWithLog } = await import("../src/memory/repo-scope.ts");
+  expect(nearestRepoRootWithLog(deep)).toBe(r.repo);
+  // a worktree or submodule has a `.git` FILE: it still marks the root
+  const wt = join(r.dir, "wt"); mkdirSync(join(wt, ".amem"), { recursive: true }); writeFileSync(join(wt, ".git"), "gitdir: /nowhere\n"); writeFileSync(join(wt, ".amem", "log.jsonl"), "");
+  expect(nearestRepoRootWithLog(wt)).toBe(realPath(wt));
+  // a nested repository without its own log does NOT inherit the outer repository's log
+  const nested = join(r.repo, "vendor", "lib"); mkdirSync(join(nested, ".git"), { recursive: true });
+  expect(nearestRepoRootWithLog(nested)).toBeUndefined();
+  // no repository at all: nothing, even with a log in a plain directory
+  const plain = join(r.dir, "plain"); mkdirSync(join(plain, ".amem"), { recursive: true }); writeFileSync(join(plain, ".amem", "log.jsonl"), "");
+  expect(nearestRepoRootWithLog(plain)).toBeUndefined();
+});
+
 test("brief: the repo section screens only the newest few rows (a row limit), and stops at the hook's own deadline", async () => {
   const r = rig();
   writeLog(r, Array.from({ length: 200 }, (_, i) => repoLine(`decision number ${i}`, { at: `2026-10-20T10:${String(i % 60).padStart(2, "0")}:00.000Z` })));

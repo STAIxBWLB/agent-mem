@@ -10,7 +10,7 @@ import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
-import { boundRepoRoot, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
+import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
 import type { View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
@@ -19,6 +19,8 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
   timeRemaining?: () => number;
   /** Host-only parent CLI path: precomputed owned process identity and zero-wait stores. */
   nativeSession?: { signature: string };
+  /** Set only by the SessionStart hook, whose `project` was resolved from this very `cwd`: the repo section then finds its root by `lstat` and spawns no git process. */
+  projectFromCwd?: true;
 }
 type Coverage = "complete" | "partial" | "unavailable";
 export interface BriefResult {
@@ -122,7 +124,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const coverage: BriefResult["coverage"] = { work: "complete", curated: "complete", capture: "complete" };
     // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). The `lstat` probe comes FIRST and on every path (the SessionStart
     // worker builds this brief without `nativeSession`): a repository with no `.amem/log.jsonl` at or above the cwd costs a few syscalls and no git process.
-    const repoRoot = repoLogNearby(cwd) ? boundRepoRoot(cwd, base, project) : undefined;
+    const repoRoot = !repoLogNearby(cwd) ? undefined : options.projectFromCwd ? nearestRepoRootWithLog(cwd) : boundRepoRoot(cwd, base, project);
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};

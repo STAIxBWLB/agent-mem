@@ -172,6 +172,22 @@ export async function readRepoScope(root: string | undefined, policy: MemoryPoli
   return { state: read.lines.length || plainLog(root).kind === "file" ? "ok" : "absent", root, views, skipped, partial: read.partial || stoppedEarly || skipped.malformed + skipped.mismatched > 0 };
 }
 
+/**
+ * The repository root that holds `cwd` AND a `.amem/log.jsonl`, found by `lstat` alone: the nearest ancestor with a `.git` (directory or file, so worktrees and submodules count) must
+ * be the directory that holds the log. For a caller whose project key was itself resolved from this `cwd` (the SessionStart hook) the "this repository is the bound project" check of
+ * `boundRepoRoot` holds by construction, so no git process is spawned on the hook's deadline (two synchronous git spawns cost the hook 60 MB of peak RSS and tens of ms).
+ * ponytail: lexical, trusts the `.git` entry on disk; a caller with a project it did not derive from `cwd` must use `boundRepoRoot`.
+ */
+export function nearestRepoRootWithLog(cwd: string): string | undefined {
+  try {
+    for (let dir = cwd, depth = 0; depth < 32; dir = dirname(dir), depth++) {
+      if (lstatSync(join(dir, ".git"), { throwIfNoEntry: false })) return lstatSync(join(dir, REPO_DIR, REPO_LOG), { throwIfNoEntry: false }) ? realPath(dir) : undefined;
+      if (dir === dirname(dir)) return undefined;
+    }
+  } catch { /* unreadable: no section */ }
+  return undefined;
+}
+
 /** Whether a repo log exists at all, by lstat only: the brief reserves header room for a section only when there is one. */
 export function repoLogPresent(root: string | undefined): boolean { return !!root && plainLog(root).kind !== "absent"; }
 
