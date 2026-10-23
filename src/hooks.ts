@@ -13,6 +13,10 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES } 
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
 const HANDLER_MS = 140;
+// A timed-out child must be reaped and metrics flushed inside the unchanged handler/R2 budgets.
+// ponytail: reserve measured native teardown variance; an asynchronous hard-deadline transport
+// through storage/cleanup is the upgrade, not a longer external deadline.
+const WORKER_CLEANUP_MS = 25, FULL_TIER_BRIEF_RESERVE_MS = 40;
 export interface HookOptions { cwd: string; base?: string; policy?: StandalonePolicyOptions; maxTokens?: number; startedAt?: number }
 export interface HookReceipt {
   captured: boolean; skipped: boolean;
@@ -47,9 +51,10 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>): Promise<string
 /** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
 async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean }> {
-  if (options.policy?.host || deadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
+  const workDeadline = deadline - WORKER_CLEANUP_MS;
+  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + deadline,
+  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
@@ -66,7 +71,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   try {
     const answer = await Promise.race([
       Promise.all([exit, boundedOutput(child.stdout)]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, deadline - performance.now())); }),
+      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
     ]);
     if (!answer || !answer[1]) return result;
     const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown };
@@ -102,15 +107,13 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
   try {
     const project = resolveAlias(base, await resolveHookProjectAsync({ cwd, base, scope, timeRemaining: remaining }, usage));
     const signature = await hookProcessSignature(remaining, usage);
-    const { sessionStartBrief } = await import("./session-brief.ts");
-    const brief = await sessionStartBrief({ ...options, cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
-    // A full tier cannot cost a completed brief. Replay only with a reserve left,
-    // then stage the current normalized event; concurrent finite-cap refusal stays explicit.
-    if (full && remaining() > 15) {
+    // Make bounded capture progress before optional brief work can consume its slice.
+    // The reserve belongs to known work/serialization; recovery failure never refuses it.
+    if (full && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5) {
       let store: import("./memory/capture.ts").CaptureStore | undefined;
       try {
         const { CaptureStore } = await import("./memory/capture.ts");
-        await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - 5 }, (value, receipt) => {
+        await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - FULL_TIER_BRIEF_RESERVE_MS }, (value, receipt) => {
           store ??= new CaptureStore({ memoryDir: base, project, busyTimeoutMs: 0 });
           return store.append(value, { receipt });
         });
@@ -119,6 +122,8 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
       try { pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base }); }
       catch (error) { if (!(error instanceof HookSpoolFull)) throw error; }
     }
+    const { sessionStartBrief } = await import("./session-brief.ts");
+    const brief = await sessionStartBrief({ ...options, cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
     result.pending = !!pending;
     if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;
     result.context = brief.context; result.valid = true;

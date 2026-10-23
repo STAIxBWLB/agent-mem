@@ -16,6 +16,17 @@ function fixture(rows = 2) {
   const dir = writer.dir, expected = writer.rows(), page = writer.readPage({ project, limit: 32 }).rows; writer.close();
   return { base, dir, expected, page, close: () => rmSync(base, { recursive: true, force: true }) };
 }
+/** SQLite itself may create empty WAL/SHM bookkeeping on the first read-only open.
+ * Establish that neutral reader before comparing CaptureStore's authored files. */
+function keeper(dir: string): Database {
+  const db = new Database(join(dir, "capture.db"), { readonly: true });
+  try {
+    db.run("PRAGMA busy_timeout = 0"); db.run("BEGIN");
+    db.query("SELECT COUNT(*) FROM rows").get();
+    return db;
+  } catch (error) { db.close(); throw error; }
+}
+
 function files(base: string): Record<string, { bytes: string; mode: number }> {
   const found: Record<string, { bytes: string; mode: number }> = {};
   const walk = (relative: string) => {
@@ -30,13 +41,14 @@ function files(base: string): Record<string, { bytes: string; mode: number }> {
 }
 
 test("read-only capture brief matches bounded native rows without creating FTS or authoring metadata", () => {
-  const f = fixture(); let reader: CaptureStore | undefined;
+  const f = fixture(); let reader: CaptureStore | undefined, neutral: Database | undefined;
   try {
     const db = new Database(join(f.dir, "capture.db"));
     try {
       for (const trigger of ["rows_ai", "rows_ad", "rows_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
       db.run("DROP TABLE IF EXISTS fts");
     } finally { db.close(); }
+    neutral = keeper(f.dir);
     const before = files(f.base);
     reader = new CaptureStore({ memoryDir: f.base, project, readOnly: true, maxReadRows: 128 });
     expect(reader.migrated).toBe(0);
@@ -52,7 +64,7 @@ test("read-only capture brief matches bounded native rows without creating FTS o
     const check = new Database(join(f.dir, "capture.db"), { readonly: true });
     try { expect(check.query("SELECT name FROM sqlite_master WHERE name IN ('fts','mcp_fts','rows_ai','rows_ad','rows_au')").all()).toEqual([]); }
     finally { check.close(); }
-  } finally { reader?.close(); f.close(); }
+  } finally { reader?.close(); neutral?.close(); f.close(); }
 });
 
 test("a missing capture store is unavailable without creating machine, shard, database or spool", () => {
@@ -70,14 +82,16 @@ test("a missing capture store is unavailable without creating machine, shard, da
 });
 
 test("129 capture rows refuse a 128-row brief ceiling instead of returning an empty or truncated view", () => {
-  const f = fixture(129);
+  const f = fixture(129); let neutral: Database | undefined;
   try {
+    neutral = keeper(f.dir);
     const before = files(f.base);
     expect(() => new CaptureStore({ memoryDir: f.base, project, readOnly: true, maxReadRows: 128 })).toThrow("row bound exceeded");
     expect(files(f.base)).toEqual(before);
+    neutral.close(); neutral = undefined;
     const full = new CaptureStore({ memoryDir: f.base, project });
     try { expect(full.rows()).toHaveLength(129); } finally { full.close(); }
-  } finally { f.close(); }
+  } finally { neutral?.close(); f.close(); }
 });
 
 test("read-only capture admission is zero-wait under an exclusive lock", () => {
@@ -99,4 +113,30 @@ test("read-only capture cannot continue across an alias rebind", () => {
     appendAlias(f.base, { alias: project, key: "another-project", actor: "person", machine: "1".repeat(16) });
     expect(() => reader.readPage({ project, limit: 32 })).toThrow("alias binding changed");
   } finally { reader.close(); f.close(); }
+});
+
+
+test("read-only capture sees committed uncheckpointed WAL rows without authoring or immutable reads", () => {
+  const base = mkdtempSync(join(tmpdir(), "amem-capture-visible-wal-"));
+  const writer = new CaptureStore({ memoryDir: base, project });
+  const file = join(writer.dir, "capture.db"), db = new Database(file);
+  let reader: CaptureStore | undefined;
+  const hash = () => createHash("sha256").update(readFileSync(file)).digest("hex");
+  try {
+    writer.append(input(0));
+    db.run("PRAGMA wal_autocheckpoint = 0"); db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    const checkpointHash = hash();
+    writer.append(input(1));
+    expect(hash()).toBe(checkpointHash);
+    expect(statSync(file + "-wal").size).toBeGreaterThan(32);
+    const expected = writer.rows(), page = writer.readPage({ project, limit: 32 }).rows;
+    expect(expected.map(row => row.excerpt)).toEqual(["public capture 0", "public capture 1"]);
+    const before = files(base);
+    reader = new CaptureStore({ memoryDir: base, project, readOnly: true, maxReadRows: 128 });
+    expect(reader.rows()).toEqual(expected);
+    expect(reader.readPage({ project, limit: 32 }).rows).toEqual(page);
+    reader.close(); reader = undefined;
+    expect(hash()).toBe(checkpointHash);
+    expect(files(base)).toEqual(before);
+  } finally { reader?.close(); db.close(); writer.close(); rmSync(base, { recursive: true, force: true }); }
 });

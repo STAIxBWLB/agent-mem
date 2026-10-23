@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { hookCapturePending } from "../src/hook-spool.ts";
 import { hookBin, hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
@@ -123,3 +123,16 @@ for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} time
     }
   }
 }, 5000);
+
+test("a worker execution deadline reserves teardown time inside the unchanged hook budget", () => {
+  const f = fixture(), preload = join(f.root, "worker-reserve.ts"), receipt = join(f.root, "worker-deadline.json");
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  writeFileSync(preload, `import {writeFileSync} from 'node:fs';
+const spawn=Bun.spawn.bind(Bun),nativeStart=performance.timeOrigin+performance.now()-process.uptime()*1000,boot=Number(process.env.AMEM_HOOK_BOOT_AT)||nativeStart;
+Bun.spawn=(argv,options)=>{if(Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}){const input=JSON.parse(Buffer.from(options.stdin).toString());writeFileSync(${JSON.stringify(receipt)},JSON.stringify({deadlineFromBoot:input.deadlineAt-boot}));}return spawn(argv,options);};`);
+  const result = f.run("PreToolUse", { prompt: "worker cleanup reserve" }, { BUN_OPTIONS: `--preload=${preload}` });
+  expect(result.exitCode).toBe(0); expect(existsSync(receipt)).toBe(true);
+  const budget = JSON.parse(readFileSync(receipt, "utf8"));
+  expect(budget.deadlineFromBoot).toBeGreaterThan(0);
+  expect(budget.deadlineFromBoot).toBeLessThanOrEqual(115);
+});

@@ -1,5 +1,15 @@
 # P3 hook budget receipt, 2026-10-23
 
+Status: **acceptance remains open on both OSes**. Candidate `0162265f54ee57c71a3b4805e7fd02811cc0a419` failed actual [run 39937543153](https://github.com/STAIxBWLB/agent-mem/actions/runs/39937543153): Ubuntu added SQLite bookkeeping files during readonly open; macOS exceeded the timeout fixture wall bound once and made no full-tier capture progress once. The new phase-reserve/fixture rework below is not a GitHub-runner pass. PR #34 remains unmergeable pending both-platform exact-head CI, two successful actual macOS runs and the held reviewer verdict.
+
+## CI follow-up after the parent-only candidate
+
+The Ubuntu additions were exactly a 32,768-byte SHM file and an empty WAL; DB and authored JSON hashes/modes were unchanged. A Linux Bun 1.4.2 probe imported only bun:sqlite and filesystem/crypto, created and closed a WAL database, then performed `new Database(file, {readonly: true})` plus SELECT: it produced the same two bookkeeping files with no CaptureStore import. A neutral readonly keeper now establishes that baseline before the existing exact file/hash/mode comparison. No authoring/FTS/schema/spool assertions were removed. A new regression keeps a writer open and proves readonly admission sees committed, uncheckpointed WAL rows while the main DB hash stays unchanged; using immutable reads would fail it. The exact-source Linux focused fixture verified 51 source/fixture hashes and passed six tests/27 assertions, as did native macOS. This is focused evidence only, not a full Linux gate.
+
+For macOS, the original worker could spend the full work slice and then overrun while reaping/flushing metrics. Worker execution now leaves 25 ms inside the unchanged 140 ms handler budget. The original strict external `<150 ms` assertion remains. Full-tier recovery previously waited until after the brief, so a late brief could leave no time for even one append. Bounded recovery now runs with a 40 ms reserve for known work/serialization before brief work. Original `rows > 0`, event retention, known-work and context bounds remain. Deterministic tests fail against 0162265f on the worker-reserve assertion and on capture progress after a controlled late-brief clock advance; both pass with the fix. No external limit was raised. The unchanged native PreToolUse timeout and same-project full-tier SessionStart tests each passed 20 consecutive serial macOS runs after the phase-reserve fix. The later full gate passed both as well; actual runner results for the new head remain pending.
+
+### Earlier runner history
+
 Status: **macOS acceptance remains open**. The privacy fix at `1e4ec025e0359d05d515988b50da632f5a1545a8` passed Ubuntu but regressed SessionStart on actual macOS [run 39909819878](https://github.com/STAIxBWLB/agent-mem/actions/runs/39909819878), including a failed-job rerun. The preceding `b797a99b` passed both OSes but had the legacy-remote privacy finding. No passing local result below supersedes those runner failures. PR #34 remains unmergeable pending both-platform exact-head CI and the held privacy/performance verdict.
 
 ## Current candidate, parent-only native SessionStart
@@ -12,14 +22,14 @@ Pinned Bun 1.4.2, native macOS, synthetic isolated home, current runtime source 
 
 | Path | Runs | Wall p95 (ms) | Wall max (ms) | Own combined peak (MB) | Raw combined peak (MB) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Plain capture | 40 | 45.53 | 62.18 | 72.78 | 72.89 |
-| Contended capture | 15 | 42.47 | 42.47 | 68.61 | 68.72 |
-| SessionStart known work | 20 | 49.32 | 50.21 | 45.55 | 45.55 |
-| Drain | 1 | 48.43 | 48.43 | 67.56 | 67.67 |
+| Plain capture | 40 | 44.67 | 59.93 | 72.89 | 72.91 |
+| Contended capture | 15 | 40.55 | 40.55 | 68.45 | 68.47 |
+| SessionStart known work | 20 | 46.86 | 47.69 | 45.44 | 45.44 |
+| Drain | 1 | 44.78 | 44.78 | 68.34 | 68.45 |
 
-R1 observed 76 invocations and 76 owned child roots (56 Bun workers, 20 native supervisors), with zero remaining processes/groups. All 55 original workload captures replayed exactly once, and 20 final SessionStart acknowledgements stayed durably pending. The unchanged diagnostic asserted output before 140 ms: cold attempt 0 returned known work and 429 bytes at 75.79 ms, warm attempts at 41.30-43.61 ms, and the prepared 256-record foreign tier at 83.23 ms. These are local results only. Native child RSS retains the documented Git-descendant omission ceiling; it is not an entire-process-tree peak claim. Raw inherited-rusage diagnostics and the independent CLI wait4 floor are retained.
+R1 observed 76 invocations and 76 owned child roots (56 Bun workers, 20 native supervisors), with zero remaining processes/groups. All 55 original workload captures replayed exactly once, and 20 final SessionStart acknowledgements stayed durably pending. The unchanged diagnostic asserted output before 140 ms: cold attempt 0 returned known work and 429 bytes at 77.85 ms, warm attempts at 41.06-42.63 ms, and the prepared 256-record foreign tier at 79.35 ms. These are local results only. Native child RSS retains the documented Git-descendant omission ceiling; it is not an entire-process-tree peak claim. Raw inherited-rusage diagnostics and the independent CLI wait4 floor are retained.
 
-The current focused suite passed 97 tests, 0 failed and 2 Linux-only RSS tests skipped on macOS; the additional async-identity suite passed 3 tests. The isolated-HOME AGENTS gate passed on the candidate: typecheck clean, `boundary: OK` (48 source files), 672 pass / 2 Linux-only skips / 0 fail, 9,749 assertions across 674 tests and 87 files (151.23 seconds), and npm pack dry-run OK (54 package files). New-head actual GitHub-runner results remain pending in the PR handoff. Acceptance remains open until Ubuntu and macOS are green at the exact head, two actual macOS runs pass, and actual runner numbers replace the pending runner readback. None of the older local/container tables below establishes that acceptance.
+The earlier parent focused suite passed 97 tests, 0 failed and 2 Linux-only RSS tests skipped on macOS; the additional async-identity suite passed 3 tests. The isolated-HOME AGENTS gate passed on the candidate: typecheck clean, `boundary: OK` (48 source files), 675 pass / 2 Linux-only skips / 0 fail, 9,764 assertions across 677 tests and 87 files (146.51 seconds), and npm pack dry-run OK (54 package files). New-head actual GitHub-runner results remain pending in the PR handoff. Acceptance remains open until Ubuntu and macOS are green at the exact head, two actual macOS runs pass, and actual runner numbers replace the pending runner readback. None of the older local/container tables below establishes that acceptance.
 
 ## SessionStart maintenance deferral
 

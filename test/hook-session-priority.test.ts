@@ -60,3 +60,20 @@ Bun.plugin({name:'repeat-full-admission',setup(b){${missingCapture ? `b.onLoad({
     expect(receipt.captured).toBe(false); expect(receipt).not.toHaveProperty("pending");
   } finally { f.close(); }
 });
+
+test("a full SessionStart tier makes capture progress before late brief work consumes its remaining slice", async () => {
+  const f = hookFixture(), preload = join(f.root, "late-brief.ts"), marker = join(f.root, "late-brief-observed"), home = process.env.HOME;
+  try {
+    await f.seed(); process.env.HOME = f.env.HOME;
+    const { stageHookCapture } = await import("../src/hook-spool.ts");
+    for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `late brief backlog ${i}` }, { cwd: f.cwd, base: f.base });
+    writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';let offset=0;const now=performance.now.bind(performance);
+Object.defineProperty(performance,'now',{value:()=>now()+offset,configurable:true});
+globalThis.__lateBrief=(remaining)=>{offset+=Math.max(0,remaining-12);writeFileSync(${JSON.stringify(marker)},'observed');};
+Bun.plugin({name:'late-brief-budget',setup(b){b.onLoad({filter:/[/]hooks\\.ts$/},({path})=>{const source=readFileSync(path,'utf8'),anchor='    const brief = await sessionStartBrief({ ...options, cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });';if(source.split(anchor).length!==2)throw new Error('late brief anchor changed');return{loader:'ts',contents:source.replace(anchor,anchor+'globalThis.__lateBrief(remaining());')};});}});`);
+    const result = f.run("SessionStart", { prompt: "late brief current event" }, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(result.exitCode).toBe(0); expect(existsSync(marker)).toBe(true);
+    expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
+    expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog ")).length).toBeGreaterThan(0);
+  } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; f.close(); }
+});
