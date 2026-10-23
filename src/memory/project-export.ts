@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { closeSync, constants, existsSync, lstatSync, openSync, rmSync, statSync, writeSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { walkShards } from "./catalog.ts";
 import { openCuratedForRead, requireShard } from "./curated-read.ts";
 import { projectState } from "./lifecycle.ts";
@@ -12,8 +12,8 @@ import { WorkListStore } from "./work-lists.ts";
 
 /**
  * #15 T5 / D3: `amem project export <key> --to <file>`. One project's capture rows, curated notes, goals and work lists as one portable JSON bundle,
- * written once to a new file with mode 0600. It is read-only for the home: it opens the capture databases read-only, the curated store only to read, and
- * writes nothing under the memory home (a destination inside it is refused).
+ * written once to a new file with mode 0600. It changes no content file of the home: it opens the capture databases read-only and the curated store only to
+ * read, and only derived files (the curated `index.db`, `search.db`, SQLite sidecars) may refresh, as they do for any read. A destination inside the home is refused.
  *
  * The bundle leaves the home, so it is screened like sync and promotion are: a secret-looking value is withheld, and so is anything the host policy (when
  * one is passed) declines. `withheld` counts the capture rows, notes and goals left out; a work list the policy declines is left out silently by its own store.
@@ -35,7 +35,8 @@ interface CaptureRowRaw { id: number; at: string; project: string; agent: string
 
 function destination(base: string, to: string): string {
   if (typeof to !== "string" || !to.trim()) throw new Error("export needs --to <file>");
-  const file = resolve(to), parent = dirname(file);
+  const file = resolve(to), parent = dirname(file), name = basename(file);
+  if (!name || file === parent) throw new Error("--to names a file, not a directory root");
   let parentReal: string;
   try { if (!statSync(parent).isDirectory()) throw new Error(); parentReal = realPath(parent); }
   catch { throw new Error("the destination directory does not exist"); }
@@ -43,7 +44,7 @@ function destination(base: string, to: string): string {
   try { homeReal = realPath(base); } catch { /* a home that is not there yet holds nothing to collide with */ }
   if (parentReal === homeReal || parentReal.startsWith(homeReal + sep)) throw new Error("the destination is inside the memory home; choose a folder outside it");
   if (lstatSync(file, { throwIfNoEntry: false })) throw new Error("the destination exists; export never overwrites");
-  return join(parentReal, file.slice(parent.length + 1));
+  return join(parentReal, name);
 }
 
 export async function exportProject(base: string, key: string, opts: { to: string; policy?: MemoryPolicy }): Promise<ExportResult> {

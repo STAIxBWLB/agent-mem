@@ -60,7 +60,10 @@ test("a cap shrink trims oldest rows first, in bounded batches, and the report s
   const first = runGc(base, { now: () => NOW, maxBatchesPerShard: 1 });
   const row = first.shards[0]!;
   expect(row.batches).toBe(1);
-  expect(row.trimmed).toBeLessThanOrEqual(CAPTURE_EVICT_BATCH_ROWS * CAPTURE_EVICT_MAX_BATCHES);   // one evict() window (R2): the cap never takes the shard in one pass
+  // One evict() call is bounded by CAPTURE_EVICT_MAX_MS of wall time (its trim loop repeats 4-batch windows while time remains), so the row count per call
+  // depends on machine speed: the bound that holds everywhere is whole batches, and never the whole shard in one pass.
+  expect(row.trimmed % CAPTURE_EVICT_BATCH_ROWS).toBe(0);
+  expect(row.trimmed).toBeGreaterThanOrEqual(CAPTURE_EVICT_BATCH_ROWS);
   expect(row.trimmed).toBeLessThan(6000);
   expect(row.trimmed).toBeGreaterThan(0);
   expect(row.remainingOverCap).toBe(true);
@@ -187,4 +190,15 @@ test("a catalog.db from before the state column is rebuilt, never read as all-ac
   const { Database } = require("bun:sqlite");
   const db = new Database(join(base, "catalog.db")); db.run("ALTER TABLE projects DROP COLUMN state"); db.close();
   expect(readCatalog({ home: dir }).map(p => p.state)).toEqual(["archived"]);
+});
+
+test("readCatalog reports the live lifecycle state: an op after the catalog was built shows without a rebuild", () => {
+  const { dir, base } = home();
+  fill(dir, "github.com/o/a", [{ daysAgo: 1 }]);
+  rebuildCatalog({ home: dir });
+  expect(readCatalog({ home: dir }).find(p => p.key === "github.com/o/a")!.state).toBe("active");
+  appendLifecycle(base, { op: "archive", key: "github.com/o/a", actor: "person", machine: "m1" });
+  expect(readCatalog({ home: dir }).find(p => p.key === "github.com/o/a")!.state).toBe("archived");   // the cached row said active
+  appendLifecycle(base, { op: "forget", key: "github.com/o/a", actor: "person", machine: "m1" });
+  expect(readCatalog({ home: dir }).find(p => p.key === "github.com/o/a")!.state).toBe("forgotten");
 });

@@ -234,3 +234,10 @@ test("the export's own secret screen holds with a host policy that waves everyth
   expect(readFileSync(result.file, "utf8")).not.toContain("hunter2hunter2hunter2");
   expect(result.withheld).toBe(1);
 });
+
+test("--to at a filesystem root or an empty name is refused with an error about the destination, not a missing directory", async () => {
+  const { dir, base } = home();
+  capture(dir, "github.com/o/a", ["alpha"]);
+  await expect(exportProject(base, "github.com/o/a", { to: "/" })).rejects.toThrow(/names a file/);
+  await expect(exportProject(base, "github.com/o/a", { to: "   " })).rejects.toThrow(/--to/);
+});

@@ -158,7 +158,10 @@ export function readCatalog(opts: { home?: string } = {}): CatalogProject[] {
     db.run("PRAGMA busy_timeout = 3000");
     const columns = new Set((db.query("PRAGMA table_info(projects)").all() as { name: string }[]).map(column => column.name));
     if (!columns.has("curated_entries") || !columns.has("curated_last_at") || !columns.has("state") || !columns.has("disk_bytes")) throw new Error("catalog schema needs rebuild");
+    // The state is the person's decision in lifecycle.jsonl, which changes without touching a shard: read it live, never from the cached row.
+    const stateOf = lifecycleResolver(base);
     return (db.query("SELECT * FROM projects ORDER BY key").all() as CatalogRow[]).map(fromRow)
+      .map(project => ({ ...project, state: stateOf(project.key) }))
       .map(project => captured ? { ...project, curatedEntries: null, curatedLastAt: null, curatedAvailable: false } : project);
   } catch { return rebuildCatalog(opts); }
   finally { db?.close(); }

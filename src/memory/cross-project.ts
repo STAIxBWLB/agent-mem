@@ -12,7 +12,7 @@ import { vaultCandidates } from "./vault.ts";
  *
  * - `searchAllProjects` (`amem search --all-projects`): one ordinary project-scoped search per active project, merged by score. Every hit names its project and
  *   the reply says `crossedProjects: true` with the projects it read, so a caller can never mistake it for a single-project answer. An archived project is
- *   read only with `includeArchived`; a forgotten one never. It writes nothing under the home.
+ *   read only with `includeArchived`; a forgotten one never. It changes no content file of the home (only derived indexes and sidecars may refresh, as for any read).
  * - `vaultCandidatesAll` (`amem vault-candidates --all-projects | --project <key>`): the existing durable-candidate selection (`vaultCandidates`), under the
  *   caller's policy, run per project and grouped by project. amem lists; it never writes the vault or a vault link (D8).
  *
