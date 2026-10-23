@@ -120,9 +120,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       ? (value: unknown) => policy.screen(value)
       : async (value: unknown) => { guard(); const permitted = await policy.screen(value); guard(); return permitted; };
     const coverage: BriefResult["coverage"] = { work: "complete", curated: "complete", capture: "complete" };
-    // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). A native parent session first asks by lstat alone whether a `.amem` exists at or above the cwd
-    // (a few syscalls, no git), so the two git calls that resolve the root are paid only by a repository that has a repo scope; the section's own deadline check (80 ms) still applies.
-    const repoRoot = options.nativeSession && !repoLogNearby(cwd) ? undefined : boundRepoRoot(cwd, base, project);
+    // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). The `lstat` probe comes FIRST and on every path (the SessionStart
+    // worker builds this brief without `nativeSession`): a repository with no `.amem/log.jsonl` at or above the cwd costs a few syscalls and no git process.
+    const repoRoot = repoLogNearby(cwd) ? boundRepoRoot(cwd, base, project) : undefined;
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
@@ -199,7 +199,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       if (coverage.repo) await run("repo", async () => {
         const scoped = repoReadPolicy(repoRoot!, options.policy);
         if ("reason" in scoped) { coverage.repo = "unavailable"; reasons.repo = "repo policy unreadable"; return; }
-        const repo = await readRepoScope(repoRoot, scoped.policy); guard();
+        // The newest few rows only, and never past the caller's deadline: the read stops (partial) when less than the reserve is left, so a 1 MiB log cannot spend the hook's budget.
+        const repo = await readRepoScope(repoRoot, scoped.policy, { limit: SECTION_RECORDS + 1, ...(options.timeRemaining ? { remainingMs: options.timeRemaining, reserveMs: 20 } : {}) }); guard();
         if (repo.state === "unsafe") { coverage.repo = "unavailable"; reasons.repo = "repo log is not a plain file"; return; }
         if (repo.partial || repo.skipped.withheld) coverage.repo = "partial";
         let shownRepo = 0; // not `selected`: scripts/measure-hook-stages.ts anchors on that exact line once

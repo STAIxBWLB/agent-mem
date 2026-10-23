@@ -361,11 +361,14 @@ test("a hostile .amem/log.jsonl: forged ids, unknown fields, wrong schema, overs
   expect(JSON.stringify(read)).not.toContain(GH_TOKEN);
 });
 
-test("a file larger than the read cap is read as whole lines only and reported partial", async () => {
+test("a file larger than the read cap keeps its NEWEST lines (the tail), as whole lines only, and reports partial", async () => {
   const r = rig(); const lines = Array.from({ length: 400 }, (_, i) => JSON.stringify(repoLine(`decision number ${i} ${"y".repeat(3000)}`)));
   writeLog(r, lines);
   const read = await readRepoScope(r.repo, policy);
   expect(read.partial).toBe(true); expect(read.views.length).toBeGreaterThan(0); expect(read.views.length).toBeLessThan(400);
+  expect(read.views[0]!.text).toContain("decision number 399");                      // the last appended line survives the cap
+  expect(read.views.at(-1)!.text).not.toContain("decision number 0 ");               // the oldest do not
+  expect(read.skipped.malformed).toBe(0);                                              // the cut first piece is dropped, never parsed
 });
 
 test("a valid-JSON line naming a home path, a credential location, a denied file, a secret or an email is withheld at read time, whoever wrote it", async () => {
@@ -569,12 +572,13 @@ test("the native hook's brief (nativeSession) includes the repo section when a .
   expect((await brief(a.repo, b.project)).context).not.toContain("quartz");                 // project B started inside repository A
 });
 
-test("repoLogNearby is lstat-only: true for a .amem at or above the cwd (a symlink included, the reader refuses it later), false without one", async () => {
+test("repoLogNearby is lstat-only and looks for the LOG: an empty .amem directory does not count, a log at or above the cwd does, a symlinked .amem counts so the reader can refuse it", async () => {
   const { repoLogNearby } = await import("../src/memory/repo-scope.ts");
   const r = rig(null); const deep = join(r.repo, "a", "b"); mkdirSync(deep, { recursive: true });
   expect(repoLogNearby(deep)).toBe(false);
-  mkdirSync(join(r.repo, ".amem")); expect(repoLogNearby(deep)).toBe(true);
-  const s = rig(null, "linked"); symlinkSync(r.dir, join(s.repo, ".amem")); expect(repoLogNearby(s.repo)).toBe(true);
+  mkdirSync(join(r.repo, ".amem")); expect(repoLogNearby(deep)).toBe(false);          // the directory alone is not a repo scope
+  writeFileSync(r.logPath, ""); expect(repoLogNearby(deep)).toBe(true);
+  const s = rig(null, "linked"); const target = join(r.dir, "elsewhere"); mkdirSync(target); writeFileSync(join(target, "log.jsonl"), ""); symlinkSync(target, join(s.repo, ".amem")); expect(repoLogNearby(s.repo)).toBe(true);
 });
 
 test("promoting into a repository that git ignores says so, because git status will never show the file; a tracked or unignored log gets no warning", async () => {
@@ -634,6 +638,89 @@ test("MCP search on the FTS engine lets FTS pick repo candidates, like curated o
     }
     expect((await mcp.tools.amem_search({ query: "zzz" }) as { hits: unknown[] }).hits).toHaveLength(0);
   } finally { mcp.close(); }
+});
+
+// ---- review round 1 (claude): hook deadline, terminal escapes, forged dates, private-path spellings
+
+test("brief: without a .amem/log.jsonl the repo section costs NO git process, on the plain path and on the native path", async () => {
+  const { processSignature } = await import("../src/memory/platform.ts");
+  const r = rig(); r.note("we chose sqlite for the index");
+  const real = Bun.spawnSync(["which", "git"]).stdout.toString().trim(), shim = join(r.dir, "shim"), seen = join(r.dir, "git-calls.log");
+  mkdirSync(shim); writeFileSync(join(shim, "git"), `#!/bin/sh\nprintf 'GIT %s\\n' "$*" >> '${seen}'\nexec '${real}' "$@"\n`); chmodSync(join(shim, "git"), 0o755);
+  process.env.PATH = `${shim}:${oldPath}`;
+  const calls = () => existsSync(seen) ? readFileSync(seen, "utf8").split("\n").filter(Boolean) : [];
+  // The shim sees every git call; the brief's OTHER sections may call git (project identity). Measure the repo section by the delta against an identical brief whose repo probe is positive.
+  await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project });
+  const without = calls().length;
+  rmSync(seen, { force: true });
+  writeLog(r, [repoLine("a shared decision")]);
+  await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project });
+  const withLog = calls().length;
+  expect(withLog, "a repository WITH a log pays the root resolution (git rev-parse and remote get-url)").toBeGreaterThan(without);
+  rmSync(seen, { force: true }); rmSync(join(r.repo, ".amem"), { recursive: true });
+  const native = { signature: processSignature(process.pid)! };
+  await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, nativeSession: native, timeRemaining: () => 2000 });
+  expect(calls().filter(line => /rev-parse --show-toplevel/.test(line)), "no root resolution for a repo scope that is not there").toEqual([]);
+});
+
+test("brief: a 1 MiB log is read as the newest handful only and never past the deadline; a spent deadline reads nothing and marks the section partial", async () => {
+  const r = rig();
+  const big = Array.from({ length: 330 }, (_, i) => repoLine(`decision number ${i} ${"y".repeat(3100)}`, { at: `2026-10-20T10:${String(i % 60).padStart(2, "0")}:00.000Z` }));
+  writeLog(r, big);
+  const size = readFileSync(r.logPath).length; expect(size).toBeGreaterThan(1_000_000);
+  const started = performance.now();
+  const brief = await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, timeRemaining: () => 140 - (performance.now() - started) });
+  expect(performance.now() - started).toBeLessThan(140);
+  expect(brief.context).toContain("repo=partial");
+  const rows = brief.context.split("\n").slice(1).map(line => JSON.parse(line) as { section: string; data: { text: string } }).filter(row => row.section === "repo");
+  expect(rows.length).toBeLessThanOrEqual(4); expect(rows.length).toBeGreaterThan(0);
+  expect(rows[0]!.data.text).toContain("decision number 329");                       // the LAST line of the file is the newest
+  // the read itself, bounded by its own deadline
+  const { readRepoScope } = await import("../src/memory/repo-scope.ts");
+  const spent = await readRepoScope(r.repo, policy, { remainingMs: () => 0 });
+  expect(spent.views).toEqual([]); expect(spent.partial).toBe(true);
+  const limited = await readRepoScope(r.repo, policy, { limit: 3 });
+  expect(limited.views).toHaveLength(3); expect(limited.partial).toBe(true);
+  const midway = (() => { let calls = 0; return () => (calls++ < 20 ? 50 : 0); })();
+  const cut = await readRepoScope(r.repo, policy, { remainingMs: midway });
+  expect(cut.views).toHaveLength(20); expect(cut.partial).toBe(true);                // the 21st check saw the deadline: 20 rows, not the ~270 the window holds
+});
+
+test("control characters are refused on read: a pull request cannot carry a terminal escape into list, search or show", async () => {
+  const r = rig();
+  const esc = "\u001b[2J\u001b]0;pwned\u0007", csi = "\u009b31m", nul = "a\u0000b", bell = "ring\u0007";
+  writeLog(r, [repoLine(`before ${esc} after`), repoLine(`c1 ${csi} here`), repoLine(nul), repoLine(bell), repoLine("tab\tand newline\nare fine"), repoLine("clean", { title: `ti${esc}tle` }), repoLine("a clean line")]);
+  const read = await readRepoScope(r.repo, policy);
+  expect(read.views.map(v => v.text)).toEqual(["a clean line", "tab\tand newline\nare fine"]);
+  expect(read.skipped.malformed).toBe(5);
+  const out = [await runCli(["list"], r.person), await runCli(["search", "line"], r.person), await runCli(["repo", "status"], r.person)].join("\n");
+  expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+});
+
+test("a line dated in the future cannot pin the brief or the list: order is file position (newest appended first), and a future `at` is shown as now", async () => {
+  const r = rig();
+  writeLog(r, [repoLine("the oldest line", { at: "2026-10-01T00:00:00.000Z" }), repoLine("pinned by a forged date", { at: "2999-01-01T00:00:00.000Z" }), repoLine("the newest appended line", { at: "2026-10-02T00:00:00.000Z" })]);
+  const read = await readRepoScope(r.repo, policy);
+  expect(read.views.map(v => v.text)).toEqual(["the newest appended line", "pinned by a forged date", "the oldest line"]);
+  expect(read.views.every(v => Date.parse(v.at) <= Date.now())).toBe(true);
+  const brief = await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project });
+  const order = brief.context.split("\n").slice(1).map(line => JSON.parse(line) as { section: string; data: { text: string; at: string } }).filter(row => row.section === "repo");
+  expect(order[0]!.data.text).toBe("the newest appended line");
+  expect(brief.context).not.toContain("2999");
+});
+
+test("a duplicate line (merge=union repeats) collapses to its newest copy", async () => {
+  const r = rig(); const dup = repoLine("shared once"); const other = repoLine("something between");
+  writeLog(r, [dup, other, dup]);
+  const read = await readRepoScope(r.repo, policy);
+  expect(read.views.map(v => v.text)).toEqual(["shared once", "something between"]); expect(read.skipped.duplicate).toBe(1);
+});
+
+test("private paths are caught in every spelling a person or a platform writes: folded case and width, split with zero-width characters, backslashes, $HOME and %USERPROFILE%", async () => {
+  const { namesPrivatePath } = await import("../src/memory/repo-scope.ts");
+  for (const text of ["see /Users/alice/x", "see /USERS/Alice/x", "see /users/alice/x", "see /home/bob/x", "see C:\\Users\\bob\\x", "see c:/Users/bob/x", "see /Us\u200bers/alice/x", "see \uff0fUsers\uff0falice\uff0fx".normalize("NFKC"),
+    "copy ~/.ssh/id_work", "copy ~/.AWS/credentials", "copy ~/.kube/config", "run $HOME/bin/tool", "run ${HOME}/bin/tool", "set %USERPROFILE%\\x", "set %AppData%\\x", "set %LOCALAPPDATA%\\x"]) expect(namesPrivatePath(text), text).toBe(true);
+  for (const text of ["the users table is documented", "home page of the project", "see src/users/model.ts", "a user home screen", "use $HOMEPAGE_URL", "50% of users"]) expect(namesPrivatePath(text), text).toBe(false);
 });
 
 test("planRepoPromotion asks no remote and writes nothing; the plan's line id is the hash of its content", async () => {

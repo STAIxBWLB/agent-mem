@@ -32,6 +32,8 @@ export const REPO_ATTRIBUTES_LINE = `${REPO_DIR}/${REPO_LOG} merge=union`;
 
 const MAX_LINE_BYTES = 16 * 1024, MAX_FILE_BYTES = 1024 * 1024, MAX_TEXT = 4000, MAX_TITLE = 200, MAX_ABOUT = 64, MAX_NODE = 300;
 const MAX_CONFIG_BYTES = 1024 * 1024;
+/** C0 (except tab and newline), DEL and C1 controls. */
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
 export interface RepoView {
   id: string; at: string; kind: RepoKind; title: string | null; text: string; about: string[];
@@ -102,7 +104,8 @@ export function parseRepoLine(raw: string): { view: RepoView } | { error: "malfo
   const e = value as Record<string, unknown>;
   const allowed = new Set(["schema", "op", "id", "at", "kind", "title", "text", "about", "actor"]);
   if (Object.keys(e).some(key => !allowed.has(key))) return { error: "malformed" };
-  const str = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && Buffer.byteLength(v) <= max;
+  // C0 and C1 controls other than tab and newline never belong in a shared line: a pull request could carry a terminal escape (ESC, CSI U+009B) that the CLI would print.
+  const str = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && Buffer.byteLength(v) <= max && !CONTROL.test(v);
   if (e.schema !== REPO_SCHEMA || e.op !== "note" || e.actor !== "person") return { error: "malformed" };
   if (typeof e.id !== "string" || !/^[a-f0-9]{32}$/.test(e.id)) return { error: "malformed" };
   if (typeof e.at !== "string" || Number.isNaN(Date.parse(e.at)) || new Date(e.at).toISOString() !== e.at) return { error: "malformed" };
@@ -124,51 +127,62 @@ function readLog(root: string): { lines: string[]; partial: boolean } | { unsafe
     fd = openSync(repoLogPath(root), constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { unsafe: `${REPO_DIR}/${REPO_LOG} is not a regular file` };
-    const length = Math.min(stat.size, MAX_FILE_BYTES), buffer = Buffer.alloc(length);
+    // The TAIL window: the log is append-only and read newest first, so a file over the cap keeps its last MAX_FILE_BYTES (the newest lines), never its head.
+    const truncated = stat.size > MAX_FILE_BYTES, length = Math.min(stat.size, MAX_FILE_BYTES), start = stat.size - length, buffer = Buffer.alloc(length);
     let filled = 0;
-    while (filled < length) { const n = readSync(fd, buffer, filled, length - filled, filled); if (n === 0) break; filled += n; }
+    while (filled < length) { const n = readSync(fd, buffer, filled, length - filled, start + filled); if (n === 0) break; filled += n; }
     let text = buffer.subarray(0, filled).toString("utf8");
-    const truncated = stat.size > MAX_FILE_BYTES;
-    // A cut file ends mid-line: keep whole lines only, and say the read was partial.
-    if (truncated) text = text.slice(0, text.lastIndexOf("\n") + 1);
+    // The window starts mid-line: drop that first piece, whole lines only, and say the read was partial.
+    if (truncated) text = text.slice(text.indexOf("\n") + 1);
     return { lines: text.split("\n").filter(line => line.trim() !== ""), partial: truncated };
   } catch { return { unsafe: `${REPO_DIR}/${REPO_LOG} could not be read` }; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
+export interface RepoReadOptions {
+  /** Stop once this many screened rows are collected: the brief shows a handful, so it never parses the whole file. */
+  limit?: number;
+  /** Milliseconds left before the caller's hard deadline (the hook): checked before every line, because the screen's awaits are microtasks and no timer can fire in between. */
+  remainingMs?: () => number;
+  /** Time held back from `remainingMs` for the caller's own work after the read. */
+  reserveMs?: number;
+}
 /**
- * Every valid, screened row of the repository's `.amem/log.jsonl`, newest first. Duplicates by id collapse (`merge=union`
- * can repeat a line). The policy sees each complete row, as it does a curated one: what it declines is counted, not shown.
+ * The valid, screened rows of the repository's `.amem/log.jsonl`, NEWEST FIRST BY FILE POSITION (append order: a line's own `at` is the author's claim and never orders
+ * anything, so a line dated in the future cannot pin a brief; its displayed `at` is clamped to now). Duplicates by id collapse to the newest copy (`merge=union` can repeat
+ * a line). The policy sees each complete row, as it does a curated one: what it declines is counted, not shown. With a `limit` or a deadline the read stops early and reports `partial`.
  */
-export async function readRepoScope(root: string | undefined, policy: MemoryPolicy): Promise<RepoRead> {
+export async function readRepoScope(root: string | undefined, policy: MemoryPolicy, options: RepoReadOptions = {}): Promise<RepoRead> {
   const skipped: RepoSkipped = { malformed: 0, mismatched: 0, duplicate: 0, withheld: 0 };
   if (!root) return { state: "absent", views: [], skipped, partial: false };
   const read = readLog(root);
   if ("unsafe" in read) return { state: "unsafe", root, views: [], skipped, partial: true, reason: read.unsafe };
-  const views: RepoView[] = [], seen = new Set<string>();
-  for (const raw of read.lines) {
-    const parsed = parseRepoLine(raw);
+  const views: RepoView[] = [], seen = new Set<string>(), now = Date.now();
+  let stoppedEarly = false;
+  for (let index = read.lines.length - 1; index >= 0; index--) {
+    if (options.limit !== undefined && views.length >= options.limit) { stoppedEarly = true; break; }
+    if (options.remainingMs && options.remainingMs() - (options.reserveMs ?? 0) <= 0) { stoppedEarly = true; break; }
+    const parsed = parseRepoLine(read.lines[index]!);
     if ("error" in parsed) { skipped[parsed.error]++; continue; }
     if (seen.has(parsed.view.id)) { skipped.duplicate++; continue; }
     seen.add(parsed.view.id);
     if (namesPrivatePath(`${parsed.view.title ?? ""}\n${parsed.view.text}\n${parsed.view.about.join("\n")}`) || !await policy.screen(parsed.view)) { skipped.withheld++; continue; }
-    views.push(parsed.view);
+    views.push(Date.parse(parsed.view.at) > now ? { ...parsed.view, at: new Date(now).toISOString() } : parsed.view);
   }
-  views.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? -1 : 1));
-  return { state: read.lines.length || plainLog(root).kind === "file" ? "ok" : "absent", root, views, skipped, partial: read.partial || skipped.malformed + skipped.mismatched > 0 };
+  return { state: read.lines.length || plainLog(root).kind === "file" ? "ok" : "absent", root, views, skipped, partial: read.partial || stoppedEarly || skipped.malformed + skipped.mismatched > 0 };
 }
 
 /** Whether a repo log exists at all, by lstat only: the brief reserves header room for a section only when there is one. */
 export function repoLogPresent(root: string | undefined): boolean { return !!root && plainLog(root).kind !== "absent"; }
 
 /**
- * Whether a `.amem` entry exists at or above `cwd`, by lstat only (no git, no read). The native hook asks this first, so a repository
- * without a repo scope (almost all of them) costs it two or three lstat calls and never a git process.
+ * Whether `.amem/log.jsonl` exists at or above `cwd`, by `lstat` alone (no git, no read). Every brief asks this first, so a repository without a repo scope (almost all
+ * of them) costs the hook a few syscalls and never a git process. A symlinked `.amem` directory still counts (its log resolves), so the reader can report it unsafe.
  */
 export function repoLogNearby(cwd: string): boolean {
   try {
     for (let dir = cwd, depth = 0; depth < 32; dir = dirname(dir), depth++) {
-      if (lstatSync(join(dir, REPO_DIR), { throwIfNoEntry: false })) return true;
+      if (lstatSync(join(dir, REPO_DIR, REPO_LOG), { throwIfNoEntry: false })) return true;
       if (dir === dirname(dir)) return false;
     }
   } catch { /* unreadable: no section */ }
@@ -245,10 +259,13 @@ export function repoReadPolicy(root: string, base: StandalonePolicyOptions = {})
   try { return { policy: repoPolicy(repoPolicyOptions(root), base) }; } catch (error) { return { reason: (error as Error).message }; }
 }
 
-const HOME_PATH = [/\/Users\/[^/\s"'`]+\//, /\/home\/[^/\s"'`]+\//, /[A-Za-z]:\\Users\\[^\\\s"'`]+\\/, /~\/\.(?:ssh|aws|gnupg|config|agenthub|maru|claude|codex)\b/];
-/** A home directory or a credential location, in any text. Refused when promoting and withheld when reading: a pull request can add such a line to the file too. */
+/** The text as a case-insensitive disk and a terminal see it: compatibility forms folded, ignorable code points dropped, backslashes as slashes, lower case. */
+const foldText = (text: string): string => text.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").replace(/\\/g, "/").toLowerCase();
+const HOME_PATH = [/\/users\/[^/\s"'`]+\//, /\/home\/[^/\s"'`]+\//, /\b[a-z]:\/users\/[^/\s"'`]+\//, /~\/\.(?:ssh|aws|gnupg|config|agenthub|maru|claude|codex|kube|docker|netrc)\b/, /\$\{?home\}?\//, /%(?:userprofile|homepath|appdata|localappdata)%/];
+/** A home directory or a credential location, in any text (folded first: `\Users\x\`, a width-folded or zero-width-split spelling, `$HOME/`, `%USERPROFILE%`). Refused when promoting and withheld when reading: a pull request can add such a line too. */
 export function namesPrivatePath(text: string): boolean {
-  return HOME_PATH.some(re => re.test(text)) || (homedir().length > 3 && text.includes(homedir()));
+  const folded = foldText(text), home = foldText(homedir());
+  return HOME_PATH.some(re => re.test(folded)) || (home.length > 3 && folded.includes(home));
 }
 const SAFE_NODE = /^(?:path|symbol|issue):/;
 /** A graph node that may be committed: a repository-relative path or symbol, or an issue. Private task, goal and memory references and absolute or escaping paths stay out. */
@@ -323,6 +340,9 @@ export async function repoVisibility(root: string, visibility?: (url: string) =>
   return { state, remotes };
 }
 
+// ponytail: between the `plainLog` check and the open another process with write access to the repository could swap `.amem` for a symlink. `O_NOFOLLOW` covers the file itself and the post-open
+// `realPath(dir)` check refuses a directory that resolves elsewhere, but the open of a path THROUGH a swapped directory is not atomic. The ceiling is a local attacker who can already write the repository.
+// Upgrade: open the directory first and use `openat` relative to its descriptor (not available in Bun's fs today).
 /** Append one line to `.amem/log.jsonl`: O_NOFOLLOW, a regular file, the directory inside the repository, a newline first when the file lacks one. Never runs git. */
 export function appendRepoLine(root: string, line: RepoLine): { path: string; created: boolean } {
   const dir = join(root, REPO_DIR), path = repoLogPath(root);
