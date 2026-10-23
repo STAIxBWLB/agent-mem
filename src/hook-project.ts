@@ -34,6 +34,18 @@ function publish(dir: string, file: string, value: Binding): void {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stat = lstatSync(dir); if (!stat.isDirectory() || stat.isSymbolicLink()) return;
     chmodSync(dir, 0o700);
+    // Only old, owned publication names are eligible; a recent writer keeps its temp.
+    const scan = opendirSync(dir);
+    try {
+      for (let count = 0; count < CACHE_CWDS * 2; count++) {
+        const entry = scan.readSync(); if (!entry) break;
+        if (!/^\.[a-f0-9]{64}-[a-f0-9]{24}$/.test(entry.name)) continue;
+        const stale = join(dir, entry.name), before = lstatSync(stale, { throwIfNoEntry: false });
+        if (!before?.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || Date.now() - before.mtimeMs < 60_000) continue;
+        const after = lstatSync(stale, { throwIfNoEntry: false });
+        if (after?.dev === before.dev && after.ino === before.ino && after.size === before.size && after.mtimeMs === before.mtimeMs) rmSync(stale);
+      }
+    } finally { scan.closeSync(); }
     // ponytail: 128 cached cwd identities, one bounded derived value each. New cwd misses
     // still resolve natively; a future cache policy may retire old entries without touching capture.
     if (!lstatSync(file, { throwIfNoEntry: false })) {
@@ -74,6 +86,7 @@ export function resolveHookProject(options: { cwd: string; base: string; scope: 
  * standalone roots; linked/submodule/local nested layouts retain the native resolver. */
 function cacheableLocal(cwd: string, project: string): boolean {
   if (!/.+@[a-f0-9]{8}$/.test(project)) return true;
+  if (!project.endsWith(`@${hash(cwd).slice(0, 8)}`)) return false;
   try {
     const git = lstatSync(join(cwd, ".git"));
     if (!git.isDirectory() || git.isSymbolicLink()) return false;

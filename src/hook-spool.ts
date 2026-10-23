@@ -160,6 +160,12 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
           parts.push(`HEAD:${hash(content(join(gitDir, "HEAD"), 4096))}`);
           for (const name of ["objects", "refs"]) parts.push(`${name}:${identity(join(commonDir, name))}`);
         }
+        // Git still consults legacy remote definitions when config has no origin.
+        // Bind bytes for both pending capture and the stricter identity cache.
+        for (const dir of new Set([commonDir, gitDir])) for (const legacy of ["remotes", "branches"]) {
+          const file = join(dir, legacy, "origin");
+          parts.push(`${file}:${hash(content(file))}`);
+        }
         configuration.push(...identityConfig(content(join(commonDir, "config"))));
         const worktreeConfig = configuration.filter(([key]) => key === "extensions.worktreeconfig").at(-1)?.[1];
         if (worktreeConfig === "true") configuration.push(...identityConfig(content(join(gitDir, "config.worktree"))));

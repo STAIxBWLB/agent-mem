@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { hookCaptureScope } from "../src/hook-spool.ts";
@@ -90,4 +90,37 @@ test("the shared alias reader leaf resolves an alias without loading SQLite muta
   const result = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
   expect(result.stdout.toString(), `early SQLite attempted=${existsSync(marker)}`).toBe("canonical\n");
   expect(result.exitCode).toBe(0); expect(existsSync(marker)).toBe(false);
+});
+
+for (const legacy of ["branches", "remotes"]) test(`legacy ${legacy}/origin changes invalidate pending scope and cached project`, async () => {
+  const f = fixture(); await f.seed();
+  const dir = join(f.cwd, ".git", legacy); mkdirSync(dir, { recursive: true });
+  const file = join(dir, "origin");
+  const remote = (name: string) => legacy === "branches" ? `https://example.invalid/${name}.git\n` : `URL: https://example.invalid/${name}.git\n`;
+  writeFileSync(file, remote("project-a"));
+  const before = binding(f), projectA = resolveHookProject(before);
+  writeFileSync(file, remote("project-b"));
+  expect(hookCaptureScope(f.cwd, f.base)).not.toBe(before.scope);
+  expect(() => resolveHookProject(before)).toThrow("scope changed");
+  expect(resolveHookProject(binding(f))).not.toBe(projectA);
+});
+
+test("a local key from a symlinked core.worktree is never cached", () => {
+  const f = fixture(), target = join(f.root, "other-worktree"), link = join(f.root, "worktree-link");
+  mkdirSync(target); symlinkSync(target, link);
+  const result = Bun.spawnSync(["git", "-C", f.cwd, "config", "core.worktree", link], { env: f.env, stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  resolveHookProject(binding(f));
+  expect(existsSync(join(f.base, "hook-project"))).toBe(false);
+});
+
+test("stale owned cache publication temps cannot fill the cwd cache", () => {
+  const f = fixture(), dir = join(f.base, "hook-project"); mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (let i = 0; i < 128; i++) {
+    const file = join(dir, `.${i.toString(16).padStart(64, "0")}-${"a".repeat(24)}`);
+    writeFileSync(file, "{}", { mode: 0o600 }); utimesSync(file, new Date(0), new Date(0));
+  }
+  resolveHookProject(binding(f));
+  expect(readdirSync(dir)).toHaveLength(1);
+  expect(readdirSync(dir)[0]).toEndWith(".json");
 });
