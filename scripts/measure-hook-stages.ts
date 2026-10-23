@@ -1,7 +1,7 @@
 /** Diagnostic only: numeric cold-path milestones for actual runner failures. No budget overrides. */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { hookFixture } from "../test/fakes/hooks-fixture.ts";
+import { hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 
 const f = hookFixture(), preload = join(f.root, "hook-stages.ts"), trace = join(f.root, "hook-stages.jsonl");
 const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
@@ -30,12 +30,21 @@ note('loaded');const spawn=Bun.spawn.bind(Bun),sync=Bun.spawnSync.bind(Bun),kill
 Bun.spawn=(argv,options)=>{if(!Array.isArray(argv)||argv[2]!==${JSON.stringify(worker)})return spawn(argv,options);note('spawn');const p=spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options);p.exited.then(()=>note('reaped'));return p;};
 Bun.spawnSync=(argv,options)=>{const kind=Array.isArray(argv)&&argv.includes('remote')?'git-origin':Array.isArray(argv)&&argv.includes('rev-parse')?'git-metadata':Array.isArray(argv)&&argv[0]==='ps'?'lease-signature':'native';note(kind+'-start');const r=sync(argv,options);note(kind+'-end');return r;};
 process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o600 });
+  let cold: { knownWork: boolean; ms: number | null } | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     writeFileSync(trace, "", { mode: 0o600 });
     const started = performance.timeOrigin + performance.now();
     const result = f.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
     const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
-    console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length,
+    let context: unknown;
+    try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Report missing context explicitly. */ }
+    const knownWork = typeof context === "string" && context.includes(workMarker);
+    const stopped = [...rows].reverse().find(row => row.child && row.stage === "stop");
+    const completedMs = stopped ? stopped.at - started : null;
+    if (attempt === 0) cold = { knownWork, ms: completedMs };
+    console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length, knownWork, completedMs,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
   }
+  if (!cold?.knownWork || cold.ms === null || cold.ms >= 140)
+    throw new Error(`cold SessionStart did not return known work before 140 ms: knownWork=${cold?.knownWork}, completedMs=${cold?.ms}`);
 } finally { f.close(); }
