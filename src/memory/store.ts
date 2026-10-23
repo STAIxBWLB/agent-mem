@@ -7,6 +7,7 @@ import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { machineId, type Machine } from "./machine.ts";
+import { assertProjectActive } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
@@ -169,6 +170,8 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
 export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
+  /** #15 T5: `openShardStore` refuses a project the person archived or forgot unless the caller says `ignore` (the catalog, `--include-archived` reads and export do, on purpose). */
+  lifecycle?: "enforce" | "ignore";
   /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
   reconcile?: { canonical: string; aliases: readonly string[] };
 }
@@ -1244,6 +1247,8 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
   const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
   assertCuratedShardPaths(home, opts);
+  // #15 T5: the one gate every recall path shares, checked before a shard can be created. The user shard has no lifecycle.
+  if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
   const missing = !existsSync(join(dir, "generation.json"));
   if (missing) initializeShard(home, opts);

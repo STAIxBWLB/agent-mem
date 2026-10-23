@@ -46,7 +46,7 @@ function curatedStats(base: string, hash: string, key: string, captured: boolean
   const dir = join(base, "projects", hash);
   // A capture-only descriptor is not permission to initialize a curated store while listing the catalog.
   if (!existsSync(join(dir, "generation.json")) && !existsSync(join(dir, "generation-seal.json"))) return { entries: 0, lastAt: null };
-  const store = openShardStore({ memoryDir: base, project: key, deferPromotions: true });
+  const store = openShardStore({ memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore" });
   try {
     const db = new Database(join(dir, "index.db"), { readonly: true });
     try {

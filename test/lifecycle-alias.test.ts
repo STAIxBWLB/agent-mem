@@ -1,15 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CaptureStore, captureShardStats } from "../src/memory/capture.ts";
-import { appendAlias, appendUnalias, shardMachineDir } from "../src/memory/shard.ts";
+import { appendAlias, appendUnalias, shardDir, shardMachineDir } from "../src/memory/shard.ts";
 import { appendLifecycle, lifecycleResolver, projectState } from "../src/memory/lifecycle.ts";
 import { searchAllProjects } from "../src/memory/cross-project.ts";
 import { planGc, runGc } from "../src/memory/gc.ts";
 import { scanCatalog } from "../src/memory/catalog.ts";
 import { capacityReport } from "../src/memory/capacity.ts";
-import { machineId } from "../src/memory/store.ts";
+import { machineId, openShardStore } from "../src/memory/store.ts";
 
 // #15 T5 review (alias-bypasses-lifecycle): lifecycle ops are recorded on the canonical key, but a shard can exist under an alias of it (captured before
 // the alias was added). Every walk resolves through the alias table, and an alias op cannot undo a forget.
@@ -74,4 +74,26 @@ test("an unaliased key is its own state again, so removing the alias returns the
   const w = world(); w.alias(); w.person("archive", A);
   appendUnalias(w.base, { alias: OLD, actor: "person", machine: "m1" });
   expect(projectState(w.base, OLD)).toBe("active"); expect(projectState(w.base, A)).toBe("archived");
+});
+
+// #15 T5 review (hub-recall-not-gated): agent-hub opens curated stores directly with openShardStore, so the gate sits at the open, not in each caller.
+test("openShardStore refuses an archived or forgotten project, and an alias of one, and creates nothing for a project it refuses", () => {
+  const w = world();
+  w.alias(); w.person("archive", A);
+  for (const key of [A, OLD]) expect(() => openShardStore({ memoryDir: w.base, project: key })).toThrow(/archived/);
+  w.person("unarchive", A); w.person("forget", A);
+  for (const key of [A, OLD]) expect(() => openShardStore({ memoryDir: w.base, project: key })).toThrow(/forgotten/);
+});
+
+test("the gate refuses before the shard is initialized and lifecycle ignore passes the gate (catalog, export, --include-archived)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "amem-open-gate-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const base = join(dir, "memory"), key = "github.com/o/fresh";
+  const store = new CaptureStore({ home: dir, project: key }); store.close();      // a capture-only shard: no generation.json yet
+  appendLifecycle(base, { op: "archive", key, actor: "person", machine: "m1" });
+  expect(() => openShardStore({ memoryDir: base, project: key })).toThrow(/archived/);
+  expect(existsSync(join(shardDir(base, key), "generation.json"))).toBe(false);   // refused before initializeShard wrote anything
+  // lifecycle "ignore" passes the gate: this unsplit home then fails on the missing migration, which is not the lifecycle refusal
+  expect(() => openShardStore({ memoryDir: base, project: key, lifecycle: "ignore" })).toThrow(/no active curated shard migration/);
+}); open.close();
+  expect(existsSync(join(shardDir(base, key), "generation.json"))).toBe(true);
 });

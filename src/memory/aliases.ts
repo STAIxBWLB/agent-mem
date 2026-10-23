@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { lifecycleStates } from "./lifecycle.ts";
+import { lifecycleStates } from "./lifecycle-log.ts";
 
 export const SHARD_SCHEMA = "agent-hub.memory.shard/v1";
 

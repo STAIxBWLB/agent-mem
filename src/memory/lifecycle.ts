@@ -1,7 +1,10 @@
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { SHARD_SCHEMA, effectiveAliases, resolveAlias } from "./aliases.ts";
+import { lifecyclePath, lifecycleStates, listLifecycle, type LifecycleKind, type LifecycleOp, type LifecycleState } from "./lifecycle-log.ts";
 import { readShardDescriptor, shardKeyHash } from "./shard.ts";
+
+export { lifecyclePath, lifecycleStates, listLifecycle, type LifecycleKind, type LifecycleOp, type LifecycleState };
+const KINDS: readonly string[] = ["archive", "unarchive", "forget"];
 
 /**
  * #15 T5 / D3: the per-project lifecycle. `archive`, `unarchive` and `forget` are append-only ops in `lifecycle.jsonl` of the memory home, in the same
@@ -12,38 +15,6 @@ import { readShardDescriptor, shardKeyHash } from "./shard.ts";
  * - forgotten: the project is out of recall and the default listing for good. Its bytes are not erased here (that is what `amem project export`
  *   and a person's own file deletion are for); the op is the record that the person asked for it.
  */
-
-export type LifecycleState = "active" | "archived" | "forgotten";
-export type LifecycleKind = "archive" | "unarchive" | "forget";
-export interface LifecycleOp { schema: typeof SHARD_SCHEMA; op: LifecycleKind; at: string; machine: string; key: string; actor: string }
-
-const MAX_LOG_BYTES = 8 * 1024 * 1024;
-const KINDS: readonly string[] = ["archive", "unarchive", "forget"];
-
-export function lifecyclePath(base: string): string {
-  return join(base, "lifecycle.jsonl");
-}
-
-/** Every well-formed op in file order; a malformed or unknown line is skipped, never fatal. A log above the byte bound is refused (it cannot be read whole), never read in part: a half-read log could show a forgotten project as active. */
-export function listLifecycle(base: string): LifecycleOp[] {
-  let text = "";
-  try {
-    const file = lifecyclePath(base);
-    if (statSync(file).size > MAX_LOG_BYTES) throw new Error("lifecycle log is larger than its read bound");
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const ops: LifecycleOp[] = [];
-  for (const line of text.split("\n").filter(Boolean)) {
-    try {
-      const op = JSON.parse(line) as LifecycleOp;
-      if (op?.schema === SHARD_SCHEMA && KINDS.includes(op.op) && typeof op.key === "string" && op.key && typeof op.at === "string") ops.push(op);
-    } catch { /* a malformed line is skipped */ }
-  }
-  return ops;
-}
 
 const SEVERITY: Record<LifecycleState, number> = { active: 0, archived: 1, forgotten: 2 };
 const worse = (a: LifecycleState, b: LifecycleState): LifecycleState => SEVERITY[a] >= SEVERITY[b] ? a : b;
@@ -61,17 +32,6 @@ export function projectState(base: string, key: string): LifecycleState {
 export function lifecycleResolver(base: string): (key: string) => LifecycleState {
   const states = lifecycleStates(base), aliases = effectiveAliases(base);
   return key => worse(states.get(key) ?? "active", states.get(aliases.get(key) ?? key) ?? "active");
-}
-
-/** Every project key with a non-active state, for the catalog: one pass over the log. */
-export function lifecycleStates(base: string): Map<string, LifecycleState> {
-  const states = new Map<string, LifecycleState>();
-  for (const op of listLifecycle(base)) {
-    const current = states.get(op.key) ?? "active";
-    if (current === "forgotten") continue;
-    states.set(op.key, op.op === "forget" ? "forgotten" : op.op === "archive" ? "archived" : "active");
-  }
-  return states;
 }
 
 /** Refuses a project the person archived or forgot; the one check every writable capture open, recall and brief shares. */

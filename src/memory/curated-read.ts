@@ -13,7 +13,7 @@ export function openCuratedForRead(base: string, key: string): MemoryStore | und
   if (existsSync(join(base, "shards.json"))) {
     readShardedSelection(base);
     if (!existsSync(join(shardDir(base, key), "generation.json"))) return undefined;
-    return openShardStore({ memoryDir: base, project: key, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
+    return openShardStore({ memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore", ...(reconcile ? { reconcile } : {}) });
   }
   if (!existsSync(join(base, "log")) && !existsSync(join(base, "local")) && !existsSync(join(base, "generations"))) return undefined;
   return new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
