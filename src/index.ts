@@ -8,6 +8,8 @@ export * from "./memory/capacity.ts";
 export * from "./memory/lifecycle.ts";
 export * from "./memory/usage.ts";
 export * from "./memory/gc.ts";
+export * from "./memory/project-export.ts";
+export * from "./memory/cross-project.ts";
 export * from "./memory/sync.ts";
 export * from "./memory/import.ts";
 export * from "./memory/project.ts";
