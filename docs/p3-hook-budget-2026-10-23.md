@@ -1,8 +1,18 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **new candidate CI pending**. Completed GitHub run [39885606254](https://github.com/STAIxBWLB/agent-mem/actions/runs/39885606254) at `15231c7ea0e72c80241380af1df32947fd16f8c6` passed Ubuntu R2, but failed the unchanged macOS SessionStart context assertion. PR #34 must not merge until both OSes pass at the exact new head and quarantine has a clean re-review. #113's step approval was not merge approval.
+Status: **macOS R2 remains open**. At `570f29c2b3777247c7ecb14884f3e0d681db03bd`, actual [run 39898659447](https://github.com/STAIxBWLB/agent-mem/actions/runs/39898659447) passed Ubuntu, including SessionStart own combined peak 86.09 MB (raw 100.1 MB), p95 88.4 ms and zero R1 leftovers. macOS job 120234875962 failed two unit assertions (full-tier SessionStart replay and plain SessionStart empty JSON) and the unchanged strict budget assertion (empty context, wall 164.05 ms, metric 142.81 ms). The local Mac pass below did not establish runner acceptance. PR #34 remains unmergeable until exact-head CI is green on both OSes and re-review is clean.
 
-## Follow-up #391, SessionStart priority
+## Round 2, full-tier fairness and runner diagnostics
+
+Runtime candidate `b4fa6256899e7c7afc7f460b88c53527c0b50f8c` fixes a separate reproduced starvation bug. With 256 valid pending records from existing project B, project A previously emitted no SessionStart context and retained none of its new events. At capacity, one bounded retirement pass can now move oldest valid foreign-cwd records into private quarantine, preserving their bodies without binding them to A. Healthy admission still retires unresolved records within the same bounds. Repeated capacity refusal after recovery retains its computed brief; the library receipt does not falsely report an unadmitted capture as durably pending. Concurrent publication can still exhaust the finite capture tier; this does not justify discarding a computed context.
+
+The six-event cross-project native regression fails at the old head on the named nonempty-output assertion; it passes with all six events exactly once as a row or pending, no foreign capture in A, and bounded quarantine. A separate repeated-refusal regression is red before the brief-preservation catch and green after it. Existing same-project full-tier assertions are unchanged.
+
+Cold Mac timing is not closed by another local pass. After the unchanged budget step (so the diagnostic cannot warm it), a numeric-only diagnostic step records CLI boot, helper spawn/boot, hardened native identity calls, lease signature and reaping milestones on the real GitHub runner, even after a failed unit step. It never changes the hook deadline or budget assertions and logs no paths, payloads or tokens. A local four-call diagnostic showed helper boot around 21 ms, imports about 7 ms, the two Git identity queries around 9 and 12-16 ms, and the remaining lease/store/context work around 11 ms. These are a lead for actual-runner profiling, not the cause asserted for the runner's 164 ms failure. The runner's cold-path diagnosis and fix remain open. A local native 1.4.2 check of this runtime passed all 20 known-work contexts with p95 114.45 ms, max 117.03 ms and conservative combined peak 84.16 MB; 55 original captures replayed exactly once and R1 found zero leftovers. Those local numbers do not close the runner failure.
+
+A pinned Bun 1.4.2 Mac probe did not reproduce the reported 1.4.3 4.6 MB self figure. Three fresh children measured near-exit self peaks 11,584/11,536/11,584 KiB, parent-observed ps RSS 11,456/11,408/11,456 KiB and reaped wait4 peaks 11,680/11,632/11,680 KiB. A child touching 8 MiB measured self/ps 24,048 KiB and wait4 24,112 KiB. Darwin worker accounting now floors its reported self sample at the reaped wait4 peak. Linux retains the reviewed per-image VmHWM logic and raw diagnostics. The two-image sum excludes native Git descendant peaks (about 7.8 MB in the reviewer's local probe); it is not claimed to be an entire process-tree peak. The independent CLI wait4 floor remains. Whole-tree sampled accounting is a future measurement upgrade, not a reason to raise the current limits.
+
+## Historical round 1, SessionStart priority
 
 Runtime candidate: `71813553414ae564065aaa84142d190840fb7692`. A normally staged SessionStart now leaves its screened capture durably pending and avoids pre-brief CaptureStore loading/draining. Later non-SessionStart invocations replay it; full-tier admission still performs bounded recovery. Optional curated/capture sections need 80 ms remaining; work still needs 10 ms. The 140 ms handler deadline, 150 ms external p95 and 100 MB combined peak criterion are unchanged.
 
@@ -40,7 +50,7 @@ An earlier independent fork/exec probe held the child's current RSS at 9,175,040
 
 The owned worker flushes a complete bounded result before terminating its still-live process group on completion; fatal paths and the self-deadline reap the same group. Pending identity ignores rewritten HEAD/config inodes, binds supported project-deciding configuration, and retires unresolved/removed scopes into bounded private quarantine outside the active cap. Existing red-first quarantine, exactly-once, full-tier, process-reaping and network-tripwire regressions remain required. New-head CI and reviewer verification remain open.
 
-## Round 3 verification
+## Historical round 3 verification
 
 Round 2 at `241158559ce08ef60d168d4d212587b3a183869e` also failed on the actual Ubuntu runner: [run 39875883123](https://github.com/STAIxBWLB/agent-mem/actions/runs/39875883123), job 120161255064 measured 107.07 MB SessionStart, 100.87 MB contended capture and 100.66 MB drain (plain capture 96.27 MB). The Linux-container table below did not predict that result and does not establish R2 acceptance. That head did not meet Ubuntu R2; the later actual-runner result above supersedes it.
 
