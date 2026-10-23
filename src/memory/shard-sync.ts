@@ -16,7 +16,7 @@ const digest = (bytes: string | Uint8Array): string => createHash("sha256").upda
 const zero = "0".repeat(40);
 type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; sources: PruneSourceRow[]; generation: string; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
-const refuse = (reason: string): never => { throw new SyncRefusal(reason); };
+function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) refuse("shard sync requires independent private directories");
@@ -270,10 +270,13 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     };
     const fetchTargets = async (): Promise<void> => {
       for (const target of targets) {
-        const ref = shardSyncRef(target.realm), local = await git(["rev-parse", "--verify", "--quiet", ref]);
+        const ref = shardSyncRef(target.realm);
+        const symbolic = await git(["symbolic-ref", "--quiet", ref]); check();
+        if (symbolic.code !== 1) refuse(`${shardSyncLabel(target.realm)}: selected cache ref must be direct`);
+        const local = await git(["rev-parse", "--verify", "--quiet", ref]);
         if (local.code === 0) { if (!OID.test(local.out)) refuse("shard sync cached ref invalid"); target.local = local.out; await history(local.out, target); }
         else if (local.code !== 1) refuse("shard sync cached ref unavailable");
-        const advertised = await git(["ls-remote", "--exit-code", "--refs", "origin", ref]); check();
+        const advertised = await git(["ls-remote", "--symref", "--exit-code", "--refs", "origin", ref]); check();
         if (advertised.code === 2) { if (target.local) refuse(`${shardSyncLabel(target.realm)}: previously synced remote ref disappeared`); target.remote = undefined; continue; }
         const fields = advertised.out.split("\t");
         if (advertised.code !== 0 || fields.length !== 2 || !OID.test(fields[0]!) || fields[1] !== ref) refuse(`${shardSyncLabel(target.realm)}: remote ref lookup unavailable`);
@@ -326,7 +329,9 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); check(); }
       await buildTargets(); check();
-      const sent = await git(["push", "--atomic", "--no-follow-tags", "-q", "origin", ...targets.map(target => `${target.commit!}:${shardSyncRef(target.realm)}`)]); check();
+      const sent = await git(["push", "--atomic", "--no-follow-tags", "-q", "origin", ...targets.map(target => `${target.commit!}:${shardSyncRef(target.realm)}`)]);
+      if (sent.code === 0) pushed = true;
+      check();
       if (sent.code === 0) {
         pushed = true;
         // No local append before a successful atomic publication: a raced foreign prune can still refuse the entire retry safely.
@@ -335,7 +340,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
           assertCuratedShardPaths(target.store.profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
           importRows(target);
         }
-        for (const target of targets) await required(["update-ref", shardSyncRef(target.realm), target.commit!, target.local ?? zero], "shard sync cached ref changed concurrently");
+        for (const target of targets) await required(["update-ref", "--no-deref", shardSyncRef(target.realm), target.commit!, target.local ?? zero], "shard sync cached ref changed concurrently");
         return { ok: true, pushed, entries: targets.reduce((n, target) => n + [...target.rows.values()].filter(row => row.op === "note").length, 0) };
       }
       if (opts.signal?.aborted) return fail("stopped");
@@ -344,7 +349,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
   } catch (error) {
     return fail(error instanceof ShardSyncFormatError || error instanceof SyncRefusal ? error.message : "shard sync unavailable");
   } finally {
-    for (const ref of transient) { try { await generationSyncGit(root, ["--no-replace-objects", "--git-dir", cache, "update-ref", "-d", ref], undefined); } catch { /* private orphaned refs remain non-public */ } }
+    for (const ref of transient) { try { await generationSyncGit(root, ["--no-replace-objects", "--git-dir", cache, "update-ref", "--no-deref", "-d", ref], undefined); } catch { /* private orphaned refs remain non-public */ } }
     for (const file of temporary) { try { rmSync(file, { force: true }); } catch { /* private diagnostic bytes never enter a public tree */ } }
     for (const release of releases.reverse()) { try { release(); } catch { /* fail-open cleanup */ } }
     try { releaseSync?.(); } catch { /* private lock cleanup */ }

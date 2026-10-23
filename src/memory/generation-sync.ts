@@ -49,6 +49,9 @@ function lockSync(dir: string): (() => void) | undefined {
   return undefined;
 }
 
+/** Shared by isolated generation and shard transports; callers hold the directory's mutation lock first. */
+export { lockSync as generationSyncLock };
+
 function validatePublic(bytes: string, generation: string, path: string, checkPrune?: (row: PruneRow) => void): void {
   if (!bytes) return;
   const legacy: string[] = [];

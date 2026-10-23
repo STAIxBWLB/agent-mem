@@ -27,7 +27,7 @@ function remote() { const dir = temp(); git(dir, "init", "-q", "--bare"); return
 const note = (project: string, text: string, scope: "project" | "shared" = "project"): NoteInput => ({ op: "note", project, scope, tier: "long", kind: "finding", peer: "fixture", source: "person", text, about: [] });
 function keep(store: MemoryStore) { cleanup.push(() => store.close()); return store; }
 async function split(generation: string, seeded = false) {
-  const home = temp(), legacy = new MemoryStore({ home, profile: "shared-v1", deferPromotions: true }), ids: Record<string, string> = {};
+  const home = temp(), legacy = new MemoryStore({ home, profile: "shared-v1", deferPromotions: true }), ids: Partial<Record<"alphaLegacy" | "betaLegacy" | "userLegacy", string>> = {};
   if (seeded) {
     ids.alphaLegacy = legacy.note(note(A, "alphalegacy"));
     ids.betaLegacy = legacy.note(note(B, "UNOPENED_B_betalegacy"));
@@ -197,4 +197,37 @@ test("ambient follow-tags configuration cannot publish private cache tags", asyn
   git(cache, "config", "push.followTags", "true"); source.a.note(note(A, "next public append"));
   expect(await syncMemory(source.a, privateRemote)).toMatchObject({ ok: true });
   expect(git(url, "for-each-ref", "--format=%(refname)", "refs/tags/")).toBe("");
+}, 60_000);
+
+test("independent ordinary writers converge without duplicate rows or no-op history growth", async () => {
+  const url = remote(), a = await split(G1), b = await split(G2);
+  const first = a.a.note(note(A, "first machine original")), second = b.a.note(note(A, "second machine original"));
+  expect(await syncMemory(a.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(await syncMemory(b.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(await syncMemory(a.a, privateRemote)).toMatchObject({ ok: true });
+  for (const store of [a.a, b.a]) expect(store.list({ project: A }).map(row => row.id).sort()).toEqual([first, second].sort());
+  const before = refs(url);
+  expect(await syncMemory(a.a, privateRemote)).toMatchObject({ ok: true });
+  expect(await syncMemory(b.a, privateRemote)).toMatchObject({ ok: true });
+  expect(refs(url)).toBe(before);
+}, 60_000);
+
+test("cancellation during private-visibility readback leaves no transport cache or published ref", async () => {
+  const url = remote(), source = await split(G1), stop = new AbortController();
+  source.a.note(note(A, "pending local original")); const before = jsonlBytes(source.a.dir);
+  expect(await syncMemory(source.a, { remote: url, signal: stop.signal, visibility: async () => { stop.abort(); return "private"; } })).toMatchObject({ ok: false, pushed: false, error: "stopped" });
+  expect(existsSync(join(source.memory, "shard-sync"))).toBe(false);
+  expect(refs(url)).toBe(""); expect(jsonlBytes(source.a.dir)).toEqual(before);
+});
+
+for (const where of ["cache", "remote"] as const) test(`a symbolic selected ${where} ref cannot redirect an update to another branch`, async () => {
+  const url = remote(), source = await split(G1);
+  source.a.note(note(A, "first original"));
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const repo = where === "cache" ? join(source.memory, "shard-sync", "objects.git") : url;
+  const other = "refs/heads/unselected", tip = git(repo, "rev-parse", refA);
+  git(repo, "update-ref", other, tip); git(repo, "symbolic-ref", refA, other);
+  const before = refs(url); source.a.note(note(A, "must not redirect another branch"));
+  expect(await syncMemory(source.a, privateRemote)).toMatchObject({ ok: false, pushed: false });
+  expect(git(repo, "rev-parse", other)).toBe(tip); expect(refs(url)).toBe(before);
 }, 60_000);

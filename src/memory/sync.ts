@@ -125,6 +125,7 @@ export interface SyncOptions {
 }
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  if (store.profile.sharded) return (await import("./shard-sync.ts")).syncShardedMemory(store, opts);
   if (store.profile.kind === "generation") return syncGenerationMemory(store, opts);
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });
