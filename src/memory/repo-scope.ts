@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { realPath, memoryGitEnv, memoryGitSync } from "./platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./policy.ts";
 import { memoryProjectKey } from "./project.ts";
@@ -159,6 +159,28 @@ export async function readRepoScope(root: string | undefined, policy: MemoryPoli
 
 /** Whether a repo log exists at all, by lstat only: the brief reserves header room for a section only when there is one. */
 export function repoLogPresent(root: string | undefined): boolean { return !!root && plainLog(root).kind !== "absent"; }
+
+/**
+ * Whether a `.amem` entry exists at or above `cwd`, by lstat only (no git, no read). The native hook asks this first, so a repository
+ * without a repo scope (almost all of them) costs it two or three lstat calls and never a git process.
+ */
+export function repoLogNearby(cwd: string): boolean {
+  try {
+    for (let dir = cwd, depth = 0; depth < 32; dir = dirname(dir), depth++) {
+      if (lstatSync(join(dir, REPO_DIR), { throwIfNoEntry: false })) return true;
+      if (dir === dirname(dir)) return false;
+    }
+  } catch { /* unreadable: no section */ }
+  return false;
+}
+
+/** `git check-ignore`: true when git would ignore the log, so the person is told before they wait for a file that never shows in `git status`. A tracked file is never reported (git shows its changes whatever a pattern says). */
+export function repoLogIgnored(root: string): boolean {
+  try {
+    const result = memoryGitSync(["-C", root, "check-ignore", "-q", `${REPO_DIR}/${REPO_LOG}`], { encoding: "utf8", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
+    return result.status === 0;
+  } catch { return false; }
+}
 
 /** `local.deny` and `pii.paths` of the repository's own agent-hub config, read as data (no agent-hub import). Anything that exists but is unreadable or malformed refuses. */
 export function repoPolicyOptions(root: string): { denyPaths: string[] } {

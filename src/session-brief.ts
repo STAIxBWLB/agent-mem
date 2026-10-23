@@ -10,7 +10,7 @@ import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
-import { boundRepoRoot, readRepoScope, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
+import { boundRepoRoot, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
 import type { View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
@@ -120,8 +120,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       ? (value: unknown) => policy.screen(value)
       : async (value: unknown) => { guard(); const permitted = await policy.screen(value); guard(); return permitted; };
     const coverage: BriefResult["coverage"] = { work: "complete", curated: "complete", capture: "complete" };
-    // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). ponytail: a native parent session skips it: resolving the root costs two git calls the hard deadline does not budget. Upgrade: pass the root from the host with the precomputed signature.
-    const repoRoot = options.nativeSession ? undefined : boundRepoRoot(cwd, base, project);
+    // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). A native parent session first asks by lstat alone whether a `.amem` exists at or above the cwd
+    // (a few syscalls, no git), so the two git calls that resolve the root are paid only by a repository that has a repo scope; the section's own deadline check (80 ms) still applies.
+    const repoRoot = options.nativeSession && !repoLogNearby(cwd) ? undefined : boundRepoRoot(cwd, base, project);
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};

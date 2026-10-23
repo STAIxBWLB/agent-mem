@@ -478,6 +478,57 @@ test("appendRepoLine itself refuses a symlinked or non-regular .amem and log.jso
   expect(() => appendRepoLine(asDir.repo, repoLine("into a directory"))).toThrow("not a regular file");
 });
 
+// ---- found while exercising the installed package
+
+test("the native hook's brief (nativeSession) includes the repo section when a .amem exists, and none when it does not or the repository is another project's", async () => {
+  const { processSignature } = await import("../src/memory/platform.ts");
+  const native = { signature: processSignature(process.pid)! };
+  const a = rig("https://github.com/o/a.git", "repo-a"), b = rig("https://github.com/o/b.git", "repo-b", a.dir);
+  process.env.AMEM_HOME = a.base;
+  const brief = (cwd: string, project: string) => sessionStartBrief({ cwd, base: a.base, project, nativeSession: native, timeRemaining: () => 2000 });
+  expect((await brief(a.repo, a.project)).coverage).not.toHaveProperty("repo");           // no .amem anywhere above: no section, no git call needed
+  writeLog(a, [repoLine("a native-session shared decision about quartz")]);
+  const withLog = await brief(a.repo, a.project);
+  expect(withLog.context).toContain("repo=complete"); expect(withLog.context).toContain("quartz");
+  const sub = join(a.repo, "src", "deep"); mkdirSync(sub, { recursive: true });
+  expect((await brief(sub, a.project)).context).toContain("quartz");                       // a subdirectory finds the root's file
+  const other = await brief(b.repo, b.project);                                             // AC3 on the native path
+  expect(other.context).not.toContain("quartz"); expect(other.coverage).not.toHaveProperty("repo");
+  expect((await brief(a.repo, b.project)).context).not.toContain("quartz");                 // project B started inside repository A
+});
+
+test("repoLogNearby is lstat-only: true for a .amem at or above the cwd (a symlink included, the reader refuses it later), false without one", async () => {
+  const { repoLogNearby } = await import("../src/memory/repo-scope.ts");
+  const r = rig(null); const deep = join(r.repo, "a", "b"); mkdirSync(deep, { recursive: true });
+  expect(repoLogNearby(deep)).toBe(false);
+  mkdirSync(join(r.repo, ".amem")); expect(repoLogNearby(deep)).toBe(true);
+  const s = rig(null, "linked"); symlinkSync(r.dir, join(s.repo, ".amem")); expect(repoLogNearby(s.repo)).toBe(true);
+});
+
+test("promoting into a repository that git ignores says so, because git status will never show the file; a tracked or unignored log gets no warning", async () => {
+  const r = rig(); writeFileSync(join(r.repo, ".gitignore"), ".amem/\n");
+  const first = await promote(r, r.note("we chose sqlite for the index"), "--confirm");
+  expect(first).toContain("WARNING: git ignores .amem/log.jsonl");
+  expect(Bun.spawnSync(["git", "-C", r.repo, "status", "--porcelain", "--", ".amem"]).stdout.toString()).toBe("");
+  const clean = rig("https://github.com/o/clean.git", "clean"); // a remote, so the injected "private" answer applies and --confirm alone writes
+  const second = await promote(clean, clean.note("we chose sqlite for the index"), "--confirm");
+  expect(second).toContain("appended"); expect(second).not.toContain("WARNING");
+});
+
+test("a git worktree of the repository (same project key) reads its own checkout of .amem, and concurrent promotions of different entries append intact lines", async () => {
+  const r = rig(); const ids = [1, 2, 3, 4, 5, 6].map(i => r.note(`concurrent decision number ${i}`));
+  const prefixes = await Promise.all(ids.map(async id => (JSON.parse((await promote(r, id)).split("\n")[1]!) as RepoLine).id.slice(0, 8)));
+  await Promise.all(ids.map((id, i) => promote(r, id, "--confirm", "--confirm-public", prefixes[i]!)));
+  const lines = r.log().trim().split("\n");
+  expect(lines).toHaveLength(6); for (const line of lines) expect(parseRepoLine(line)).toHaveProperty("view");
+  expect(new Set(lines.map(l => (JSON.parse(l) as RepoLine).id)).size).toBe(6);
+  git(r.repo, "-c", "user.email=a@b", "-c", "user.name=n", "add", "-A"); git(r.repo, "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "-m", "base");
+  const wt = join(r.dir, "wt"); git(r.repo, "worktree", "add", "-q", wt, "-b", "side");
+  expect((await runCli(["search", "concurrent"], { ...r.person, cwd: wt })).match(/repo:[a-f0-9]{8}/g)).toHaveLength(6);
+  rmSync(join(wt, ".amem", "log.jsonl"));
+  expect(await runCli(["search", "concurrent"], { ...r.person, cwd: wt })).not.toContain("repo scope (.amem/log.jsonl):");
+});
+
 test("planRepoPromotion asks no remote and writes nothing; the plan's line id is the hash of its content", async () => {
   const r = rig(); const store = new MemoryStore({ home: r.dir, deferPromotions: true });
   try {

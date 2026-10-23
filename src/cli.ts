@@ -27,7 +27,7 @@ import { usageReport, usageText } from "./memory/usage.ts";
 import { exportProject } from "./memory/project-export.ts";
 import { searchAllProjects, vaultCandidatesAll } from "./memory/cross-project.ts";
 import { requireShard } from "./memory/curated-read.ts";
-import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
+import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 
@@ -370,7 +370,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       if (typeof given !== "string" || given.length < 8 || !/^[a-f0-9]+$/.test(given) || !plan.line.id.startsWith(given)) throw new Error(`the repository is ${seen.state === "public" ? "public" : "not verified private"}: repo scope needs your confirmation of this entry: --confirm-public ${entryPrefix} (the first 8 characters of the id in the line above)`);
     }
     const written = appendRepoLine(root, plan.line);
-    return [...preview, `appended to ${written.path}. amem does not commit or push: review and commit it yourself.`].join("\n");
+    return [...preview, `appended to ${written.path}. amem does not commit or push: review and commit it yourself.`,
+      ...(repoLogIgnored(root) ? ["WARNING: git ignores .amem/log.jsonl here, so `git status` will not show it and it cannot be committed until you un-ignore it (a .gitignore or .git/info/exclude rule)."] : [])].join("\n");
   }
   if (sub === "show" && /^repo:/.test(parsed.positionals[0] ?? "")) {
     const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project), scoped = root ? repoReadPolicy(root) : undefined;
