@@ -120,7 +120,21 @@ test("stale owned cache publication temps cannot fill the cwd cache", () => {
     const file = join(dir, `.${i.toString(16).padStart(64, "0")}-${"a".repeat(24)}`);
     writeFileSync(file, "{}", { mode: 0o600 }); utimesSync(file, new Date(0), new Date(0));
   }
-  resolveHookProject(binding(f));
+  resolveHookProject({ ...binding(f), maintainCache: true });
   expect(readdirSync(dir)).toHaveLength(1);
   expect(readdirSync(dir)[0]).toEndWith(".json");
+});
+
+test("SessionStart publication defers stale-temp maintenance until a maintenance-enabled publish", async () => {
+  const f = fixture(); await f.seed();
+  const dir = join(f.base, "hook-project"); mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stale = join(dir, `.${"b".repeat(64)}-${"c".repeat(24)}`);
+  writeFileSync(stale, "{}", { mode: 0o600 }); utimesSync(stale, new Date(0), new Date(0));
+  const first = f.run("SessionStart");
+  expect(first.stdout.length).toBeGreaterThan(0);
+  expect(JSON.parse(first.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
+  expect(existsSync(stale)).toBe(true);
+  rmSync(join(dir, readdirSync(dir).find(name => name.endsWith(".json"))!));
+  resolveHookProject({ ...binding(f), maintainCache: true });
+  expect(existsSync(stale)).toBe(false);
 });

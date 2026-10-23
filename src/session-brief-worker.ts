@@ -47,7 +47,7 @@ if (import.meta.main) {
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!) ?? stop();
     let project: string;
-    try { project = resolveAlias(options.base!, resolveHookProject({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); }
+    try { project = resolveAlias(options.base!, resolveHookProject({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining, maintainCache: event !== "SessionStart" })); }
     catch {
       quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
       project = stop();

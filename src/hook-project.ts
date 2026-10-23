@@ -28,24 +28,26 @@ function read(file: string): Binding | undefined {
   } catch { return undefined; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
-function publish(dir: string, file: string, value: Binding): void {
+function publish(dir: string, file: string, value: Binding, maintain: boolean): void {
   let temporary: string | undefined;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stat = lstatSync(dir); if (!stat.isDirectory() || stat.isSymbolicLink()) return;
     chmodSync(dir, 0o700);
     // Only old, owned publication names are eligible; a recent writer keeps its temp.
-    const scan = opendirSync(dir);
-    try {
-      for (let count = 0; count < CACHE_CWDS * 2; count++) {
-        const entry = scan.readSync(); if (!entry) break;
-        if (!/^\.[a-f0-9]{64}-[a-f0-9]{24}$/.test(entry.name)) continue;
-        const stale = join(dir, entry.name), before = lstatSync(stale, { throwIfNoEntry: false });
-        if (!before?.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || Date.now() - before.mtimeMs < 60_000) continue;
-        const after = lstatSync(stale, { throwIfNoEntry: false });
-        if (after?.dev === before.dev && after.ino === before.ino && after.size === before.size && after.mtimeMs === before.mtimeMs) rmSync(stale);
-      }
-    } finally { scan.closeSync(); }
+    if (maintain) {
+      const scan = opendirSync(dir);
+      try {
+        for (let count = 0; count < CACHE_CWDS * 2; count++) {
+          const entry = scan.readSync(); if (!entry) break;
+          if (!/^\.[a-f0-9]{64}-[a-f0-9]{24}$/.test(entry.name)) continue;
+          const stale = join(dir, entry.name), before = lstatSync(stale, { throwIfNoEntry: false });
+          if (!before?.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || Date.now() - before.mtimeMs < 60_000) continue;
+          const after = lstatSync(stale, { throwIfNoEntry: false });
+          if (after?.dev === before.dev && after.ino === before.ino && after.size === before.size && after.mtimeMs === before.mtimeMs) rmSync(stale);
+        }
+      } finally { scan.closeSync(); }
+    }
     // ponytail: 128 cached cwd identities, one bounded derived value each. New cwd misses
     // still resolve natively; a future cache policy may retire old entries without touching capture.
     if (!lstatSync(file, { throwIfNoEntry: false })) {
@@ -61,7 +63,7 @@ function publish(dir: string, file: string, value: Binding): void {
 }
 /** Cache only a successful shared native resolver result, before alias resolution. The current
  * semantic scope and executable revision must still match; no filesystem guess replaces Git. */
-export function resolveHookProject(options: { cwd: string; base: string; scope: string; timeRemaining: () => number }): string {
+export function resolveHookProject(options: { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean }): string {
   const remaining = options.timeRemaining();
   if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("project deadline");
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), binary = hookGitBinary();
@@ -72,13 +74,14 @@ export function resolveHookProject(options: { cwd: string; base: string; scope: 
   const file = join(dir, `${hash(cwd)}.json`);
   const cached = !named || named.isDirectory() && !named.isSymbolicLink() && !(named.mode & 0o077) ? read(file) : undefined;
   if (cached?.cwd === cwd && cached.scope === options.scope && validity && cached.validity === validity && cached.binary === binary.revision && cacheableLocal(cwd, cached.project)) {
-    if (hookCaptureScope(cwd, base) !== options.scope || hookCaptureScope(cwd, base, true, prefixConfig) !== validity) throw new Error("project scope changed");
+    // The stronger binding includes every semantic field; no duplicate semantic scan is needed here.
+    if (hookCaptureScope(cwd, base, true, prefixConfig) !== validity) throw new Error("project scope changed");
     return cached.project;
   }
   const project = memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: hookGit(options.timeRemaining, binary.file) });
   if (hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
   if (validity && hookCaptureScope(cwd, base, true, prefixConfig) === validity && cacheableLocal(cwd, project))
-    publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project });
+    publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project }, options.maintainCache === true);
   return project;
 }
 

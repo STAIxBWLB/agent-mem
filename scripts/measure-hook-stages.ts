@@ -23,6 +23,8 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('await emit({ ...result, captured','brief-done');
  }else if(path.endsWith('/hook-project.ts')){
   mark('const cwd = realPath','git-path-start');mark('if (!options.scope','git-path-done');
+  mark('const validity = hookCaptureScope','project-validity-start');mark('const dir = join(base','project-validity-done');
+  mark('const scan = opendirSync(dir);','cache-maintenance-start');mark('const text = JSON.stringify(value);','cache-publication-start');
   mark('return cached.project;','project-cache-hit');mark('const project = memoryProjectKey','project-cache-miss');
  }else{mark('const work = new WorkListStore','work-store-start');mark('const views = await work.read','work-store-open');}
  return {loader:'ts',contents};});}});
@@ -45,6 +47,23 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length, knownWork, completedMs,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
   }
+  // Reproduce the full foreign tier separately from the cold/plain budget; preparation
+  // is outside the measured hook, and these numeric stages diagnose its real deadline.
+  const full = hookFixture(), foreign = hookFixture(), oldHome = process.env.HOME;
+  try {
+    await full.seed(); process.env.HOME = full.env.HOME;
+    const { stageHookCapture } = await import("../src/hook-spool.ts");
+    for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `stage diagnostic ${i}` }, { cwd: foreign.cwd, base: full.base });
+    writeFileSync(trace, "", { mode: 0o600 });
+    const started = performance.timeOrigin + performance.now();
+    const result = full.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
+    const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
+    let context: unknown; try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Missing output is the diagnostic. */ }
+    const stopped = [...rows].reverse().find(row => row.child && row.stage === "stop");
+    console.log(JSON.stringify({ diagnostic: "full-foreign-session-stages", exit: result.exitCode, outputBytes: result.stdout.length,
+      knownWork: typeof context === "string" && context.includes(workMarker), completedMs: stopped ? stopped.at - started : null,
+      stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
+  } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; full.close(); foreign.close(); }
   if (!cold?.knownWork || cold.ms === null || cold.ms >= 140)
     throw new Error(`cold SessionStart did not return known work before 140 ms: knownWork=${cold?.knownWork}, completedMs=${cold?.ms}`);
 } finally { f.close(); }
