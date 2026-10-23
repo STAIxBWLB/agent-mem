@@ -132,7 +132,7 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
     // system locations conservatively too; unsupported identity-affecting configuration refuses resolution.
     const configuration: [string, string][] = [];
     for (const file of ["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"]) configuration.push(...identityConfig(content(file)));
-    if (process.env.HOME) for (const file of [join(process.env.HOME, ".gitconfig"), join(process.env.HOME, ".config", "git", "config")]) configuration.push(...identityConfig(content(file)));
+    if (process.env.HOME) for (const file of [join(process.env.HOME, ".config", "git", "config"), join(process.env.HOME, ".gitconfig")]) configuration.push(...identityConfig(content(file)));
     let found = false, reachedRoot = false;
     for (let folder = cwd, depth = 0; depth < 32; depth++) {
       const git = join(folder, ".git"), stat = lstatSync(git, { throwIfNoEntry: false });

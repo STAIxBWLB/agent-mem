@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renam
 import { join } from "node:path";
 import { drainHookCaptures, hookCapturePending, hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [], originalHome = process.env.HOME;
@@ -309,5 +310,34 @@ test("invalid syntax in an unused Git value leaves project scope unknown", () =>
     const native = Bun.spawnSync(["git", "-C", f.cwd, "config", "--get", "alias.broken"], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
     expect(native.exitCode).not.toBe(0);
     expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  }
+});
+
+
+test("the semantic stamp follows Git precedence when both global files decide the worktree", async () => {
+  const f = fixture(), xdg = join(f.env.HOME!, ".config"), oldXdg = process.env.XDG_CONFIG_HOME,
+    oldGlobal = process.env.GIT_CONFIG_GLOBAL, oldSystem = process.env.GIT_CONFIG_SYSTEM;
+  mkdirSync(join(xdg, "git"), { recursive: true });
+  const a = join(f.root, "worktree-A"), b = join(f.root, "worktree-B"), c = join(f.root, "worktree-C");
+  for (const dir of [a, b, c]) mkdirSync(dir);
+  writeFileSync(join(xdg, "git", "config"), `[core]\n worktree = ${b}\n`);
+  writeFileSync(join(f.env.HOME!, ".gitconfig"), `[core]\n worktree = ${a}\n`);
+  process.env.XDG_CONFIG_HOME = xdg; delete process.env.GIT_CONFIG_GLOBAL; process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+  try {
+    const keyA = memoryProjectKey(f.cwd, { repositoryIsolation: true }), stampA = hookCaptureScope(f.cwd, f.base);
+    expect(keyA.startsWith("worktree-A@")).toBe(true); expect(stampA).toBeDefined();
+    const pending = await stageHookCapture("PostToolUse", { prompt: "old global worktree marker" }, f.options);
+    expect(pending).toBeDefined();
+    writeFileSync(join(f.env.HOME!, ".gitconfig"), `[core]\n worktree = ${c}\n`);
+    const keyC = memoryProjectKey(f.cwd, { repositoryIsolation: true });
+    expect(keyC.startsWith("worktree-C@")).toBe(true); expect(keyC).not.toBe(keyA);
+    expect(hookCaptureScope(f.cwd, f.base)).not.toBe(stampA);
+    let appended = false;
+    expect((await drainHookCaptures({ ...f.options, project: keyC }, () => { appended = true; return { id: 1 }; })).captured).toEqual([]);
+    expect(appended).toBe(false);
+  } finally {
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg;
+    if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal;
+    if (oldSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM; else process.env.GIT_CONFIG_SYSTEM = oldSystem;
   }
 });
