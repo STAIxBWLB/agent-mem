@@ -58,7 +58,7 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
     if (result.stdout.length > 8192) throw new Error("SessionStart output exceeded 8 KiB");
     if (!result.stdout.length) throw new Error(`SessionStart empty output: wall=${wallMs}, metric=${metric.wallMs}, stderrBytes=${result.stderr.length}`);
     const output = JSON.parse(result.stdout.toString()), context = output.hookSpecificOutput?.additionalContext;
-    if (output.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof context !== "string" || !context.includes(workMarker) || !/coverage|complete|partial/i.test(context) || Buffer.byteLength(context) > 1200) throw new Error("SessionStart fixture lacked bounded known work and coverage");
+    if (output.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof context !== "string" || !context.includes(workMarker) || !/coverage|complete|partial/i.test(context) || Buffer.byteLength(context) > 1200) throw new Error(`SessionStart fixture lacked bounded known work and coverage: wall=${wallMs}, metric=${metric.wallMs}, context=${JSON.stringify(context)}`);
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
   }
   // Production hook metrics include parent peak + brief child peak. CLI rusage independently covers the executable.
