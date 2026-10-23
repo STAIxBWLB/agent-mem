@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -186,4 +186,38 @@ test("vault candidates skip archived and forgotten projects and honor the limit 
   const all = await vaultCandidatesAll(base, { policy: createStandalonePolicy(), limit: 2 });
   expect(all.projects.map(p => p.project)).toEqual(["github.com/o/a"]);
   expect(all.projects[0]!.candidates).toHaveLength(2);
+});
+
+test("the destination is claimed with O_EXCL before anything is read: a file that appears while rows are being screened is never replaced or truncated, and a failed export removes only its own partial file", async () => {
+  const { dir, base } = home();
+  capture(dir, "github.com/o/a", ["alpha one", "alpha two"]);
+  const target = out(dir, "claimed");
+  // the first screened row proves the export already holds its file: a second exporter to the same path is refused, and the first keeps working
+  let second: unknown;
+  const policy = createStandalonePolicy({ host: { screen: async () => {
+    if (second === undefined) second = await exportProject(base, "github.com/o/a", { to: target }).then(() => "wrote", error => (error as Error).message);
+    return true;
+  } } });
+  const result = await exportProject(base, "github.com/o/a", { to: target, policy });
+  expect(second).toMatch(/exists/);
+  expect(JSON.parse(readFileSync(result.file, "utf8")).counts.capture).toBe(2);
+  // a failure mid-write removes the partial file it created, and only that one
+  const broken = out(dir, "broken"), keep = out(dir, "keep"); writeFileSync(keep, "untouched");
+  let calls = 0;
+  const failing = { screen: async () => { if (++calls === 2) throw new Error("policy failed"); return true; } };
+  await expect(exportProject(base, "github.com/o/a", { to: broken, policy: failing })).rejects.toThrow(/policy failed/);
+  expect(existsSync(broken)).toBe(false);
+  expect(readFileSync(keep, "utf8")).toBe("untouched");
+});
+
+test("the export's own secret screen holds with a host policy that waves everything through", async () => {
+  const { dir, base } = home();
+  capture(dir, "github.com/o/a", ["fine row", "second row"]);
+  const db = new Database(join(shardMachineDir(base, "github.com/o/a", machineId(base).id), "capture.db"));
+  db.query("UPDATE rows SET excerpt = ? WHERE id = (SELECT MAX(id) FROM rows)").run("password: hunter2hunter2hunter2"); db.close();
+  // a permissive host (a different standalone policy object, as a host passes) must not widen what leaves the home
+  const permissive = { screen: async () => true };
+  const result = await exportProject(base, "github.com/o/a", { to: out(dir), policy: permissive });
+  expect(readFileSync(result.file, "utf8")).not.toContain("hunter2hunter2hunter2");
+  expect(result.withheld).toBe(1);
 });
