@@ -7,10 +7,12 @@ const f = hookFixture(), preload = join(f.root, "hook-stages.ts"), trace = join(
 const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
 try {
   await f.seed();
-  // Both preloads and each append count toward the real unchanged deadline. No payload/path is logged.
+  // Preload/observation still count toward the unchanged deadline; buffer bounded numeric marks so
+  // synchronous trace-file I/O does not intervene at every measured stage. Flush once at CLI exit.
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 const child=process.argv[1]===${JSON.stringify(worker)},file=${JSON.stringify(trace)};
-const note=(stage)=>appendFileSync(file,JSON.stringify({child,stage,at:performance.timeOrigin+performance.now()})+'\\n');
+const samples=[];const note=(stage)=>{if(samples.length>=256)throw new Error('diagnostic sample bound');samples.push({child,stage,at:performance.timeOrigin+performance.now()});};
+process.on('exit',()=>appendFileSync(file,samples.map(row=>JSON.stringify(row)).join('\\n')+'\\n'));
 globalThis.__amemHookStage=note;
 Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-worker|hook-project|session-brief|hooks|hook-native)\\.ts$|[/]bin[/]amem\\.js$/},({path})=>{
  let contents=readFileSync(path,'utf8'); const mark=(needle,name)=>{if(contents.split(needle).length!==2)throw new Error('diagnostic anchor changed');contents=contents.replace(needle,"globalThis.__amemHookStage('"+name+"');"+needle);};
@@ -42,6 +44,7 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
  }else if(path.endsWith('/hook-project.ts')){
   mark('const cwd = realPath','git-path-start');mark('if (!options.scope','git-path-done');
   mark('const validity = hookCaptureScope','project-validity-start');mark('const dir = join(base','project-validity-done');
+  mark('const currentValidity = hookCaptureScope','project-completion-start');mark('if (currentValidity !== validity','project-completion-read-done');
   mark('const scan = opendirSync(dir);','cache-maintenance-start');mark('const text = JSON.stringify(value);','cache-publication-start');
   mark('return cached.project;','project-cache-hit');mark('const project = memoryProjectKey','project-cache-miss');
  }else{mark('const work = new WorkListStore','work-store-start');mark('const views = await work.read','work-store-open');}

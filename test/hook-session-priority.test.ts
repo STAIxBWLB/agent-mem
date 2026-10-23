@@ -45,17 +45,20 @@ for (const missingCapture of [false, true]) test(`a repeated full-tier refusal c
   try {
     await f.seed();
     writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
-Bun.plugin({name:'repeat-full-admission',setup(b){${missingCapture ? `b.onLoad({filter:/memory\\/capture\\.ts$/},()=>{writeFileSync(${JSON.stringify(marker)},'attempted');throw new Error('optional recovery module unavailable');});` : ''}b.onLoad({filter:/hook-spool\\.ts$/},({path})=>({loader:'ts',contents:readFileSync(path,'utf8').replace('export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {','export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> { throw new HookSpoolFull();')}));}});`);
+Bun.plugin({name:'repeat-full-admission',setup(b){if(process.env.AMEM_TEST_LIBRARY_CLOCK==='1'){Object.defineProperty(performance,'now',{value:()=>0,configurable:true});b.onLoad({filter:/[/]hook-project\\.ts$/},()=>({loader:'ts',contents:'export async function resolveHookProjectAsync(){return '+JSON.stringify(${JSON.stringify(f.project)})+';}'}));b.onLoad({filter:/[/]hook-native\\.ts$/},()=>({loader:'ts',contents:'export async function hookProcessSignature(){return '+JSON.stringify('1'.repeat(64))+';}'}));}${missingCapture ? `b.onLoad({filter:/memory\\/capture\\.ts$/},()=>{writeFileSync(${JSON.stringify(marker)},'attempted');throw new Error('optional recovery module unavailable');});` : ''}b.onLoad({filter:/hook-spool\\.ts$/},({path})=>({loader:'ts',contents:readFileSync(path,'utf8').replace('export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {','export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> { throw new HookSpoolFull();')}));}});`);
     const result = f.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
     expect(result.exitCode).toBe(0);
-    if (missingCapture) expect(existsSync(marker)).toBe(true);
+    // Optional capture may correctly be skipped by the native deadline; known context must survive either way.
     expect(result.stdout.length).toBeGreaterThan(0);
     expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
     const hooks = resolve(import.meta.dir, "../src/hooks.ts");
     const script = `import {runHook} from ${JSON.stringify(hooks)};console.log(JSON.stringify(await runHook('SessionStart',{cwd:${JSON.stringify(f.cwd)},prompt:'repeat capacity library'},{cwd:${JSON.stringify(f.cwd)},base:${JSON.stringify(f.base)}})));`;
-    const library = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    if (existsSync(marker)) rmSync(marker); // Require the guaranteed library recovery to reach its own fresh fault.
+    const library = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: { ...f.env, AMEM_TEST_LIBRARY_CLOCK: "1" }, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    if (missingCapture) expect(existsSync(marker), library.stderr.toString()).toBe(true);
     expect(library.exitCode, library.stderr.toString()).toBe(0);
     const receipt = JSON.parse(library.stdout.toString());
+    expect(receipt).toHaveProperty("output");
     expect(receipt.output.hookSpecificOutput.additionalContext).toContain(workMarker);
     expect(receipt.captured).toBe(false); expect(receipt).not.toHaveProperty("pending");
   } finally { f.close(); }

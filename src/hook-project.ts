@@ -63,11 +63,15 @@ function publish(dir: string, file: string, value: Binding, maintain: boolean): 
   } catch { /* Derived cache I/O never changes a successfully resolved identity. */ }
   finally { if (temporary) try { rmSync(temporary, { force: true }); } catch { /* Cache cleanup stays advisory too. */ } }
 }
-/** Cache only a successful shared native resolver result, before alias resolution. The current
- * semantic scope and executable revision must still match; no filesystem guess replaces Git. */
-export function resolveHookProject(options: { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean; gitRead?: ProjectGitRead; assertComplete?: () => void; env?: NodeJS.ProcessEnv }): string {
-  const remaining = options.timeRemaining();
-  if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("project deadline");
+interface ResolverOptions { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean; gitRead?: ProjectGitRead; assertComplete?: () => void; env?: NodeJS.ProcessEnv }
+
+/** Prepare filesystem/cache binding once; suspended native reads replay only the shared resolver. */
+function prepareHookProject(options: ResolverOptions) {
+  const checkDeadline = () => {
+    const remaining = options.timeRemaining();
+    if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("project deadline");
+  };
+  checkDeadline();
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), binary = hookGitBinary(options.env);
   if (!options.scope || hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
   const prefixConfig = join(dirname(dirname(binary.file)), "etc", "gitconfig");
@@ -75,17 +79,44 @@ export function resolveHookProject(options: { cwd: string; base: string; scope: 
   const dir = join(base, "hook-project"), named = lstatSync(dir, { throwIfNoEntry: false });
   const file = join(dir, `${hash(cwd)}.json`);
   const cached = !named || named.isDirectory() && !named.isSymbolicLink() && !(named.mode & 0o077) ? read(file) : undefined;
-  if (cached?.cwd === cwd && cached.scope === options.scope && validity && cached.validity === validity && cached.binary === binary.revision && cacheableLocal(cwd, cached.project)) {
-    // The stronger binding includes every semantic field; no duplicate semantic scan is needed here.
-    if (hookCaptureScope(cwd, base, true, prefixConfig) !== validity) throw new Error("project scope changed");
-    return cached.project;
-  }
-  const project = memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: options.gitRead ?? hookGit(options.timeRemaining, binary.file) });
-  options.assertComplete?.();
-  if (hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
-  if (validity && hookCaptureScope(cwd, base, true, prefixConfig) === validity && cacheableLocal(cwd, project))
-    publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project }, options.maintainCache === true);
-  return project;
+  const hit = cached?.cwd === cwd && cached.scope === options.scope && validity && cached.validity === validity && cached.binary === binary.revision && cacheableLocal(cwd, cached.project);
+  const verifyBinary = () => {
+    checkDeadline();
+    const currentBinary = hookGitBinary(options.env);
+    if (currentBinary.file !== binary.file || currentBinary.revision !== binary.revision) throw new Error("project binary changed");
+    checkDeadline();
+  };
+  const verify = () => {
+    verifyBinary();
+    // A known strong binding includes every semantic field. Only the uncached,
+    // unknown-validity case also needs its independent semantic scope check.
+    const currentValidity = hookCaptureScope(cwd, base, true, prefixConfig);
+    if (currentValidity !== validity || !validity && hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
+    checkDeadline();
+  };
+  return { binary, verifyBinary, resolve(gitRead: ProjectGitRead, assertComplete?: () => void): string {
+    checkDeadline();
+    if (hit && cached) {
+      assertComplete?.(); verify();
+      return cached.project;
+    }
+    const project = memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead });
+    // The synchronous resolver can catch an unknown native read internally. Fence that
+    // suspended pass before any completion checks, cache publication or returned key.
+    assertComplete?.(); verify();
+    if (validity && cacheableLocal(cwd, project)) {
+      checkDeadline();
+      publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project }, options.maintainCache === true);
+    }
+    checkDeadline();
+    return project;
+  } };
+}
+
+/** Cache only a successful shared native resolver result, before alias resolution. */
+export function resolveHookProject(options: ResolverOptions): string {
+  const prepared = prepareHookProject(options);
+  return prepared.resolve(options.gitRead ?? hookGit(options.timeRemaining, prepared.binary.file), options.assertComplete);
 }
 
 /** A local key's superproject chain depends on outer Git indexes. Cache only ordinary
@@ -109,20 +140,22 @@ function cacheableLocal(cwd: string, project: string): boolean {
 export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope: string; timeRemaining: () => number }, usage: HookNativeUsage): Promise<string> {
   const reads = new Map<string, ReturnType<ProjectGitRead>>();
   const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: options.base };
+  const prepared = prepareHookProject({ ...options, env });
   const suspended = new Error("native identity suspended");
   for (let count = 0; count < 64; count++) {
     let needed: { key: string; args: string[] } | undefined;
     let result: string | undefined, failure: unknown;
     try {
-      result = resolveHookProject({ ...options, env, gitRead: (args) => {
+      result = prepared.resolve((args) => {
         const key = JSON.stringify(args);
         const value = reads.get(key); if (value) return value;
         needed ??= { key, args }; throw suspended;
-      }, assertComplete: () => { if (needed) throw suspended; } });
+      }, () => { if (needed) throw suspended; });
     } catch (error) { failure = error; }
     if (!needed) { if (failure) throw failure; if (result !== undefined) return result; throw suspended; }
     const query = needed as { key: string; args: string[] };
-    const argv = memoryGitArgv(query.args); argv[0] = hookGitBinary(env).file;
+    const argv = memoryGitArgv(query.args); argv[0] = prepared.binary.file;
+    prepared.verifyBinary(); // No awaited native read may execute a replaced binary.
     const value = await hookNative(argv, memoryGitEnv(env, { repositoryIsolation: true }), options.timeRemaining, usage);
     reads.set(query.key, value);
   }
