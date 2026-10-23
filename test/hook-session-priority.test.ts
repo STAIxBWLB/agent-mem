@@ -64,7 +64,7 @@ Bun.plugin({name:'repeat-full-admission',setup(b){if(process.env.AMEM_TEST_LIBRA
   } finally { f.close(); }
 });
 
-test("with an available recovery slice a full tier progresses before deterministic late brief work", async () => {
+test("SessionStart defers full-tier replay until a following hook despite available recovery time", async () => {
   const f = hookFixture(), preload = join(f.root, "late-brief.ts"), marker = join(f.root, "late-brief-observed"), home = process.env.HOME;
   try {
     await f.seed(); process.env.HOME = f.env.HOME;
@@ -81,6 +81,9 @@ Bun.plugin({name:'late-brief-budget',setup(b){b.onLoad({filter:/[/]hook-project\
     const result = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(existsSync(marker)).toBe(true);
     expect(JSON.parse(result.stdout.toString()).output.hookSpecificOutput.additionalContext).toContain(workMarker);
+    expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog "))).toHaveLength(0);
+    const replay = f.runFunctional("PostToolUse", { prompt: "following hook owns deferred replay" });
+    expect(replay.exitCode, replay.stderr.toString()).toBe(0);
     expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog ")).length).toBeGreaterThan(0);
   } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; f.close(); }
 });

@@ -36,8 +36,9 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     while ([...nativePids, ...groups].some(alive) && performance.now() < until) await Bun.sleep(10);
     check(![...nativePids, ...groups].some(alive), "owned timeout descendant or leader survived the exit barrier");
     const spool = join(f.base, "hook-spool");
-    const retained = readdirSync(spool).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
-      .map(name => ({ name: name.split(".draining-")[0]!, value: JSON.parse(readFileSync(join(spool, name), "utf8")) }));
+    const retained = [spool, join(spool, ".capacity")].flatMap(dir => (existsSync(dir) ? readdirSync(dir) : [])
+      .filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
+      .map(name => ({ name: name.split(".draining-")[0]!, value: JSON.parse(readFileSync(join(dir, name), "utf8")) })));
     const pending = retained.filter(row => row.value.capture?.event === event && row.value.capture?.excerpt === payload.prompt);
     check(pending.length === 1 && hookCapturePending(f.base, pending[0]!.name), "timeout capture was not retained exactly once");
     check(!f.rows().some(row => row.excerpt === payload.prompt), "blocked command unexpectedly committed capture");

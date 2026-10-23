@@ -136,7 +136,8 @@ for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional $
   const traces = [result.stderr.toString()];
   const codes = traces[0]!.trim().split("\n").map(line => JSON.parse(line) as number[]);
   expect(codes.every(row => Array.isArray(row) && row.every(Number.isFinite)), traces[0]).toBe(true);
-  expect(codes.some(row => row[0] === 25), traces[0]).toBe(true);
+  expect(codes.some(row => row[0] === 25), traces[0]).toBe(event !== "SessionStart");
+  expect(codes.some(row => row[0] === 27), traces[0]).toBe(true);
   let rows = f.rows(), pending = f.pending();
   const retained = rows.filter(row => row.excerpt === accepted.at(-1)), held = pending.filter(row => row.value.capture.excerpt === accepted.at(-1));
   expect(Math.max(retained.length, held.length), traces.join("\n")).toBe(1);

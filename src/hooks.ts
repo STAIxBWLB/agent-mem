@@ -4,7 +4,7 @@ import { hookProcessSignature } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
-import { stageHookCapture, hookCaptureScope, drainHookCaptures, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
+import { stageHookCapture, hookCaptureScope, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
@@ -16,7 +16,7 @@ const HANDLER_MS = 140;
 // A timed-out child must be reaped and metrics flushed inside the unchanged handler/R2 budgets.
 // ponytail: reserve measured native teardown variance; an asynchronous hard-deadline transport
 // through storage/cleanup is the upgrade, not a longer external deadline.
-const WORKER_CLEANUP_MS = 25, FULL_TIER_BRIEF_RESERVE_MS = 40;
+const WORKER_CLEANUP_MS = 25;
 /** Programmatic host-only timing port. Native CLI registration never supplies this object. */
 export interface HookHostPorts { deadlineMs?: number }
 function handlerMs(host?: HookHostPorts): number {
@@ -118,7 +118,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
  * only native metadata uses an owned, deadline-reaped shell supervisor. */
 async function sessionInParent(input: unknown, options: HookOptions, base: string, deadline: number) {
   let pending: PendingHookCapture | undefined, full = false;
-  try { pending = await stageHookCapture("SessionStart", input, { ...options, base, deferAtCapacity: true }); full = pending?.deferred === true; }
+  try { pending = await stageHookCapture("SessionStart", input, { ...options, base, deferAtCapacity: true }); }
   catch (error) { if (!(error instanceof HookSpoolFull)) throw error; full = true; }
   if (!pending && !full) return undefined;
   const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);
@@ -144,22 +144,8 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     const signature = owner.value;
     const { sessionStartBrief } = briefModule.value;
     if (remaining() <= 0) return result;
-    // Make bounded capture progress before optional brief work can consume its slice.
-    // The reserve belongs to known work/serialization; recovery failure never refuses it.
-    if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5) {
-      let store: import("./memory/capture.ts").CaptureStore | undefined;
-      try {
-        const { CaptureStore } = await import("./memory/capture.ts");
-        const drained = await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - FULL_TIER_BRIEF_RESERVE_MS }, (value, receipt) => {
-          store ??= new CaptureStore({ memoryDir: base, project, busyTimeoutMs: 0 });
-          return store.append(value, { receipt });
-        });
-        result.captured = !!pending && drained.captured.includes(pending.name);
-      } catch { /* Optional capture recovery never discards completed context. */ }
-      finally { store?.close(); }
-      try { if (!pending) pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base, deferAtCapacity: true }); }
-      catch (error) { if (!(error instanceof HookSpoolFull)) throw error; }
-    }
+    // The current SessionStart is durable in its bounded reserve. All replay and
+    // retirement belong to a later non-SessionStart hook, never this brief deadline.
     const losses = captureDropSummary(base);
     if (!pending) losses.spool_full = (losses.spool_full ?? 0) + 1;
     const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");

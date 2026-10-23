@@ -22,9 +22,11 @@ test("default active admission remains capped while explicit reserve retains the
   const f = fixture(); await full(f);
   await expect(stageHookCapture("PostToolUse", { prompt: "ordinary full refusal" }, options(f))).rejects.toThrow("hook storage full");
   const admission = stageHookCapture("SessionStart", { prompt: "reserved current" }, { ...options(f), deferAtCapacity: true });
-  await expect(admission).resolves.toMatchObject({ deferred: true, backlog: true });
+  await expect(admission).resolves.toMatchObject({ deferred: true });
   const first = await admission;
-  expect(first).toMatchObject({ deferred: true, backlog: true }); expect(hookCapturePending(f.base, first!.name)).toBe(true);
+  expect(first).toMatchObject({ deferred: true }); expect(hookCapturePending(f.base, first!.name)).toBe(true);
+  // SessionStart does not inspect the active backlog, so it cannot report its presence.
+  expect(first).not.toHaveProperty("backlog");
   expect(names(active(f))).toHaveLength(256); expect(names(capacity(f))).toHaveLength(1);
   expect(statSync(capacity(f)).mode & 0o777).toBe(0o700);
   expect(statSync(join(capacity(f), first!.name)).mode & 0o777).toBe(0o600);

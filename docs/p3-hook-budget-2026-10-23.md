@@ -2,7 +2,17 @@
 
 Status: **acceptance remains open**. The previous head `dec75e009c40b84c7858e581313e099742029d4c` passed both OSes in [run 39949588047](https://github.com/STAIxBWLB/agent-mem/actions/runs/39949588047), but independent source review found pending-capture loss and worker-watchdog gaps. This candidate fixes those findings. Its exact head still needs two consecutive green runs on both GitHub runners and the held source verdict. Local/container results are not runner acceptance.
 
-## Current SessionStart native-query candidate
+## Current reserve-only SessionStart candidate
+
+At `69fd1bdba923777e961d86b9919266fab7dd6929`, Ubuntu passes but macOS fails the full-foreign cold stage at 160.88 ms in [run 39963670554](https://github.com/STAIxBWLB/agent-mem/actions/runs/39963670554). The trace spends 11.82 ms in admission, completes native identity at 119.67 ms, and finishes work at 157.57 ms. The replay slice is skipped, so removing replay alone cannot explain or fix the overrun.
+
+SessionStart now publishes only into the existing 32-file/256 KiB reserve and inspects at most its 32 metadata entries. It never inventories the active 256-file tier, retires records or drains on this critical path. All maintenance moves to non-SessionStart, including reserve expiry when active admission has space. `ponytail:` this bounded reserve scan is not O(1); an atomic slot-reservation protocol is the upgrade. A full reserve causes an explicitly counted SessionStart drop, never removal of accepted foreign data.
+
+The remaining work-stage cost is reduced without guessing a project or releasing unconfirmed rows: fixed native policy screens every raw row, view and display value, then section/final binding guards validate all buffered output before publication. Host-callback and standalone guards remain unchanged. Work-list refresh no longer UPSERTs an identical segment head, eliminating a needless SQLite/WAL commit on unchanged reads while preserving full-prefix hashes, mutation locks, replay backfill and rebuild parity. An external SQLite data-version regression fails against the old unconditional write. New native policy tests prove known work is screened and a binding change during screening discards all buffered rows.
+
+Pinned Bun 1.4.2, isolated homes, local Mac: p95 / combined MB plain 43.55 / 83.52, contended 39.06 / 69.38, SessionStart 41.91 / 45.52, drain 44.56 / 68.63. Cold attempt 0 returns known work at 57.54 ms; full-foreign at 54.11 ms. Normal R1 observes 76 invocations with zero leftovers. Actual timeout paths: SessionStart 131.65 ms (three observed groups), PreToolUse 118.09 ms (one group), zero observed children. The budget's pending inventory now checks both replayable tiers with the same duplicate/no-loss assertions. These are local observations, not runner acceptance; unchanged 140/150/100 limits and two consecutive exact-head green jobs on both GitHub runners remain required.
+
+## Prior SessionStart native-query candidate
 
 The preceding B/C/E head `be9e0e5a200dbd33bad7786d1fea58b4e5a424de` passes functional tests but fails the actual budget step on both GitHub runners in [run 39960461919](https://github.com/STAIxBWLB/agent-mem/actions/runs/39960461919). macOS reports a 160.02 ms actual timeout and a 155.43 ms full-foreign context; Ubuntu reports a 171.60 ms context without known work. Those failures remain acceptance failures. The macOS cold trace measures scope at 0.27 ms and cache validity at 0.29 ms, while native identity occupies about 85 ms: origin finishes before a second metadata supervisor starts. The full-foreign trace shows the same serial cost, about 72 ms. These observations do not establish include parsing as the bottleneck.
 

@@ -27,9 +27,8 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('  const remaining = () => deadline','parent-scope-done');
   mark('    const metadata = await Promise.allSettled(','parent-project-start');
   mark('    const project = resolveAlias(base, identity.value);','parent-project-done');
-  mark('    const losses = captureDropSummary(base);','parent-full-recovery-done');
+  mark('    const losses = captureDropSummary(base);','parent-recovery-deferred');
   mark('    const brief = await sessionStartBrief','parent-brief-start');
-  mark('    if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
   mark('    result.pending = !!pending && !result.captured;','parent-brief-done');
   mark('    result.context = joinedContext(','parent-context-ready');
  }else if(path.endsWith('/hook-native.ts')){
@@ -47,7 +46,7 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('const currentValidity = hookCaptureScope','project-completion-start');mark('if (currentValidity !== validity','project-completion-read-done');
   mark('const scan = opendirSync(dir);','cache-maintenance-start');mark('const text = JSON.stringify(value);','cache-publication-start');
   mark('return cached.project;','project-cache-hit');mark('const project = memoryProjectKey','project-cache-miss');
- }else{mark('const work = new WorkListStore','work-store-start');mark('const views = await work.read','work-store-open');}
+ }else{mark('const work = new WorkListStore','work-store-start');mark('const views = await work.read','work-store-open');mark('        let selected = 0;','work-read-done');mark('    for (const close of closers.reverse())','brief-cleanup-start');}
  return {loader:path.endsWith('.js')?'js':'ts',contents};});}});
 note('loaded');const spawn=Bun.spawn.bind(Bun),sync=Bun.spawnSync.bind(Bun),kill=process.kill.bind(process);
 Bun.spawn=(argv,options)=>{if(!Array.isArray(argv)||argv[2]!==${JSON.stringify(worker)})return spawn(argv,options);note('spawn');const p=spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options);p.exited.then(()=>note('reaped'));return p;};

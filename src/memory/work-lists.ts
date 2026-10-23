@@ -236,7 +236,8 @@ export class WorkListStore {
         this.checkBudget();
         const old = reset ? 0 : heads.get(file)?.bytes ?? 0, current = scans.get(file)!;
         if (old !== current.bytes) scan(join(this.dir, "log", file), (line, end) => { if (end > old) this.index(this.decode(line), end); }, 0, () => this.checkBudget());
-        this.db.query("INSERT OR REPLACE INTO work_heads (file, bytes, hash) VALUES (?, ?, ?)").run(file, current.bytes, current.hash);
+        const head = heads.get(file);
+        if (reset || !head || head.bytes !== current.bytes || head.hash !== current.hash) this.db.query("INSERT OR REPLACE INTO work_heads (file, bytes, hash) VALUES (?, ?, ?)").run(file, current.bytes, current.hash);
       }
       // Old readers may rebuild/append this disposable index without the additive replay column. Backfill one
       // row at a time, including on an otherwise unchanged refresh; no payload history is materialized.

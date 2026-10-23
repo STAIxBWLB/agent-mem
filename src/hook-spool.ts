@@ -462,25 +462,31 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   const record: Record = { schema: SCHEMA, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
-  const inventory = entries(base);
-  const full = inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES;
-  // Valid foreign data stays pending in the active tier. The separate bounded reserve
-  // admits this project's event without erasing that backlog or rebinding its project.
-  // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
-  const quarantineBatch: QuarantineBatch = {};
-  const retired = retireUnresolved(base, cwd, inventory, Buffer.byteLength(bytes), event === "SessionStart", false, quarantineBatch);
-  const queued = inventory.filter(row => !retired.has(row.name));
-  let reserved = entries(base, true), destination = dir, deferred = false;
-  const backlog = queued.length > 0 || reserved.length > 0;
-  // A bounded cwd/scope-bound reserve admits the already-screened current event before
-  // project resolution or optional replay. It is not privacy quarantine and is replayable.
-  if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
-    if (options.deferAtCapacity !== true) throw new HookSpoolFull();
+  let destination = dir, deferred = false, backlog = false;
+  if (event === "SessionStart") {
+    // ponytail: reserve-only admission scans at most 32 metadata entries, not O(1).
+    // Never inspect/retire the active tier on the brief deadline. Fixed-slot byte
+    // reservations with crash recovery are the upgrade if this bound is too costly.
     destination = join(dir, ".capacity"); privateDirectory(destination);
+    const reserved = entries(base, true);
+    if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
+    deferred = true; backlog = reserved.length > 0;
+  } else {
+    const inventory = entries(base), quarantineBatch: QuarantineBatch = {};
+    const retired = retireUnresolved(base, cwd, inventory, Buffer.byteLength(bytes), false, false, quarantineBatch);
+    const queued = inventory.filter(row => !retired.has(row.name));
+    let reserved = entries(base, true);
+    // Reserve maintenance must progress even while ordinary admission has space:
+    // SessionStart never retires, so otherwise expired undrainable reserve data pins it.
     const retiredCapacity = retireUnresolved(base, cwd, reserved, Buffer.byteLength(bytes), true, true, quarantineBatch);
     reserved = reserved.filter(row => !retiredCapacity.has(row.name));
-    if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
-    deferred = true;
+    backlog = queued.length > 0 || reserved.length > 0;
+    if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
+      if (options.deferAtCapacity !== true) throw new HookSpoolFull();
+      destination = join(dir, ".capacity"); privateDirectory(destination);
+      if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
+      deferred = true;
+    }
   }
   const name = `hook-${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }

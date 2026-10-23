@@ -117,9 +117,9 @@ try {
     }
   } finally { finalStore.close(); }
   const pendingDir = join(f.base, "hook-spool");
-  for (const name of existsSync(pendingDir) ? readdirSync(pendingDir) : []) {
+  for (const dir of [pendingDir, join(pendingDir, ".capacity")]) for (const name of existsSync(dir) ? readdirSync(dir) : []) {
     if (!/^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)) continue;
-    const value = JSON.parse(readFileSync(join(pendingDir, name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
+    const value = JSON.parse(readFileSync(join(dir, name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
     if (!match || value.cwd !== f.cwd) throw new Error("pending fixture capture unavailable");
     const id = Number(match[1]); if (pending.has(id)) throw new Error("pending fixture capture duplicated");
     pending.set(id, value.capture.at);

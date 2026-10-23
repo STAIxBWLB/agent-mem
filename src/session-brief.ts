@@ -103,7 +103,12 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
       } catch { drifted = true; throw new BindingChanged(); }
     };
-    const screen = async (value: unknown) => { guard(); const permitted = await policy.screen(value); guard(); return permitted; };
+    // Fixed native screening has no host callback to observe intermediate rows. Buffer
+    // its fully screened output until the section and final binding guards succeed;
+    // host callbacks retain their pre/post-await fence for every individual value.
+    const screen = options.nativeSession && !options.policy?.host
+      ? (value: unknown) => policy.screen(value)
+      : async (value: unknown) => { guard(); const permitted = await policy.screen(value); guard(); return permitted; };
     const coverage: BriefResult["coverage"] = { work: "complete", curated: "complete", capture: "complete" };
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
