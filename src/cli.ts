@@ -20,6 +20,14 @@ import { resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
 import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
+import { readCatalogFresh } from "./memory/catalog.ts";
+import { appendLifecycle, projectState } from "./memory/lifecycle.ts";
+import { gcText, runGc } from "./memory/gc.ts";
+import { usageReport, usageText } from "./memory/usage.ts";
+import { exportProject } from "./memory/project-export.ts";
+import { searchAllProjects, vaultCandidatesAll } from "./memory/cross-project.ts";
+import { requireShard } from "./memory/curated-read.ts";
+import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 
 export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -121,7 +129,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const { definition, options, rawArgs: args } = parsed;
   const goal = parsed.path[0] === "goal", review = parsed.path[0] === "review", sub = goal || review ? parsed.path[1]! : parsed.path[0]!;
   const policyFree = options["--policy-free"] === true;
-  const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined;
+  const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined
+    || definition.mutates === "confirm" && options["--confirm"] === true;
   if (mutating && !(context.stdinTTY ?? process.stdin.isTTY)) throw new Error("mutating commands require a terminal on stdin");
   if (definition.policyFree && !policyFree) {
     throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
@@ -195,6 +204,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       } finally { store.close(); }
     } finally { candidates.close(); }
   }
+  if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
+    if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");
+    const result = await vaultCandidatesAll(memoryHome(), { policy: createStandalonePolicy(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+    return JSON.stringify(result, null, 2);
+  }
   if (sub === "vault-candidates") {
     const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
@@ -207,6 +221,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (share !== undefined && (!Number.isFinite(Number(share)) || Number(share) <= 0 || Number(share) > 1)) throw new Error("--disk-share must be a number in (0, 1]");
     const report = capacityReport({ ...(share !== undefined ? { diskShare: Number(share) } : {}) });
     if (parsed.path[1] !== "apply") return options["--json"] ? JSON.stringify(report, null, 2) : capacityText(report);
+    if (options["--split"] === true) {
+      // #15 D7: each shard's own share of the global budget, written to its own config. The same two steps as the home default below, bound to the shards it was made for.
+      if (options["--cap-mb"] !== undefined || options["--retention-days"] !== undefined) throw new Error("--split computes each shard's values; do not combine it with --cap-mb or --retention-days");
+      const diskShare = share !== undefined ? { diskShare: Number(share) } : {};
+      return JSON.stringify(options["--confirm"] === true ? applySplit(memoryHome(), diskShare) : previewSplit(memoryHome(), diskShare), null, 2);
+    }
     // Person-only (agent marker and TTY are refused above): preview first, --confirm writes the home default config.
     const file = join(memoryHome(), "capture-config.json");
     const target: CaptureConfig = {
@@ -231,6 +251,51 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     rmSync(previewFile, { force: true });
     return JSON.stringify({ preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
   }
+  if (sub === "projects") {
+    // Archived projects stay listed (the person must see what is cold); a forgotten one is out of the default view, and --all brings it back with its state.
+    const rows = readCatalogFresh(memoryHome()).filter(project => options["--all"] === true || project.state !== "forgotten");
+    if (options["--json"]) return JSON.stringify(rows, null, 2);
+    if (!rows.length) return "no project shards yet";
+    const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
+    return rows.map(p => `${p.key}  ${p.state}${p.local ? "  local-only key" : ""}${p.aliases.length ? `  aliases: ${p.aliases.join(", ")}` : ""}  capture ${p.captureRows} rows ${mb(p.captureBytes)}  curated ${p.curatedEntries ?? "unavailable"}  disk ${mb(p.diskBytes)}  last ${p.captureLastAt ?? "never"}`).join("\n");
+  }
+  if (sub === "usage") {
+    const limit = options["--limit"] === undefined ? undefined : Number(options["--limit"]);
+    const report = usageReport(memoryHome(), { ...(limit !== undefined ? { limit } : {}), includeForgotten: options["--all"] === true });
+    return options["--json"] ? JSON.stringify(report, null, 2) : usageText(report);
+  }
+  if (sub === "gc") {
+    // A preview reads; only --confirm evicts (and then the terminal and agent-marker refusals above already ran, because `mutates: "confirm"`).
+    const batches = options["--batches"] === undefined ? undefined : Number(options["--batches"]);
+    const result = runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) });
+    return options["--json"] ? JSON.stringify(result, null, 2) : `${result.dryRun ? "preview (nothing evicted; add --confirm):\n" : ""}${gcText(result)}`;
+  }
+  if (sub === "project") {
+    const op = parsed.path[1]!, [requested] = parsed.positionals;
+    if (!requested) throw new Error(`usage: amem project ${op} <key>`);
+    if (op === "export") {
+      if (typeof options["--to"] !== "string") throw new Error("usage: amem project export <key> --to <file>");
+      // The screen is the standalone one (secrets, PII patterns, denied paths); `--policy-free` is accepted only because a person may decline the host's narrower policy, which amem alone does not have.
+      const result = await exportProject(memoryHome(), requested, { to: options["--to"] });
+      return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
+    }
+    const key = requireShard(memoryHome(), requested);
+    if (op === "forget" && options["--confirm"] !== true) {
+      const state = projectState(memoryHome(), key), shard = readCatalogFresh(memoryHome()).find(p => p.key === key);
+      return `preview: forget ${key} (now ${state}; capture ${shard?.captureRows ?? 0} rows, curated ${shard?.curatedEntries ?? "unavailable"}). Forget is an append-only record that takes the project out of recall and every listing for good; nothing is erased here and it cannot be undone. Re-run with --confirm to record it.`;
+    }
+    const written = appendLifecycle(memoryHome(), { op: op as "archive" | "unarchive" | "forget", key, actor: "person", machine: machineId(memoryHome()).id });
+    return options["--json"] ? JSON.stringify(written, null, 2) : `${op === "forget" ? "forgot" : op === "archive" ? "archived" : "unarchived"} ${written.key}${requested !== written.key ? ` (alias ${requested})` : ""}`;
+  }
+  if (sub === "search" && options["--all-projects"] === true) {
+    const words = parsed.positionals.join(" ");
+    if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
+    const result = searchAllProjects(memoryHome(), words, { ...(options["--limit"] !== undefined ? { limit: Number(options["--limit"]) } : {}), includeArchived: options["--include-archived"] === true });
+    if (options["--json"]) return JSON.stringify(result, null, 2);
+    const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}  ${hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
+    return [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
+  }
+  if (sub === "search" && options["--include-archived"] === true) throw new Error("--include-archived only applies with --all-projects");
   if (sub === "alias") {
     if (parsed.path[1] === "add") {
       const [from, to] = parsed.positionals;

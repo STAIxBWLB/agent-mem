@@ -8,7 +8,8 @@ export interface CommandDefinition {
   options?: Record<string, OptionDefinition>;
   args?: readonly ArgumentDefinition[];
   commands?: Record<string, CommandDefinition>;
-  mutates?: boolean | "apply" | "label";
+  /** `confirm`: previews without `--confirm` (a read), and mutates with it (#15 T5: gc, project forget, capacity apply). */
+  mutates?: boolean | "apply" | "label" | "confirm";
   policyFree?: boolean;
   defaultCommand?: string;
 }
@@ -25,9 +26,22 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi"] }] },
-  "vault-candidates": { description: "List screened durable curated vault candidates", options: { ...json, "--limit": text("Maximum candidates (1..100)") } },
+  "vault-candidates": { description: "List screened durable curated vault candidates (per project, or across projects)", options: { ...json, "--limit": text("Maximum candidates per project (1..100)"),
+    "--all-projects": flag("List every active project's candidates; the reply says it crossed projects"), "--project": text("List one named project's candidates") } },
   list: { description: "List memory", options: filters },
-  search: { description: "Search memory", options: filters, args: [{ name: "words", variadic: true }] },
+  search: { description: "Search memory", options: { ...filters, "--all-projects": flag("Search every active project; the reply says it crossed projects"),
+    "--include-archived": flag("With --all-projects, also read archived projects") }, args: [{ name: "words", variadic: true }] },
+  projects: { description: "List the project shards of this memory home (#15 D3)", options: { ...json, "--all": flag("Include forgotten projects (archived ones are always listed)") } },
+  usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
+  gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
+    ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },
+  project: { description: "Per-project lifecycle and export (#15 D3): one project only", options: json, commands: {
+    export: { description: "Write one project's capture, curated notes, goals and work lists to a new bundle file (never overwrites)", options: { "--to": { description: "Destination file, outside the memory home", value: "path" }, ...policy },
+      args: [{ name: "key" }] },
+    archive: { description: "Take a cold project out of recall (append-only op; unarchive brings it back)", args: [{ name: "key" }], mutates: true },
+    unarchive: { description: "Bring an archived project back into recall (append-only op)", args: [{ name: "key" }], mutates: true },
+    forget: { description: "Forget one project for good (append-only op; preview without --confirm)", options: { "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
+  } },
   show: { description: "Show a note", options: json, args: [{ name: "id" }] },
   graph: { description: "Show a graph", options: { ...json, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
   suggestions: { description: "List pending suggestions", options: json },
@@ -72,8 +86,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--apply": flag("Apply the exact local plan"), "--plan": { description: "Sealed local plan JSON file", value: "path" },
   } },
   capacity: { description: "Report capture use and propose R6 bounds (R7)", options: { ...json, "--disk-share": text("Disk-share bound for the proposal (default 0.02)") }, commands: {
-    apply: { description: "Write the proposed (or given) bounds to the home capture config", mutates: true, options: {
-      ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview") } },
+    apply: { description: "Write the proposed (or given) bounds to the home capture config, or with --split each shard's share of the global budget", mutates: true, options: {
+      ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview"),
+      "--split": flag("Write the per-shard split of the global budget to each shard's own config") } },
   } },
   alias: { description: "Person-reviewed project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
     list: { description: "List alias ops" },

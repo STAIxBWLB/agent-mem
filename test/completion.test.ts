@@ -98,7 +98,9 @@ test("completion metadata and CLI parser cover the retained raw command cases an
       for (const name of pending.splice(0)) {
         const row = definitions.find(item => item.path.join(" ") === [...prefix, name].join(" "))!;
         for (const flag of flags) expect(Object.keys(row.options)).toContain(flag);
-        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag)).toBe(true);
+        // #15 T5: `search --all-projects` and `--include-archived` are the person's cross-project read, handled by src/cli.ts before the raw command (like --policy-free);
+        // the raw command, which hosts share, refuses them (test/cli-projects.test.ts). The exemption is these two flags on `search` only.
+        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived"].includes(flag)).toBe(true);
       }
     }
   }
