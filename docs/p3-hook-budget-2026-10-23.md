@@ -1,24 +1,48 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status at review: **R2 failed on Linux at `9b0bcae`**. Ubuntu run [39871679397](https://github.com/STAIxBWLB/agent-mem/actions/runs/39871679397) measured SessionStart main+helper peak RSS 106.58 MB, exceeding 100 MB. macOS CI also found capture loss before append on deadline. The historical local Mac table below is not cross-OS acceptance. Replacement evidence follows.
+Status: **new candidate CI pending**. Completed GitHub run [39885606254](https://github.com/STAIxBWLB/agent-mem/actions/runs/39885606254) at `15231c7ea0e72c80241380af1df32947fd16f8c6` passed Ubuntu R2, but failed the unchanged macOS SessionStart context assertion. PR #34 must not merge until both OSes pass at the exact new head and quarantine has a clean re-review. #113's step approval was not merge approval.
 
-## Follow-up #391, candidate runtime
+## Follow-up #391, SessionStart priority
 
-PR #34 remains unmergeable until exact-head Ubuntu and macOS CI are green and the reviewer verifies quarantine. Step approval of #113 is not merge approval. Runtime candidate: `33448ab5b28d05cd650b3115c758e1d626125b58`; actual new-head GitHub numbers are pending.
+Runtime candidate: `71813553414ae564065aaa84142d190840fb7692`. A normally staged SessionStart now leaves its screened capture durably pending and avoids pre-brief CaptureStore loading/draining. Later non-SessionStart invocations replay it; full-tier admission still performs bounded recovery. Optional curated/capture sections need 80 ms remaining; work still needs 10 ms. The 140 ms handler deadline, 150 ms external p95 and 100 MB combined peak criterion are unchanged.
 
-Round 3 did not pass CI. At `65cf521fb57e846b30a510e3a606333130be3da2`, Ubuntu job 120178457861 reported combined raw-rusage peaks of 105.92 MB SessionStart, 100.71 MB contention, 100.43 MB drain and 95.87 MB plain capture. macOS job 120178457524 failed original replay, newly created barrier and known-work assertions; both JSON EOF failures were empty stdout, not malformed context.
+Two new regressions fail on the former runtime: a native SessionStart whose optional capture import throws must still emit known work, and a brief with 70 ms remaining must defer optional stores while preserving work. The native test observes the attempted module load under the old implementation, then verifies eventual exactly-once replay with the fix. Full-tier native recovery now covers both PostToolUse and SessionStart. The backlog fixture checks every staged event is retained exactly once as a row or pending record, then uses up to three production bounded drain passes before its unchanged final exactly-once/pending-clear assertions. It no longer assumes four deadline-bound native calls necessarily acknowledge 65 records. The native budget workload and all its assertions are unchanged.
 
-A synthetic Linux fork/exec probe found a measurement artifact: a fresh child had current RSS 9,175,040 bytes and raw peak 12,544 KiB; after its launcher touched 128 MiB, the same fresh child still had current RSS 9,175,040 bytes but reported raw peak 146,944 KiB. Bun's external child rusage reported the same inherited high-water. This is a diagnostic reproduction, not R2 acceptance. The regression fails with the old raw sampler.
+Actual GitHub Ubuntu job 120192956976 at the previous head:
 
-Linux hook metrics now read their own `/proc/self/status` VmHWM, the process's peak resident set size ([Linux kernel documentation](https://docs.kernel.org/filesystems/proc.html)). On non-proc hosts they retain conservative rusage fallback; unknown never becomes zero. The combined criterion still sums parent and helper peaks and remains 100 MB. `rawRssMB` and `rawCombinedPeakRssMB` retain the old raw-rusage evidence alongside the exec-image measure. The script also keeps its independent CLI rusage floor. No container table replaces actual GitHub-runner proof. The frozen candidate's isolated Linux AGENTS gate passed: typecheck clean, `boundary: OK (45 source files)`, 627 pass, 5 OS-specific skips, 0 fail, 8,960 expectations across 632 tests/79 files (138.51 s); npm pack dry-run listed 51 files. A remote budget smoke also passed all native assertions, but is diagnostic only and does not establish GitHub acceptance. The final candidate has not yet been measured on native macOS locally because admission deferred on unrelated uncovered work; exact-head macOS CI remains required.
+| Path | Runs | Wall p95 (ms) | Wall max (ms) | Own combined peak RSS (MB) | Raw combined peak RSS (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain capture | 40 | 50.92 | 53.22 | 85.66 | 95.49 |
+| Contended capture | 15 | 50.80 | 50.80 | 86.53 | 100.61 |
+| SessionStart, known work | 20 | 77.94 | 79.95 | 95.45 | 109.97 |
+| Drain | 1 | 56.87 | 56.87 | 85.94 | 100.46 |
 
-The owned worker flushes a complete bounded result before terminating its still-live process group on completion; fatal transport paths and the self-deadline terminate that same group. This closes an overflow path where Git could exit while its background descendant survived. A synthetic overflow/owned-sleep regression is red with the previous worker and green with the fix. Native Git uses the shared hardened argv/environment through a Bun-specific port. Ordinary no-origin identity reads are batched into two calls; separate `.git`, symlink and linked layouts fall back when needed to preserve existing project keys.
+R1: 76 invocations, 76 helpers, zero leftovers. macOS job 120192956814 passed 629 unit tests with three OS-specific skips, but its strict budget run failed with empty SessionStart output: wall 153.20 ms, metric 138.84 ms, stderr zero bytes. A unit-suite pass did not establish R2.
 
-Original capture row exactly-once and pending-clear assertions are unchanged. A newly created barrier is allowed to remain a normalized durable pending record; the original captured row is already a positive control. All native R2 assertions (20 known-work contexts, original 55 captures, reaping and 150 ms p95) remain. The workflow runs the budget step even when another check fails so functional failures cannot hide runner resource diagnostics; a failed gate still fails CI.
+Native macOS measurement of the new candidate's runtime, Bun 1.4.2, isolated synthetic homes:
+
+| Path | Runs | Wall p95 (ms) | Wall max (ms) | Own combined peak RSS (MB) | Raw combined peak RSS (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain capture | 40 | 102.52 | 103.60 | 84.73 | 84.91 |
+| Contended capture | 15 | 90.26 | 90.26 | 83.00 | 83.13 |
+| SessionStart, known work | 20 | 110.53 | 116.73 | 83.69 | 83.84 |
+| Drain | 1 | 86.13 | 86.13 | 82.88 | 83.00 |
+
+All 20 known-work contexts passed, all 55 original captures replayed exactly once, and R1 observed 76 invocations/helpers with zero leftovers. The six-file focused suite passed 57 tests and 1,826 expectations. The frozen runtime full Linux AGENTS gate passed: typecheck clean, `boundary: OK (45 source files)`, 631 pass, five unavailable-shell skips, zero failures, 9,429 expectations across 636 tests/80 files in 137.47 s, and `npm pack --dry-run` listed 51 files. This local Mac result is diagnostic evidence; exact-head GitHub macOS CI remains required.
+
+## Linux peak RSS measurement proof
+
+Linux metrics read their own `/proc/self/status` VmHWM, documented as peak resident set size in the [Linux kernel proc documentation](https://docs.kernel.org/filesystems/proc.html). Conservative rusage fallback remains when proc data is unavailable or malformed. Unknown never becomes zero. Parent/helper peaks are still summed, the independent CLI rusage floor remains, and `rawRssMB`/`rawCombinedPeakRssMB` retain the former measurement alongside it.
+
+`test/hooks-resources.test.ts` proves the distinction causally. A launcher touches 128 MiB before exec; the measured child samples its own peak, touches 16 MiB itself and samples again after release/GC. The new sampler reported before 14,336 KiB, own allocation 32,256 KiB and retained peak 34,048 KiB, while raw rusage remained 145,152 KiB. The child-allocation assertion and a 64 MiB separation assertion both pass. Replacing the sampler with the former `process.resourceUsage().maxRSS` makes the named allocation assertion fail: before/allocation/own/raw all read 145,152 KiB. This rules out a fixed subtraction and proves sensitivity to the child's own allocation. A second regression runs the actual packaged hook through the pressured launcher: production metrics reported own combined 66.5 MB and raw combined 176.75 MB. Both tests pass in the frozen candidate Linux gate.
+
+An earlier independent fork/exec probe held the child's current RSS at 9,175,040 bytes while touching 128 MiB only in its launcher changed raw peak from 12,544 to 146,944 KiB. That reproduction explains the inherited pre-exec high-water; neither the probe nor container measurements replace GitHub acceptance.
+
+The owned worker flushes a complete bounded result before terminating its still-live process group on completion; fatal paths and the self-deadline reap the same group. Pending identity ignores rewritten HEAD/config inodes, binds supported project-deciding configuration, and retires unresolved/removed scopes into bounded private quarantine outside the active cap. Existing red-first quarantine, exactly-once, full-tier, process-reaping and network-tripwire regressions remain required. New-head CI and reviewer verification remain open.
 
 ## Round 3 verification
 
-Round 2 at `241158559ce08ef60d168d4d212587b3a183869e` also failed on the actual Ubuntu runner: [run 39875883123](https://github.com/STAIxBWLB/agent-mem/actions/runs/39875883123), job 120161255064 measured 107.07 MB SessionStart, 100.87 MB contended capture and 100.66 MB drain (plain capture 96.27 MB). The Linux-container table below did not predict that result and does not establish R2 acceptance. **Ubuntu R2 remains open until the new head runs on that runner.**
+Round 2 at `241158559ce08ef60d168d4d212587b3a183869e` also failed on the actual Ubuntu runner: [run 39875883123](https://github.com/STAIxBWLB/agent-mem/actions/runs/39875883123), job 120161255064 measured 107.07 MB SessionStart, 100.87 MB contended capture and 100.66 MB drain (plain capture 96.27 MB). The Linux-container table below did not predict that result and does not establish R2 acceptance. That head did not meet Ubuntu R2; the later actual-runner result above supersedes it.
 
 Round 3 runtime: `68f9e76681e905f22c99df9f525515ee12f1b885`. The published executable and plugin now enter Bun `--smol` directly, with same-PID exec replacement for an explicit non-smol Bun invocation. Process helpers and optional stores load lazily. The budget harness executes the published executable and retains its original process-start clock and 150 ms/100 MB criteria.
 
