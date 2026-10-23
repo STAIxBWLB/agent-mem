@@ -1,5 +1,5 @@
 {
   "name": "agent-mem",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Bounded project memory context and deterministic capture, without a resident worker."
 }
