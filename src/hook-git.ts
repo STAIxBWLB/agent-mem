@@ -9,11 +9,11 @@ import type { ProjectGitRead } from "./memory/project.ts";
  * Node process compatibility module on this Bun-only, short-lived path. The parent's deadline
  * reaps the whole worker group, including a blocked Git descendant; a per-Git leader-only
  * timeout would let a wrapper's descendants survive after the worker exits. */
-export function hookGit(timeRemaining: () => number, binary = hookGitBinary().file): ProjectGitRead {
+export function hookGit(timeRemaining: () => number, binary?: string): ProjectGitRead {
   return (args, env) => {
     const remaining = timeRemaining();
     if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("Git project identity unavailable");
-    const argv = memoryGitArgv(args); argv[0] = binary;
+    const argv = memoryGitArgv(args); argv[0] = binary ?? hookGitBinary(env).file;
     const result = Bun.spawnSync(argv, {
       env: memoryGitEnv(env), stdin: "ignore", stdout: "pipe", stderr: "ignore", maxBuffer: 64 * 1024,
     });
@@ -25,9 +25,9 @@ export function hookGit(timeRemaining: () => number, binary = hookGitBinary().fi
 
 /** Only bypass Apple's selected /usr/bin/git shim, never a caller's custom PATH binary.
  * Resolve the root-owned developer selection on disk, without launching xcrun on the hook deadline. */
-export function hookGitBinary(): { file: string; revision: string } {
-  let file = realPath(Bun.which("git") ?? (() => { throw new Error("Git unavailable"); })());
-  if (process.platform === "darwin" && file === "/usr/bin/git") {
+export function hookGitBinary(env: NodeJS.ProcessEnv = process.env): { file: string; revision: string } {
+  let file = realPath(Bun.which("git", { PATH: env.PATH ?? process.env.PATH ?? "" }) ?? (() => { throw new Error("Git unavailable"); })());
+  if (process.platform === "darwin" && file === "/usr/bin/git" && !env.DEVELOPER_DIR) {
     try {
       const selected = "/var/db/xcode_select_link", link = lstatSync(selected);
       if (link.isSymbolicLink() && link.uid === 0) {
