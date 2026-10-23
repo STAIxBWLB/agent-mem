@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
 import { normalizeCaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -127,12 +128,13 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
       } finally { closeSync(fd); }
     };
     cwd = realPath(cwd);
-    parts.push(`${cwd}:${identity(cwd)}`);
+    const home = canonicalPath(process.env.HOME?.trim() || homedir());
+    parts.push(`${cwd}:${identity(cwd)}`, `home:${home}`);
     // The fixed worker keeps HOME but strips inherited Git routing/override environment. Check the ordinary
     // system locations conservatively too; unsupported identity-affecting configuration refuses resolution.
     const configuration: [string, string][] = [];
     for (const file of ["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"]) configuration.push(...identityConfig(content(file)));
-    if (process.env.HOME) for (const file of [join(process.env.HOME, ".config", "git", "config"), join(process.env.HOME, ".gitconfig")]) configuration.push(...identityConfig(content(file)));
+    for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) configuration.push(...identityConfig(content(file)));
     let found = false, reachedRoot = false;
     for (let folder = cwd, depth = 0; depth < 32; depth++) {
       const git = join(folder, ".git"), stat = lstatSync(git, { throwIfNoEntry: false });
@@ -264,9 +266,9 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean): boolean 
  * occupy active capacity forever; current-policy rejection during drain uses the same retirement boundary. */
 function retireUnresolved(base: string): void {
   trimQuarantine(base);
-  const active = entries(base), scopes = new Map<string, string | undefined>();
-  let remaining = MAX_BYTES;
-  for (const row of active) {
+  const active = entries(base).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
+  let remaining = DRAIN_BYTES;
+  for (const row of active.slice(0, DRAIN_FILES)) {
     const match = namePattern.exec(row.name); if (!match) continue;
     if (row.size <= RECORD_BYTES && row.size > remaining) break;
     let file: OwnedFile | undefined;
@@ -290,6 +292,34 @@ function retireUnresolved(base: string): void {
     } catch { /* Transient I/O and changed evidence remain retryable; capture bodies never enter logs. */ }
     finally { if (file) closeSync(file.fd); }
   }
+}
+
+/** INTERNAL worker recovery after a known fatal native Git resolution. No project is inferred and no
+ * capture is appended here: bounded matching publications leave active admission through the same guard. */
+export function quarantineHookScope(options: { cwd: string; base: string; scope: string }): { retired: number } {
+  let retired = 0;
+  if (!/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
+  const cwd = realPath(options.cwd), base = canonicalPath(options.base), cwdHash = hash(cwd);
+  trimQuarantine(base);
+  const rows = entries(base).filter(row => {
+    const match = namePattern.exec(row.name); return match && match[2] === cwdHash && match[3] === options.scope;
+  }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
+  let remaining = DRAIN_BYTES;
+  for (const row of rows.slice(0, DRAIN_FILES)) {
+    if (row.size <= RECORD_BYTES && row.size > remaining) break;
+    let file: OwnedFile | undefined;
+    try {
+      file = openOwned(join(directory(base), row.name));
+      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
+      const claim = claimOwned(base, row.name, file); if (!claim) continue;
+      if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
+      const record = decoded(claim), match = namePattern.exec(row.name)!;
+      const valid = !!record && record.value.cwd === cwd && record.value.scope === options.scope && record.value.nonce === match[4];
+      if (retireClaim(base, claim, valid)) retired++;
+    } catch { /* A transient failure or foreign replacement is never treated as acknowledgement. */ }
+    finally { if (file) closeSync(file.fd); }
+  }
+  return { retired };
 }
 
 /** Only screened normalized capture fields are retained, never the native input envelope. */

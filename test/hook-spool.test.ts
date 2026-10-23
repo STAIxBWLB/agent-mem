@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { drainHookCaptures, hookCapturePending, hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
+import { drainHookCaptures, hookCapturePending, hookCaptureScope, quarantineHookScope, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
@@ -340,4 +340,56 @@ test("the semantic stamp follows Git precedence when both global files decide th
     if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal;
     if (oldSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM; else process.env.GIT_CONFIG_SYSTEM = oldSystem;
   }
+});
+
+test("identical home config bytes do not erase HOME-dependent project scope", async () => {
+  const f = fixture(), otherHome = join(f.root, "other-home"); mkdirSync(otherHome);
+  const config = "[core]\n worktree = ~/same-relative-root\n";
+  writeFileSync(join(f.env.HOME!, ".gitconfig"), config);
+  writeFileSync(join(otherHome, ".gitconfig"), config);
+  const scope = hookCaptureScope(f.cwd, f.base); expect(scope).toBeDefined();
+  const staged = await stageHookCapture("PostToolUse", { prompt: "HOME-bound marker" }, f.options); expect(staged).toBeDefined();
+  process.env.HOME = otherHome;
+  expect(hookCaptureScope(f.cwd, f.base)).not.toBe(scope);
+  let appended = false;
+  expect((await drainHookCaptures({ ...f.options, project: f.project, expectedScope: scope }, () => { appended = true; return { id: 1 }; })).captured).toEqual([]);
+  expect(appended).toBe(false);
+  process.env.HOME = f.env.HOME;
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+});
+
+test("fatal native-resolution quarantine retires only a bounded matching scope without appending", async () => {
+  const f = fixture();
+  for (let index = 0; index < 40; index++) await stageHookCapture("PostToolUse", { prompt: `native-failure marker ${index}` }, f.options);
+  const scope = hookCaptureScope(f.cwd, f.base); expect(scope).toBeDefined();
+  const original = f.pending(); expect(original).toHaveLength(40);
+  writeFileSync(join(f.base, "hook-spool", original[0]!.name), "RAW_INVALID_RETIREMENT_CANARY");
+  utimesSync(join(f.base, "hook-spool", original[0]!.name), new Date(0), new Date(0));
+  const result = quarantineHookScope({ ...f.options, scope: scope! });
+  expect(result.retired).toBe(32); expect(f.pending()).toHaveLength(8);
+  expect(f.rows()).toEqual([]);
+  const quarantine = join(f.base, "hook-spool", ".quarantine");
+  const retained = readdirSync(quarantine); expect(retained).toHaveLength(31);
+  for (const name of retained) expect(readFileSync(join(quarantine, name), "utf8")).not.toContain("RAW_INVALID_RETIREMENT_CANARY");
+});
+
+test("native fatal Git resolution quarantines remote-bound pending instead of using a local fallback", async () => {
+  const f = fixture("https://github.com/fixture/native-fatal"), config = join(f.cwd, ".git", "config");
+  const original = readFileSync(config, "utf8"), scope = hookCaptureScope(f.cwd, f.base);
+  const staged = await stageHookCapture("PostToolUse", { cwd: f.cwd, prompt: "remote-bound pending" }, f.options);
+  expect(staged).toBeDefined();
+  appendFileSync(config, "\n[core]\nrepositoryformatversion = 999\n");
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  for (let i = 0; i < 3 && f.pending().length; i++) expect(f.run("PostToolUse", { prompt: "fatal admission" }).exitCode).toBe(0);
+  expect(f.pending()).toHaveLength(0);
+  const quarantine = join(f.base, "hook-spool", ".quarantine");
+  expect(readdirSync(quarantine).map(name => readFileSync(join(quarantine, name), "utf8")).join("\n")).toContain("remote-bound pending");
+  expect(f.rows()).toHaveLength(0);
+  const fallback = memoryProjectKey(f.cwd, { repositoryIsolation: true });
+  const store = new CaptureStore({ memoryDir: f.base, project: fallback });
+  try { expect(store.rows({ project: fallback })).toHaveLength(0); } finally { store.close(); }
+  writeFileSync(config, original);
+  for (let i = 0; i < 4 && !f.rows().some(row => row.excerpt === "healthy recovery"); i++) expect(f.run("PostToolUse", { prompt: i === 0 ? "healthy recovery" : "replay barrier" }).exitCode).toBe(0);
+  expect(f.rows().filter(row => row.excerpt === "healthy recovery")).toHaveLength(1);
+  expect(f.rows().some(row => row.excerpt === "remote-bound pending")).toBe(false);
 });

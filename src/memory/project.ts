@@ -1,21 +1,59 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import { memoryGitEnv, memoryGitSync, realPath } from "./platform.ts";
 
+interface ProjectIdentityOptions {
+  repositoryIsolation?: boolean;
+  /** Host-only: native intake must not rebind a failed Git identity to a local fallback. */
+  strictGitErrors?: boolean;
+}
+class GitIdentityUnavailable extends Error { constructor() { super("Git project identity unavailable"); } }
+const unavailable = (): never => { throw new GitIdentityUnavailable(); };
+function canonicalCwd(cwd: string, strict: boolean | undefined): string {
+  if (!strict) return cwd;
+  try { const canonical = realPath(cwd); if (!lstatSync(canonical).isDirectory()) unavailable(); return canonical; }
+  catch { return unavailable(); }
+}
+/** Filesystem evidence only; unknown ancestry never certifies an ordinary non-Git directory. */
+function physicalGit(cwd: string): boolean {
+  const present = (file: string) => {
+    try { return !!lstatSync(file, { throwIfNoEntry: false }); }
+    catch { return unavailable(); }
+  };
+  for (let dir = cwd, depth = 0; depth < 32; dir = dirname(dir), depth++) {
+    if (present(resolve(dir, ".git")) || present(resolve(dir, "HEAD")) && present(resolve(dir, "objects"))) return true;
+    if (dir === dirname(dir)) return false;
+  }
+  return unavailable();
+}
+function checkedGit(args: string[], env: NodeJS.ProcessEnv, strict: boolean, statuses = [0]) {
+  const result = memoryGitSync(args, { encoding: "utf8", env });
+  if (strict && (result.error || result.signal || !statuses.includes(result.status ?? -1) || typeof result.stdout !== "string"
+    || result.stdout.length > 64 * 1024 || result.stdout.includes("\0"))) unavailable();
+  return result;
+}
+function pathText(text: string, strict: boolean, empty = false): string {
+  if (strict && (text ? !isAbsolute(text) || /[\r\n]/.test(text) : !empty)) unavailable();
+  return text;
+}
+
 /** Project names from the outermost superproject down to this repo; isolation binds native hook cwd over inherited Git routing. */
-export function projectChain(cwd: string, options: { repositoryIsolation?: boolean } = {}): string[] {
+export function projectChain(cwd: string, options: ProjectIdentityOptions = {}): string[] {
+  cwd = canonicalCwd(cwd, options.strictGitErrors);
+  const strict = options.strictGitErrors === true && physicalGit(cwd);
   const env = memoryGitEnv(process.env, options);
-  const git = (dir: string, arg: string) => memoryGitSync(["-C", dir, "rev-parse", arg], { encoding: "utf8", env }).stdout?.trim() ?? "";
+  const git = (dir: string, arg: string) => pathText(checkedGit(["-C", dir, "rev-parse", arg], env, strict).stdout?.trim() ?? "", strict, arg === "--show-superproject-working-tree");
   const top = git(cwd, "--show-toplevel");
   if (!top) return [basename(cwd)];
   return projectChainAtRoot(top, options);
 }
 
 /** Internal callers that have already resolved the working root do not repeat its git lookup. */
-function projectChainAtRoot(top: string, options: { repositoryIsolation?: boolean }): string[] {
+function projectChainAtRoot(top: string, options: ProjectIdentityOptions): string[] {
+  const strict = options.strictGitErrors === true;
   const env = memoryGitEnv(process.env, options);
-  const git = (dir: string, arg: string) => memoryGitSync(["-C", dir, "rev-parse", arg], { encoding: "utf8", env }).stdout?.trim() ?? "";
+  const git = (dir: string, arg: string) => pathText(checkedGit(["-C", dir, "rev-parse", arg], env, strict).stdout?.trim() ?? "", strict, true);
   // claude-mem's native identity for a worktree is [parent, parent/worktree].
   // The worktree's .git file points into <parent>/.git/worktrees/<name>; the
   // ordinary superproject walk below remains unchanged for repos and submodules.
@@ -31,7 +69,8 @@ function projectChainAtRoot(top: string, options: { repositoryIsolation?: boolea
         return [...parent, `${parentName}/${basename(top)}`];
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof GitIdentityUnavailable) throw error;
     // A missing or unreadable .git file falls through to git's normal chain.
   }
 
@@ -48,9 +87,13 @@ function projectChainAtRoot(top: string, options: { repositoryIsolation?: boolea
  * the main working root keeps two unrelated repositories that share a name apart while the main checkout, a
  * subdirectory and a worktree resolve to one key (that key is this machine's only, and root-invoked keys stay stable).
  */
-export function memoryProjectKey(cwd: string, options: { repositoryIsolation?: boolean } = {}): string {
+export function memoryProjectKey(cwd: string, options: ProjectIdentityOptions = {}): string {
+  cwd = canonicalCwd(cwd, options.strictGitErrors);
+  const strict = options.strictGitErrors === true && physicalGit(cwd);
   const env = memoryGitEnv(process.env, options);
-  const url = memoryGitSync(["-C", cwd, "remote", "get-url", "origin"], { encoding: "utf8", env }).stdout?.trim() ?? "";
+  const origin = checkedGit(["-C", cwd, "remote", "get-url", "origin"], env, strict, [0, 2]);
+  const url = origin.stdout?.trim() ?? "";
+  if (strict && (origin.status === 0 ? !url || /[\r\n]/.test(url) : !!url)) unavailable();
   // A URL's default port is not part of the repository (`ssh://git@github.com:22/o/r` is `github.com/o/r`); any other
   // port is, since another service may run there. An scp-style `host:path` has no port.
   const u = /^([a-z+]+):\/\/(?:[^@/]+@)?(\[[^\]/]+\]|[^/:]+)(?::(\d*))?\/(.+?)(?:\.git)?\/?$/i.exec(url); // an IPv6 host is bracketed
@@ -69,28 +112,34 @@ export function memoryProjectKey(cwd: string, options: { repositoryIsolation?: b
   // pre-#15 value while the main checkout, a subdirectory and a worktree resolve to ONE key (#15 D2/AC2). A bare
   // repository has no working root: its own directory is the stable identity for it and its worktrees.
   // Batch metadata for ordinary repositories; linked worktrees still inspect the common directory's bare state.
-  const location = memoryGitSync(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir", "--is-bare-repository"], { encoding: "utf8", env }).stdout?.trim().split("\n") ?? [];
+  const location = checkedGit(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir", "--is-bare-repository"], env, strict).stdout?.trim().split("\n") ?? [];
+  if (strict && (location.length !== 3 || !isAbsolute(location[0]!) || !isAbsolute(location[1]!) || !/^(true|false)$/.test(location[2]!))) unavailable();
   const ordinary = location.length === 3 && location[0] === location[1] && /^(true|false)$/.test(location[2]!);
-  const common = location.length === 3 ? location[0]! : memoryGitSync(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env }).stdout?.trim() ?? "";
+  const common = location.length === 3 ? location[0]! : checkedGit(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], env, strict).stdout?.trim() ?? "";
   if (common) {
     let realCommon = common;
-    try { realCommon = realPath(common); } catch { /* as given */ }
-    const bare = ordinary ? location[2] === "true" : (memoryGitSync(["--git-dir", realCommon, "rev-parse", "--is-bare-repository"], { encoding: "utf8", env }).stdout?.trim() ?? "") === "true";
+    try { realCommon = realPath(common); } catch { if (strict) unavailable(); /* as given */ }
+    const bareText = ordinary ? location[2]! : checkedGit(["--git-dir", realCommon, "rev-parse", "--is-bare-repository"], env, strict).stdout?.trim() ?? "";
+    if (strict && !/^(true|false)$/.test(bareText)) unavailable();
+    const bare = bareText === "true";
     let root = realCommon, knownWorkingRoot = false;
     if (!bare) {
-      const configured = memoryGitSync(["--git-dir", realCommon, "config", "--path", "core.worktree"], { encoding: "utf8", env }).stdout?.trim() ?? "";
+      const config = checkedGit(["--git-dir", realCommon, "config", "--path", "core.worktree"], env, strict, [0, 1]);
+      const configured = config.stdout?.trim() ?? "";
+      if (strict && (config.status === 0 ? !configured || /[\r\n]/.test(configured) : !!configured)) unavailable();
       // Only a separate git directory without core.worktree needs another root lookup.
       // Ordinary repositories already bind their root through the canonical .git directory.
       const top = !configured && basename(realCommon) !== ".git"
-        ? memoryGitSync(["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", env }).stdout?.trim() ?? "" : "";
+        ? checkedGit(["-C", cwd, "rev-parse", "--show-toplevel"], env, strict).stdout?.trim() ?? "" : "";
       // Only an actual `.git` directory makes its parent the working root. A separate git dir shares its parent
       // with unrelated repositories, so the real worktree root (or, as a last resort, the unique git dir) is safer.
+      if (strict && !configured && basename(realCommon) !== ".git") pathText(top, true);
       root = configured ? resolve(realCommon, configured) : basename(realCommon) === ".git" ? dirname(realCommon) : top || realCommon;
       knownWorkingRoot = !configured && basename(realCommon) === ".git";
     }
     let realRoot = root;
-    try { realRoot = realPath(root); } catch { /* as given */ }
-    const chain = knownWorkingRoot ? projectChainAtRoot(realRoot, options) : projectChain(realRoot, options);
+    try { realRoot = realPath(root); } catch { if (strict) unavailable(); /* as given */ }
+    const chain = strict && bare ? [basename(realRoot)] : knownWorkingRoot ? projectChainAtRoot(realRoot, options) : projectChain(realRoot, options);
     return `${chain.join("/")}@${createHash("sha256").update(realRoot).digest("hex").slice(0, 8)}`;
   }
   let real = cwd;

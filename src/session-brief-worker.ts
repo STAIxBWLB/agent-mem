@@ -3,7 +3,7 @@ import { CaptureStore } from "./memory/capture.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { resolveAlias } from "./memory/shard.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
-import { drainHookCaptures, hookCaptureScope } from "./hook-spool.ts";
+import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 
 async function readOptions(): Promise<string> {
@@ -32,7 +32,12 @@ if (import.meta.main) {
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) process.exit(0);
     const expectedScope = hookCaptureScope(options.cwd, options.base!);
     if (!expectedScope) process.exit(0);
-    const project = resolveAlias(options.base!, memoryProjectKey(options.cwd, { repositoryIsolation: true }));
+    let project: string;
+    try { project = resolveAlias(options.base!, memoryProjectKey(options.cwd, { repositoryIsolation: true, strictGitErrors: true })); }
+    catch {
+      quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
+      process.exit(0);
+    }
     let store: CaptureStore | undefined;
     let captured = false;
     try {
