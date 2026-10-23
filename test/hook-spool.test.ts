@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { drainHookCaptures, hookCapturePending, hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -214,3 +214,100 @@ test("256 orphaned cwd records cannot disable actual hooks in another healthy cw
   expect(held.length).toBeGreaterThan(0); expect(held.length).toBeLessThanOrEqual(256);
   expect(held.reduce((bytes, name) => bytes + statSync(join(f.base, "hook-spool", ".quarantine", name)).size, 0)).toBeLessThanOrEqual(2 * 1024 * 1024);
 }, 20000);
+
+test("oldest pending records progress when each drain deadline permits only one append", async () => {
+  const f = fixture();
+  const older = await stageHookCapture("PostToolUse", { prompt: "oldest pending" }, f.options);
+  expect(older).toBeDefined();
+  utimesSync(join(f.base, "hook-spool", older!.name), new Date(0), new Date(0));
+  const newer = await stageHookCapture("PostToolUse", { prompt: "newer current" }, f.options);
+  expect(newer).toBeDefined();
+  const appended: string[] = [];
+  const first = await drainHookCaptures({ ...f.options, project: f.project, current: newer!.name, timeRemaining: () => appended.length ? 0 : 50 }, input => {
+    appended.push(input.excerpt!); return { id: appended.length };
+  });
+  expect(first.captured).toEqual([older!.name]); expect(appended).toEqual(["oldest pending"]);
+  expect(hookCapturePending(f.base, newer!.name)).toBe(true);
+  utimesSync(join(f.base, "hook-spool", newer!.name), new Date(1000), new Date(1000));
+  const latest = await stageHookCapture("PostToolUse", { prompt: "another current" }, f.options);
+  const second: string[] = [];
+  await drainHookCaptures({ ...f.options, project: f.project, current: latest!.name, timeRemaining: () => second.length ? 0 : 50 }, input => {
+    second.push(input.excerpt!); return { id: 1 };
+  });
+  expect(second).toEqual(["newer current"]);
+});
+
+test("malformed and oversized publications age out without retaining raw bodies in quarantine", async () => {
+  const f = fixture();
+  for (const body of ["not JSON RAW_MALFORMED_CANARY", JSON.stringify({ schema: "unsupported", text: "RAW_UNKNOWN_SCHEMA_CANARY" }), "RAW_OVERSIZE_CANARY".repeat(20000)]) {
+    const staged = await stageHookCapture("PostToolUse", { prompt: "replace only this fixture publication" }, f.options);
+    expect(staged).toBeDefined();
+    writeFileSync(join(f.base, "hook-spool", staged!.name), body);
+    const healthy = await stageHookCapture("PostToolUse", { prompt: "healthy admission" }, f.options);
+    expect(healthy).toBeDefined(); expect(hookCapturePending(f.base, staged!.name)).toBe(false);
+    const quarantine = join(f.base, "hook-spool", ".quarantine");
+    if (existsSync(quarantine)) for (const name of readdirSync(quarantine)) {
+      expect(readFileSync(join(quarantine, name), "utf8")).not.toContain("RAW_");
+    }
+  }
+});
+
+test("resolved records denied by current policy retire outside the active queue", async () => {
+  const f = fixture(), staged = await stageHookCapture("PostToolUse", { prompt: "denied-later-canary" }, f.options);
+  expect(staged).toBeDefined();
+  let appended = false;
+  const result = await drainHookCaptures({ ...f.options, project: f.project, policy: { piiPatterns: ["denied-later-canary"] } }, () => { appended = true; return { id: 1 }; });
+  expect(result.captured).toEqual([]); expect(result.blocked).toBe(1); expect(appended).toBe(false);
+  expect(f.pending()).toEqual([]);
+  const quarantine = join(f.base, "hook-spool", ".quarantine");
+  expect(readdirSync(quarantine)).toHaveLength(1);
+  expect(hookCapturePending(f.base, staged!.name)).toBe(true);
+});
+
+test("policy retirement never removes a foreign replacement of its unique claim", async () => {
+  const f = fixture();
+  await stageHookCapture("PostToolUse", { prompt: "owned before replacement" }, f.options);
+  let replacement = "", replaced = false;
+  const body = JSON.stringify({ foreignReplacement: true });
+  const result = await drainHookCaptures({ ...f.options, project: f.project, policy: { host: { screen: async () => {
+    if (!replaced) {
+      replaced = true;
+      const name = readdirSync(join(f.base, "hook-spool")).find(name => name.includes(".draining-"))!;
+      replacement = join(f.base, "hook-spool", name);
+      renameSync(replacement, replacement + ".original-fixture");
+      writeFileSync(replacement, body);
+    }
+    return false;
+  } } } }, () => { throw new Error("denied row must not append"); });
+  expect(replaced).toBe(true); expect(result.captured).toEqual([]);
+  expect(readFileSync(replacement, "utf8")).toBe(body);
+});
+
+test("valid quoted alias and user escapes do not alter the project scope", async () => {
+  const f = fixture("https://example.invalid/team/escaped-alias.git"), config = join(f.cwd, ".git", "config");
+  const staged = await stageHookCapture("PostToolUse", { prompt: "unrelated escaped config marker" }, f.options);
+  expect(staged).toBeDefined();
+  const scope = hookCaptureScope(f.cwd, f.base), original = readFileSync(config, "utf8");
+  appendFileSync(config, '\n[alias]\n fixture = "!printf \\"stable\\\\n\\""\n[user]\n name = "Fixture\\tName"\n');
+  git(f, "config", "--get", "alias.fixture");
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  writeFileSync(config + ".replacement", original + '\n[alias]\n fixture = "!printf \\"changed\\\\n\\""\n[user]\n name = "Other\\tFixture"\n');
+  renameSync(config + ".replacement", config);
+  git(f, "config", "--get", "alias.fixture");
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    expect((await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt }))).captured).toEqual([staged!.name]);
+    expect(store.rows().map(row => row.excerpt)).toEqual(["unrelated escaped config marker"]);
+  } finally { store.close(); }
+});
+
+test("invalid syntax in an unused Git value leaves project scope unknown", () => {
+  const f = fixture(), config = join(f.cwd, ".git", "config"), original = readFileSync(config, "utf8");
+  for (const value of ['"unterminated', '"bad\\q"']) {
+    writeFileSync(config, original + `\n[alias]\n broken = ${value}\n`);
+    const native = Bun.spawnSync(["git", "-C", f.cwd, "config", "--get", "alias.broken"], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(native.exitCode).not.toBe(0);
+    expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  }
+});

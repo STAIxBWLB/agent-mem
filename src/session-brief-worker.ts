@@ -1,4 +1,4 @@
-import { sessionStartBrief, type BriefOptions } from "./session-brief.ts";
+import type { BriefOptions } from "./session-brief.ts";
 import { CaptureStore } from "./memory/capture.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { resolveAlias } from "./memory/shard.ts";
@@ -36,13 +36,14 @@ if (import.meta.main) {
     let store: CaptureStore | undefined;
     let captured = false;
     try {
-      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining }, (input, receipt) => {
+      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: event === "SessionStart" ? () => remaining() - 80 : remaining }, (input, receipt) => {
         store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0 });
         return store.append(input, { receipt });
       });
       captured = drained.captured.includes(options.current);
     } finally { store?.close(); }
     if (event === "SessionStart") {
+      const { sessionStartBrief } = await import("./session-brief.ts");
       const result = await sessionStartBrief({ ...options, project,
         timeRemaining: () => options.deadlineAt - (performance.timeOrigin + performance.now()) });
       console.log(JSON.stringify({ ...result, captured, valid: await policy.screen({ context: result.context }) }));

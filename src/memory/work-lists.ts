@@ -8,7 +8,7 @@ import { mutationDatabase } from "./mutation.ts";
 import { canonicalPath } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
-import { machineId } from "./store.ts";
+import { machineId } from "./machine.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
 export type WorkListFields = Record<string, string | number | boolean | null>;

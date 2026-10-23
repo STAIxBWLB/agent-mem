@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionStart",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionStart",
             "timeout": 1
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook UserPromptSubmit",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook UserPromptSubmit",
             "timeout": 1
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PreToolUse",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PreToolUse",
             "timeout": 1
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUse",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUse",
             "timeout": 1
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUseFailure",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUseFailure",
             "timeout": 1
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook Stop",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook Stop",
             "timeout": 1
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionEnd",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionEnd",
             "timeout": 1
           }
         ]

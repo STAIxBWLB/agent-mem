@@ -7,7 +7,7 @@ import { normalizeCaptureFields, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
-import { machineId } from "./store.ts";
+import { machineId } from "./machine.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Available } from "./search-fts.ts";
 
 /**

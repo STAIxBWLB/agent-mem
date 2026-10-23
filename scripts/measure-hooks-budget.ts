@@ -3,7 +3,7 @@
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
@@ -31,7 +31,7 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
   const start = performance.now();
   // Observe fixed-worker PIDs as well as the outer CLI group: the worker may own a separate detached group.
   // The test preload and its append overhead conservatively count inside actual CLI wall/RSS measurements.
-  const result = Bun.spawnSync([process.execPath, "--preload", observer.preload, hookBin, "hook", event], { cwd: f.cwd, env: f.env, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
+  const result = Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
   const wallMs = performance.now() - start;
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
@@ -83,14 +83,49 @@ try {
     const segmentName = /^spool-[0-9a-f-]+\.jsonl(?:\.offset-\d+(?:-skip)?)?(?:\.draining-[0-9a-f]+)?$/;
     const entries = existsSync(spool) ? readdirSync(spool, { withFileTypes: true }) : [];
     const receipts = entries.filter(entry => entry.isFile() && segmentName.test(entry.name));
-    if (receipts.length < RUNS.contention) throw new Error(`contention did not produce per-writer spool receipts (valid=${receipts.length}, claimed=${receipts.filter(entry => entry.name.includes(".draining-")).length}, ignored=${entries.length - receipts.length})`);
+    const pendingDir = join(f.base, "hook-spool");
+    const pending = existsSync(pendingDir) ? readdirSync(pendingDir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)).length : 0;
+    if (receipts.length + pending < RUNS.contention) throw new Error(`contention did not retain its capture receipts (spool=${receipts.length}, pending=${pending})`);
   } finally { try { holder.run("ROLLBACK"); } finally { holder.close(); } }
-  const drain = invoke("PostToolUse");
-  const check = new CaptureStore({ memoryDir: f.base, project: f.project });
-  try { if (check.stats().rows !== baseline + RUNS.plain + RUNS.contention + 1) throw new Error("contended rows did not drain losslessly"); } finally { check.close(); }
+  const drains: Sample[] = [], acceptedWorkload = invocations;
+  // Capture is durable before optional work; a bounded series of real invocations observes replay.
+  // Every barrier is included in R1 and R2, and every accepted event must appear exactly once.
+  for (let pass = 0; pass < 4; pass++) {
+    drains.push(invoke("PostToolUse"));
+    const check = new CaptureStore({ memoryDir: f.base, project: f.project });
+    let rows: number[];
+    try { rows = check.rows().flatMap(row => {
+      const match = /^budget public result (\d+)$/.exec(row.excerpt), id = match ? Number(match[1]) : 0;
+      return id >= 1 && id <= acceptedWorkload ? [id] : [];
+    }); } finally { check.close(); }
+    if (new Set(rows).size !== rows.length) throw new Error("capture replay duplicated a workload event");
+    if (rows.length === acceptedWorkload) break;
+    if (pass === 3) throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
+  }
   const sessionStart = Array.from({ length: RUNS.sessionStart }, () => invoke("SessionStart"));
-  const groups = { plain: summarize(plain), spoolAndExit: summarize(contended), sessionStart: summarize(sessionStart), drain: summarize([drain]) };
-  const report = { platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, scope: "outer executable groups plus every observed fixed-worker PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const finalStore = new CaptureStore({ memoryDir: f.base, project: f.project });
+  const recorded = new Map<number, string>(), pending = new Map<number, string>();
+  try {
+    for (const row of finalStore.rows()) {
+      const match = /^budget public result (\d+)$/.exec(row.excerpt); if (!match) continue;
+      const id = Number(match[1]); if (recorded.has(id)) throw new Error("capture duplicated an accepted invocation");
+      recorded.set(id, row.at);
+    }
+  } finally { finalStore.close(); }
+  const pendingDir = join(f.base, "hook-spool");
+  for (const name of existsSync(pendingDir) ? readdirSync(pendingDir) : []) {
+    if (!/^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)) continue;
+    const value = JSON.parse(readFileSync(join(pendingDir, name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
+    if (!match || value.cwd !== f.cwd) throw new Error("pending fixture capture unavailable");
+    const id = Number(match[1]); if (pending.has(id)) throw new Error("pending fixture capture duplicated");
+    pending.set(id, value.capture.at);
+  }
+  for (let id = 1; id <= invocations; id++) {
+    if (!recorded.has(id) && !pending.has(id)) throw new Error("accepted invocation has neither capture nor pending receipt");
+    if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
+  }
+  const groups = { plain: summarize(plain), spoolAndExit: summarize(contended), sessionStart: summarize(sessionStart), drain: summarize(drains) };
+  const report = { capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, scope: "outer executable groups plus every observed fixed-worker PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   console.log(JSON.stringify(report, null, 2));
   if (!report.pass) process.exitCode = 1;
 } finally {

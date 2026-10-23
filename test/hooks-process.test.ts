@@ -13,6 +13,47 @@ function alive(pid: number) {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
 }
 
+interface AcceptedCapture { event: string; excerpt: string }
+function pendingCaptures(f: ReturnType<typeof hookFixture>, item: AcceptedCapture) {
+  const dir = join(f.base, "hook-spool");
+  if (!existsSync(dir)) return [];
+  const matches = readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
+    .map(name => JSON.parse(readFileSync(join(dir, name), "utf8")))
+    .filter(value => value.schema === "agent-mem.hook-capture/v1" && value.cwd === f.cwd && value.capture?.event === item.event && value.capture?.excerpt === item.excerpt);
+  for (const value of matches) {
+    expect(value.capture.agent).toBe("claude"); expect(Number.isFinite(Date.parse(value.capture.at))).toBe(true);
+    expect(Array.isArray(value.capture.paths)).toBe(true); expect(value.capture.paths.length).toBeLessThanOrEqual(32);
+    expect(Number.isFinite(value.capture.bytes)).toBe(true); expect(Buffer.byteLength(value.capture.excerpt)).toBeLessThanOrEqual(8000);
+  }
+  return matches;
+}
+function replayThroughHooks(f: ReturnType<typeof hookFixture>, accepted: AcceptedCapture[]) {
+  const barriers: AcceptedCapture[] = []; let rows = f.rows();
+  const matching = (item: AcceptedCapture) => rows.filter(row => row.event === item.event && row.excerpt === item.excerpt && row.project === f.project);
+  // Real accepted work drives replay. The final barrier itself may still be durably pending.
+  for (let i = 0; i < 4; i++) {
+    const excerpt = `process replay barrier ${i}`, result = f.run("PostToolUse", { prompt: excerpt });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).not.toMatch(/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/);
+    barriers.push({ event: "PostToolUse", excerpt }); rows = f.rows();
+    if (accepted.every(item => matching(item).length === 1 && pendingCaptures(f, item).length === 0) && barriers.some(item => matching(item).length === 1)) break;
+  }
+  for (const item of accepted) {
+    expect(matching(item)).toHaveLength(1); expect(pendingCaptures(f, item)).toHaveLength(0);
+  }
+  expect(barriers.some(item => matching(item).length === 1)).toBe(true);
+  for (const item of barriers) {
+    const saved = matching(item), pending = pendingCaptures(f, item);
+    expect(saved.length).toBeLessThanOrEqual(1); expect(pending.length).toBeLessThanOrEqual(1);
+    expect(saved.length === 1 || pending.length === 1).toBe(true);
+    // A committed row can retain its same-time acknowledgement claim until the next replay.
+    if (saved.length && pending.length) expect(saved[0]!.at).toBe(pending[0]!.capture.at);
+  }
+  expect(rows).toHaveLength(accepted.length + barriers.filter(item => matching(item).length === 1).length);
+  return rows;
+}
+
+
 test("SessionStart never exposes raw private or secret native input in observed fixed-worker argv", () => {
   const f = fixture(), observer = hookProcessObserver(f.root);
   const markers = ["PRIVATE_NATIVE_ARGV_SENTINEL", "SYNTHETIC_PASSWORD_ARGV_SENTINEL"];
@@ -32,8 +73,8 @@ test("SessionStart never exposes raw private or secret native input in observed 
     for (const marker of markers) expect(JSON.stringify(receipt.argv)).not.toContain(marker);
     expect(receipt.argv).toEqual([process.execPath, "--smol", observer.worker]);
   }
-  expect(f.rows().filter(row => row.excerpt === "public argv observer control")).toHaveLength(1);
-  for (const marker of markers) expect(JSON.stringify(f.rows())).not.toContain(marker);
+  const rows = replayThroughHooks(f, [{ event: "SessionStart", excerpt: "public argv observer control" }]);
+  for (const marker of markers) expect(JSON.stringify(rows)).not.toContain(marker);
 });
 
 for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} timeout terminates its observed owned native descendant and fails open within R2`, async () => {
@@ -65,13 +106,13 @@ for (const event of ["SessionStart", "PreToolUse"] as const) test(`${event} time
     expect(pending).toHaveLength(1);
     expect(hookCapturePending(f.base, pending[0]!.name)).toBe(true);
     expect(f.rows().filter(row => row.excerpt === "public timeout fixture")).toHaveLength(0);
+    const accepted = [{ event, excerpt: "public timeout fixture" }];
     for (const marker of ["healthy follow-up", "second healthy follow-up"]) {
       const healthy = f.run(event, { prompt: marker }); expect(healthy.exitCode).toBe(0);
-      const rows = f.rows();
-      expect(rows.filter(row => row.excerpt === marker && row.event === event && row.project === f.project)).toHaveLength(1);
-      expect(rows.filter(row => row.excerpt === "public timeout fixture" && row.event === event && row.project === f.project)).toHaveLength(1);
-      expect(hookCapturePending(f.base, pending[0]!.name)).toBe(false);
+      accepted.push({ event, excerpt: marker });
     }
+    replayThroughHooks(f, accepted);
+    expect(hookCapturePending(f.base, pending[0]!.name)).toBe(false);
   } finally {
     if (nativePid === undefined && existsSync(pidFile)) nativePid = Number(readFileSync(pidFile, "utf8").trim());
     if (nativePid !== undefined && Number.isSafeInteger(nativePid) && nativePid > 0 && alive(nativePid)) {

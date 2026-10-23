@@ -1,6 +1,6 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
+import type { CaptureRow } from "./memory/capture.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -9,7 +9,7 @@ import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
-import { MemoryStore, openShardStore, type View } from "./memory/store.ts";
+import type { View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
 export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
@@ -119,7 +119,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         guard();
         // ponytail: keep cleanup/serialization headroom instead of starting another cold store.
         // A future paged deadline port can refine this section-level cutoff; the parent remains the hard stop.
-        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 30)) { coverage[section] = "unavailable"; return; }
+        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 45)) { coverage[section] = "unavailable"; return; }
         await work(); guard();
       }
       catch (error) {
@@ -160,12 +160,14 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (!complete) coverage[section] = "partial";
       };
       await run("curated", async () => {
+        const { MemoryStore, openShardStore } = await import("./memory/store.ts");
         const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true, ...(reconcile ? { reconcile } : {}) })
           : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
         closers.push(() => store.close());
         await recent("curated", window => store.readPage(window), noteDisplay);
       });
       await run("capture", async () => {
+        const { CaptureStore } = await import("./memory/capture.ts");
         const capture = new CaptureStore({ memoryDir: base, project }); closers.push(() => capture.close());
         await recent("capture", window => capture.readPage(window), captureDisplay);
       });
