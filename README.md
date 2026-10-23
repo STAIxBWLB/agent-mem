@@ -153,7 +153,7 @@ amem repo status                                     # the file, its entries, wh
 amem repo attributes [--confirm]                     # add `.amem/log.jsonl merge=union` to .gitattributes, only when you ask
 ```
 
-It is person-only and needs a terminal. The entry is screened (secrets, personal data, private paths, the repository's own `local.deny` and `pii.paths`), and amem never commits or pushes: you review and commit the file. Recall, brief and MCP search include the current repository's `.amem/` when that repository is the project, never another project's.
+It is person-only and needs a terminal. The entry is screened (secrets, personal data, private paths, the repository's own `local.deny` and `pii.paths` with agent-hub's glob rules), and amem never commits or pushes: you review and commit the file. A repository counts as private only when every remote's effective URL (after `insteadOf`) is a `github.com` repository that `gh` reports private; any other host is unknown and asks for the per-entry confirmation. The file is read as untrusted input: the newest 1 MiB, no control characters, a future date shown as now. Recall, brief and MCP search include the current repository's `.amem/` when that repository is the project, never another project's.
 
 ## Managing the project shards (#15 T5)
 

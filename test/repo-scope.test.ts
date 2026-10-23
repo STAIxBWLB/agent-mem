@@ -686,6 +686,34 @@ test("brief: a 1 MiB log is read as the newest handful only and never past the d
   expect(cut.views).toHaveLength(20); expect(cut.partial).toBe(true);                // the 21st check saw the deadline: 20 rows, not the ~270 the window holds
 });
 
+test("brief: the repo section screens only the newest few rows (a row limit), and stops at the hook's own deadline", async () => {
+  const r = rig();
+  writeLog(r, Array.from({ length: 200 }, (_, i) => repoLine(`decision number ${i}`, { at: `2026-10-20T10:${String(i % 60).padStart(2, "0")}:00.000Z` })));
+  const screened: string[] = []; // distinct rows: a shown row is screened again when it is added to the brief
+  const counting = (after?: () => void) => ({ host: { screen: async (value: unknown) => { const text = (value as { text?: string })?.text; if (text?.startsWith("decision number") && !screened.includes(text)) { screened.push(text); after?.(); } return true; } } });
+  // no deadline pressure: the limit alone bounds the work to SECTION_RECORDS + 1 rows, not the 200 in the file
+  await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, policy: counting(), timeRemaining: () => 1000 });
+  expect(screened.length).toBeGreaterThan(0); expect(screened.length).toBeLessThanOrEqual(5);
+  expect(screened[0]).toBe("decision number 199");
+  // deadline pressure: after the second row the time left drops under the reserve, so the read stops there (the limit alone would allow five)
+  screened.length = 0; let left = 1000;
+  const brief = await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, policy: counting(() => { if (screened.length >= 2) left = 15; }), timeRemaining: () => left });
+  expect(screened.length, "the read ran past the deadline").toBeLessThanOrEqual(3); expect(screened.length).toBeGreaterThanOrEqual(2);
+  expect(brief.context).toContain("repo=partial");
+});
+
+test("repo-scope.ts stays a leaf on the hook's cold path: its static imports never reach sync.ts or the store (only a promotion loads sync lazily; shard.ts and the generation code were already on the brief's path)", () => {
+  const seen = new Set<string>(), stack = [join(import.meta.dir, "..", "src", "memory", "repo-scope.ts")];
+  while (stack.length) {
+    const file = stack.pop()!; if (seen.has(file)) continue; seen.add(file);
+    const text = readFileSync(file, "utf8").replace(/^\s*\/\/.*$/gm, "");
+    for (const m of text.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^;]*?\sfrom\s+"(\.[^"]+)"/gm)) stack.push(join(file, "..", m[1]!));
+  }
+  const names = [...seen].map(file => file.slice(file.indexOf("/src/") + 5));
+  expect(names).toContain("memory/repo-scope.ts"); expect(names.length).toBeGreaterThan(1);
+  for (const heavy of ["memory/sync.ts", "memory/store.ts"]) expect(names, `repo-scope.ts statically imports ${heavy}`).not.toContain(heavy);
+});
+
 test("control characters are refused on read: a pull request cannot carry a terminal escape into list, search or show", async () => {
   const r = rig();
   const esc = "\u001b[2J\u001b]0;pwned\u0007", csi = "\u009b31m", nul = "a\u0000b", bell = "ring\u0007";

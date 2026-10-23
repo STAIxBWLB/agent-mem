@@ -3,11 +3,12 @@
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
+import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
@@ -19,7 +20,7 @@ const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
-const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
+const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
 let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 function members(pgid: number): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -43,7 +44,7 @@ function pendingInvocation(event: string, excerpt: string): boolean {
   }
   return false;
 }
-function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers): Sample {
+function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false): Sample {
   const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
   const start = performance.now();
@@ -91,6 +92,10 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     const output = JSON.parse(result.stdout.toString()), context = output.hookSpecificOutput?.additionalContext;
     if (output.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof context !== "string" || !context.includes(workMarker) || !/coverage|complete|partial/i.test(context) || Buffer.byteLength(context) > 1200) throw new Error(`SessionStart fixture lacked bounded known work and coverage: wall=${wallMs}, metric=${metric.wallMs}, context=${JSON.stringify(context)}`);
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
+    // With a repo log the brief names the repo section in its coverage line, whatever its state: inside the hook's own 140 ms the optional sections
+    // (curated, capture, repo) are dropped as "deadline exhausted" when under 80 ms is left, which is the fail-open design and not a repo fault.
+    if (expectRepoSection && !/repo=(?:complete|partial|unavailable)/.test(context)) throw new Error(`SessionStart with a repo log named no repo coverage: ${context.slice(0, 160)}`);
+    if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each exec-image peak; raw inherited-rusage peaks remain separate diagnostics. CLI rusage independently covers the executable.
   return { wallMs, cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB ?? recordedRssMB, rssMB: Math.max(cliRssMB, recordedRssMB) };
@@ -153,10 +158,23 @@ try {
     pending.set(id, value.capture.at);
   }
   for (let id = 1; id <= invocations; id++) {
-    if (!recorded.has(id) && !pending.has(id)) throw new Error("accepted invocation has neither capture nor pending receipt");
+    if (!recorded.has(id) && !pending.has(id)) throw new Error(`accepted invocation has neither capture nor pending receipt (id=${id}, of ${invocations}, recorded=${recorded.size}, pending=${pending.size})`);
     if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
   }
-  const groups = { plain: summarize("plain", plain), spoolAndExit: summarize("spoolAndExit", contended), sessionStart: summarize("sessionStart", sessionStart), drain: summarize("drain", drains) };
+  // #15 T4 (after the capture accounting above, which counts PostToolUse and plain SessionStart runs only): the same real `bin/amem.js hook SessionStart`, with a 1 MiB `.amem/log.jsonl` (the repo scope's read cap) in the repository. The repo section must be bounded by the
+  // hook's own deadline, so a log at the cap costs the hook no more than the budget it already has. This is a wall-time and RSS guard, not proof of the bounded read:
+  // inside the native hook's 140 ms the optional sections are usually dropped before the repo read starts. The bounded read is proven in test/repo-scope.test.ts (1 MiB brief test).
+  const repoLog = join(f.cwd, ".amem", "log.jsonl");
+  mkdirSync(join(f.cwd, ".amem"), { recursive: true });
+  const repoLines: string[] = [];
+  for (let i = 0; repoLines.join("\n").length < 1_000_000; i++) {
+    const body = { schema: REPO_SCHEMA as typeof REPO_SCHEMA, op: "note" as const, at: "2026-10-20T10:00:00.000Z", kind: "decision" as const, text: `shared decision ${i} ${"y".repeat(3000)}`, about: [] as string[], actor: "person" as const };
+    repoLines.push(JSON.stringify({ ...body, id: repoEntryId(body) }));
+  }
+  writeFileSync(repoLog, `${repoLines.join("\n")}\n`);
+  if (statSync(repoLog).size < 1_000_000) throw new Error("repo log fixture is smaller than 1 MB");
+  const sessionStartRepoLog = Array.from({ length: RUNS.sessionStart }, () => invoke("SessionStart", "sessionStartRepoLog", true));
+  const groups = { plain: summarize("plain", plain), spoolAndExit: summarize("spoolAndExit", contended), sessionStart: summarize("sessionStart", sessionStart), sessionStartRepoLog: summarize("sessionStartRepoLog", sessionStartRepoLog), drain: summarize("drain", drains) };
   // These actual-CLI timeout legs retain hard R1/RSS assertions; only individual wall misses are advisory on CI.
   // Sample counts and limits are unchanged; only exact GitHub macOS workload p95 verdicts are advisory.
   const timeoutPaths = [];

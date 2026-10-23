@@ -20,7 +20,7 @@ afterEach(() => {
 function fakeGh(answer: string): { log: () => string[] } {
   const dir = realPath(mkdtempSync(join(tmpdir(), "amem-fakegh-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const log = join(dir, "calls.log");
-  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf 'ARGS=%s GH_HOST=%s\\n' "$*" "\${GH_HOST-unset}" >> '${log}'\necho ${answer}\n`); chmodSync(join(dir, "gh"), 0o755);
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf 'ARGS=%s GH_HOST=%s ENT=%s/%s\\n' "$*" "\${GH_HOST-unset}" "\${GH_ENTERPRISE_TOKEN-unset}" "\${GITHUB_ENTERPRISE_TOKEN-unset}" >> '${log}'\necho ${answer}\n`); chmodSync(join(dir, "gh"), 0o755);
   process.env.PATH = `${dir}:${oldPath}`;
   return { log: () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [] };
 }
@@ -53,7 +53,14 @@ test("gh is pinned to github.com: an inherited GH_HOST never redirects the answe
   const gh = fakeGh("private");
   process.env.GH_HOST = "attacker.example";
   expect(await remoteVisibility("git@github.com:acme/notes.git")).toBe("private");
-  expect(gh.log()).toEqual(["ARGS=repo view acme/notes --json visibility --jq .visibility GH_HOST=github.com"]);
+  expect(gh.log()).toEqual(["ARGS=repo view acme/notes --json visibility --jq .visibility GH_HOST=github.com ENT=unset/unset"]);
+});
+
+test("gh never receives an enterprise token: it would be sent to github.com as a credential for another server", async () => {
+  const gh = fakeGh("private");
+  process.env.GH_ENTERPRISE_TOKEN = "ghe-secret-1"; process.env.GITHUB_ENTERPRISE_TOKEN = "ghe-secret-2";
+  try { expect(await remoteVisibility("https://github.com/acme/notes.git")).toBe("private"); } finally { delete process.env.GH_ENTERPRISE_TOKEN; delete process.env.GITHUB_ENTERPRISE_TOKEN; }
+  expect(gh.log()).toEqual(["ARGS=repo view acme/notes --json visibility --jq .visibility GH_HOST=github.com ENT=unset/unset"]);
 });
 
 test("gh answers map: public is public, private and internal are private, anything else, a failure or a missing gh is unknown", async () => {
@@ -73,7 +80,7 @@ test("`amem sync`'s private-remote guard (syncMemory, the 0.6.0 path) asks gh ab
   expect(gh.log(), "a look-alike host must not be resolved to acme/notes").toEqual([]);
   const real = await syncMemory(open("b"), { remote: "https://github.com/acme/notes.git" });
   expect(real.ok ? "" : real.error).not.toContain("is public");
-  expect(gh.log()).toEqual(["ARGS=repo view acme/notes --json visibility --jq .visibility GH_HOST=github.com"]);
+  expect(gh.log()).toEqual(["ARGS=repo view acme/notes --json visibility --jq .visibility GH_HOST=github.com ENT=unset/unset"]);
 });
 
 test("end to end: a public push target whose URL merely contains github.com cannot make `amem promote --to repo --confirm` skip --confirm-public", async () => {
