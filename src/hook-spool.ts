@@ -350,7 +350,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
   retireUnresolved(base, full ? cwd : undefined);
   const queued = entries(base);
-  // Soft per-home cap: concurrent publishers can exceed it by their already in-flight records, never by eviction.
+  // Soft per-home cap: concurrent publishers can exceed it by their already in-flight records.
   if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) throw new HookSpoolFull();
   const name = `hook-${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(dir, name)); }
