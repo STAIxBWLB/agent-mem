@@ -7,8 +7,8 @@ import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { appendRepoLine, parseRepoLine, planRepoPromotion, readRepoScope, REPO_SCHEMA, repoEntryId, repoVisibility, type RepoLine } from "../src/memory/repo-scope.ts";
-import { createStandalonePolicy } from "../src/memory/policy.ts";
+import { appendRepoLine, parseRepoLine, planRepoPromotion, readRepoScope, REPO_SCHEMA, repoEntryId, repoReadPolicy, repoVisibility, type RepoLine } from "../src/memory/repo-scope.ts";
+import { createStandalonePolicy, type MemoryPolicy } from "../src/memory/policy.ts";
 import { MemoryStore, type Kind } from "../src/memory/store.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 import type { Visibility } from "../src/memory/sync.ts";
@@ -102,15 +102,53 @@ test("local.deny and pii.paths of the repository's own agent-hub config refuse a
   writeFileSync(join(r.repo, ".agenthub", "config.local.json"), JSON.stringify({ pii: { paths: ["customers/"] } }));
   const denied = r.note("the plan is in internal-vault/roadmap.md"), pii = r.note("export customers/acme.csv monthly"), fine = r.note("we keep one writer per shard");
   expect(await refusal(promote(r, denied, "--confirm"))).toContain("local.deny");
-  expect(await refusal(promote(r, pii, "--confirm"))).toContain("local.deny");
+  expect(await refusal(promote(r, pii, "--confirm"))).toContain("pii.paths entry");
   expect(r.log()).toBe("");
   expect(await promote(r, fine, "--confirm")).toContain("appended");
+});
+
+test("pii.paths and local.deny are matched with the hub's glob and subtree semantics on promote and on read, not as substrings", async () => {
+  const r = rig();
+  mkdirSync(join(r.repo, ".agenthub"));
+  writeFileSync(join(r.repo, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: ["data/**/*.csv", "hr/*", "secrets"] }, local: { deny: ["internal-vault"] } }));
+  const refused = ["the export is data/2025/customers.csv", "payroll is in hr/payroll.xlsx", "the keys sit under secrets/prod/k", "see Secrets/Prod/K (case differs)"];
+  for (const text of refused) { const message = await refusal(promote(r, r.note(text), "--confirm")); expect(message, text).toContain("pii.paths entry"); }
+  expect(await refusal(promote(r, r.note("link only", { about: ["path:data/q/z.csv"] }), "--confirm"))).toContain("pii.paths entry");
+  expect(r.log()).toBe("");
+  const fine = r.note("data pipelines run nightly; HR reviews are quarterly; the csv writer is in src/csv.ts");
+  expect(await promote(r, fine, "--confirm")).toContain("appended");
+  // read side: a valid line a pull request added is withheld by the same matcher, whatever its author thought
+  writeLog(r, [repoLine("the export is data/2025/customers.csv"), repoLine("payroll is in hr/payroll.xlsx"), repoLine("keys under secrets/prod/k"), repoLine("clean line about src/csv.ts")]);
+  const read = await readRepoScope(r.repo, (repoReadPolicy(r.repo) as { policy: MemoryPolicy }).policy);
+  expect(read.views.map(v => v.text)).toEqual(["clean line about src/csv.ts"]);
+  expect(read.skipped.withheld).toBe(3);
+  // and through the recall surfaces: the person's own private note still shows in their own list (it is theirs, unscreened), the repo section does not carry the withheld lines
+  const listed = await runCli(["search", "export"], r.person), repoPart = listed.slice(listed.indexOf("repo scope (.amem/log.jsonl):") >= 0 ? listed.indexOf("repo scope (.amem/log.jsonl):") : listed.length);
+  expect(repoPart).not.toContain("customers.csv"); expect(listed).toContain("3 withheld by the screen");
+  const mcp = createMemoryMcp({ cwd: r.repo, base: r.base, project: r.project });
+  try { expect(JSON.stringify(await mcp.tools.amem_search({ query: "payroll" }))).not.toContain("hr/payroll"); } finally { mcp.close(); }
+});
+
+test("an invalid pii.paths entry (absolute, .., brackets, a mixed ** segment, more than 64) refuses by name, as the hub's own loader does", async () => {
+  for (const bad of [["/etc/x"], ["../x"], ["a[1]"], ["a**b"], Array.from({ length: 65 }, (_, i) => `p${i}`), "data"]) {
+    const r = rig(); mkdirSync(join(r.repo, ".agenthub")); writeFileSync(join(r.repo, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: bad } }));
+    expect(await refusal(promote(r, r.note("we keep one writer per shard"), "--confirm")), JSON.stringify(bad).slice(0, 30)).toContain("pii.paths");
+    expect(existsSync(join(r.repo, ".amem"))).toBe(false);
+  }
+});
+
+test("a local.deny list longer than the screen holds refuses by name instead of a generic invalid-policy error", async () => {
+  const r = rig(); mkdirSync(join(r.repo, ".agenthub"));
+  writeFileSync(join(r.repo, ".agenthub", "config.json"), JSON.stringify({ local: { deny: Array.from({ length: 65 }, (_, i) => `deny-${i}`) } }));
+  expect(await refusal(promote(r, r.note("we keep one writer per shard"), "--confirm"))).toContain("local.deny names more than 64");
+  writeFileSync(join(r.repo, ".agenthub", "config.json"), JSON.stringify({ local: { deny: ["x".repeat(300)] } }));
+  expect(await refusal(promote(r, r.note("we keep one writer per shard"), "--confirm"))).toContain("at most 256 bytes");
 });
 
 for (const [label, content] of [["does not parse", "{not json"], ["is not an object", "[]"], ["has a non-list deny", JSON.stringify({ local: { deny: "x" } })], ["has a non-object local", JSON.stringify({ local: 5 })]] as const) test(`a repository config that ${label} refuses the promotion instead of skipping the deny list`, async () => {
   const r = rig(); mkdirSync(join(r.repo, ".agenthub")); writeFileSync(join(r.repo, ".agenthub", "config.json"), content);
   const id = r.note("we keep one writer per shard");
-  expect(await refusal(promote(r, id, "--confirm"))).toContain("fix it before promoting");
+  expect(await refusal(promote(r, id, "--confirm"))).toContain("fix it before using the repo scope");
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
 });
 

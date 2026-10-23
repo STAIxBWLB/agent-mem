@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { realPath, memoryGitEnv, memoryGitSync } from "./platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./policy.ts";
 import { memoryProjectKey } from "./project.ts";
+import { mentionsPrivatePath, policyEntries } from "./path-glob.ts";
 import { resolveAlias } from "./shard.ts";
 import type { Visibility } from "./sync.ts";
 import type { View } from "./store.ts";
@@ -182,36 +183,66 @@ export function repoLogIgnored(root: string): boolean {
   } catch { return false; }
 }
 
-/** `local.deny` and `pii.paths` of the repository's own agent-hub config, read as data (no agent-hub import). Anything that exists but is unreadable or malformed refuses. */
-export function repoPolicyOptions(root: string): { denyPaths: string[] } {
-  const denyPaths: string[] = [];
+/**
+ * `local.deny` and `pii.paths` of the repository's own agent-hub config, read as data (no agent-hub import). Anything that exists but is unreadable or
+ * malformed refuses. `local.deny` entries are substrings (the hub's `isDenied` extra list); `pii.paths` entries are the hub's bounded globs and
+ * subtrees (`policyEntries`, a port of `policyPaths`), matched by `src/memory/path-glob.ts`, never as substrings.
+ */
+export function repoPolicyOptions(root: string): { denyPaths: string[]; piiPaths: string[] } {
+  const denyPaths: string[] = [], piiPaths: string[] = [];
   for (const name of ["config.json", "config.local.json"]) {
     const file = join(root, ".agenthub", name);
     const stat = lstatSync(file, { throwIfNoEntry: false });
     if (!stat) continue;
-    if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES) throw new Error(`.agenthub/${name} is not a plain file within ${MAX_CONFIG_BYTES} bytes; fix it before promoting to repo scope`);
+    const fix = "; fix it before using the repo scope";
+    if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES) throw new Error(`.agenthub/${name} is not a plain file within ${MAX_CONFIG_BYTES} bytes${fix}`);
     let config: unknown;
-    try { config = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`.agenthub/${name} does not parse; fix it before promoting to repo scope`); }
-    if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error(`.agenthub/${name} is not a JSON object; fix it before promoting to repo scope`);
-    const strings = (value: unknown, label: string): string[] => {
-      if (value === undefined) return [];
-      if (!Array.isArray(value) || !value.every(item => typeof item === "string")) throw new Error(`.agenthub/${name}: ${label} is not a list of strings; fix it before promoting to repo scope`);
-      return value as string[];
-    };
+    try { config = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`.agenthub/${name} does not parse${fix}`); }
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error(`.agenthub/${name} is not a JSON object${fix}`);
     const body = config as { local?: { deny?: unknown }; pii?: { paths?: unknown } };
-    if (body.local !== undefined && (typeof body.local !== "object" || body.local === null || Array.isArray(body.local))) throw new Error(`.agenthub/${name}: local is not an object; fix it before promoting to repo scope`);
-    if (body.pii !== undefined && (typeof body.pii !== "object" || body.pii === null || Array.isArray(body.pii))) throw new Error(`.agenthub/${name}: pii is not an object; fix it before promoting to repo scope`);
-    denyPaths.push(...strings(body.local?.deny, "local.deny"), ...strings(body.pii?.paths, "pii.paths"));
+    if (body.local !== undefined && (typeof body.local !== "object" || body.local === null || Array.isArray(body.local))) throw new Error(`.agenthub/${name}: local is not an object${fix}`);
+    if (body.pii !== undefined && (typeof body.pii !== "object" || body.pii === null || Array.isArray(body.pii))) throw new Error(`.agenthub/${name}: pii is not an object${fix}`);
+    const deny = body.local?.deny;
+    if (deny !== undefined) {
+      // The standalone policy takes at most 64 literals of 256 bytes: say so here, so a long list refuses by name instead of as a generic "invalid deny paths".
+      if (!Array.isArray(deny) || !deny.every(item => typeof item === "string" && item.trim() !== "" && Buffer.byteLength(item) <= 256 && !/[\x00-\x1f\x7f]/.test(item))) throw new Error(`.agenthub/${name}: local.deny is not a list of non-empty strings of at most 256 bytes${fix}`);
+      denyPaths.push(...deny as string[]);
+    }
+    try { piiPaths.push(...policyEntries(body.pii?.paths, `.agenthub/${name}: pii.paths`)); } catch (error) { throw new Error(`${(error as Error).message}${fix}`); }
   }
-  return { denyPaths: [...new Set(denyPaths)] };
+  const unique = (list: string[]) => [...new Set(list)];
+  if (unique(denyPaths).length > 64) throw new Error(`.agenthub config: local.deny names more than 64 entries across config.json and config.local.json, more than amem's screen holds; trim it${" before using the repo scope"}`);
+  return { denyPaths: unique(denyPaths), piiPaths: unique(piiPaths) };
 }
 
-/** The policy a repo-bound reader applies: the caller's standalone screen (host policy and patterns included) narrowed by this repository's own deny list. Unreadable config withholds repo rows (reason), never shows them. */
+/** Every string in a screened value, and its `about` links: what `mentionsPrivatePath` reads. Bounded like the policy's own snapshot. */
+function textOf(value: unknown): { text: string; about: string[] } {
+  const strings: string[] = []; let budget = 4096;
+  const visit = (input: unknown, depth: number) => {
+    if (budget-- <= 0 || depth > 16) return;
+    if (typeof input === "string") strings.push(input);
+    else if (Array.isArray(input)) for (const item of input) visit(item, depth + 1);
+    else if (input && typeof input === "object") for (const [key, item] of Object.entries(input)) { strings.push(key); visit(item, depth + 1); }
+  };
+  visit(value, 0);
+  const about = value && typeof value === "object" && Array.isArray((value as { about?: unknown }).about) ? (value as { about: unknown[] }).about.filter((x): x is string => typeof x === "string") : [];
+  return { text: strings.join("\n"), about };
+}
+
+/** The standalone screen, plus the repository's own `pii.paths` matched with the hub's glob semantics. Either declining declines. */
+export function repoPolicy(options: { denyPaths: string[]; piiPaths: string[] }, base: StandalonePolicyOptions = {}): MemoryPolicy {
+  const standalone = createStandalonePolicy({ ...base, denyPaths: [...new Set([...(base.denyPaths ?? []), ...options.denyPaths])] });
+  return { async screen(value: unknown): Promise<boolean> {
+    if (!await standalone.screen(value)) return false;
+    if (!options.piiPaths.length) return true;
+    const { text, about } = textOf(value);
+    return !mentionsPrivatePath(text, about, options.piiPaths);
+  } };
+}
+
+/** The policy a repo-bound reader applies: the caller's standalone screen (host policy and patterns included) narrowed by this repository's own deny list and `pii.paths`. Unreadable config withholds repo rows (reason), never shows them. */
 export function repoReadPolicy(root: string, base: StandalonePolicyOptions = {}): { policy: MemoryPolicy } | { reason: string } {
-  try {
-    const repo = repoPolicyOptions(root);
-    return { policy: createStandalonePolicy({ ...base, denyPaths: [...new Set([...(base.denyPaths ?? []), ...repo.denyPaths])] }) };
-  } catch (error) { return { reason: (error as Error).message }; }
+  try { return { policy: repoPolicy(repoPolicyOptions(root), base) }; } catch (error) { return { reason: (error as Error).message }; }
 }
 
 const HOME_PATH = [/\/Users\/[^/\s"'`]+\//, /\/home\/[^/\s"'`]+\//, /[A-Za-z]:\\Users\\[^\\\s"'`]+\\/, /~\/\.(?:ssh|aws|gnupg|config|agenthub|maru|claude|codex)\b/];
@@ -247,12 +278,12 @@ export async function planRepoPromotion(root: string, note: View): Promise<Promo
   const flat = `${note.title ?? ""}\n${note.text}\n${about.join("\n")}`;
   if (namesPrivatePath(flat)) refusals.push("it names a private path (a home directory or a credential location)");
   let policy: MemoryPolicy | undefined;
-  try { policy = createStandalonePolicy(repoPolicyOptions(root)); } catch (error) { refusals.push((error as Error).message); }
+  try { policy = repoPolicy(repoPolicyOptions(root)); } catch (error) { refusals.push((error as Error).message); }
   // The policy's shape check refuses `undefined` values, so the screened value is exactly the committed line's own fields.
   const { id: _lineId, ...committed } = line;
   // The writer and every reader must agree: a line the reader's own parser rejects (a byte limit, a shape) is never appended, whatever the checks above said.
   if (!refusals.length && "error" in parseRepoLine(JSON.stringify(line))) refusals.push("the line it would write does not pass the repo reader's own validation (a title, text or link over a limit, or an empty field); shorten it first");
-  if (policy && !await policy.screen(committed)) refusals.push("the screen declined it: a secret, personal data, a private path or a local.deny entry");
+  if (policy && !await policy.screen(committed)) refusals.push("the screen declined it: a secret, personal data, a private path, a local.deny entry or a pii.paths entry");
   const read = readLog(root);
   if ("unsafe" in read) refusals.push(read.unsafe);
   const alreadyPresent = !("unsafe" in read) && read.lines.some(raw => { const parsed = parseRepoLine(raw); return "view" in parsed && parsed.view.id === line.id; });
