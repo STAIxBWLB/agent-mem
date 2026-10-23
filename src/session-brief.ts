@@ -9,6 +9,7 @@ import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { projectState } from "./memory/lifecycle.ts";
 import type { View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
@@ -86,6 +87,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     if (!Number.isSafeInteger(maximum) || maximum < 1) return result;
     const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome());
     const requested = options.project ?? memoryProjectKey(cwd, { repositoryIsolation: true }), project = resolveAlias(base, requested);
+    // #15 T5: a project the person archived or forgot yields no brief at all, before any lease, store or screen is opened.
+    if (projectState(base, project) !== "active") return result;
     const policy = createStandalonePolicy(options.policy), release = registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
     const selection = readSelector(base).revision;
@@ -98,7 +101,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (drifted) throw new BindingChanged();
         release.verify();
         if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")
-          || readSelector(base).revision !== selection) throw new BindingChanged();
+          || readSelector(base).revision !== selection || projectState(base, project) !== "active") throw new BindingChanged();
         const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
         if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
       } catch { drifted = true; throw new BindingChanged(); }

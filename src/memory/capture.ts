@@ -7,6 +7,7 @@ import { normalizeCaptureFields, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, readShardDescriptor, resolveAlias, shardKeyHash } from "./shard.ts";
+import { assertProjectActive } from "./lifecycle.ts";
 import { machineId } from "./machine.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Available } from "./search-fts.ts";
 
@@ -81,6 +82,11 @@ export interface CaptureOptions {
   recentReadRows?: boolean;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
+  /**
+   * #15 T5: a writable open of an archived or forgotten project is refused (the person took it out of recall; `amem project unarchive` brings an archived one back).
+   * `ignore` is for the maintenance that must still reach the shard (gc, export): it never appends.
+   */
+  lifecycle?: "enforce" | "ignore";
 }
 export interface CaptureAppendOptions {
   /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */
@@ -179,6 +185,7 @@ export class CaptureStore {
     if (this.readOnly && !/^[a-f0-9]{16}$/.test(machine)) throw new Error("capture machine identity unavailable");
     this.requestedKey = opts.project;
     this.key = resolveAlias(this.base, opts.project);
+    if (!this.readOnly && opts.lifecycle !== "ignore") assertProjectActive(this.base, this.key);
     if (this.readOnly) {
       const descriptor = lstatSync(join(this.base, "projects", shardKeyHash(this.key), "project.json"));
       if (!descriptor.isFile() || descriptor.isSymbolicLink() || descriptor.size > 4096
