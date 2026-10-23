@@ -1,6 +1,14 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **new-head GitHub macOS acceptance pending**. At `92ab7d42532f11b083a5e63a16b10f8758ffbeb6`, actual [run 39905074398](https://github.com/STAIxBWLB/agent-mem/actions/runs/39905074398) passed Ubuntu and both platforms' R1/R2 steps. macOS still failed the unchanged six-invocation foreign-full-tier SessionStart test (empty stdout); the cold diagnostic returned 365 bytes on attempt 0. The admission follow-up below addresses that remaining I/O work. PR #34 remains unmergeable until exact-head CI and clean re-review pass.
+Status: **macOS acceptance remains open**. The privacy fix at `1e4ec025e0359d05d515988b50da632f5a1545a8` passed Ubuntu but regressed SessionStart on actual macOS [run 39909819878](https://github.com/STAIxBWLB/agent-mem/actions/runs/39909819878), including a failed-job rerun. The preceding `b797a99b` passed both OSes but had the legacy-remote privacy finding. No passing local result below supersedes those runner failures. PR #34 remains unmergeable pending both-platform exact-head CI and the held privacy/performance verdict.
+
+## SessionStart maintenance deferral
+
+Runtime `89313a7043ecfbeac25be118ffcb90b484f4de01` keeps the legacy-remote and physical-root privacy bindings. Cache publication now sweeps stale temps only when its explicit internal maintenance option is enabled, which the fixed worker does only for non-SessionStart events. SessionStart can still resolve natively when its derived cache is full; it never guesses a project. The final cache-hit validity recheck already includes every semantic input, so the duplicate semantic scan at that same boundary is removed while retaining the stronger recheck.
+
+The actual-SessionStart regression fails on the former runtime because the stale temp is removed, then passes with deferred cleanup and a later maintenance-enabled publication. The existing 128-temp cleanup and all legacy-remote invalidation assertions remain. The native focused suite passes 62 tests/1,860 expectations. Numeric runner diagnostics now split the stronger validity computation, mark cache maintenance/publication, and add a separately prepared 256-record foreign-full-tier SessionStart case; no deadline or success assertion is relaxed.
+
+Frozen native macOS, Bun 1.4.2: plain capture p95 46.09 ms (70.56 MB own / 70.58 MB raw combined peak), contention 56.98 ms (68.06 / 68.08 MB), SessionStart 73.16 ms, max 79.35 (77.17 / 77.19 MB), drain 49.57 ms (66.88 / 66.89 MB). All 20 contexts retained known work, all 55 original captures replayed exactly once, and R1 found 76 invocations/helpers with zero leftovers. The cold diagnostic returned 365 bytes at 68.65 ms and the full-foreign-tier case 365 bytes at 76.60 ms, both with known work and no maintenance-sweep stage. The full isolated Linux AGENTS gate passed: typecheck clean, boundary OK (47 source files), 649 pass, 5 unavailable-shell skips, 0 fail, 9,540 expectations across 654 tests/82 files in 145.94 s; npm pack dry-run OK (53 files). These are local/container diagnostics, not GitHub acceptance; the new runner stages must explain the actual macOS result.
 
 ## Identity privacy follow-up
 
