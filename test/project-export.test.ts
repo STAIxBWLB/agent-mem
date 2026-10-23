@@ -103,10 +103,14 @@ test("export of an archived project works, and an aliased key exports the canoni
   expect(projectState(base, "github.com/o/a")).toBe("archived"); // export changes no state
 });
 
-test("export is read-only for the home: no shard, lifecycle or catalog file changes", async () => {
+// What "read-only" means here: no authored or content file changes (capture rows, curated logs, lifecycle, aliases, configs, work lists, descriptors) and no file
+// appears except SQLite's own transient sidecars (-wal, -shm, -journal) and the derived indexes (index.db, search.db, mutation-lock.db, catalog.db), which any amem read
+// may create or refresh and which are rebuildable from the logs. Runners differ on the sidecars (Linux leaves them after a read-only open, macOS removes them).
+const DERIVED = /(?:-wal|-shm|-journal)$|\/(?:index|search|mutation-lock|catalog)\.db$/;
+test("export changes no content file of the home: only derived indexes and SQLite sidecars may come or go", async () => {
   const { dir, base } = home();
   capture(dir, "github.com/o/a", ["alpha one"]);
-  const snapshot = () => [...walk(base)].map(([p, s]) => `${p}:${s}`).sort();
+  const snapshot = () => [...walk(base)].filter(([p]) => !DERIVED.test(p)).map(([p, s]) => `${p}:${s}`).sort();
   const before = snapshot();
   await exportProject(base, "github.com/o/a", { to: out(dir) });
   expect(snapshot()).toEqual(before);
@@ -149,10 +153,10 @@ test("cross-project search leaves archived and forgotten projects out, applies t
   expect(limited.hits).toHaveLength(1); expect(limited.projects).toEqual(["github.com/o/a", "github.com/o/b"]);
 });
 
-test("cross-project search is read-only for the home", () => {
+test("cross-project search changes no content file of the home (derived indexes and sidecars may refresh)", () => {
   const { dir, base } = home();
   note(dir, "github.com/o/a", "needle alpha"); capture(dir, "github.com/o/a", ["needle row"]);
-  const snapshot = () => [...walk(base)].map(([p, s]) => `${p}:${s}`).filter(line => !/index\.db|search\.db|mutation-lock|-wal|-shm|catalog\.db/.test(line)).sort();
+  const snapshot = () => [...walk(base)].filter(([p]) => !DERIVED.test(p)).map(([p, s]) => `${p}:${s}`).sort();
   const before = snapshot();
   searchAllProjects(base, "needle");
   expect(snapshot()).toEqual(before);

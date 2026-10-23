@@ -7,6 +7,7 @@ import { normalizeCaptureFields, type NormalizedCaptureFields } from "./memory/c
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
+import { projectState } from "./memory/lifecycle.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 
 const SCHEMA = "agent-mem.hook-capture/v1";
@@ -530,6 +531,15 @@ export async function drainHookCaptures(options: Options & { project: string; ex
       }
       const value = record.value, c = value.capture;
       if (value.scope === null) { blocked++; continue; }
+      // #15 T5: a project the person archived or forgot takes no new capture. Retire the record here with a counted reason instead of leaving it pending:
+      // the home-wide spool is bounded, so a kept record would crowd out every active project. Read per record: an op can land mid-drain. A receipt that
+      // cannot be written keeps the body pending, as for every other retirement.
+      const state = projectState(base, options.project);
+      if (state !== "active") {
+        appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: state === "archived" ? "project_archived" : "project_forgotten" }]);
+        if (!retireClaim(base, claim, false)) blocked++;
+        continue;
+      }
       const input: CaptureInput = { project: options.project, agent: c.agent, event: c.event, at: c.at, paths: c.paths,
         ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }

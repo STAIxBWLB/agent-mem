@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PERSON_ONLY, runCli } from "../src/cli.ts";
@@ -115,7 +115,9 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   capture(dir, A, ["alpha one", "alpha two"]); capture(dir, B, ["beta"]);
   const to = join(dir, "a.json");
   const result = await json(["project", "export", A, "--to", to, "--json"], { ...person, stdinTTY: false });   // export reads; a terminal is not required
-  expect(result).toMatchObject({ project: A, file: to, withheld: 0 });
+  // The reply names the real path (a temp dir can sit behind a symlink, /var -> /private/var on macOS): compare resolved paths, not spellings.
+  expect(result).toMatchObject({ project: A, withheld: 0 });
+  expect(realpathSync(result.file)).toBe(realpathSync(to));
   expect(result.counts.capture).toBe(2);
   expect(readFileSync(to, "utf8")).not.toContain("beta");
   await expect(runCli(["project", "export", A, "--to", to], person)).rejects.toThrow(/exists/);
