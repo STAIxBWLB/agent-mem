@@ -22,7 +22,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       ? f.runFunctional(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` })
       : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
     const wallMs = performance.now() - start, workers = observer.read();
-    check(workers.length === (event === "SessionStart" ? 2 : 1), "timeout probe did not observe every owned child");
+    check(workers.length === (event === "SessionStart" ? 3 : 1), "timeout probe did not observe every owned child");
     groups = workers.map(worker => worker.pid);
     check(workers.every(worker => worker.detached), "timeout child did not own its process group");
     check(existsSync(observer.entered) && existsSync(observer.nativePidFile), "timeout fixture did not reach its owned blocking command");

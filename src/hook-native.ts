@@ -20,7 +20,8 @@ const SUPERVISOR = [
   'wait "$watchdog"',
 ].join("; ");
 
-export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv, timeRemaining: () => number, usage: HookNativeUsage): Promise<{ status: number; stdout: string }> {
+export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv, timeRemaining: () => number, usage: HookNativeUsage, signal?: AbortSignal): Promise<{ status: number; stdout: string }> {
+  if (signal?.aborted) throw new Error("native metadata cancelled");
   const remaining = timeRemaining();
   if (!Number.isFinite(remaining) || remaining <= 1) throw new Error("native metadata deadline");
   const marker = `AMEM_META_${randomBytes(16).toString("hex")}`, prefix = `\n${marker}:`, armedFrame = `${prefix}ARMED\n`;
@@ -38,6 +39,7 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   };
   const reader = child.stdout.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let aborted: (() => void) | undefined;
   try {
     const read = async () => {
       let text = "", bytes = 0, armed = false;
@@ -60,8 +62,13 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     };
     return await Promise.race([read(), new Promise<never>((_, reject) => {
       timer = setTimeout(() => { stop(); reject(new Error("native metadata deadline")); }, remaining);
+    }), new Promise<never>((_, reject) => {
+      aborted = () => { stop(); reject(new Error("native metadata cancelled")); };
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) aborted();
     })]);
   } finally {
+    if (aborted) signal?.removeEventListener("abort", aborted);
     if (timer) clearTimeout(timer);
     stop();
     // SIGKILL was delivered to every member before waiting for our owned leader.

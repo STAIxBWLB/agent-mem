@@ -129,9 +129,11 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     // Independent native reads and module loading share the same deadline, not three serial cold starts.
     // Separate usage ports conservatively sum concurrent helper peaks instead of hiding overlap.
     const projectUsage = { rssKB: 0, rawRssKB: 0 }, signatureUsage = { rssKB: 0, rawRssKB: 0 };
+    // Reaping native groups and serializing the fail-open result stay inside the handler deadline.
+    const nativeRemaining = () => remaining() - 15;
     const metadata = await Promise.allSettled([
-      resolveHookProjectAsync({ cwd, base, scope, timeRemaining: remaining }, projectUsage),
-      hookProcessSignature(remaining, signatureUsage),
+      resolveHookProjectAsync({ cwd, base, scope, timeRemaining: nativeRemaining, prefetch: true }, projectUsage),
+      hookProcessSignature(nativeRemaining, signatureUsage),
       import("./session-brief.ts"),
     ] as const);
     usage.rssKB = projectUsage.rssKB + signatureUsage.rssKB;

@@ -32,7 +32,8 @@ test("a native-validated cached identity removes Git from SessionStart while pre
   // The same fixture without a valid receipt must really reach the refused Git port.
   rmSync(cache(f));
   expect(f.runFunctional("SessionStart", {}, noGit(f)).stdout.length).toBe(0);
-  expect(readFileSync(join(f.root, "refused-git-attempt"), "utf8").trim()).toBe("parent");
+  // A cache miss starts the two independently refused parent-side identity queries.
+  expect(readFileSync(join(f.root, "refused-git-attempt"), "utf8").trim().split("\n")).toEqual(["parent", "parent"]);
 });
 
 test("origin changes and malformed, oversized or linked cache entries cannot reuse a project", async () => {

@@ -146,27 +146,61 @@ function cacheableLocal(cwd: string, project: string): boolean {
 
 /** Replay the shared synchronous resolver only after every requested native read is known.
  * A suspended/partially resolved pass can never publish a cache entry or return a guessed key. */
-export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean }, usage: HookNativeUsage): Promise<string> {
+export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean; prefetch?: boolean }, usage: HookNativeUsage): Promise<string> {
   const reads = new Map<string, ReturnType<ProjectGitRead>>();
   const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: options.base };
   const prepared = prepareHookProject({ ...options, env });
   const suspended = new Error("native identity suspended");
-  for (let count = 0; count < 64; count++) {
-    let needed: { key: string; args: string[] } | undefined;
-    let result: string | undefined, failure: unknown;
-    try {
-      result = prepared.resolve((args) => {
-        const key = JSON.stringify(args);
-        const value = reads.get(key); if (value) return value;
-        needed ??= { key, args }; throw suspended;
-      }, () => { if (needed) throw suspended; });
-    } catch (error) { failure = error; }
-    if (!needed) { if (failure) throw failure; if (result !== undefined) return result; throw suspended; }
-    const query = needed as { key: string; args: string[] };
-    const argv = memoryGitArgv(query.args); argv[0] = prepared.binary.file;
+  const pending = new Map<string, { abort: AbortController; result: Promise<ReturnType<ProjectGitRead>>; usage: HookNativeUsage }>();
+  const active = new Set<string>(), overlaps: string[][] = [];
+  let prefetched = false;
+  const query = (args: string[]) => {
+    const key = JSON.stringify(args), existing = pending.get(key); if (existing) return existing.result;
+    if (pending.size >= 64) throw new Error("native identity query bound");
     prepared.verifyBinary(); // No awaited native read may execute a replaced binary.
-    const value = await hookNative(argv, memoryGitEnv(env, { repositoryIsolation: true }), options.timeRemaining, usage);
-    reads.set(query.key, value);
+    const argv = memoryGitArgv(args); argv[0] = prepared.binary.file;
+    const abort = new AbortController(), own = { rssKB: 0, rawRssKB: 0 };
+    active.add(key); overlaps.push([...active]);
+    const result = hookNative(argv, memoryGitEnv(env, { repositoryIsolation: true }), options.timeRemaining, own, abort.signal)
+      .finally(() => { active.delete(key); });
+    // Speculative failures have no authority until the shared resolver requests that read.
+    void result.catch(() => {});
+    pending.set(key, { abort, result, usage: own }); return result;
+  };
+  try {
+    for (let count = 0; count < 64; count++) {
+      let needed: { key: string; args: string[] } | undefined;
+      let result: string | undefined, failure: unknown;
+      try {
+        result = prepared.resolve((args) => {
+          const key = JSON.stringify(args);
+          const value = reads.get(key); if (value) return value;
+          needed ??= { key, args }; throw suspended;
+        }, () => { if (needed) throw suspended; });
+      } catch (error) { failure = error; }
+      if (!needed) { if (failure) throw failure; if (result !== undefined) return result; throw suspended; }
+      const request = needed as { key: string; args: string[] };
+      const demanded = query(request.args);
+      // A native read is requested only on a real cache miss. Prefetch the portable
+      // resolver's ordinary-repository metadata alongside origin, never an alternate
+      // identity algorithm. Only memoryProjectKey decides which replies it consumes.
+      if (options.prefetch === true && !prefetched && request.args.length === 5 && request.args[0] === "-C" && request.args.slice(2).join(" ") === "remote get-url origin") {
+        prefetched = true;
+        void query(["-C", request.args[1]!, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir", "--is-bare-repository", "--show-toplevel", "--show-superproject-working-tree"]);
+      }
+      reads.set(request.key, await demanded);
+    }
+    throw new Error("native identity query bound");
+  } finally {
+    // Never leave an unused prefetch or its descendants behind, even if origin alone
+    // resolved the key or a requested read failed. Abort still uses the owned reaper.
+    for (const child of pending.values()) child.abort.abort();
+    await Promise.allSettled([...pending.values()].map(child => child.result));
+    // Per-call peaks arrive at reap. Conservatively sum all calls whose owned
+    // lifetimes overlapped, rather than hiding concurrent helpers behind max().
+    for (const group of overlaps) {
+      usage.rssKB = Math.max(usage.rssKB, group.reduce((sum, key) => sum + pending.get(key)!.usage.rssKB, 0));
+      usage.rawRssKB = Math.max(usage.rawRssKB, group.reduce((sum, key) => sum + pending.get(key)!.usage.rawRssKB, 0));
+    }
   }
-  throw new Error("native identity query bound");
 }

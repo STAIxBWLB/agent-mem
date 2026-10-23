@@ -2,7 +2,17 @@
 
 Status: **acceptance remains open**. The previous head `dec75e009c40b84c7858e581313e099742029d4c` passed both OSes in [run 39949588047](https://github.com/STAIxBWLB/agent-mem/actions/runs/39949588047), but independent source review found pending-capture loss and worker-watchdog gaps. This candidate fixes those findings. Its exact head still needs two consecutive green runs on both GitHub runners and the held source verdict. Local/container results are not runner acceptance.
 
-## Latest B/C/E ruling verification
+## Current SessionStart native-query candidate
+
+The preceding B/C/E head `be9e0e5a200dbd33bad7786d1fea58b4e5a424de` passes functional tests but fails the actual budget step on both GitHub runners in [run 39960461919](https://github.com/STAIxBWLB/agent-mem/actions/runs/39960461919). macOS reports a 160.02 ms actual timeout and a 155.43 ms full-foreign context; Ubuntu reports a 171.60 ms context without known work. Those failures remain acceptance failures. The macOS cold trace measures scope at 0.27 ms and cache validity at 0.29 ms, while native identity occupies about 85 ms: origin finishes before a second metadata supervisor starts. The full-foreign trace shows the same serial cost, about 72 ms. These observations do not establish include parsing as the bottleneck.
+
+On a SessionStart cache miss only, the host now prefetches origin and ordinary-repository metadata concurrently. The existing shared project resolver still decides which results are needed and valid. An unused or failed speculative read has no identity authority; it is cancelled and awaited through the owned native reaper before resolution returns. Each concurrent child has a separate RSS port, and overlapping peaks are conservatively summed. The worker and standalone defaults remain serial. Native metadata has a 15 ms cleanup reserve inside the unchanged 140 ms handler deadline. The stalled SessionStart fixture now observes all three native groups (origin, metadata and process signature), rather than the former two.
+
+Pinned Bun 1.4.2, isolated homes, local macOS: plain p95 46.71 ms / 82.61 MB, contended 41.80 / 69.28, SessionStart 53.25 / 46.77, drain 47.94 / 69.27. Cold attempt 0 returns known work at 62.18 ms; full-foreign at 68.95 ms. The normal 76-invocation R1 workload leaves zero processes. Actual timeout paths return at 128.38 ms (SessionStart, three observed groups) and 119.50 ms (PreToolUse, one group), with zero observed children. These are local results only; two consecutive exact-head green jobs on both GitHub runners and the held source verdict remain required.
+
+The candidate's mandatory remote Linux package gate uses pinned Bun 1.4.2 and isolated HOME/AMEM_HOME/AGENTHUB_HOME: typecheck clean; `boundary: OK (48 source files)`; 718 pass, five unavailable-shell skips, zero failures, 12,858 assertions across 723 tests / 96 files (163.15 seconds); npm pack dry-run succeeds with 54 files. New tests use observed mutual barriers to prove prefetch, check cache hits/default serial behavior, and require unused-child/descendant cleanup. The cached-identity positive control still asserts zero native reads on a hit; after removing the cache it now asserts exactly two refused parent reads. No budget assertion was weakened.
+
+## Prior B/C/E ruling verification
 
 The latest review requires every valid-record retirement reason, including missing cwd, to wait at least seven days. Admission checks each record's own scope; an old foreign record that remains drainable is retained. The new regressions cover old foreign replay, young missing cwd restoration and both unavailable/oversized brief paths with a positive fault-injection marker. The joined native context retains its first untrusted header and stays within 1200 UTF-8 bytes.
 
