@@ -201,9 +201,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         const repo = await readRepoScope(repoRoot, scoped.policy); guard();
         if (repo.state === "unsafe") { coverage.repo = "unavailable"; reasons.repo = "repo log is not a plain file"; return; }
         if (repo.partial || repo.skipped.withheld) coverage.repo = "partial";
-        let selected = 0;
+        let shownRepo = 0; // not `selected`: scripts/measure-hook-stages.ts anchors on that exact line once
         for (const view of repo.views) {
-          if (selected++ >= SECTION_RECORDS) { coverage.repo = "partial"; break; }
+          if (shownRepo++ >= SECTION_RECORDS) { coverage.repo = "partial"; break; }
           await add("repo", repoDisplay(view), false); // repo lines are reviewed repository content, not the person's own curated evidence
         }
       });
