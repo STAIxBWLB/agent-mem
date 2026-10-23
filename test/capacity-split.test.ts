@@ -116,3 +116,27 @@ test("the split reads capture only: it names no curated, goal or work-list quant
   const report = capacityReport({ home: dir, now: () => NOW, ...readings });
   for (const row of report.split) expect(Object.keys(row).sort()).toEqual(["capMb", "key", "reason", "retentionDays"]);
 });
+
+// ---- the activity weight itself, pinned (a rule that only shows in the tight and the surplus case) ----
+test("with equal use and no growth, a surplus goes to the recently active shard in proportion to its activity weight, not equally", () => {
+  const rows = split([shard("active", 50, 0, 0), shard("cold", 50, 0, 140)], 1000);
+  const byKey = Object.fromEntries(rows.map(row => [row.key, row.capMb]));
+  expect(byKey.active! + byKey.cold!).toBeGreaterThan(900);                     // the surplus is handed out, not left on the table
+  expect(byKey.active!).toBeGreaterThan(byKey.cold! * 5);                        // a 140-day-cold shard (weight 0.02) against a fresh one (1.02): about fifty to one
+  expect(byKey.cold!).toBeGreaterThanOrEqual(50);                               // and never below what it holds
+});
+
+test("with equal use and no growth under a tight budget, the cold shard is the one pushed down, and the reason says the budget did it", () => {
+  const rows = split([shard("active", 200, 0, 0), shard("cold", 200, 0, 140)], 250);
+  const active = rows.find(row => row.key === "active")!, cold = rows.find(row => row.key === "cold")!;
+  expect(active.capMb).toBeGreaterThan(cold.capMb);
+  expect(cold.capMb).toBeLessThan(200); expect(cold.reason).toMatch(/budget forces shrink/);
+  expect(active.capMb + cold.capMb).toBeLessThanOrEqual(250);
+});
+
+test("a shard whose last capture time is unknown counts as cold (a year), never as active", () => {
+  const rows = split([shard("known", 50, 0, 1), { key: "unknown", useBytes: 50 * MB, growthBytesPerDay: 0, lastAt: null }, { key: "garbled", useBytes: 50 * MB, growthBytesPerDay: 0, lastAt: "not a date" }], 600);
+  const cap = (key: string) => rows.find(row => row.key === key)!.capMb;
+  expect(cap("known")).toBeGreaterThan(cap("unknown")); expect(cap("known")).toBeGreaterThan(cap("garbled"));
+  expect(cap("unknown")).toBe(cap("garbled"));
+});
