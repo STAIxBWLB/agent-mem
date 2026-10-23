@@ -2,6 +2,14 @@
 
 Status: **new-head GitHub macOS acceptance pending**. At `92ab7d42532f11b083a5e63a16b10f8758ffbeb6`, actual [run 39905074398](https://github.com/STAIxBWLB/agent-mem/actions/runs/39905074398) passed Ubuntu and both platforms' R1/R2 steps. macOS still failed the unchanged six-invocation foreign-full-tier SessionStart test (empty stdout); the cold diagnostic returned 365 bytes on attempt 0. The admission follow-up below addresses that remaining I/O work. PR #34 remains unmergeable until exact-head CI and clean re-review pass.
 
+## Identity privacy follow-up
+
+At `b797a99b46518917ee62ec2d4d1c7da24056288a`, both-platform CI was green, but final review reproduced a legacy-remote identity leak. Git can read `branches/origin` or `remotes/origin` without a configured origin. Runtime `80705bf1dc9454177bff818e63bead341b73d265` binds both files in both Git/common directories into pending scope and cache validity. It also refuses local-key caching unless the root hash is the physical cwd, retires old owned publication temps within a bounded scan, and corrects the developer-directory documentation (the fixed worker does not forward DEVELOPER_DIR).
+
+All four new regressions failed on named assertions before the fix: both legacy remote formats retained the old scope, a symlinked core.worktree was cached, and 128 stale publication temps blocked cache admission. After the fix the identity-cache suite passes 10 tests/54 expectations. No prior assertion or deadline changed.
+
+Frozen native macOS, Bun 1.4.2: plain capture p95 50.54 ms, contended 50.03, SessionStart 63.89 (max 64.20), drain 44.80. Own combined peak RSS: 71.34, 67.47, 77.94, 66.78 MB respectively; raw peaks: 71.36, 67.48, 77.95, 66.80 MB. R1 found 76 invocations/helpers and zero leftovers; all 55 original captures replayed exactly once and all 20 contexts retained known work. Cold diagnostic attempt 0 returned 365 bytes in 68.14 ms. The frozen-runtime Linux AGENTS gate also passed: typecheck clean, boundary OK (47 source files), 648 pass, 5 unavailable-shell skips, 0 fail; npm pack dry-run OK (53 files). New-head GitHub acceptance remains pending.
+
 ## Admission follow-up, minimal SessionStart retirement
 
 Runtime: `c3167666ce5282aa9a34b093092f5b8dc8ab1b24`. A full tier previously retired 32 foreign records even when the incoming event needed only one slot, and repeatedly inventoried active/quarantine files. SessionStart now retires only enough for its event's file and byte capacity, defers unnecessary body cleanup when it already fits, and shares bounded inventories within the synchronous admission. Fresh destructive ownership checks, oldest-first order, the 32-file/256 KiB retirement bound, private quarantine and soft concurrent-publication ceiling remain unchanged. Non-SessionStart hooks retain healthy-admission cleanup.
