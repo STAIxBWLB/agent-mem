@@ -166,12 +166,13 @@ try {
   // inside the native hook's 140 ms the optional sections are usually dropped before the repo read starts. The bounded read is proven in test/repo-scope.test.ts (1 MiB brief test).
   const repoLog = join(f.cwd, ".amem", "log.jsonl");
   mkdirSync(join(f.cwd, ".amem"), { recursive: true });
-  const repoLines: string[] = [];
-  for (let i = 0; repoLines.join("\n").length < 1_000_000; i++) {
+  // Built without garbage: on Linux a child's maxRSS includes the parent's RSS at fork, so a harness that churns megabytes of strings (a `join` per loop turn did) inflates the hook's measured peak.
+  const repoLines: string[] = []; let repoBytes = 0;
+  for (let i = 0; repoBytes < 1_000_000; i++) {
     const body = { schema: REPO_SCHEMA as typeof REPO_SCHEMA, op: "note" as const, at: "2026-10-20T10:00:00.000Z", kind: "decision" as const, text: `shared decision ${i} ${"y".repeat(3000)}`, about: [] as string[], actor: "person" as const };
-    repoLines.push(JSON.stringify({ ...body, id: repoEntryId(body) }));
+    const line = JSON.stringify({ ...body, id: repoEntryId(body) }); repoLines.push(line); repoBytes += line.length + 1;
   }
-  writeFileSync(repoLog, `${repoLines.join("\n")}\n`);
+  writeFileSync(repoLog, `${repoLines.join("\n")}\n`); repoLines.length = 0; Bun.gc(true);
   if (statSync(repoLog).size < 1_000_000) throw new Error("repo log fixture is smaller than 1 MB");
   const sessionStartRepoLog = Array.from({ length: RUNS.sessionStart }, () => invoke("SessionStart", "sessionStartRepoLog", true));
   const groups = { plain: summarize("plain", plain), spoolAndExit: summarize("spoolAndExit", contended), sessionStart: summarize("sessionStart", sessionStart), sessionStartRepoLog: summarize("sessionStartRepoLog", sessionStartRepoLog), drain: summarize("drain", drains) };
