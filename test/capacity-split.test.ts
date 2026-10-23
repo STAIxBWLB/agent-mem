@@ -46,6 +46,43 @@ test("a shard is never proposed below what it holds right now unless the budget 
   expect(forced.find(row => row.key === "b")!.reason).toMatch(/budget|shrink/);
 });
 
+test("when total use fits but total need does not, no shard goes below what it holds (hot A 10 MB, cold B 50 MB, budget 100 MB)", () => {
+  const rows = split([shard("a", 10, 5, 0), shard("b", 50, 0, 120)], 100);
+  const a = rows.find(row => row.key === "a")!, b = rows.find(row => row.key === "b")!;
+  expect(b.capMb).toBeGreaterThanOrEqual(50);                                    // the review's example: B used to get 1 MB
+  expect(a.capMb).toBeGreaterThanOrEqual(10);
+  expect(sum(rows)).toBeLessThanOrEqual(100);
+  expect(b.reason).not.toMatch(/smaller than what the shards hold|forces shrink/);
+  expect(a.capMb - 10).toBeGreaterThan(b.capMb - 50);                             // the headroom goes to the hot shard first
+});
+
+test("property: whenever the total use fits the budget, every cap is at least its shard's use, and the sum stays within the budget", () => {
+  let seed = 20261023;
+  const next = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  let middle = 0;
+  for (let round = 0; round < 400; round++) {
+    const count = 1 + Math.floor(next() * 6);
+    const shards = Array.from({ length: count }, (_, i) => shard(`p${i}`, Math.floor(next() * 200 * next()), next() * 8 * Math.round(next()), next() < 0.1 ? null : Math.floor(next() * 400)));
+    const use = shards.reduce((total, row) => total + Math.max(1, Math.ceil(row.useBytes / MB)), 0);
+    const budget = Math.max(count, Math.floor(use * (0.9 + next() * 1.5)));
+    const rows = split(shards, budget);
+    expect(sum(rows)).toBeLessThanOrEqual(Math.max(budget, count));
+    if (use <= budget) {
+      middle++;
+      for (const row of rows) expect(row.capMb).toBeGreaterThanOrEqual(Math.max(1, Math.ceil(shards.find(s => s.key === row.key)!.useBytes / MB)));
+    }
+  }
+  expect(middle).toBeGreaterThan(100);                                            // the property really exercised the fits-by-use region
+});
+
+test("retention never drops below a shard's idle time plus a month: a shard idle for a year keeps its rows, with no project emptied by gc", () => {
+  for (const idle of [0, 10, 31, 60, 120, 200, 365, 500]) {
+    const row = split([shard("quiet", 20, 0, idle), shard("busy", 20, 1, 0)], 1000).find(r => r.key === "quiet")!;
+    expect(row.retentionDays).toBeGreaterThanOrEqual(idle + 30);                  // every row it holds is younger than its retention
+  }
+  expect(split([shard("never", 20, 0, null)], 1000)[0]!.retentionDays).toBeGreaterThanOrEqual(30);
+});
+
 test("with room to spare the split gives every shard at least what it uses and grows the growing ones, bounded by the budget", () => {
   const rows = split([shard("a", 20, 4, 0), shard("b", 20, 0, 60)], 10_000);
   expect(sum(rows)).toBeLessThanOrEqual(10_000);
@@ -56,7 +93,7 @@ test("retention follows activity: a cold shard keeps a shorter window, an active
   const rows = split([shard("active", 50, 3, 0), shard("cold", 50, 0, 200)], 1000);
   const active = rows.find(row => row.key === "active")!, cold = rows.find(row => row.key === "cold")!;
   expect(active.retentionDays).toBeGreaterThan(cold.retentionDays);
-  for (const row of rows) { expect(row.retentionDays).toBeGreaterThanOrEqual(7); expect(row.retentionDays).toBeLessThanOrEqual(365); }
+  for (const row of rows) { expect(row.retentionDays).toBeGreaterThanOrEqual(30); expect(row.retentionDays).toBeLessThanOrEqual(365); }
 });
 
 test("the split is deterministic and independent of input order, and an empty or all-zero input is well defined", () => {

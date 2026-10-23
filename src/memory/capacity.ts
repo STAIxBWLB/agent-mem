@@ -73,18 +73,38 @@ export interface SplitInput {
 }
 
 const ACTIVITY_HALF_LIFE_DAYS = 14, ACTIVITY_FLOOR = 0.02, SPLIT_HORIZON_DAYS = 30;
-// ponytail: a cold project keeps at least its last month, so a proposal never empties a shard that merely went quiet. The upgrade path is a configured floor.
+// ponytail: a quiet shard keeps its last month of rows, counted from its last capture, so a proposal never empties a shard that merely went quiet (gc evicts by
+// age from now). That floor is the one case allowed above the year ceiling: a shard idle for more than 335 days keeps idle days plus the floor. The upgrade path is a configured floor.
 const SPLIT_RETENTION_FLOOR_DAYS = 30;
+
+/** Share `amount` whole MB over `items` in proportion to weight x want, no item above its want (a bounded water-fill); the shares sum to at most `amount`. */
+function waterFill(items: { key: string; weight: number; want: number }[], amount: number): Map<string, number> {
+  const out = new Map<string, number>(items.map(item => [item.key, 0]));
+  let free = items.filter(item => item.want > 0), remaining = amount;
+  for (let guard = 0; guard <= items.length && free.length; guard++) {
+    const total = free.reduce((sum, item) => sum + item.weight * item.want, 0);
+    const share = (item: (typeof items)[number]) => remaining * item.weight * item.want / total;
+    const high = free.filter(item => share(item) > item.want);
+    if (high.length) { for (const item of high) { out.set(item.key, item.want); remaining -= item.want; } free = free.filter(item => !high.includes(item)); continue; }
+    for (const item of free) out.set(item.key, Math.floor(share(item)));
+    break;
+  }
+  return out;
+}
 
 /**
  * #15 D7: split one global capture budget across shards. Only capture is in it: the inputs are capture bytes, capture growth and the last capture time,
  * so curated notes, goals and work lists have no quantity here to evict.
  *
  * Each shard has an activity weight, 0.5 per 14 days since its last capture (a shard with none counts as a year cold), plus a small floor. What a shard needs
- * is what it holds now plus 30 days of its growth scaled by that weight. If every need fits, each shard gets its need and the surplus goes by weight. If not,
- * the budget is shared in proportion to weight times need, bounded below by 1 MB and above by the need (a bounded water-fill), so cold shards shrink first, and a
- * shard pushed below what it holds says so. The caps are whole MB and their sum never exceeds the budget; with a budget under 1 MB per shard every shard still
- * gets the 1 MB minimum, because a cap of 0 is not a bound.
+ * is what it holds now plus 30 days of its growth scaled by that weight. Three cases, by what fits:
+ * 1. every need fits: each shard gets its need and the surplus goes by weight.
+ * 2. every shard's use fits but not every need: each shard gets its use first (rounded up to whole MB, at least 1), and only the headroom is shared, by weight times
+ *    the growth it asked for, so a cold shard keeps what it holds and a hot one gets the room.
+ * 3. the use itself does not fit: the budget is shared by weight times need, between 1 MB and the need, so cold shards shrink first, and a shard pushed
+ *    below what it holds says so.
+ * The caps are whole MB and their sum never exceeds the budget, except that a budget under 1 MB per shard still gives every shard the 1 MB minimum, because a cap of 0 is not a bound.
+ * A shard's retention is the activity window, but never shorter than its idle time plus a month: gc counts age from now, so a shorter window would delete rows the shard still holds.
  */
 export function capacitySplit(input: SplitInput): ShardSplit[] {
   if (!Number.isFinite(input.budgetBytes) || input.budgetBytes < 0) throw new Error("the capture budget must be a finite number of bytes, zero or more");
@@ -98,15 +118,17 @@ export function capacitySplit(input: SplitInput): ShardSplit[] {
   const budgetMb = Math.floor(input.budgetBytes / MB);
   const rows = shards.map((shard) => {
     const lastMs = shard.lastAt === null ? Number.NaN : Date.parse(shard.lastAt);
-    const days = Number.isFinite(lastMs) ? Math.max(0, (input.now - lastMs) / (24 * 3600_000)) : 365;
+    const known = Number.isFinite(lastMs), days = known ? Math.max(0, (input.now - lastMs) / (24 * 3600_000)) : 365;
     const activity = Math.pow(0.5, days / ACTIVITY_HALF_LIFE_DAYS);
     const weight = activity + ACTIVITY_FLOOR;
     const useMb = shard.useBytes / MB, growthMb = shard.growthBytesPerDay / MB;
-    const need = Math.max(1, Math.ceil(useMb + growthMb * SPLIT_HORIZON_DAYS * activity));
-    const retentionDays = Math.round(SPLIT_RETENTION_FLOOR_DAYS + (RETENTION_CEILING_DAYS - SPLIT_RETENTION_FLOOR_DAYS) * activity);
-    return { key: shard.key, useMb, activity, weight, need, retentionDays, cap: 1 };
+    const base = Math.max(1, Math.ceil(useMb)), need = Math.max(base, Math.ceil(useMb + growthMb * SPLIT_HORIZON_DAYS * activity));
+    const windowDays = Math.round(SPLIT_RETENTION_FLOOR_DAYS + (RETENTION_CEILING_DAYS - SPLIT_RETENTION_FLOOR_DAYS) * activity);
+    // A shard with no capture time holds no row to protect; the idle floor applies to a known last capture only.
+    const retentionDays = Math.max(windowDays, known ? Math.ceil(days) + SPLIT_RETENTION_FLOOR_DAYS : 0);
+    return { key: shard.key, useMb, activity, weight, base, need, retentionDays, cap: 1 };
   });
-  const totalNeed = rows.reduce((sum, row) => sum + row.need, 0);
+  const totalNeed = rows.reduce((sum, row) => sum + row.need, 0), totalBase = rows.reduce((sum, row) => sum + row.base, 0);
   const reasons = new Map<string, string>();
   if (totalNeed <= budgetMb) {
     const surplus = budgetMb - totalNeed, totalWeight = rows.reduce((sum, row) => sum + row.weight, 0);
@@ -114,8 +136,14 @@ export function capacitySplit(input: SplitInput): ShardSplit[] {
       row.cap = row.need + Math.floor(surplus * row.weight / totalWeight);
       reasons.set(row.key, `fits the budget: keeps its ${row.useMb.toFixed(1)} MB in use plus growth headroom for ${SPLIT_HORIZON_DAYS} days at its recent activity (weight ${row.activity.toFixed(2)})`);
     }
+  } else if (totalBase <= budgetMb) {
+    const extra = waterFill(rows.map(row => ({ key: row.key, weight: row.weight, want: row.need - row.base })), budgetMb - totalBase);
+    for (const row of rows) {
+      row.cap = row.base + (extra.get(row.key) ?? 0);
+      reasons.set(row.key, `budget is tight: keeps the ${row.useMb.toFixed(1)} MB it holds, and its growth headroom is shared by recent activity (weight ${row.activity.toFixed(2)})`);
+    }
   } else {
-    // Bounded water-fill: shares by weight x need, between 1 MB and the need; fix the violators of one bound at a time and share what is left.
+    // The use itself does not fit: shares by weight x need, between 1 MB and the need; fix the violators of one bound at a time and share what is left.
     let free = [...rows], remaining = budgetMb;
     const fixed = new Map<string, number>();
     for (let guard = 0; guard <= rows.length && free.length; guard++) {
