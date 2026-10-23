@@ -8,7 +8,7 @@ test("isolated real prune writer target placement and proof mutants fail the fro
   try {
     mkdirSync(join(root, "src", "memory"), { recursive: true }); mkdirSync(join(root, "test", "fixtures"), { recursive: true }); mkdirSync(join(root, "tmp"));
     // This explicit small list mirrors the fixture's import closure. No dependency/build trees or user data are copied.
-    for (const name of ["store", "machine", "generation", "generation-index", "bridge", "platform", "mutation", "home", "prune", "ops-contract", "migrate", "screen", "search-fts", "capture", "capture-input", "shard", "aliases", "reader-lease", "shard-bridge"]) writeFileSync(join(root, "src", "memory", `${name}.ts`), readFileSync(new URL(`../src/memory/${name}.ts`, import.meta.url)));
+    for (const name of ["store", "machine", "generation", "generation-index", "bridge", "platform", "mutation", "home", "prune", "ops-contract", "migrate", "screen", "search-fts", "capture", "capture-input", "shard", "aliases", "lifecycle", "lifecycle-log", "reader-lease", "shard-bridge"]) writeFileSync(join(root, "src", "memory", `${name}.ts`), readFileSync(new URL(`../src/memory/${name}.ts`, import.meta.url)));
     writeFileSync(join(root, "test", "generation-replay.test.ts"), readFileSync(new URL("./generation-replay.test.ts", import.meta.url)));
     writeFileSync(join(root, "test", "fixtures", "generation-prune.json"), readFileSync(new URL("./fixtures/generation-prune.json", import.meta.url)));
     const run = () => Bun.spawnSync([process.execPath, "test", "test/generation-replay.test.ts", "--test-name-pattern", "real generation prune writer matches"], {

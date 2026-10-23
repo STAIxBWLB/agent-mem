@@ -12,6 +12,7 @@ import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { projectState } from "./memory/lifecycle.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
@@ -36,6 +37,8 @@ const sinceOf = (args: Record<string, unknown>): string | undefined => { const s
 export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
   const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome());
   const requested = options.project ?? memoryProjectKey(cwd), project = resolveAlias(base, requested);
+  // #15 T5: an archived or forgotten project has no MCP server: the person took it out of recall.
+  if (projectState(base, project) !== "active") unavailable();
   const policy = createStandalonePolicy(options.policy), release = registerReaderLease(base);
   const closers: (() => void)[] = [release]; let closed = false;
   const close = () => { if (closed) return; closed = true; let failure: unknown; for (const closer of closers.reverse()) { try { closer(); } catch (error) { failure ??= error; } } if (failure) throw failure; };
@@ -53,7 +56,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const guard = () => {
       if (closed) unavailable();
       release.verify();
-      if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n") || readSelector(base).revision !== selection) unavailable();
+      if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n") || readSelector(base).revision !== selection || projectState(base, project) !== "active") unavailable();
       const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
       if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) unavailable();
     };

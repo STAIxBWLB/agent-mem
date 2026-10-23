@@ -36,8 +36,8 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
 }
 
 
-export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown";
-const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown"];
+export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten";
+const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten"];
 /** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. */
 export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
   const counts: Partial<Record<CaptureDropReason, number>> = {};

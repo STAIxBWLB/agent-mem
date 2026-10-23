@@ -45,6 +45,8 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const actor = "user";
   const project = opts.project ?? memoryProjectKey(cwd);
   const need = (v: View | undefined, id: string) => v ?? fail(`no memory entry ${id} (ahub memory list shows the ids)`);
+  // #15 D4: this command is bound to one project. Crossing projects is the person's `amem search --all-projects`; here the flags would otherwise read as query words.
+  for (const crossing of ["--all-projects", "--include-archived"]) if (rest.includes(crossing)) fail(`${crossing} crosses projects: run amem search --all-projects; ahub memory reads this project only`);
   try {
     switch (sub) {
       case "list": case "search": {

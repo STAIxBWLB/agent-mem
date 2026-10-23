@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { lifecycleStates } from "./lifecycle-log.ts";
 
 export const SHARD_SCHEMA = "agent-hub.memory.shard/v1";
 
@@ -25,6 +26,9 @@ export function appendAlias(base: string, input: { alias: string; key: string; a
   if (!alias || !key) throw new Error("an alias needs both keys");
   if (alias === key) throw new Error("an alias cannot target itself");
   if (resolveAlias(base, key) !== key) throw new Error("an alias cannot target another alias");
+  // A forget is terminal: an alias op could otherwise bring a forgotten project's notes back under an active key, or hide an active one behind it.
+  const lifecycle = lifecycleStates(base);
+  for (const forgotten of [alias, key]) if (lifecycle.get(forgotten) === "forgotten") throw new Error(`project ${forgotten} is forgotten: an alias to or from it would bring it back`);
   // The other direction too, using only the latest op per alias: a target abandoned by a later retarget or a removal is free again.
   const currentTargets = new Set(effectiveAliases(base).values());
   if (currentTargets.has(alias)) throw new Error("an alias target cannot become an alias");
