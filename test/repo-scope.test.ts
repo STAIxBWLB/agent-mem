@@ -126,7 +126,10 @@ test("pii.paths and local.deny are matched with the hub's glob and subtree seman
   const listed = await runCli(["search", "export"], r.person), repoPart = listed.slice(listed.indexOf("repo scope (.amem/log.jsonl):") >= 0 ? listed.indexOf("repo scope (.amem/log.jsonl):") : listed.length);
   expect(repoPart).not.toContain("customers.csv"); expect(listed).toContain("3 withheld by the screen");
   const mcp = createMemoryMcp({ cwd: r.repo, base: r.base, project: r.project });
-  try { expect(JSON.stringify(await mcp.tools.amem_search({ query: "payroll" }))).not.toContain("hr/payroll"); } finally { mcp.close(); }
+  try {
+    const hits = (await mcp.tools.amem_search({ query: "payroll" }) as { hits: { source: string }[] }).hits;
+    expect(hits.filter(h => h.source === "repo")).toEqual([]);       // the planted repo line is withheld; the person's own private note (source curated) is theirs and not in question here
+  } finally { mcp.close(); }
 });
 
 test("an invalid pii.paths entry (absolute, .., brackets, a mixed ** segment, more than 64) refuses by name, as the hub's own loader does", async () => {
@@ -248,6 +251,37 @@ test("every remote counts: a public push URL or a second public remote makes the
   const mixed = rig("https://github.com/o/a.git", "mixed"); git(mixed.repo, "remote", "add", "x", "https://git.example.com/o/x.git");
   expect((await repoVisibility(mixed.repo, async url => url.includes("github") ? "private" : "unknown")).state).toBe("unknown");
   expect((await repoVisibility(mixed.repo, async () => "private")).state).toBe("private");
+});
+
+test("effective URLs count: url.<base>.insteadOf and pushInsteadOf rewrite where git really pushes, and several pushurls are all checked", async () => {
+  const answers = async (url: string): Promise<Visibility> => url.includes("public-one") ? "public" : url.startsWith("https://github.com/") ? "private" : "unknown";
+  const viaPush = rig("https://github.com/o/private-one.git");
+  git(viaPush.repo, "config", "url.https://github.com/o/public-one.git.pushInsteadOf", "https://github.com/o/private-one.git");
+  const pushed = await repoVisibility(viaPush.repo, answers);
+  expect(pushed.state).toBe("public");
+  expect(pushed.remotes.find(r => r.kind === "push")?.url).toContain("public-one");
+  const viaBoth = rig("https://github.com/o/a.git");
+  git(viaBoth.repo, "config", "url.https://github.com/o/public-one.git/.insteadOf", "https://github.com/o/a.git/");
+  git(viaBoth.repo, "config", "url.https://github.com/o/public-one.git.insteadOf", "https://github.com/o/a.git");
+  expect((await repoVisibility(viaBoth.repo, answers)).state).toBe("public");
+  const manyPush = rig("https://github.com/o/a.git");
+  git(manyPush.repo, "remote", "set-url", "--push", "origin", "https://github.com/o/a.git"); git(manyPush.repo, "remote", "set-url", "--add", "--push", "origin", "https://github.com/o/public-one.git");
+  expect((await repoVisibility(manyPush.repo, answers)).state).toBe("public");
+  // a rewrite onto a host gh cannot judge is unknown, never private
+  const toUnknown = rig("https://github.com/o/a.git");
+  const noteId = toUnknown.note("we chose sqlite for the index");           // stored under the project key as it is BEFORE the rewrite: insteadOf on origin changes the key git reports
+  git(toUnknown.repo, "config", "url.https://git.example.com/mirror/.insteadOf", "https://github.com/o/");
+  expect((await repoVisibility(toUnknown.repo, answers)).state).toBe("unknown");
+  // end to end through the CLI with the injected check: the person is told it is not verified private
+  toUnknown.person.visibility = answers;
+  const rewrittenKey = memoryProjectKey(toUnknown.repo);
+  expect(rewrittenKey).not.toBe(toUnknown.project);                          // the premise of the note above
+  const store = new MemoryStore({ home: toUnknown.dir, deferPromotions: true });
+  let moved: string;
+  try { moved = store.note({ op: "note", project: rewrittenKey, scope: "project", tier: "long", kind: "decision", peer: "person", text: "we chose sqlite for the index", about: [], source: "person" }); } finally { store.close(); }
+  void noteId;
+  const preview = await promote(toUnknown, moved);
+  expect(preview).toContain("NOT a verified private repository");
 });
 
 test("a remote URL with embedded credentials is never printed", async () => {

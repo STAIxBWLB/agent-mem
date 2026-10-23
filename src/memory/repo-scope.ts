@@ -290,23 +290,36 @@ export async function planRepoPromotion(root: string, note: View): Promise<Promo
   return { line, text: JSON.stringify(line), path: repoLogPath(root), droppedNodes, alreadyPresent, refusals };
 }
 
-export interface RepoVisibility { state: Visibility; remotes: { name: string; url: string; visibility: Visibility }[] }
+export interface RepoVisibility { state: Visibility; remotes: { name: string; kind: "fetch" | "push"; url: string; visibility: Visibility }[] }
 const redact = (url: string) => url.replace(/\/\/[^/@\s]*@/, "//");
-/** Every remote URL and push URL of the repository, each asked through the same visibility check sync uses. Only all-private is private; no remote or an unreadable config is unknown. */
+/**
+ * Every remote's EFFECTIVE fetch and push URLs, each asked through the same visibility check sync uses (`git remote get-url [--push] --all`: it applies `url.<base>.insteadOf`
+ * and `pushInsteadOf`, which a raw `remote.*.url` read does not, and it lists every `pushurl`). Only all-private is private; no remote, a remote git cannot resolve or a
+ * non-GitHub host is unknown. `internal` visibility counts as private, as `amem sync` always has (a GitHub Enterprise Cloud repository is not public).
+ */
 export async function repoVisibility(root: string, visibility?: (url: string) => Promise<Visibility>): Promise<RepoVisibility> {
   // ponytail: `sync.ts` drags in the store and the generation code; the brief and hooks import this module on their cold path, so only a promotion loads it. Upgrade: move `remoteVisibility` to a leaf.
   visibility ??= (await import("./sync.ts")).remoteVisibility;
-  const result = memoryGitSync(["-C", root, "config", "--get-regexp", "^remote\\..*\\.(url|pushurl)$"], { encoding: "utf8", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
-  if (result.status !== 0 && result.status !== 1) return { state: "unknown", remotes: [] };
+  const env = memoryGitEnv(process.env, { repositoryIsolation: true });
+  const git = (...args: string[]) => memoryGitSync(["-C", root, ...args], { encoding: "utf8", env });
+  const listed = git("remote");
+  if (listed.status !== 0) return { state: "unknown", remotes: [] };
+  const names = (listed.stdout ?? "").split("\n").map(line => line.trim()).filter(Boolean);
   const remotes: RepoVisibility["remotes"] = [];
-  for (const row of (result.stdout ?? "").split("\n").filter(Boolean)) {
-    const split = row.indexOf(" "), key = row.slice(0, split), url = row.slice(split + 1).trim();
-    if (!url) continue;
-    let state: Visibility = "unknown";
-    try { state = await visibility(url); } catch { /* unknown */ }
-    remotes.push({ name: key.replace(/^remote\./, "").replace(/\.(url|pushurl)$/, ""), url: redact(url), visibility: state });
+  let unresolved = false;
+  for (const name of names) {
+    for (const kind of ["fetch", "push"] as const) {
+      const got = git("remote", "get-url", ...(kind === "push" ? ["--push"] : []), "--all", name);
+      const urls = got.status === 0 ? (got.stdout ?? "").split("\n").map(line => line.trim()).filter(Boolean) : [];
+      if (!urls.length) { unresolved = true; continue; }
+      for (const url of urls) {
+        let state: Visibility = "unknown";
+        try { state = await visibility(url); } catch { /* unknown */ }
+        remotes.push({ name, kind, url: redact(url), visibility: state });
+      }
+    }
   }
-  const state: Visibility = remotes.length === 0 ? "unknown" : remotes.some(r => r.visibility === "public") ? "public" : remotes.every(r => r.visibility === "private") ? "private" : "unknown";
+  const state: Visibility = remotes.length === 0 || unresolved ? "unknown" : remotes.some(r => r.visibility === "public") ? "public" : remotes.every(r => r.visibility === "private") ? "private" : "unknown";
   return { state, remotes };
 }
 

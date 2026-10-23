@@ -361,7 +361,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (plan.refusals.length) throw new Error(`not promoted to repo scope:\n- ${plan.refusals.join("\n- ")}`);
     const seen = await repoVisibility(root, context.visibility);
     const preview = [`the exact line that would be appended to ${plan.path}:`, plan.text, ...(plan.droppedNodes.length ? [`(left out, private references: ${plan.droppedNodes.join(", ")})`] : []),
-      `repository visibility: ${seen.state}${seen.remotes.length ? ` (${seen.remotes.map(r => `${r.name} ${r.visibility}`).join(", ")})` : " (no remote)"}`];
+      `repository visibility: ${seen.state}${seen.remotes.length ? ` (${[...new Set(seen.remotes.map(r => `${r.name}${r.kind === "push" ? " (push)" : ""} ${r.visibility}`))].join(", ")})` : " (no remote)"}`];
     if (plan.alreadyPresent) return [...preview, "already in the file: nothing to write"].join("\n");
     const entryPrefix = plan.line.id.slice(0, 8);
     if (options["--confirm"] !== true) return [...preview, seen.state === "private" ? "nothing written; add --confirm to append it" : `NOT a verified private repository: add --confirm --confirm-public ${entryPrefix} to append this entry (per entry, never blanket)`].join("\n");
