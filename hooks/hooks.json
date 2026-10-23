@@ -1,0 +1,81 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionStart",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook UserPromptSubmit",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PreToolUse",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUse",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook PostToolUseFailure",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook Stop",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun --smol \"${CLAUDE_PLUGIN_ROOT}/bin/amem.js\" hook SessionEnd",
+            "timeout": 1
+          }
+        ]
+      }
+    ]
+  }
+}

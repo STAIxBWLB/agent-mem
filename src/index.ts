@@ -23,3 +23,7 @@ export * from "./mcp-memory.ts";
 export * from "./memory/policy.ts";
 export * from "./memory/work-lists.ts";
 export * from "./memory/vault.ts";
+
+export * from "./hooks.ts";
+export * from "./ingest.ts";
+export * from "./session-brief.ts";

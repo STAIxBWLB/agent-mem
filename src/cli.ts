@@ -87,6 +87,22 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     await serveMcp({ tools: memory.tools, close: memory.close, version: VERSION });
     return "";
   }
+  if (argv[0] === "hook") {
+    const { hookMain } = await import("./hooks.ts");
+    return hookMain(argv.slice(1));
+  }
+  if (argv[0] === "ingest") {
+    // Capture-only native intake: no project/home override, policy bypass or curated write capability.
+    const parsed = parseCommand(argv);
+    if (parsed.options["--help"] === true) return commandHelp();
+    const kind = parsed.positionals[0];
+    if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi [--since ISO] [--json]");
+    const { ingestTranscript } = await import("./ingest.ts");
+    return JSON.stringify(await ingestTranscript(kind as "codex" | "kimi" | "pi", {
+      cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
+      ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
+    }));
+  }
   if (agentMarked(context.env ?? process.env)) throw new Error(PERSON_ONLY);
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
   if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp();

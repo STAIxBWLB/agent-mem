@@ -1,12 +1,13 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
-import { isDenied } from "./platform.ts";
+import { normalizeCaptureFields, type CaptureFields } from "./capture-input.ts";
+export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
-import { captureShardDir, ensureShardDescriptor, resolveAlias } from "./shard.ts";
-import { machineId } from "./store.ts";
+import { captureShardDir, ensureShardDescriptor, readShardDescriptor, resolveAlias, shardKeyHash } from "./shard.ts";
+import { machineId } from "./machine.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Available } from "./search-fts.ts";
 
 /**
@@ -39,15 +40,12 @@ export const CAPTURE_DEFAULT_CAP_MB = 512;
 export const CAPTURE_DEFAULT_RETENTION_DAYS = 90;
 /** Well under the 150 ms R2 wall budget even with process startup: contention spools instead of waiting. */
 export const CAPTURE_BUSY_TIMEOUT_MS = 25;
-export const CAPTURE_MAX_EXCERPT = 2000;
-export const CAPTURE_MAX_PATHS = 32;
 /** Eviction and drain work per invocation, so a shrunk cap or a long outage is worked off over many hooks. */
 export const CAPTURE_EVICT_BATCH_ROWS = 256;
 export const CAPTURE_EVICT_MAX_BATCHES = 4;
 /** Wall-time bound for one invocation's eviction: with the batch bound, an append stays inside R2 after a cap shrink. */
 export const CAPTURE_EVICT_MAX_MS = 25;
 export const CAPTURE_DRAIN_MAX_LINES = 1000;
-const ROW_OVERHEAD_BYTES = 96;
 const SPOOL = "spool.jsonl";
 const DRAINING = "spool.jsonl.draining";
 const SPOOL_DIR = "spool";
@@ -58,12 +56,7 @@ const segmentName = /^spool-[0-9a-f-]+\.jsonl(?:\.offset-(\d+)(-skip)?)?(?:\.dra
 let spoolSequence = 0;
 const spoolToken = () => `${Date.now().toString(16).padStart(13, "0")}-${process.pid.toString(16).padStart(8, "0")}-${(spoolSequence++).toString(16).padStart(8, "0")}-${randomBytes(12).toString("hex")}`;
 
-export interface CaptureInput {
-  project: string; agent: string; event: string;
-  tool?: string; paths?: string[]; status?: string; excerpt?: string;
-  /** Tests and the spool replay pin the time; hooks leave it to the store clock. */
-  at?: string;
-}
+export interface CaptureInput extends CaptureFields { project: string }
 export interface CaptureRow {
   id: number; at: string; project: string; agent: string; event: string;
   tool: string | null; paths: string[]; status: string | null; excerpt: string;
@@ -80,10 +73,20 @@ export interface CaptureOptions {
   /** Host-supplied R6 values win over the shard and home config files. */
   capMb?: number; retentionDays?: number;
   busyTimeoutMs?: number;
+  /** Host-only brief view: open existing capture only, without schema/index/replay writes. */
+  readOnly?: boolean;
+  /** Host-only row ceiling for the read-only snapshot; overflow is unavailable, never empty. */
+  maxReadRows?: number;
+  /** Host-only optional brief: retain the newest maxReadRows ids, with explicit partial coverage. */
+  recentReadRows?: boolean;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
 }
-export type CaptureAppend = { id: number } | { spooled: true };
+export interface CaptureAppendOptions {
+  /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */
+  receipt?: string;
+}
+export type CaptureAppend = { id: number; already?: true } | { spooled: true };
 
 /** One row after validation, deny-filtering, bounding and screening: what both the insert and the spool carry. */
 interface NormalizedCapture {
@@ -158,24 +161,77 @@ export class CaptureStore {
   private readonly retentionDays: number;
   /** Set when the schema setup itself met the lock: appends spool without touching the database again. */
   private contended = false;
+  private readonly readOnly: boolean;
+  private recentReadIds?: number[];
+  /** True when the optional recent snapshot excludes older capture rows. */
+  readonly recentReadTruncated: boolean = false;
 
   constructor(opts: CaptureOptions) {
     if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
     if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
+    this.readOnly = opts.readOnly === true;
+    if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("invalid capture read-only option");
+    if (opts.recentReadRows !== undefined && (typeof opts.recentReadRows !== "boolean" || !this.readOnly)) throw new Error("recent capture rows require a read-only store");
+    const maxReadRows = opts.maxReadRows ?? 128;
+    if (this.readOnly && (!Number.isSafeInteger(maxReadRows) || maxReadRows < 1 || maxReadRows >= Number.MAX_SAFE_INTEGER)) throw new Error("invalid capture read row bound");
     this.base = opts.memoryDir ?? memoryBase(opts.home);
-    const machine = opts.machine ?? machineId(this.base).id;
+    const machine = opts.machine ?? (this.readOnly ? this.existingMachine() : machineId(this.base).id);
+    if (this.readOnly && !/^[a-f0-9]{16}$/.test(machine)) throw new Error("capture machine identity unavailable");
     this.requestedKey = opts.project;
     this.key = resolveAlias(this.base, opts.project);
-    ensureShardDescriptor(this.base, this.key);
+    if (this.readOnly) {
+      const descriptor = lstatSync(join(this.base, "projects", shardKeyHash(this.key), "project.json"));
+      if (!descriptor.isFile() || descriptor.isSymbolicLink() || descriptor.size > 4096
+        || readShardDescriptor(this.base, shardKeyHash(this.key))?.key !== this.key) throw new Error("capture shard identity unavailable");
+    } else ensureShardDescriptor(this.base, this.key);
     this.dir = captureShardDir(this.base, opts.project, machine);
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
+    if (!this.readOnly) {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      chmodSync(this.dir, 0o700); // mkdir's mode applies only when it creates the directory
+    }
+    if (this.readOnly) for (const file of [join(this.dir, "config.json"), join(this.base, "capture-config.json")]) {
+      const stat = lstatSync(file, { throwIfNoEntry: false });
+      if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)) throw new Error("capture configuration unavailable");
+    }
     const config = readCaptureConfig(this.dir, this.base); // each invocation: a config change applies at the next hook
     this.capMb = opts.capMb ?? config.capMb;
     this.retentionDays = opts.retentionDays ?? config.retentionDays;
     this.now = opts.now ?? Date.now;
     this.screen = opts.screen ?? looksSecret;
     const file = join(this.dir, "capture.db");
+    if (this.readOnly) {
+      // Refuse absent/cold state without authoring machine, shard, schema, FTS or spool metadata.
+      for (const directory of [this.base, join(this.base, "projects"), join(this.base, "projects", shardKeyHash(this.key)),
+        join(this.base, "projects", shardKeyHash(this.key), "machine"), this.dir]) {
+        const stat = lstatSync(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("capture read path unavailable");
+      }
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("capture database unavailable");
+      const timeout = opts.busyTimeoutMs ?? 0;
+      if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 3000) throw new Error("invalid capture busy timeout");
+      const db = this.db = new Database(file, { readonly: true });
+      try {
+        db.run(`PRAGMA busy_timeout = ${timeout}`); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
+        db.run("BEGIN");
+        if (opts.recentReadRows) {
+          // The existing rows_at index supplies the reverse time/id walk; retain ids only.
+          // One sentinel records excluded history without counting or loading its bodies.
+          const sql = "SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC, id DESC LIMIT ?";
+          const plan = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(maxReadRows + 1) as { detail: string }[];
+          if (plan.some(row => row.detail.includes("TEMP B-TREE"))) throw new Error("capture recent index unavailable");
+          const recent = db.query(sql).all(maxReadRows + 1) as { id: number }[];
+          this.recentReadIds = recent.slice(0, maxReadRows).map(row => row.id);
+          this.recentReadTruncated = recent.length > maxReadRows;
+        } else {
+          const count = (db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT ?)").get(maxReadRows + 1) as { n: number }).n;
+          if (count > maxReadRows) throw new Error("capture brief row bound exceeded");
+        }
+        if (resolveAlias(this.base, this.requestedKey) !== this.key) throw new Error("capture alias binding changed");
+      } catch (error) { db.close(); throw error; }
+      this.migrated = 0;
+      return;
+    }
     const db = new Database(file, { create: true });
     this.db = db;
     try { chmodSync(file, 0o600); } catch { /* best effort */ }
@@ -193,6 +249,20 @@ export class CaptureStore {
       this.contended = true; // R2: the hook spools and exits instead of waiting out another writer
     }
     this.migrated = this.contended ? 0 : this.migrateLegacy();
+  }
+
+  private existingMachine(): string {
+    const file = join(this.base, "machine.json"), stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) throw new Error("capture machine identity unavailable");
+    const value = JSON.parse(readFileSync(file, "utf8")) as { id?: unknown };
+    if (typeof value?.id !== "string" || !/^[a-f0-9]{16}$/.test(value.id)) throw new Error("capture machine identity unavailable");
+    return value.id;
+  }
+  private writable(): void {
+    if (this.readOnly) throw new Error("capture store is read-only");
+  }
+  private checkReadBinding(): void {
+    if (this.readOnly && resolveAlias(this.base, this.requestedKey) !== this.key) throw new Error("capture alias binding changed");
   }
 
   /** The pre-T1 machine-wide store hands this project key's rows AND spool lines to the shard, once; an emptied legacy store goes away. */
@@ -270,6 +340,7 @@ export class CaptureStore {
   private mcpReady = false;
   /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
   private ensureMcpFts(): boolean {
+    if (this.readOnly) return !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
     if (!fts5Available()) return false;
     if (this.mcpReady) return true;
     try {
@@ -303,46 +374,54 @@ export class CaptureStore {
    * and a later drainer — under any screen — inserts exactly that row. On lock contention the row goes to the spool
    * and the caller exits fast (R2); the next uncontended writer replays it with its original timestamp.
    */
-  append(input: CaptureInput): CaptureAppend {
+  append(input: CaptureInput, options: CaptureAppendOptions = {}): CaptureAppend {
+    this.writable();
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
     if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a parseable time string");
+    const receipt = options.receipt;
+    if (receipt !== undefined && (typeof receipt !== "string" || !/^[a-f0-9]{64}$/.test(receipt) || input.at === undefined)) throw new Error("capture receipt needs a stable time and a 64-hex digest");
     const row = this.normalize(input);
+    // Reuse the immutable spool format and its existing unique index: a crash between capture and cursor
+    // advance replays exactly the same screened line, whether first written directly or under contention.
+    const spoolId = receipt === undefined ? null : createHash("sha256").update(this.spoolLine(row, receipt)).digest("hex");
     if (this.contended) {
-      this.spool(row);
+      this.spool(row, receipt);
       return { spooled: true };
     }
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
       // The row and its running byte count commit or roll back together: a lock after the INSERT cannot spool a duplicate.
-      const id = this.db.transaction(() => this.insertRow(row, null)).immediate();
+      const result = this.db.transaction((): CaptureAppend => {
+        const id = this.insertRow(row, spoolId);
+        if (id !== undefined) return { id };
+        const prior = this.db.query("SELECT id FROM rows WHERE spool_id = ?").get(spoolId) as { id: number } | null;
+        if (!prior) throw new Error("capture receipt lookup failed");
+        return { id: prior.id, already: true };
+      }).immediate();
       try { this.evict(); } catch (error) {
         if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
       }
-      return { id: id! };
+      return result;
     } catch (error) {
       if (!lockError(error)) throw error;
-      this.spool(row);
+      this.spool(row, receipt);
       return { spooled: true };
     }
   }
 
   /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
   private normalize(input: CaptureInput): NormalizedCapture {
-    const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
-    // Canonical UTC ISO text, so text order is time order for eviction (`at < cutoff`) and search (`at >= notBefore`).
-    const at = new Date(input.at === undefined ? this.now() : Date.parse(input.at)).toISOString();
-    const tool = str(input.tool, 64) ? input.tool! : null;
-    const status = str(input.status, 64) ? input.status! : null;
-    const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p)).slice(0, CAPTURE_MAX_PATHS).map((p) => p.slice(0, 400));
-    let excerpt = (input.excerpt ?? "").slice(0, CAPTURE_MAX_EXCERPT);
-    if (excerpt && this.screen(excerpt)) excerpt = "[secret-screened]";
-    return { at, project: input.project, agent: input.agent, event: input.event, tool, paths, status, excerpt,
-      bytes: Buffer.byteLength(excerpt) + Buffer.byteLength(JSON.stringify(paths)) + ROW_OVERHEAD_BYTES };
+    const { at, agent, event, tool, paths, status, excerpt, bytes } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text));
+    return { at, project: input.project, agent, event, tool, paths, status, excerpt, bytes };
   }
 
-  private spool(row: NormalizedCapture): void {
-    this.spoolRaw(JSON.stringify({ ...row, nonce: randomBytes(12).toString("hex") }));
+  private spoolLine(row: NormalizedCapture, nonce = randomBytes(12).toString("hex")): string {
+    return JSON.stringify({ ...row, nonce });
+  }
+
+  private spool(row: NormalizedCapture, nonce?: string): void {
+    this.spoolRaw(this.spoolLine(row, nonce));
   }
 
   /**
@@ -355,6 +434,7 @@ export class CaptureStore {
    * already-open shared inode cannot be made immutable by a newer reader.
    */
   drain(): { drained: number; skipped: number } {
+    this.writable();
     let budget = CAPTURE_DRAIN_MAX_LINES, byteBudget = SPOOL_MAX_BYTES, drained = 0, skipped = 0;
     if (this.contended) return { drained, skipped };
     const started = performance.now();
@@ -469,6 +549,7 @@ export class CaptureStore {
    * deleted; the curated store is a different file this class never opens (AC5).
    */
   evict(): { expired: number; trimmed: number } {
+    this.writable();
     if (this.contended) return { expired: 0, trimmed: 0 };
     const start = performance.now();
     const expired = this.evictWhere("at < ?", [new Date(this.now() - this.retentionDays * 24 * 3600_000).toISOString()], start);
@@ -501,7 +582,9 @@ export class CaptureStore {
   }
 
   rows(f: { project?: string; sinceId?: number; limit?: number } = {}): CaptureRow[] {
+    this.checkReadBinding();
     const where: string[] = [], bind: (string | number)[] = [];
+    if (this.recentReadIds) { where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds)); }
     if (f.project) { where.push("project = ?"); bind.push(f.project); }
     if (f.sinceId !== undefined) { where.push("id > ?"); bind.push(f.sinceId); }
     const rows = this.db.query(`SELECT * FROM rows${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id LIMIT ?`).all(...bind, f.limit ?? 1000) as RawRow[];
@@ -510,7 +593,12 @@ export class CaptureStore {
 
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
+    this.checkReadBinding();
     const { columns, where, bind } = readWindowSql(window, "id");
+    if (this.recentReadIds) {
+      if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");
+      where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds));
+    }
     const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
     if (window.query !== undefined && engine === "fts5") {
       const match = ftsTerms(window.query); if (!match) return { rows: [], engine };
@@ -522,6 +610,7 @@ export class CaptureStore {
   }
 
   stats(): { rows: number; bytes: number; capMb: number; retentionDays: number; fileBytes: number } {
+    this.checkReadBinding();
     let fileBytes = 0;
     try { fileBytes = statSync(join(this.dir, "capture.db")).size; } catch { /* not created yet */ }
     return { rows: (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n, bytes: this.bytes(), capMb: this.capMb, retentionDays: this.retentionDays, fileBytes };

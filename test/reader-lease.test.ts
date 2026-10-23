@@ -44,3 +44,19 @@ test("MemoryStore announces a legacy reader and releases it on close", () => {
   store.close();
   expect(leaseNames(memory)).toHaveLength(0);
 });
+
+
+test("reader refs in two memory homes close independently and allow fresh registration after both close", () => {
+  const a=home(),b=home(),firstA=registerReaderLease(a),secondA=registerReaderLease(a),firstB=registerReaderLease(b);
+  cleanup.push(firstA,secondA,firstB);
+  expect(leaseNames(a)).toHaveLength(1);expect(leaseNames(b)).toHaveLength(1);
+  expect(()=>assertNoLiveReaders(a)).toThrow("legacy reader is live");expect(()=>assertNoLiveReaders(b)).toThrow("legacy reader is live");
+  firstA();expect(leaseNames(a)).toHaveLength(1);secondA();
+  expect(leaseNames(a)).toHaveLength(0);expect(assertNoLiveReaders(a)).toEqual({removed:0});
+  expect(leaseNames(b)).toHaveLength(1);firstB.verify();expect(()=>assertNoLiveReaders(b)).toThrow("legacy reader is live");
+  firstB();expect(leaseNames(b)).toHaveLength(0);expect(assertNoLiveReaders(b)).toEqual({removed:0});
+  const freshA=registerReaderLease(a),freshB=registerReaderLease(b);cleanup.push(freshA,freshB);
+  freshA.verify();freshB.verify();expect(leaseNames(a)).toHaveLength(1);expect(leaseNames(b)).toHaveLength(1);
+  freshA();expect(leaseNames(a)).toHaveLength(0);expect(leaseNames(b)).toHaveLength(1);freshB.verify();
+  freshB();expect(leaseNames(b)).toHaveLength(0);
+});

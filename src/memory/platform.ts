@@ -1,7 +1,12 @@
 // Single-source platform helpers. Hub, local and Pi modules re-export these functions unchanged.
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { spawnSync, execFileSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
+import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+let processes: typeof import("node:child_process") | undefined;
+// Path/policy-only hook parents never need a process module. Node-safe synchronous users load it on demand.
+const childProcess = () => processes ??= require("node:child_process") as typeof import("node:child_process");
 import { createHash } from "node:crypto";
 
 const canonical = (path: string): string => {
@@ -33,7 +38,7 @@ export function realPath(path: string): string {
     // The path as given: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a dangling last
     // component unless told -e; the BSD one on macOS refuses it by default.
     const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
+    const r = childProcess().spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
     return r.stdout.slice(0, -1);
   }
@@ -94,7 +99,7 @@ export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { re
 /** spawnSync form of the same call: the env option is merged with memoryGitEnv, everything else passes through. */
 export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> {
   const argv = memoryGitArgv(args);
-  return spawnSync(argv[0]!, argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+  return childProcess().spawnSync(argv[0]!, argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
 }
 
 /**
@@ -109,7 +114,7 @@ export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStrin
  */
 export function processSignature(pid: number): string | undefined {
   try {
-    const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    const text = childProcess().execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
     return text ? createHash("sha256").update(text).digest("hex") : undefined;
   } catch { return undefined; }
 }
