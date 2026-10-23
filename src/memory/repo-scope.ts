@@ -18,7 +18,7 @@ import { realPath, memoryGitEnv, memoryGitSync } from "./platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./policy.ts";
 import { memoryProjectKey } from "./project.ts";
 import { resolveAlias } from "./shard.ts";
-import { remoteVisibility, type Visibility } from "./sync.ts";
+import type { Visibility } from "./sync.ts";
 import type { View } from "./store.ts";
 
 export const REPO_SCHEMA = "amem.repo/v1";
@@ -238,7 +238,9 @@ export async function planRepoPromotion(root: string, note: View): Promise<Promo
 export interface RepoVisibility { state: Visibility; remotes: { name: string; url: string; visibility: Visibility }[] }
 const redact = (url: string) => url.replace(/\/\/[^/@\s]*@/, "//");
 /** Every remote URL and push URL of the repository, each asked through the same visibility check sync uses. Only all-private is private; no remote or an unreadable config is unknown. */
-export async function repoVisibility(root: string, visibility: (url: string) => Promise<Visibility> = remoteVisibility): Promise<RepoVisibility> {
+export async function repoVisibility(root: string, visibility?: (url: string) => Promise<Visibility>): Promise<RepoVisibility> {
+  // ponytail: `sync.ts` drags in the store and the generation code; the brief and hooks import this module on their cold path, so only a promotion loads it. Upgrade: move `remoteVisibility` to a leaf.
+  visibility ??= (await import("./sync.ts")).remoteVisibility;
   const result = memoryGitSync(["-C", root, "config", "--get-regexp", "^remote\\..*\\.(url|pushurl)$"], { encoding: "utf8", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
   if (result.status !== 0 && result.status !== 1) return { state: "unknown", remotes: [] };
   const remotes: RepoVisibility["remotes"] = [];

@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PERSON_ONLY, runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
+import { rawMemoryCommand } from "../src/memory/commands.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { parseRepoLine, planRepoPromotion, readRepoScope, REPO_SCHEMA, repoEntryId, repoVisibility, type RepoLine } from "../src/memory/repo-scope.ts";
+import { appendRepoLine, parseRepoLine, planRepoPromotion, readRepoScope, REPO_SCHEMA, repoEntryId, repoVisibility, type RepoLine } from "../src/memory/repo-scope.ts";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
 import { MemoryStore, type Kind } from "../src/memory/store.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
@@ -444,6 +445,38 @@ test("amem repo status is a read: no terminal needed; outside the project's repo
 });
 
 // ---- plan: pure of effects
+
+test("the hub's raw command refuses --to, --confirm and --confirm-public instead of promoting privately and ignoring them", async () => {
+  const r = rig(); const id = r.note("we chose sqlite for the index");
+  const store = new MemoryStore({ home: r.dir, deferPromotions: true });
+  try {
+    for (const flags of [["--to", "repo"], ["--confirm"], ["--confirm-public", "abcdef01"]]) {
+      await expect(rawMemoryCommand(["promote", id, ...flags], r.repo, { project: r.project, store, open: () => store, readable: notes => notes, importPolicy: () => () => false })).rejects.toThrow("amem promote <id> --to repo");
+    }
+  } finally { store.close(); }
+  expect(existsSync(join(r.repo, ".amem"))).toBe(false);
+});
+
+test("a shared-scope note written under another project is returned by get() but cannot be promoted into this repository", async () => {
+  const r = rig(); const store = new MemoryStore({ home: r.dir, deferPromotions: true });
+  let foreign: string;
+  try { foreign = store.note({ op: "note", project: "github.com/o/other", scope: "shared", tier: "long", kind: "decision", peer: "person", text: "another project's shared decision", about: [], source: "person" }); } finally { store.close(); }
+  // The premise: a plain project-bound read DOES surface it, which is why the promotion needs its own project check.
+  expect(await runCli(["show", foreign], r.person)).toContain("another project's shared decision");
+  expect(await refusal(promote(r, foreign, "--confirm"))).toContain("belongs to another project");
+  expect(r.log()).toBe("");
+});
+
+test("appendRepoLine itself refuses a symlinked or non-regular .amem and log.jsonl, even when the planner is bypassed", () => {
+  const dirLink = rig(null, "dirlink"), outside = join(dirLink.dir, "outside"); mkdirSync(outside); symlinkSync(outside, join(dirLink.repo, ".amem"));
+  expect(() => appendRepoLine(dirLink.repo, repoLine("through a directory link"))).toThrow(/not a plain directory|resolves outside/);
+  expect(existsSync(join(outside, "log.jsonl"))).toBe(false);
+  const fileLink = rig(null, "filelink"); mkdirSync(join(fileLink.repo, ".amem")); const target = join(fileLink.dir, "target.jsonl"); writeFileSync(target, "kept\n"); symlinkSync(target, fileLink.logPath);
+  expect(() => appendRepoLine(fileLink.repo, repoLine("through a file link"))).toThrow("not a regular file");
+  expect(readFileSync(target, "utf8")).toBe("kept\n");
+  const asDir = rig(null, "asdir"); mkdirSync(join(asDir.repo, ".amem", "log.jsonl"), { recursive: true });
+  expect(() => appendRepoLine(asDir.repo, repoLine("into a directory"))).toThrow("not a regular file");
+});
 
 test("planRepoPromotion asks no remote and writes nothing; the plan's line id is the hash of its content", async () => {
   const r = rig(); const store = new MemoryStore({ home: r.dir, deferPromotions: true });
