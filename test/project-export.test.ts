@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendAlias, ensureShardDescriptor, shardMachineDir } from "../src/memory/shard.ts";
 import { appendLifecycle, projectState } from "../src/memory/lifecycle.ts";
-import { exportProject, EXPORT_SCHEMA } from "../src/memory/project-export.ts";
+import { exportHooks, exportProject, EXPORT_SCHEMA } from "../src/memory/project-export.ts";
 import { searchAllProjects, vaultCandidatesAll } from "../src/memory/cross-project.ts";
 import { MemoryStore, machineId } from "../src/memory/store.ts";
 import { Database } from "bun:sqlite";
@@ -15,7 +15,7 @@ import { WorkListStore } from "../src/memory/work-lists.ts";
 // #15 T5 / D3, D4, D8: export one project as a portable bundle, search across projects with an honest reply, and list vault candidates per project and
 // across projects. None of these writes the vault, another project's shard or the lifecycle log.
 const cleanup: (() => void)[] = [];
-afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
+afterEach(() => { delete exportHooks.afterCheck; for (const close of cleanup.splice(0).reverse()) close(); });
 function home(): { dir: string; base: string } {
   const dir = mkdtempSync(join(tmpdir(), "amem-export-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -186,6 +186,15 @@ test("vault candidates skip archived and forgotten projects and honor the limit 
   const all = await vaultCandidatesAll(base, { policy: createStandalonePolicy(), limit: 2 });
   expect(all.projects.map(p => p.project)).toEqual(["github.com/o/a"]);
   expect(all.projects[0]!.candidates).toHaveLength(2);
+});
+
+test("a file that appears after the existence check but before the open is not truncated: O_EXCL, not the check, is what protects it", async () => {
+  const { dir, base } = home();
+  capture(dir, "github.com/o/a", ["alpha one"]);
+  const target = out(dir, "raced");
+  exportHooks.afterCheck = file => writeFileSync(file, "another writer's bytes");
+  await expect(exportProject(base, "github.com/o/a", { to: target })).rejects.toThrow(/exists/);
+  expect(readFileSync(target, "utf8")).toBe("another writer's bytes");
 });
 
 test("the destination is claimed with O_EXCL before anything is read: a file that appears while rows are being screened is never replaced or truncated, and a failed export removes only its own partial file", async () => {

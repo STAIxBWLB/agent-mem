@@ -22,6 +22,11 @@ import { WorkListStore } from "./work-lists.ts";
  */
 
 export const EXPORT_SCHEMA = "agent-mem.project-export/v1";
+/**
+ * ponytail: a seam, not a lock. The destination is checked (for the message) and then claimed with O_EXCL (for the guarantee); a test sets `afterCheck` to create
+ * the file in the gap between them, which is the only way to show that O_EXCL, not the check, keeps an export from replacing someone else's file.
+ */
+export const exportHooks: { afterCheck?: (file: string) => void } = {};
 export interface ExportCounts { capture: number; curated: number; goals: number; workLists: number }
 export interface ExportResult { file: string; project: string; counts: ExportCounts; withheld: number }
 const PAGE = 500;
@@ -45,6 +50,7 @@ export async function exportProject(base: string, key: string, opts: { to: strin
   const project = requireShard(base, key);
   if (projectState(base, project) === "forgotten") throw new Error(`project ${project} is forgotten: it cannot be exported`);
   const file = destination(base, opts.to), policy = opts.policy ?? createStandalonePolicy();
+  exportHooks.afterCheck?.(file);
   const allowed = async (value: unknown): Promise<boolean> => !looksSecret(JSON.stringify(value)) && await policy.screen(value);
   const counts: ExportCounts = { capture: 0, curated: 0, goals: 0, workLists: 0 };
   let withheld = 0;
