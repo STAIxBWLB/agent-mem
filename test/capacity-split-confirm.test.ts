@@ -25,10 +25,10 @@ test("confirm writes exactly the previewed values, even when the readings behind
   const preview = previewSplit(w.base, { diskShare: 0.05, now: () => t0 });
   const seen = Object.fromEntries(preview.split.map(row => [row.key, row.target]));
   // a recomputation with another disk share would give other caps: prove the readings differ, so the test can tell the two apart
-  const fresh = previewSplit(w.base, { diskShare: 0.0000001, now: () => t0 });
+  const fresh = previewSplit(w.base, { diskShare: 0.0001, now: () => t0 });
   expect(fresh.split.map(row => row.target.capMb)).not.toEqual(preview.split.map(row => row.target.capMb));
   previewSplit(w.base, { diskShare: 0.05, now: () => t0 });                       // the preview on disk is the one the person saw
-  const result = applySplit(w.base, { diskShare: 0.0000001, now: () => t0 + 1000 });
+  const result = applySplit(w.base, { diskShare: 0.0001, now: () => t0 + 1000 });
   for (const key of [A, B]) {
     expect(readCaptureConfigFile(w.configOf(key))).toEqual(seen[key]!);
     expect(result.written.find(row => row.key === key)).toMatchObject({ cap_mb: seen[key]!.capMb, retention_days: seen[key]!.retentionDays });
@@ -60,4 +60,14 @@ test("a shard that only another machine has is left out and named, never written
   applySplit(w.base);
   expect(existsSync(join(foreign, "config.json"))).toBe(false);
   expect(existsSync(w.configOf(A))).toBe(true);
+});
+
+test("preview and confirm both refuse when the budget cannot give each shard its 1 MB, and write no config", () => {
+  const w = world();
+  expect(() => previewSplit(w.base, { diskShare: 0.000000001 })).toThrow(/fewer than the 2 shards/);
+  expect(existsSync(join(w.base, "capacity-split.preview.json"))).toBe(false);
+  expect(existsSync(w.configOf(A))).toBe(false);
+  previewSplit(w.base, { diskShare: 0.05 });                                      // a valid preview exists, then the readings collapse
+  expect(() => applySplit(w.base, { diskShare: 0.000000001 })).toThrow(/fewer than the 2 shards/);
+  expect(existsSync(w.configOf(A))).toBe(false); expect(existsSync(w.configOf(B))).toBe(false);
 });

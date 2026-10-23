@@ -43,6 +43,7 @@ function targets(base: string, split: ShardSplit[]): { targets: SplitTarget[]; s
 
 export function previewSplit(base: string, opts: { diskShare?: number; now?: () => number } = {}): SplitPreview & { confirm: string } {
   const report = capacityReport({ memoryDir: base, ...(opts.diskShare !== undefined ? { diskShare: opts.diskShare } : {}) });
+  if (report.splitRefused) throw new Error(`capacity apply --split: ${report.splitRefused}`);
   const found = targets(base, report.split);
   const preview: SplitPreview = { at: (opts.now ?? Date.now)(), split: found.targets, skipped: found.skipped };
   writeFileSync(previewPath(base), JSON.stringify(preview) + "\n", { mode: 0o600 });
@@ -58,6 +59,7 @@ export function applySplit(base: string, opts: { diskShare?: number; now?: () =>
     approved = JSON.parse(readFileSync(file, "utf8")) as SplitPreview;
   } catch { throw new Error("capacity apply --split needs a preview first; re-run without --confirm"); }
   const report = capacityReport({ memoryDir: base, ...(opts.diskShare !== undefined ? { diskShare: opts.diskShare } : {}) });
+  if (report.splitRefused) throw new Error(`capacity apply --split: ${report.splitRefused}`);
   const live = targets(base, report.split).targets;
   const age = (opts.now ?? Date.now)() - approved.at;
   if (!Number.isFinite(age) || age < 0 || age > PREVIEW_MAX_AGE_MS) throw new Error("capacity preview is out of date (older than an hour); re-run without --confirm");

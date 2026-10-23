@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
-import { capacityReport, capacitySplit, type SplitInput } from "../src/memory/capacity.ts";
+import { SplitBudgetError, capacityReport, capacitySplit, type SplitInput } from "../src/memory/capacity.ts";
 import { appendLifecycle } from "../src/memory/lifecycle.ts";
 
 // #15 D7 / #13 R7: the advisor proposes a per-shard split of the global capture budget from use and growth. Recently used projects keep more capture, cold
@@ -15,7 +15,7 @@ const split = (shards: SplitInput["shards"], budgetMb: number) => capacitySplit(
 const sum = (rows: { capMb: number }[]) => rows.reduce((total, row) => total + row.capMb, 0);
 
 test("the split never exceeds the global budget, however many shards and whatever their use", () => {
-  for (const budget of [10, 100, 1000, 20_000]) {
+  for (const budget of [5, 100, 1000, 20_000]) {
     const rows = split([shard("a", 50, 5, 0), shard("b", 300, 1, 3), shard("c", 10, 0, 90), shard("d", 0, 0, null), shard("e", 700, 20, 1)], budget);
     expect(sum(rows)).toBeLessThanOrEqual(budget);
     expect(rows.every(row => row.capMb >= 1 && Number.isInteger(row.capMb))).toBe(true);
@@ -176,4 +176,32 @@ test("a shard whose last capture time is unknown counts as cold (a year), never 
   const cap = (key: string) => rows.find(row => row.key === key)!.capMb;
   expect(cap("known")).toBeGreaterThan(cap("unknown")); expect(cap("known")).toBeGreaterThan(cap("garbled"));
   expect(cap("unknown")).toBe(cap("garbled"));
+});
+
+// #15 T5 review (codex-connector P2): a positive per-shard floor and the global bound cannot both hold when the budget has fewer whole MB than shards.
+test("a budget with fewer whole MB than shards is refused, never answered with an over-budget proposal", () => {
+  expect(() => split([shard("a", 1, 0, 0), shard("b", 1, 0, 1)], 1)).toThrow(SplitBudgetError);
+  expect(() => split([shard("a", 0, 0, 0), shard("b", 0, 0, 1), shard("c", 0, 0, 2)], 2)).toThrow(/fewer than the 3 shards/);
+  expect(() => capacitySplit({ budgetBytes: 1.9 * MB, shards: [shard("a", 0, 0, 0), shard("b", 0, 0, 1)], now: NOW })).toThrow(SplitBudgetError);   // 1.9 MB is 1 whole MB
+  for (const budget of [2, 3, 7]) expect(sum(split([shard("a", 0, 0, 0), shard("b", 0, 0, 1)], budget))).toBeLessThanOrEqual(budget);   // exactly enough still splits
+  expect(split([], 0)).toEqual([]);                                              // no shards need no budget
+});
+
+test("property: whenever a split is returned its sum is within the budget, with no exception for small budgets", () => {
+  let seed = 7331;
+  const next = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  let refused = 0, made = 0;
+  for (let round = 0; round < 300; round++) {
+    const count = 1 + Math.floor(next() * 6), budget = Math.floor(next() * 12);
+    const shards = Array.from({ length: count }, (_, i) => shard(`p${i}`, Math.floor(next() * 5), next() * 2, Math.floor(next() * 300)));
+    try { expect(sum(split(shards, budget))).toBeLessThanOrEqual(budget); made++; } catch (error) { if (!(error instanceof SplitBudgetError)) throw error; expect(budget).toBeLessThan(count); refused++; }
+  }
+  expect(refused).toBeGreaterThan(20); expect(made).toBeGreaterThan(20);
+});
+
+test("capacityReport names the refusal instead of a split, and a tiny disk share does not crash the advisor", () => {
+  const dir = home();
+  seed(dir, "github.com/o/a", 2, "2026-10-20T00:00:00.000Z"); seed(dir, "github.com/o/b", 2, "2026-10-21T00:00:00.000Z");
+  const report = capacityReport({ memoryDir: join(dir, "memory"), diskShare: 0.000001, now: () => NOW, inject: { disk: { freeBytes: 500 * 1024 * MB, totalBytes: 1024 * 1024 * MB }, memoryPressure: null, metrics: [] } });
+  expect(report.split).toEqual([]); expect(report.splitRefused).toMatch(/fewer than the 2 shards/);
 });

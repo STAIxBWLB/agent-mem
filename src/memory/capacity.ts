@@ -62,6 +62,8 @@ export interface CapacityReport {
   proposal: { capMb: number; retentionDays: number; reason: string };
   /** #15 D7: the per-shard split of the global capture budget (the disk share, less what forgotten shards still hold), one row per non-forgotten shard. A proposal: applying it is person-only. */
   split: ShardSplit[];
+  /** Why `split` is empty although shards exist: the budget cannot give each shard its 1 MB minimum. Absent when the split was made. */
+  splitRefused?: string;
 }
 
 export interface ShardSplit { key: string; capMb: number; retentionDays: number; reason: string }
@@ -103,9 +105,13 @@ function waterFill(items: { key: string; weight: number; want: number }[], amoun
  *    the growth it asked for, so a cold shard keeps what it holds and a hot one gets the room.
  * 3. the use itself does not fit: the budget is shared by weight times need, between 1 MB and the need, so cold shards shrink first, and a shard pushed
  *    below what it holds says so.
- * The caps are whole MB and their sum never exceeds the budget, except that a budget under 1 MB per shard still gives every shard the 1 MB minimum, because a cap of 0 is not a bound.
+ * The caps are whole MB, each at least 1 (a cap of 0 is not a bound), and their sum never exceeds the budget. When the budget holds fewer whole MB than there are shards, no split can
+ * satisfy both, so the function refuses with `SplitBudgetError` instead of returning an over-budget proposal.
  * A shard's retention is the activity window, but never shorter than its idle time plus a month: gc counts age from now, so a shorter window would delete rows the shard still holds.
  */
+/** The budget cannot give every shard its 1 MB minimum: there is no valid split to propose. */
+export class SplitBudgetError extends Error {}
+
 export function capacitySplit(input: SplitInput): ShardSplit[] {
   if (!Number.isFinite(input.budgetBytes) || input.budgetBytes < 0) throw new Error("the capture budget must be a finite number of bytes, zero or more");
   if (!Number.isFinite(input.now)) throw new Error("the split needs a clock");
@@ -116,6 +122,7 @@ export function capacitySplit(input: SplitInput): ShardSplit[] {
   const shards = [...input.shards].sort((a, b) => a.key.localeCompare(b.key));
   if (!shards.length) return [];
   const budgetMb = Math.floor(input.budgetBytes / MB);
+  if (budgetMb < shards.length) throw new SplitBudgetError(`the capture budget holds ${budgetMb} MB, fewer than the ${shards.length} shards that each need a 1 MB minimum; free disk or raise --disk-share before splitting`);
   const rows = shards.map((shard) => {
     const lastMs = shard.lastAt === null ? Number.NaN : Date.parse(shard.lastAt);
     const known = Number.isFinite(lastMs), days = known ? Math.max(0, (input.now - lastMs) / (24 * 3600_000)) : 365;
@@ -241,7 +248,9 @@ export function capacityReport(opts: {
   }
   const reason = binding.join("; ");
   // The split shares the same disk-share budget; what a forgotten shard still holds on disk is not available to the others.
-  const split = capacitySplit({ budgetBytes: Math.max(0, budgetBytes - forgottenBytes), shards: perShard, now: now() });
+  let split: ShardSplit[] = [], splitRefused: string | undefined;
+  try { split = capacitySplit({ budgetBytes: Math.max(0, budgetBytes - forgottenBytes), shards: perShard, now: now() }); }
+  catch (error) { if (!(error instanceof SplitBudgetError)) throw error; splitRefused = error.message; }
   return {
     at: new Date(now()).toISOString(),
     capture: { shards: shards.length, bytes, rows, rowsPerDay, bytesPerDay },
@@ -253,6 +262,7 @@ export function capacityReport(opts: {
     diskShare,
     proposal: { capMb, retentionDays, reason },
     split,
+    ...(splitRefused ? { splitRefused } : {}),
   };
 }
 
@@ -266,6 +276,7 @@ export function capacityText(report: CapacityReport): string {
     `projected capture in ${report.projected.days} days: ${mb(report.projected.bytes)}`,
     `current: cap ${report.current.capMb} MB, retention ${report.current.retentionDays} days`,
     `proposal: cap ${report.proposal.capMb} MB, retention ${report.proposal.retentionDays} days (${report.proposal.reason})`,
+    ...(report.splitRefused ? [`split: none proposed (${report.splitRefused})`] : []),
     ...(report.split.length ? ["split of the global budget per shard (a proposal: amem capacity apply --split):", ...report.split.map(row => `  ${row.key}: cap ${row.capMb} MB, retention ${row.retentionDays} days (${row.reason})`)] : []),
   ].join("\n");
 }
