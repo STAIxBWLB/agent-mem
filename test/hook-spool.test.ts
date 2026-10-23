@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { drainHookCaptures, hookCapturePending, hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -10,8 +10,8 @@ afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
   for (const f of fixtures.splice(0)) f.close();
 });
-function fixture() {
-  const f = hookFixture(); fixtures.push(f); process.env.HOME = f.env.HOME;
+function fixture(remote?: string) {
+  const f = hookFixture(remote); fixtures.push(f); process.env.HOME = f.env.HOME;
   const options = { cwd: f.cwd, base: f.base };
   return { ...f, options,
     pending() {
@@ -135,3 +135,82 @@ test("a project resolution stamp cannot admit newer stages after an origin chang
   const result = await drainHookCaptures({ ...f.options, project: f.project, expectedScope }, () => { appended = true; return { id: 1 }; });
   expect(result.captured).toEqual([]); expect(appended).toBe(false); expect(hookCapturePending(f.base, pending!.name)).toBe(true);
 });
+
+function git(f: ReturnType<typeof fixture>, ...args: string[]): string {
+  const result = Bun.spawnSync(["git", "-C", f.cwd, ...args], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return result.stdout.toString().trim();
+}
+
+test("checkout and return preserve a pending event's semantic project scope", async () => {
+  const f = fixture();
+  git(f, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "initial");
+  const branch = git(f, "symbolic-ref", "--short", "HEAD");
+  const staged = await stageHookCapture("PostToolUse", { prompt: "checkout roundtrip marker" }, f.options);
+  expect(staged).toBeDefined();
+  const scope = hookCaptureScope(f.cwd, f.base);
+  git(f, "checkout", "--quiet", "-b", "temporary-scope-branch");
+  git(f, "checkout", "--quiet", branch);
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    expect((await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt }))).captured).toEqual([staged!.name]);
+    expect(store.rows().map(row => row.excerpt)).toEqual(["checkout roundtrip marker"]);
+  } finally { store.close(); }
+});
+
+test("rewriting config with the same origin and unrelated settings does not strand pending capture", async () => {
+  const f = fixture("https://example.invalid/team/semantic.git"), config = join(f.cwd, ".git", "config");
+  const staged = await stageHookCapture("PostToolUse", { prompt: "same origin rewrite marker" }, f.options);
+  expect(staged).toBeDefined();
+  const scope = hookCaptureScope(f.cwd, f.base), original = readFileSync(config, "utf8");
+  writeFileSync(config + ".replacement", original + '\n# cosmetic rewrite\n[user]\n name = Different Fixture\n');
+  renameSync(config + ".replacement", config);
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    expect((await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt }))).captured).toEqual([staged!.name]);
+    expect(store.rows().map(row => row.excerpt)).toEqual(["same origin rewrite marker"]);
+  } finally { store.close(); }
+});
+
+test("removed cwd records leave the active cap privately and cannot become a replacement project's capture", async () => {
+  const f = fixture(), removed = join(f.cwd, "removed-worktree"); mkdirSync(removed);
+  const staged = await stageHookCapture("PostToolUse", { cwd: removed, prompt: "removed cwd private canary" }, { ...f.options, cwd: removed });
+  expect(staged).toBeDefined(); rmSync(removed, { recursive: true });
+  const current = await stageHookCapture("PostToolUse", { prompt: "healthy current marker" }, f.options);
+  expect(current).toBeDefined();
+  expect(f.pending().some(row => row.value.cwd === removed)).toBe(false);
+  const quarantine = join(f.base, "hook-spool", ".quarantine");
+  expect(existsSync(quarantine)).toBe(true);
+  expect(statSync(quarantine).mode & 0o777).toBe(0o700);
+  const held = readdirSync(quarantine);
+  expect(held.length).toBeGreaterThan(0); expect(held.length).toBeLessThanOrEqual(256);
+  expect(held.reduce((bytes, name) => bytes + statSync(join(quarantine, name)).size, 0)).toBeLessThanOrEqual(2 * 1024 * 1024);
+  for (const name of held) expect(statSync(join(quarantine, name)).mode & 0o777).toBe(0o600);
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt }));
+    expect(store.rows().map(row => row.excerpt)).toEqual(["healthy current marker"]);
+  } finally { store.close(); }
+});
+
+test("256 orphaned cwd records cannot disable actual hooks in another healthy cwd", async () => {
+  const f = fixture(), removed = join(f.cwd, "orphaned-worktree"); mkdirSync(removed);
+  for (let index = 0; index < 256; index++) {
+    expect(await stageHookCapture("PostToolUse", { cwd: removed, prompt: `orphan canary ${index}` }, { ...f.options, cwd: removed })).toBeDefined();
+  }
+  expect(f.pending()).toHaveLength(256);
+  rmSync(removed, { recursive: true });
+  const first = f.run("PostToolUse", { prompt: "healthy after orphan cap" });
+  expect(first.exitCode).toBe(0);
+  for (let pass = 0; pass < 4 && !f.rows().some(row => row.excerpt === "healthy after orphan cap"); pass++) {
+    expect(f.run("PostToolUse", { prompt: `healthy recovery barrier ${pass}` }).exitCode).toBe(0);
+  }
+  expect(f.rows().filter(row => row.excerpt === "healthy after orphan cap")).toHaveLength(1);
+  expect(f.rows().some(row => row.excerpt.startsWith("orphan canary"))).toBe(false);
+  expect(f.pending().length).toBeLessThan(256);
+  const held = readdirSync(join(f.base, "hook-spool", ".quarantine"));
+  expect(held.length).toBeGreaterThan(0); expect(held.length).toBeLessThanOrEqual(256);
+  expect(held.reduce((bytes, name) => bytes + statSync(join(f.base, "hook-spool", ".quarantine", name)).size, 0)).toBeLessThanOrEqual(2 * 1024 * 1024);
+}, 20000);
