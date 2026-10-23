@@ -31,7 +31,7 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('    const brief = await sessionStartBrief','parent-brief-start');
   mark('    if (scope && (full || pending?.backlog) && remaining() > FULL_TIER_BRIEF_RESERVE_MS + 5)','parent-full-recovery-start');
   mark('    result.pending = !!pending && !result.captured;','parent-brief-done');
-  mark('    const firstLine = brief.context.indexOf(','parent-context-ready');
+  mark('    result.context = joinedContext(','parent-context-ready');
  }else if(path.endsWith('/hook-native.ts')){
   mark('  const child = Bun.spawn','native-spawn');
  }else if(path.endsWith('/session-brief-worker.ts')){

@@ -94,6 +94,7 @@ test("removed cwd reserve records retire only the needed slot with a counted bod
     const nonce = i.toString(16).padStart(32, "0"), name = stale!.name.replace(/[a-f0-9]{32}\.json$/, nonce + ".json");
     writeFileSync(join(capacity(f), name), JSON.stringify({ ...source, nonce }), { mode: 0o600 });
   }
+  for (const name of names(capacity(f))) { const file = join(capacity(f), name), row = JSON.parse(readFileSync(file, "utf8")); row.capture.at = new Date(Date.now() - 8 * 24 * 3600_000).toISOString(); writeFileSync(file, JSON.stringify(row)); }
   rmSync(foreign.cwd, { recursive: true, force: true });
   await full(f);
   await expect(stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true })).resolves.toMatchObject({ deferred: true });

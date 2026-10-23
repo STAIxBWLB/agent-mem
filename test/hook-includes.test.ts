@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookCaptureScope, stageHookCapture, drainHookCaptures } from "../src/hook-spool.ts";
@@ -38,13 +38,14 @@ test("HOME includeIf candidates support native project resolution and pending ca
   expect(hookCaptureScope(f.cwd, f.base)).not.toBe(scope);
 });
 
-test("relative includes bind nested candidate bytes and excessive depth or file count stays unknown", () => {
+test("relative includes bind only deciding keys and excessive depth or file count stays unknown", () => {
   const f = fixture(), home = f.env.HOME!, dir = join(home, "git-config"); mkdirSync(dir);
   writeFileSync(join(home, ".gitconfig"), '[include]\n  path = git-config/one\n');
   writeFileSync(join(dir, "one"), '[include]\n  path = two\n');
   writeFileSync(join(dir, "two"), "[user]\n  name = Nested Fixture\n");
   const initial = hookCaptureScope(f.cwd, f.base); expect(initial).toBeDefined();
-  writeFileSync(join(dir, "two"), "[user]\n  name = Changed Nested Fixture\n"); expect(hookCaptureScope(f.cwd, f.base)).not.toBe(initial);
+  writeFileSync(join(dir, "two"), "[user]\n  name = Changed Nested Fixture\n"); expect(hookCaptureScope(f.cwd, f.base)).toBe(initial);
+  writeFileSync(join(dir, "two"), '[remote "origin"]\n url = https://example.invalid/included/deciding.git\n'); expect(hookCaptureScope(f.cwd, f.base)).not.toBe(initial);
   for (let n = 1; n <= 5; n++) writeFileSync(join(dir, `depth-${n}`), n === 5 ? "[user]\n name = Deep\n" : `[include]\n path = depth-${n + 1}\n`);
   writeFileSync(join(home, ".gitconfig"), '[include]\n path = git-config/depth-1\n');
   expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
@@ -52,22 +53,55 @@ test("relative includes bind nested candidate bytes and excessive depth or file 
   expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
 });
 
-test("onbranch conditions bind HEAD and include cycles remain unknown", () => {
+test("harmless included branch configuration survives checkout and drains pending capture exactly once", async () => {
   const f = fixture(), home = f.env.HOME!, candidate = join(home, "branch.gitconfig");
-  writeFileSync(candidate, '[remote "origin"]\n url = https://example.invalid/branch/conditional.git\n');
+  writeFileSync(candidate, '[branch "main"]\n merge = refs/heads/main\n');
+  writeFileSync(join(home, ".gitconfig"), '[includeIf "onbranch:main"]\n path = ~/branch.gitconfig\n');
+  const initial = hookCaptureScope(f.cwd, f.base); expect(initial).toBeDefined();
+  const strong = hookCaptureScope(f.cwd, f.base, true); expect(strong).toBeDefined();
+  const options = { cwd: f.cwd, base: f.base }, pending = await stageHookCapture("PostToolUse", { cwd: f.cwd, prompt: "semantic include survives branch config" }, options);
+  expect(pending).toBeDefined();
+  writeFileSync(candidate, '[branch "main"]\n merge = refs/heads/changed\n[user]\n name = Changed User\n');
+  writeFileSync(join(f.cwd, ".git", "HEAD"), "ref: refs/heads/topic\n");
   writeFileSync(join(home, ".gitconfig"), '[includeIf "onbranch:topic"]\n path = ~/branch.gitconfig\n');
-  const before = hookCaptureScope(f.cwd, f.base); expect(before).toBeDefined();
-  writeFileSync(join(f.cwd, ".git", "HEAD"), "ref: refs/heads/topic\n"); expect(hookCaptureScope(f.cwd, f.base)).not.toBe(before);
-  writeFileSync(candidate, '[include]\n path = .gitconfig\n');
-  expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(initial);
+  expect(hookCaptureScope(f.cwd, f.base, true)).not.toBe(strong);
+  const store = new CaptureStore({ home: f.root, project: "example.invalid/includes/project" });
+  try {
+    const append = (input: Parameters<typeof store.append>[0], receipt: string) => store.append(input, { receipt });
+    expect((await drainHookCaptures({ ...options, project: "example.invalid/includes/project" }, append)).captured).toEqual([pending!.name]);
+    expect((await drainHookCaptures({ ...options, project: "example.invalid/includes/project" }, append)).captured).toEqual([]);
+    expect(store.rows({ project: "example.invalid/includes/project" })).toHaveLength(1);
+  } finally { store.close(); }
 });
 
-test("hasconfig include conditions bind non-origin remote sources without selecting the candidate origin", () => {
+test("native onbranch origin changes stay unknown semantically while the derived cache binds raw HEAD", () => {
+  const f = fixture(), home = f.env.HOME!, first = join(home, "a.gitconfig"), second = join(home, "b.gitconfig");
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", f.cwd, ...args], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  expect(git("remote", "remove", "origin").exitCode).toBe(0);
+  writeFileSync(first, '[remote "origin"]\n url = https://example.invalid/project-a.git\n');
+  writeFileSync(second, '[remote "origin"]\n url = https://example.invalid/project-b.git\n');
+  appendFileSync(join(f.cwd, ".git", "config"), `[includeIf "onbranch:main"]\n path = ${first}\n[includeIf "onbranch:topic"]\n path = ${second}\n`);
+  expect(git("symbolic-ref", "HEAD", "refs/heads/main").exitCode).toBe(0);
+  expect(git("remote", "get-url", "origin").stdout.toString().trim()).toBe("https://example.invalid/project-a.git");
+  expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  const strong = hookCaptureScope(f.cwd, f.base, true); expect(strong).toBeDefined();
+  expect(git("symbolic-ref", "HEAD", "refs/heads/topic").exitCode).toBe(0);
+  expect(git("remote", "get-url", "origin").stdout.toString().trim()).toBe("https://example.invalid/project-b.git");
+  expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  expect(hookCaptureScope(f.cwd, f.base, true)).not.toBe(strong);
+});
+
+test("dynamic conditional identity keys and include cycles stay unknown, empty identity subtrees bind nothing", () => {
   const f = fixture(), home = f.env.HOME!, candidate = join(home, "condition.gitconfig");
-  writeFileSync(candidate, '[remote "origin"]\n url = https://example.invalid/conditional/other-project.git\n');
+  writeFileSync(candidate, "[user]\n name = Harmless\n");
   writeFileSync(join(home, ".gitconfig"), '[includeIf "hasconfig:remote.*.url:https://example.invalid/trigger/**"]\n path = ~/condition.gitconfig\n');
   const initial = hookCaptureScope(f.cwd, f.base); expect(initial).toBeDefined();
-  const changed = Bun.spawnSync(["git", "-C", f.cwd, "config", "remote.upstream.url", "https://example.invalid/trigger/repo.git"], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
-  expect(changed.exitCode).toBe(0);
-  expect(hookCaptureScope(f.cwd, f.base)).not.toBe(initial);
+  writeFileSync(candidate, "[user]\n name = Changed Harmless\n");
+  writeFileSync(join(home, ".gitconfig"), '[includeIf "unrecognized:changed-condition"]\n path = ~/condition.gitconfig\n');
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(initial);
+  writeFileSync(candidate, '[remote "origin"]\n url = https://example.invalid/conditional/other-project.git\n');
+  expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
+  writeFileSync(candidate, '[include]\n path = .gitconfig\n');
+  expect(hookCaptureScope(f.cwd, f.base)).toBeUndefined();
 });

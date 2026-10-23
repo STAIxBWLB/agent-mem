@@ -17,6 +17,12 @@ function fixture(remote?: string) {
   const f = hookFixture(remote); fixtures.push(f); process.env.HOME = f.env.HOME;
   const options = { cwd: f.cwd, base: f.base };
   return { ...f, options,
+    age(days: number) {
+      const dir = join(f.base, "hook-spool");
+      for (const name of readdirSync(dir).filter(name => /^hook-.*\.json$/.test(name))) {
+        const file = join(dir, name), row = JSON.parse(readFileSync(file, "utf8")); row.capture.at = new Date(Date.now() - days * 24 * 3600_000).toISOString(); writeFileSync(file, JSON.stringify(row));
+      }
+    },
     pending() {
       const dir = join(f.base, "hook-spool");
       return [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder)
@@ -225,7 +231,7 @@ test("rewriting config with the same origin and unrelated settings does not stra
 test("removed cwd records retire with a count and cannot become a replacement project's capture", async () => {
   const f = fixture(), removed = join(f.cwd, "removed-worktree"); mkdirSync(removed);
   const staged = await stageHookCapture("PostToolUse", { cwd: removed, prompt: "removed cwd private canary" }, { ...f.options, cwd: removed });
-  expect(staged).toBeDefined(); rmSync(removed, { recursive: true });
+  expect(staged).toBeDefined(); f.age(8); rmSync(removed, { recursive: true });
   expect(await stageHookCapture("PostToolUse", { prompt: "healthy current marker" }, f.options)).toBeDefined();
   expect(f.pending().some(row => row.value.cwd === removed)).toBe(false);
   expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
@@ -244,6 +250,7 @@ test("256 orphaned cwd records cannot disable actual hooks in another healthy cw
     expect(await stageHookCapture("PostToolUse", { cwd: removed, prompt: `orphan canary ${index}` }, { ...f.options, cwd: removed })).toBeDefined();
   }
   expect(f.pending()).toHaveLength(256);
+  f.age(8);
   rmSync(removed, { recursive: true });
   const first = f.runFunctional("PostToolUse", { prompt: "healthy after orphan cap" });
   expect(first.exitCode).toBe(0);
@@ -464,14 +471,14 @@ test("SessionStart reserves its own slot without retiring valid foreign records"
   expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
-test("SessionStart defers unrelated retirement when its capture already fits", async () => {
+test("young missing cwd records stay pending across SessionStart and ordinary admission", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   await stageHookCapture("PostToolUse", { prompt: "deferred foreign orphan" }, { cwd: b.cwd, base: a.base });
   rmSync(b.cwd, { recursive: true, force: true });
   expect(await stageHookCapture("SessionStart", { prompt: "brief first" }, a.options)).toBeDefined();
   expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(1);
   expect(await stageHookCapture("PostToolUse", { prompt: "ordinary retirement boundary" }, a.options)).toBeDefined();
-  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(0);
+  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(1);
   expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 

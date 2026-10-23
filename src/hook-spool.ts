@@ -149,36 +149,42 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
     // The fixed worker keeps HOME but strips inherited Git routing/override environment. Check the ordinary
     // system locations conservatively too; unsupported identity-affecting configuration refuses resolution.
     const configuration: [string, string][] = [];
-    let hasIncludes = false, branchConditional = false;
-    const includedFiles = new Map<string, string>(), configurationBytes = new Map<string, string>(), includeDepths = new Map<string, number>();
+    let hasIncludes = false;
+    const includedFiles = new Map<string, { digest: string; depth: number; deciding: boolean }>();
     // ponytail: at most four nested include levels and sixteen candidate files (64 KiB each).
-    // Conditions are not interpreted here; broader Git syntax needs a bounded native dependency receipt.
-    const configurationFile = (file: string, depth = 0, ancestors = new Set<string>()): [string, string][] => {
-      const text = content(file); configurationBytes.set(file, hash(text));
+    // Conditions are not interpreted here; identity-changing dynamic conditions stay unknown
+    // until a bounded native activation receipt can bind their effect without hashing branch state.
+    const configurationFile = (file: string, depth = 0, ancestors = new Set<string>()): { relevant: [string, string][]; digest: string; depth: number; deciding: boolean } => {
+      const text = content(file);
       if (ancestors.has(file)) throw new Error("cyclic Git config include");
-      const next = new Set(ancestors).add(file);
-      let nesting = 0;
+      const next = new Set(ancestors).add(file), dependencies: [string, string][] = [];
+      let nesting = 0, nestedDeciding = false;
       const relevant = identityConfig(text, (candidate, condition) => {
         hasIncludes = true;
         if (depth >= 4 || candidate.startsWith("~") && !candidate.startsWith("~/") || candidate.includes("%(")) throw new Error("unsupported Git config include");
-        if (condition?.toLowerCase().startsWith("onbranch:")) branchConditional = true;
         const target = candidate.startsWith("~/") ? resolve(home, candidate.slice(2)) : resolve(dirname(file), candidate);
         if (next.has(target)) throw new Error("cyclic Git config include");
-        const seen = includedFiles.get(target);
-        if (seen === undefined && includedFiles.size >= 16) throw new Error("Git config include file bound");
-        const digest = seen ?? hash(content(target));
-        // Every candidate is bound even when its condition does not match. Its origin and
-        // rewrite values are never promoted to active configuration or ambiguity checks.
-        parts.push(`include:${condition ?? ""}:${target}:${digest}`);
-        if (seen === undefined) { includedFiles.set(target, digest); configurationFile(target, depth + 1, next); }
-        nesting = Math.max(nesting, 1 + (includeDepths.get(target) ?? 0));
+        let dependency = includedFiles.get(target);
+        if (!dependency) {
+          if (includedFiles.size >= 16) throw new Error("Git config include file bound");
+          // Reserve before recursion: the bound covers all candidates, not just completed subtrees.
+          includedFiles.set(target, { digest: "", depth: 0, deciding: false });
+          dependency = configurationFile(target, depth + 1, next);
+          includedFiles.set(target, dependency);
+        }
+        nesting = Math.max(nesting, 1 + dependency.depth);
         if (depth + nesting > 4) throw new Error("Git config include depth bound");
+        if (!cacheValidity && dependency.deciding && condition && !/^gitdir(?:\/i)?:/i.test(condition)) throw new Error("dynamic Git identity condition unavailable");
+        nestedDeciding ||= dependency.deciding;
+        // Bind only the same deciding subset as ordinary config. Included origins are
+        // dependencies, never active values used by the direct-origin ambiguity check.
+        if (dependency.deciding) dependencies.push([condition ?? "", dependency.digest]);
       });
-      includeDepths.set(file, nesting);
-      return relevant;
+      return { relevant, digest: hash(JSON.stringify([relevant, dependencies])), depth: nesting, deciding: relevant.length > 0 || nestedDeciding };
     };
-    for (const file of new Set(["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig", ...(cacheValidity && extraGitConfig ? [extraGitConfig] : [])])) configuration.push(...configurationFile(file));
-    for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) configuration.push(...configurationFile(file));
+    const addConfiguration = (file: string) => { const parsed = configurationFile(file); configuration.push(...parsed.relevant); parts.push(`configuration:${file}:${parsed.digest}`); };
+    for (const file of new Set(["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig", ...(cacheValidity && extraGitConfig ? [extraGitConfig] : [])])) addConfiguration(file);
+    for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) addConfiguration(file);
     let found = false, reachedRoot = false;
     for (let folder = cwd, depth = 0; depth < 32; depth++) {
       const git = join(folder, ".git"), stat = lstatSync(git, { throwIfNoEntry: false });
@@ -206,22 +212,18 @@ export function hookCaptureScope(cwd: string, base: string, cacheValidity = fals
           const file = join(dir, legacy, "origin");
           parts.push(`${file}:${hash(content(file))}`);
         }
-        configuration.push(...configurationFile(join(commonDir, "config")));
+        addConfiguration(join(commonDir, "config"));
         const worktreeConfig = configuration.filter(([key]) => key === "extensions.worktreeconfig").at(-1)?.[1];
-        if (worktreeConfig === "true") configuration.push(...configurationFile(join(gitDir, "config.worktree")));
+        if (worktreeConfig === "true") addConfiguration(join(gitDir, "config.worktree"));
         else if (hasIncludes) {
           // An included candidate may enable this source; bind it without guessing whether it does.
-          const file = join(gitDir, "config.worktree"); parts.push(`worktree-candidate:${hash(content(file))}`); configurationFile(file);
+          const file = join(gitDir, "config.worktree"), candidate = configurationFile(file); if (candidate.deciding) parts.push(`worktree-candidate:${candidate.digest}`);
         }
-        if (branchConditional) parts.push(`include-branch:${hash(content(join(gitDir, "HEAD"), 4096))}`);
         break;
       }
       const parent = dirname(folder); if (parent === folder) { reachedRoot = true; break; } folder = parent;
     }
     if (!found && (!reachedRoot || cacheValidity)) return undefined;
-    // hasconfig:remote.*.url conditions can depend on a non-origin remote ignored by the
-    // ordinary semantic projection. Bind all source bytes whenever includes are present.
-    if (hasIncludes) parts.push(`include-sources:${JSON.stringify([...configurationBytes])}`);
     if (configuration.filter(([key]) => key === "origin").length > 1) return undefined;
     const scalars = new Map(configuration.filter(([key]) => !key.startsWith("rewrite:")));
     const rewrites = configuration.filter(([key]) => key.startsWith("rewrite:"));
@@ -357,10 +359,10 @@ function retirementCursor(base: string, capacity: boolean, length: number): { st
     finally { rmSync(temporary, { force: true }); }
   } };
 }
-/** ponytail: remove undrainable data after seven days (removed cwd immediately), at
+/** ponytail: remove undrainable data only after seven days, at
  * most32 files/256KiB per admission. Count loss before deleting bodies. Upgrade:
  * a person-visible durable dead-letter export and coordinated maintenance accounting. */
-function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, _sharedBatch?: QuarantineBatch): Set<string> {
+function retireUnresolved(base: string, _admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, _sharedBatch?: QuarantineBatch): Set<string> {
   const retired = new Set<string>();
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
   const fits = () => count < (capacity ? CAPACITY_FILES : MAX_FILES) && bytes + incomingBytes <= (capacity ? CAPACITY_BYTES : MAX_BYTES);
@@ -370,6 +372,7 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   let cursor: ReturnType<typeof retirementCursor>;
   try { cursor = retirementCursor(base, capacity, active.length); } catch { return retired; }
   let remaining = DRAIN_BYTES, scanned = 0;
+  const scopes = new Map<string, string | undefined>();
   try {
     for (; scanned < Math.min(DRAIN_FILES, active.length); scanned++) {
       if (minimal && fits() && !due) break;
@@ -385,11 +388,17 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
         const valid = record && hash(record.value.cwd) === match[2] && record.value.nonce === match[4] && (record.value.scope ?? "0".repeat(64)) === match[3];
         let reason: CaptureDropReason | undefined;
         if (valid) {
+          if (Date.now() - Date.parse(record.value.capture.at) < RETIRE_AFTER_MS) continue;
           try { const cwd = lstatSync(record.value.cwd); if (!cwd.isDirectory() || cwd.isSymbolicLink()) reason = "cwd_removed"; }
-          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; else if (Date.now() - Date.parse(record.value.capture.at) < RETIRE_AFTER_MS) continue; }
-          if (!reason && Date.now() - Date.parse(record.value.capture.at) >= RETIRE_AFTER_MS) {
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
+          if (!reason) {
             if (record.value.scope === null) reason = "scope_unknown";
-            else if (record.value.cwd !== admittingCwd || hookCaptureScope(record.value.cwd, base) !== record.value.scope) reason = "undrainable_expired";
+            else {
+              if (!scopes.has(record.value.cwd)) scopes.set(record.value.cwd, hookCaptureScope(record.value.cwd, base));
+              const currentScope = scopes.get(record.value.cwd);
+              if (currentScope === undefined) reason = "scope_unknown";
+              else if (currentScope !== record.value.scope) reason = "undrainable_expired";
+            }
           }
           if (!reason) continue;
         }
