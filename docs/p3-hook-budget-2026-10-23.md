@@ -1,6 +1,31 @@
 # P3 hook budget receipt, 2026-10-23
 
-Status: **new-head GitHub macOS acceptance pending**. At `35aac4ac9feef835490faae077e20754bf46fde6`, actual [run 39900857130](https://github.com/STAIxBWLB/agent-mem/actions/runs/39900857130) passed Ubuntu but failed four macOS SessionStart unit tests and its strict budget step (empty output, wall 155.17 ms, metric 141.09 ms). The runner's first diagnostic attempt loaded the worker at 70.5 ms, reached no Git marker, and stopped at 156.4 ms; warm Git queries took another 30-40 ms. New source and local evidence follow, but neither replaces exact-head runner CI. PR #34 remains unmergeable until both OSes and clean re-review pass.
+Status: **new-head GitHub macOS acceptance pending**. At `92ab7d42532f11b083a5e63a16b10f8758ffbeb6`, actual [run 39905074398](https://github.com/STAIxBWLB/agent-mem/actions/runs/39905074398) passed Ubuntu and both platforms' R1/R2 steps. macOS still failed the unchanged six-invocation foreign-full-tier SessionStart test (empty stdout); the cold diagnostic returned 365 bytes on attempt 0. The admission follow-up below addresses that remaining I/O work. PR #34 remains unmergeable until exact-head CI and clean re-review pass.
+
+## Admission follow-up, minimal SessionStart retirement
+
+Runtime: `c3167666ce5282aa9a34b093092f5b8dc8ab1b24`. A full tier previously retired 32 foreign records even when the incoming event needed only one slot, and repeatedly inventoried active/quarantine files. SessionStart now retires only enough for its event's file and byte capacity, defers unnecessary body cleanup when it already fits, and shares bounded inventories within the synchronous admission. Fresh destructive ownership checks, oldest-first order, the 32-file/256 KiB retirement bound, private quarantine and soft concurrent-publication ceiling remain unchanged. Non-SessionStart hooks retain healthy-admission cleanup.
+
+Two named regressions fail against the prior runtime: the one-slot case retired 32 instead of one, and healthy SessionStart retired an unrelated orphan. Both pass with the fix. A third regression requires multiple retirements for byte capacity, preventing a file-count-only shortcut. The existing six-native-invocation foreign-full-tier test is unchanged.
+
+Actual GitHub-runner R2 at the preceding published head `92ab7d42` (not acceptance of the new admission runtime):
+
+| Platform | Path | Runs | Wall p95 (ms) | Combined peak RSS (MB) | Raw combined peak (MB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| macOS | Plain capture | 40 | 59.11 | 61.69 | 61.70 |
+| macOS | Contended capture | 15 | 57.27 | 62.41 | 62.42 |
+| macOS | SessionStart | 20 | 72.02 | 71.08 | 71.09 |
+| macOS | Drain | 1 | 55.37 | 62.08 | 62.09 |
+| Ubuntu | Plain capture | 40 | 53.59 | 86.78 | 95.57 |
+| Ubuntu | Contended capture | 15 | 49.15 | 86.45 | 100.86 |
+| Ubuntu | SessionStart | 20 | 73.57 | 90.84 | 105.52 |
+| Ubuntu | Drain | 1 | 55.48 | 86.23 | 100.89 |
+
+Each runner observed 76 invocations/helpers, zero leftovers and all 55 original captures exactly once. Ubuntu tests were 641 pass/5 skip/0 fail; macOS tests were 641 pass/4 skip/1 fail, the foreign-full-tier case above. Linux raw inherited-rusage remains diagnostic, with the previously reviewed per-image proof below.
+
+Frozen admission runtime, local native macOS, Bun 1.4.2: plain capture p95 47.21 ms (max 62.87), contended 45.83, SessionStart 60.89 (max 62.48), drain 45.94. Own combined peaks were 71.34, 67.67, 77.89 and 67.11 MB respectively; raw peaks were 71.36, 67.69, 77.91 and 67.13 MB. R1 found 76 helpers and zero leftovers, all 55 original captures replayed exactly once, and all 20 known-work contexts passed. Cold diagnostic attempt 0 returned 365 bytes at 72.15 ms; attempts 1-4 also returned known work under 62 ms. The focused native suite passed 46 tests/1,614 expectations, including the unchanged foreign-full-tier case.
+
+The isolated frozen-runtime Linux AGENTS gate passed: typecheck clean, `boundary: OK (47 source files)`, 644 pass, five unavailable-shell skips, zero failures, 9,519 expectations across 649 tests/82 files in 137.26 s; `npm pack --dry-run` OK (53 files). These local/container results do not replace new-head GitHub acceptance. No deadline, R2 threshold or existing success assertion was loosened.
 
 ## Round 3, native identity cache and cold import boundary
 
