@@ -108,7 +108,7 @@ function identityConfig(text: string): [string, string][] {
 /** Physical cwd/common-dir identity plus project-deciding configuration, never branch HEAD or config inode.
  * ponytail: strict unsupported Git configuration remains unknown, not guessed. A native historical-origin
  * receipt would broaden that supported subset without relaxing the physical replacement boundary. */
-export function hookCaptureScope(cwd: string, base: string): string | undefined {
+export function hookCaptureScope(cwd: string, base: string, cacheValidity = false, extraGitConfig?: string): string | undefined {
   try {
     const parts: string[] = [], identity = (file: string) => {
       const stat = lstatSync(file);
@@ -124,7 +124,11 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
         if (!stat.isFile() || stat.size > maximum) throw new Error("control bound");
         const bytes = Buffer.alloc(stat.size), length = readSync(fd, bytes, 0, bytes.length, 0), after = lstatSync(actual);
         if (length !== stat.size || stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) throw new Error("control changed");
-        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        // Pending capture survives harmless Git rewrites. A derived native-identity cache
+        // has a stricter validity binding: even an ignored/unsupported config change must miss.
+        if (cacheValidity) parts.push(`${file}:${hash(text)}`);
+        return text;
       } finally { closeSync(fd); }
     };
     cwd = realPath(cwd);
@@ -133,7 +137,7 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
     // The fixed worker keeps HOME but strips inherited Git routing/override environment. Check the ordinary
     // system locations conservatively too; unsupported identity-affecting configuration refuses resolution.
     const configuration: [string, string][] = [];
-    for (const file of ["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"]) configuration.push(...identityConfig(content(file)));
+    for (const file of new Set(["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig", ...(cacheValidity && extraGitConfig ? [extraGitConfig] : [])])) configuration.push(...identityConfig(content(file)));
     for (const file of [join(home, ".config", "git", "config"), join(home, ".gitconfig")]) configuration.push(...identityConfig(content(file)));
     let found = false, reachedRoot = false;
     for (let folder = cwd, depth = 0; depth < 32; depth++) {
@@ -150,6 +154,12 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
         const common = content(join(gitDir, "commondir"), 4096).trim();
         const commonDir = common ? realPath(resolve(gitDir, common)) : gitDir;
         parts.push(`${gitDir}:${identity(gitDir)}`, `${commonDir}:${identity(commonDir)}`);
+        if (cacheValidity) {
+          const head = lstatSync(join(gitDir, "HEAD"));
+          if (!head.isFile() || head.isSymbolicLink()) return undefined;
+          parts.push(`HEAD:${hash(content(join(gitDir, "HEAD"), 4096))}`);
+          for (const name of ["objects", "refs"]) parts.push(`${name}:${identity(join(commonDir, name))}`);
+        }
         configuration.push(...identityConfig(content(join(commonDir, "config"))));
         const worktreeConfig = configuration.filter(([key]) => key === "extensions.worktreeconfig").at(-1)?.[1];
         if (worktreeConfig === "true") configuration.push(...identityConfig(content(join(gitDir, "config.worktree"))));
@@ -157,7 +167,7 @@ export function hookCaptureScope(cwd: string, base: string): string | undefined 
       }
       const parent = dirname(folder); if (parent === folder) { reachedRoot = true; break; } folder = parent;
     }
-    if (!found && !reachedRoot) return undefined;
+    if (!found && (!reachedRoot || cacheValidity)) return undefined;
     if (configuration.filter(([key]) => key === "origin").length > 1) return undefined;
     const scalars = new Map(configuration.filter(([key]) => !key.startsWith("rewrite:")));
     const rewrites = configuration.filter(([key]) => key.startsWith("rewrite:"));

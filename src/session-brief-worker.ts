@@ -1,9 +1,8 @@
 import type { BriefOptions } from "./session-brief.ts";
 import type { CaptureStore } from "./memory/capture.ts";
-import { memoryProjectKey } from "./memory/project.ts";
-import { hookGit } from "./hook-git.ts";
+import { resolveHookProject } from "./hook-project.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
-import { resolveAlias } from "./memory/shard.ts";
+import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
@@ -48,7 +47,7 @@ if (import.meta.main) {
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!) ?? stop();
     let project: string;
-    try { project = resolveAlias(options.base!, memoryProjectKey(options.cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: hookGit(remaining) })); }
+    try { project = resolveAlias(options.base!, resolveHookProject({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); }
     catch {
       quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
       project = stop();
