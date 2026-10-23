@@ -46,8 +46,28 @@ test("Git output overflow cannot leave the hook worker's owned native descendant
   const alive = () => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
   try {
     writeFileSync(join(bin, "git"), `#!/bin/sh\n/bin/sleep 30 >/dev/null 2>&1 &\necho $! > '${pidFile}'\n'${process.execPath}' -e 'process.stdout.write("x".repeat(70000))'\n`, { mode: 0o700 });
-    const result = f.run("PostToolUse", { prompt: "overflow retention fixture" }, { PATH: `${bin}:${f.env.PATH}` });
-    expect(result.exitCode).toBe(0); expect(existsSync(pidFile)).toBe(true);
+    const { stageHookCapture } = await import("../src/hook-spool.ts");
+    const priorHome = process.env.HOME;
+    let pending: Awaited<ReturnType<typeof stageHookCapture>>;
+    try {
+      process.env.HOME = f.env.HOME;
+      pending = await stageHookCapture("PostToolUse", { prompt: "overflow retention fixture" }, { cwd: f.cwd, base: f.base });
+    } finally { if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome; }
+    expect(pending).toBeDefined();
+    // Test the worker's overflow/reaper after a real staged intake, independently of
+    // two cold Bun boots reaching Git within the production hook's 140 ms budget.
+    // Actual executable R1/R2 and native deadline tests retain their original bounds.
+    const child = Bun.spawn([process.execPath, "--smol", join(import.meta.dir, "../src/session-brief-worker.ts")], {
+      cwd: f.cwd, env: { PATH: `${bin}:${f.env.PATH}`, HOME: f.env.HOME, AMEM_HOME: f.base }, detached: true,
+      stdin: Buffer.from(JSON.stringify({ cwd: f.cwd, base: f.base, current: pending!.name, event: "PostToolUse", maxTokens: 1200, ownedGroup: true, deadlineAt: performance.timeOrigin + performance.now() + 1000 })), stdout: "pipe", stderr: "pipe",
+    });
+    let exited = false;
+    const exit = child.exited.then(code => { exited = true; return code; });
+    const kill = () => { if (!exited) try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } };
+    const timeout = setTimeout(kill, 1500);
+    try { await Promise.all([exit, new Response(child.stdout).text(), new Response(child.stderr).text()]); }
+    finally { clearTimeout(timeout); kill(); await exit; }
+    expect(existsSync(pidFile)).toBe(true);
     pid = Number(readFileSync(pidFile, "utf8")); expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
     const until = performance.now() + 500;
     while (alive() && performance.now() < until) await Bun.sleep(10);

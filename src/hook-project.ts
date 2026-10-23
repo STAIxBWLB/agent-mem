@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 import { hookGit, hookGitBinary } from "./hook-git.ts";
 import { hookCaptureScope } from "./hook-spool.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
-import { memoryProjectKey } from "./memory/project.ts";
+import { memoryProjectKey, type ProjectGitRead } from "./memory/project.ts";
+import { memoryGitArgv, memoryGitEnv } from "./memory/platform.ts";
+import { hookNative, type HookNativeUsage } from "./hook-native.ts";
 
 // Bump the derived cache schema if the shared native project-key mapping changes.
 const SCHEMA = "agent-mem.hook-project/v1", CACHE_BYTES = 4096, CACHE_CWDS = 128;
@@ -63,10 +65,10 @@ function publish(dir: string, file: string, value: Binding, maintain: boolean): 
 }
 /** Cache only a successful shared native resolver result, before alias resolution. The current
  * semantic scope and executable revision must still match; no filesystem guess replaces Git. */
-export function resolveHookProject(options: { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean }): string {
+export function resolveHookProject(options: { cwd: string; base: string; scope: string; timeRemaining: () => number; maintainCache?: boolean; gitRead?: ProjectGitRead; assertComplete?: () => void; env?: NodeJS.ProcessEnv }): string {
   const remaining = options.timeRemaining();
   if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("project deadline");
-  const cwd = realPath(options.cwd), base = canonicalPath(options.base), binary = hookGitBinary();
+  const cwd = realPath(options.cwd), base = canonicalPath(options.base), binary = hookGitBinary(options.env);
   if (!options.scope || hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
   const prefixConfig = join(dirname(dirname(binary.file)), "etc", "gitconfig");
   const validity = hookCaptureScope(cwd, base, true, prefixConfig);
@@ -78,7 +80,8 @@ export function resolveHookProject(options: { cwd: string; base: string; scope: 
     if (hookCaptureScope(cwd, base, true, prefixConfig) !== validity) throw new Error("project scope changed");
     return cached.project;
   }
-  const project = memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: hookGit(options.timeRemaining, binary.file) });
+  const project = memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: options.gitRead ?? hookGit(options.timeRemaining, binary.file) });
+  options.assertComplete?.();
   if (hookCaptureScope(cwd, base) !== options.scope) throw new Error("project scope changed");
   if (validity && hookCaptureScope(cwd, base, true, prefixConfig) === validity && cacheableLocal(cwd, project))
     publish(dir, file, { schema: SCHEMA, cwd, scope: options.scope, validity, binary: binary.revision, project }, options.maintainCache === true);
@@ -99,4 +102,29 @@ function cacheableLocal(cwd: string, project: string): boolean {
     }
   } catch { /* Unprovable ancestry keeps native resolution. */ }
   return false;
+}
+
+/** Replay the shared synchronous resolver only after every requested native read is known.
+ * A suspended/partially resolved pass can never publish a cache entry or return a guessed key. */
+export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope: string; timeRemaining: () => number }, usage: HookNativeUsage): Promise<string> {
+  const reads = new Map<string, ReturnType<ProjectGitRead>>();
+  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: options.base };
+  const suspended = new Error("native identity suspended");
+  for (let count = 0; count < 64; count++) {
+    let needed: { key: string; args: string[] } | undefined;
+    let result: string | undefined, failure: unknown;
+    try {
+      result = resolveHookProject({ ...options, env, gitRead: (args) => {
+        const key = JSON.stringify(args);
+        const value = reads.get(key); if (value) return value;
+        needed ??= { key, args }; throw suspended;
+      }, assertComplete: () => { if (needed) throw suspended; } });
+    } catch (error) { failure = error; }
+    if (!needed) { if (failure) throw failure; if (result !== undefined) return result; throw suspended; }
+    const query = needed as { key: string; args: string[] };
+    const argv = memoryGitArgv(query.args); argv[0] = hookGitBinary(env).file;
+    const value = await hookNative(argv, memoryGitEnv(env, { repositoryIsolation: true }), options.timeRemaining, usage);
+    reads.set(query.key, value);
+  }
+  throw new Error("native identity query bound");
 }

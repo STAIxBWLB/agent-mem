@@ -13,7 +13,7 @@ function fixture() {
   const receipt = join(f.root, "brief-instrumentation.jsonl"), worker = join(import.meta.dir, "../src/session-brief-worker.ts");
   mkdirSync(bin);
   // A fail-open hook can swallow the exception. The append-only marker still proves that it tried networking.
-  writeFileSync(preload, `import {appendFileSync} from 'node:fs';
+  writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const hookBin=${JSON.stringify(hookBin)},marker=${JSON.stringify(marker)},receipt=${JSON.stringify(receipt)},worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)};
@@ -26,6 +26,14 @@ for(const [name,keys] of Object.entries({'node:http':['request','get'],'node:htt
 }
 require('node:net').Socket.prototype.connect=function(){return trip('Socket.connect');};
 Bun.connect=()=>trip('Bun.connect');
+// Observe the actual parent brief entry as well as the remaining fixed worker path.
+globalThis.__AMEM_BRIEF_ENTRY__=()=>{appendFileSync(receipt,JSON.stringify({kind:'parent-brief'})+String.fromCharCode(10));if(process.env.AMEM_BRIEF_TRIP_CONTROL==='1'){try{fetch('https://example.invalid');}catch{}}};
+Bun.plugin({name:'parent-brief-network-control',setup(b){b.onLoad({filter:/session-brief\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),needle='export async function sessionStartBrief(options: BriefOptions): Promise<BriefResult> {';
+ if(source.split(needle).length!==2)throw Error('parent brief diagnostic anchor changed');
+ const control="globalThis.__AMEM_BRIEF_ENTRY__();";
+ return {loader:'ts',contents:source.replace(needle,needle+control)};
+});}});
 // Instrument only the package's fixed worker. Production's child environment remains restricted.
 const nativeSpawn=Bun.spawn.bind(Bun);
 Bun.spawn=(command,options)=>{
@@ -109,13 +117,13 @@ test("AC3 network tripwires have positive controls for swallowed fetch, sockets,
   expect(names.filter(name => name === "fetch")).toHaveLength(2); // Explicit preload and inherited BUN_OPTIONS both trip.
 });
 
-test("AC3 actual SessionStart brief child tripwire observes a swallowed fetch attempt", async () => {
+test("AC3 actual parent SessionStart brief tripwire observes a swallowed fetch attempt", async () => {
   const f = fixture(); await f.seed();
   const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: f.cwd, session_id: "brief-network-control" });
   const result = f.child([hookBin, "hook", "SessionStart"], input, { AMEM_BRIEF_TRIP_CONTROL: "1" });
   expect(result.exitCode).toBe(0);
   boundedContextIfPresent(result.stdout.toString());
-  expect(f.receipts()).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);
+  expect(f.receipts()).toEqual([{ kind: "parent-brief" }]);
   expect(f.attempts()).toEqual([{ name: "fetch" }]);
 });
 
@@ -126,10 +134,10 @@ test("AC3 actual executable hooks and SessionStart context do not attempt networ
     const excerpt = `network original ${event}`;
     const result = f.child([hookBin, "hook", event], JSON.stringify({ hook_event_name: event, cwd: f.cwd, session_id: "network-fixture", prompt: excerpt, tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: excerpt }));
     expect(result.exitCode).toBe(0);
-    expect(f.receipts().slice(receiptCount)).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);
+    expect(f.receipts().slice(receiptCount)).toEqual(event === "SessionStart" ? [{ kind: "parent-brief" }] : [{ kind: "spawned" }, { kind: "loaded" }]);
     if (event === "SessionStart") {
       boundedContextIfPresent(result.stdout.toString());
-      expect(f.receipts()).toEqual([{ kind: "spawned" }, { kind: "loaded" }]);
+      expect(f.receipts()).toEqual([{ kind: "parent-brief" }]);
     }
     expect(f.attempts()).toEqual([]);
     replayOffline(f, event, excerpt);

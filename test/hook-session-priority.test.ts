@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
@@ -10,8 +10,14 @@ test("native SessionStart preserves known work when the optional capture module 
     await f.seed();
     writeFileSync(preload, `import {writeFileSync} from "node:fs";const marker=${JSON.stringify(marker)},worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)};
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>spawn(Array.isArray(argv)&&argv[2]===worker?[argv[0],argv[1],'--preload',preload,...argv.slice(2)]:argv,options);
-if(process.argv[1]===worker)Bun.plugin({name:'optional-capture-fault',setup(b){b.onLoad({filter:/memory\\/capture\\.ts$/},()=>{writeFileSync(marker,'attempted');throw new Error('synthetic unavailable optional capture module');});}});
+Bun.plugin({name:'optional-capture-fault',setup(b){b.onLoad({filter:/memory\\/capture\\.ts$/},()=>{writeFileSync(marker,'attempted');throw new Error('synthetic unavailable optional capture module');});}});
 `);
+    // Positive control: the same preload must reject the actual optional module in the parent.
+    const capture = resolve(import.meta.dir, "../src/memory/capture.ts");
+    const control = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "--eval",
+      `try { await import(${JSON.stringify(capture)}); process.exit(2); } catch { process.exit(0); }`],
+      { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(control.exitCode).toBe(0); expect(existsSync(marker)).toBe(true); rmSync(marker);
     const result = f.run("SessionStart", { prompt: "priority capture retained" }, { BUN_OPTIONS: `--preload=${preload}` });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString(), `optional module attempted=${existsSync(marker)}; stderr=${result.stderr.toString()}`).not.toBe("");
@@ -34,14 +40,15 @@ test("a native-sized brief budget keeps work and defers cold optional stores", a
   } finally { f.close(); }
 });
 
-test("a repeated full-tier refusal cannot discard the brief already computed by recovery", async () => {
-  const f = hookFixture(), preload = join(f.root, "repeat-full.ts");
+for (const missingCapture of [false, true]) test(`a repeated full-tier refusal cannot discard the brief already computed by recovery${missingCapture ? " when optional capture cannot load" : ""}`, async () => {
+  const f = hookFixture(), preload = join(f.root, "repeat-full.ts"), marker = join(f.root, "full-capture-import");
   try {
     await f.seed();
-    writeFileSync(preload, `import {readFileSync} from 'node:fs';
-Bun.plugin({name:'repeat-full-admission',setup(b){b.onLoad({filter:/hook-spool\\.ts$/},({path})=>({loader:'ts',contents:readFileSync(path,'utf8').replace('export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {','export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> { throw new HookSpoolFull();')}));}});`);
+    writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
+Bun.plugin({name:'repeat-full-admission',setup(b){${missingCapture ? `b.onLoad({filter:/memory\\/capture\\.ts$/},()=>{writeFileSync(${JSON.stringify(marker)},'attempted');throw new Error('optional recovery module unavailable');});` : ''}b.onLoad({filter:/hook-spool\\.ts$/},({path})=>({loader:'ts',contents:readFileSync(path,'utf8').replace('export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {','export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> { throw new HookSpoolFull();')}));}});`);
     const result = f.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
     expect(result.exitCode).toBe(0);
+    if (missingCapture) expect(existsSync(marker)).toBe(true);
     expect(result.stdout.length).toBeGreaterThan(0);
     expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
     const hooks = resolve(import.meta.dir, "../src/hooks.ts");

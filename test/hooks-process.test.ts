@@ -54,7 +54,7 @@ function replayThroughHooks(f: ReturnType<typeof hookFixture>, accepted: Accepte
 }
 
 
-test("SessionStart never exposes raw private or secret native input in observed fixed-worker argv", () => {
+test("SessionStart never exposes raw private or secret native input in observed owned metadata argv", () => {
   const f = fixture(), observer = hookProcessObserver(f.root);
   const markers = ["PRIVATE_NATIVE_ARGV_SENTINEL", "SYNTHETIC_PASSWORD_ARGV_SENTINEL"];
   for (const payload of [{ private: true, prompt: markers[0] }, { prompt: `password: ${markers[1]}` }]) {
@@ -68,10 +68,11 @@ test("SessionStart never exposes raw private or secret native input in observed 
     cwd: f.cwd, env: f.env, stdin: Buffer.from(JSON.stringify({ hook_event_name: "SessionStart", cwd: f.cwd, prompt: "public argv observer control" })), stdout: "pipe", stderr: "pipe", timeout: 3000,
   });
   expect(control.exitCode).toBe(0);
-  const receipts = observer.read(); expect(receipts).toHaveLength(1);
+  const receipts = observer.read(); expect(receipts.length).toBeGreaterThan(0);
+  expect(receipts.every(receipt => receipt.kind === "native")).toBe(true);
   for (const receipt of receipts) {
     for (const marker of markers) expect(JSON.stringify(receipt.argv)).not.toContain(marker);
-    expect(receipt.argv).toEqual([process.execPath, "--smol", observer.worker]);
+    expect(receipt.argv[0]).toBe("/bin/sh"); expect(receipt.argv[3]).toBe("amem-hook-native");
   }
   const rows = replayThroughHooks(f, [{ event: "SessionStart", excerpt: "public argv observer control" }]);
   for (const marker of markers) expect(JSON.stringify(rows)).not.toContain(marker);

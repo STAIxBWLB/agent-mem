@@ -12,9 +12,26 @@ try {
 const child=process.argv[1]===${JSON.stringify(worker)},file=${JSON.stringify(trace)};
 const note=(stage)=>appendFileSync(file,JSON.stringify({child,stage,at:performance.timeOrigin+performance.now()})+'\\n');
 globalThis.__amemHookStage=note;
-Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-worker|hook-project|session-brief)\\.ts$/},({path})=>{
+Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-worker|hook-project|session-brief|hooks|hook-native)\\.ts$|[/]bin[/]amem\\.js$/},({path})=>{
  let contents=readFileSync(path,'utf8'); const mark=(needle,name)=>{if(contents.split(needle).length!==2)throw new Error('diagnostic anchor changed');contents=contents.replace(needle,"globalThis.__amemHookStage('"+name+"');"+needle);};
- if(path.endsWith('/session-brief-worker.ts')){
+ if(path.endsWith('/bin/amem.js')){
+  contents=contents.replace(/^#![^\\n]*\\n/,'');
+  const output='if (output) console.log(output);';
+  if(contents.split(output).length!==2)throw new Error('diagnostic output anchor changed');
+  contents=contents.replace(output,"if (output) { globalThis.__amemHookStage('output-ready'); console.log(output); }");
+ }else if(path.endsWith('/hooks.ts')){
+  mark('  let pending: PendingHookCapture | undefined, full = false;','parent-entry');
+  mark('  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);','parent-scope-start');
+  mark('  const remaining = () => deadline','parent-scope-done');
+  mark('    const project = resolveAlias(base, await resolveHookProjectAsync','parent-project-start');
+  mark('    const signature = await hookProcessSignature','parent-project-done');
+  mark('    const { sessionStartBrief } = await import','parent-signature-done');
+  mark('    const brief = await sessionStartBrief','parent-brief-start');
+  mark('    if (full && remaining() > 15)','parent-brief-done');
+  mark('    result.context = brief.context','parent-context-ready');
+ }else if(path.endsWith('/hook-native.ts')){
+  mark('  const child = Bun.spawn','native-spawn');
+ }else if(path.endsWith('/session-brief-worker.ts')){
   contents="globalThis.__amemHookStage('entry');"+contents;
   mark('const options = JSON.parse','input-start');mark('if (!Number.isFinite(options.deadlineAt)','input-done');
   mark('const policy = createStandalonePolicy','policy-start');mark('const expectedScope = hookCaptureScope','scope-start');
@@ -27,7 +44,7 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('const scan = opendirSync(dir);','cache-maintenance-start');mark('const text = JSON.stringify(value);','cache-publication-start');
   mark('return cached.project;','project-cache-hit');mark('const project = memoryProjectKey','project-cache-miss');
  }else{mark('const work = new WorkListStore','work-store-start');mark('const views = await work.read','work-store-open');}
- return {loader:'ts',contents};});}});
+ return {loader:path.endsWith('.js')?'js':'ts',contents};});}});
 note('loaded');const spawn=Bun.spawn.bind(Bun),sync=Bun.spawnSync.bind(Bun),kill=process.kill.bind(process);
 Bun.spawn=(argv,options)=>{if(!Array.isArray(argv)||argv[2]!==${JSON.stringify(worker)})return spawn(argv,options);note('spawn');const p=spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options);p.exited.then(()=>note('reaped'));return p;};
 Bun.spawnSync=(argv,options)=>{const kind=Array.isArray(argv)&&argv.includes('remote')?'git-origin':Array.isArray(argv)&&argv.includes('rev-parse')?'git-metadata':Array.isArray(argv)&&argv[0]==='ps'?'lease-signature':'native';note(kind+'-start');const r=sync(argv,options);note(kind+'-end');return r;};
@@ -41,7 +58,7 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     let context: unknown;
     try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Report missing context explicitly. */ }
     const knownWork = typeof context === "string" && context.includes(workMarker);
-    const stopped = [...rows].reverse().find(row => row.child && row.stage === "stop");
+    const stopped = [...rows].reverse().find(row => !row.child && row.stage === "output-ready");
     const completedMs = stopped ? stopped.at - started : null;
     if (attempt === 0) cold = { knownWork, ms: completedMs };
     console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length, knownWork, completedMs,
@@ -59,7 +76,7 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     const result = full.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
     const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
     let context: unknown; try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Missing output is the diagnostic. */ }
-    const stopped = [...rows].reverse().find(row => row.child && row.stage === "stop");
+    const stopped = [...rows].reverse().find(row => !row.child && row.stage === "output-ready");
     console.log(JSON.stringify({ diagnostic: "full-foreign-session-stages", exit: result.exitCode, outputBytes: result.stdout.length,
       knownWork: typeof context === "string" && context.includes(workMarker), completedMs: stopped ? stopped.at - started : null,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));

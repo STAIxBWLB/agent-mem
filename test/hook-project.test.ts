@@ -12,7 +12,12 @@ function binding(f: ReturnType<typeof hookFixture>) { const scope = hookCaptureS
 function cache(f: ReturnType<typeof hookFixture>) { return join(f.base, "hook-project", readdirSync(join(f.base, "hook-project"))[0]!); }
 function noGit(f: ReturnType<typeof hookFixture>) {
   const preload = join(f.root, "refuse-git.ts"), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
-  writeFileSync(preload, `const worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)},spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>spawn(Array.isArray(argv)&&argv[2]===worker?[argv[0],argv[1],'--preload',preload,...argv.slice(2)]:argv,options);if(process.argv[1]===worker){const sync=Bun.spawnSync.bind(Bun);Bun.spawnSync=(argv,options)=>{if(Array.isArray(argv)&&(argv.includes('remote')||argv.includes('rev-parse')))throw new Error('unexpected native Git query');return sync(argv,options);};}`);
+  const marker = join(f.root, "refused-git-attempt");
+  writeFileSync(preload, `import {appendFileSync} from 'node:fs';const worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)},marker=${JSON.stringify(marker)},spawn=Bun.spawn.bind(Bun),sync=Bun.spawnSync.bind(Bun);
+const git=(argv)=>Array.isArray(argv)&&(argv.includes('remote')||argv.includes('rev-parse'));
+const refuse=(port)=>{appendFileSync(marker,port+'\\n');throw new Error('unexpected native Git query');};
+Bun.spawn=(argv,options)=>{if(git(argv)&&argv[0]==='/bin/sh'&&argv[3]==='amem-hook-native')return refuse('parent');return spawn(Array.isArray(argv)&&argv[2]===worker?[argv[0],argv[1],'--preload',preload,...argv.slice(2)]:argv,options);};
+Bun.spawnSync=(argv,options)=>{if(git(argv))return refuse('worker');return sync(argv,options);};`);
   return { BUN_OPTIONS: `--preload=${preload}` };
 }
 
@@ -23,9 +28,11 @@ test("a native-validated cached identity removes Git from SessionStart while pre
   const result = f.run("SessionStart", {}, noGit(f));
   expect(result.exitCode).toBe(0); expect(result.stdout.length).toBeGreaterThan(0);
   expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
+  expect(existsSync(join(f.root, "refused-git-attempt"))).toBe(false);
   // The same fixture without a valid receipt must really reach the refused Git port.
   rmSync(cache(f));
   expect(f.run("SessionStart", {}, noGit(f)).stdout.length).toBe(0);
+  expect(readFileSync(join(f.root, "refused-git-attempt"), "utf8").trim()).toBe("parent");
 });
 
 test("origin changes and malformed, oversized or linked cache entries cannot reuse a project", async () => {

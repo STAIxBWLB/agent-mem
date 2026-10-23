@@ -2,6 +2,25 @@
 
 Status: **macOS acceptance remains open**. The privacy fix at `1e4ec025e0359d05d515988b50da632f5a1545a8` passed Ubuntu but regressed SessionStart on actual macOS [run 39909819878](https://github.com/STAIxBWLB/agent-mem/actions/runs/39909819878), including a failed-job rerun. The preceding `b797a99b` passed both OSes but had the legacy-remote privacy finding. No passing local result below supersedes those runner failures. PR #34 remains unmergeable pending both-platform exact-head CI and the held privacy/performance verdict.
 
+## Current candidate, parent-only native SessionStart
+
+The previous `e07af3fa` candidate still failed actual macOS CI: the cold/noisy trace spent 45-70 ms on the second Bun startup before useful work. The current Option A candidate removes that startup from native SessionStart: work and only safe optional sections run in the parent CLI. Curated refresh is named unavailable, existing small capture indexes use a bounded read-only path, and the standalone library brief keeps all sources. Native metadata retains the shared Git identity and cache/privacy fences through owned asynchronous supervisors. An adversarial caller-SIGKILL probe found the initial supervisor could outlive its deadline; an armed native self-watchdog now reaps its nonce/PGID-verified group even without the caller. No second Bun boot or deadline increase was used.
+
+The single-boot regression fails against the previous hook source and passes with parent context. A full-tier optional CaptureStore import failure was also reproduced as discarded context; moving the optional import inside its recovery catch preserves the completed brief, with native and library regressions. A suspended completion fence refuses even otherwise valid native identity and leaves no cache; removing that fence fails a named assertion. Remote/nested/linked resolver parity and a controlled native-read scope change are checked separately. Parent network/fault/cache probes target the actual brief/native port, with positive controls; worker probes remain for other hooks. The Git-overflow reaper test starts the actual worker after durable intake under an explicit fixture deadline so that it tests the entered overflow leg, while actual executable R1/R2 keeps its original bounds.
+
+Pinned Bun 1.4.2, native macOS, synthetic isolated home, current runtime source before final documentation/tests:
+
+| Path | Runs | Wall p95 (ms) | Wall max (ms) | Own combined peak (MB) | Raw combined peak (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain capture | 40 | 45.53 | 62.18 | 72.78 | 72.89 |
+| Contended capture | 15 | 42.47 | 42.47 | 68.61 | 68.72 |
+| SessionStart known work | 20 | 49.32 | 50.21 | 45.55 | 45.55 |
+| Drain | 1 | 48.43 | 48.43 | 67.56 | 67.67 |
+
+R1 observed 76 invocations and 76 owned child roots (56 Bun workers, 20 native supervisors), with zero remaining processes/groups. All 55 original workload captures replayed exactly once, and 20 final SessionStart acknowledgements stayed durably pending. The unchanged diagnostic asserted output before 140 ms: cold attempt 0 returned known work and 429 bytes at 75.79 ms, warm attempts at 41.30-43.61 ms, and the prepared 256-record foreign tier at 83.23 ms. These are local results only. Native child RSS retains the documented Git-descendant omission ceiling; it is not an entire-process-tree peak claim. Raw inherited-rusage diagnostics and the independent CLI wait4 floor are retained.
+
+The current focused suite passed 97 tests, 0 failed and 2 Linux-only RSS tests skipped on macOS; the additional async-identity suite passed 3 tests. The isolated-HOME AGENTS gate passed on the candidate: typecheck clean, `boundary: OK` (48 source files), 672 pass / 2 Linux-only skips / 0 fail, 9,749 assertions across 674 tests and 87 files (151.23 seconds), and npm pack dry-run OK (54 package files). New-head actual GitHub-runner results remain pending in the PR handoff. Acceptance remains open until Ubuntu and macOS are green at the exact head, two actual macOS runs pass, and actual runner numbers replace the pending runner readback. None of the older local/container tables below establishes that acceptance.
+
 ## SessionStart maintenance deferral
 
 Runtime `89313a7043ecfbeac25be118ffcb90b484f4de01` keeps the legacy-remote and physical-root privacy bindings. Cache publication now sweeps stale temps only when its explicit internal maintenance option is enabled, which the fixed worker does only for non-SessionStart events. SessionStart can still resolve natively when its derived cache is full; it never guesses a project. The final cache-hit validity recheck already includes every semantic input, so the duplicate semantic scan at that same boundary is removed while retaining the stronger recheck.

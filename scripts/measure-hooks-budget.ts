@@ -16,7 +16,7 @@ const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
-let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0;
+let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 function members(pgid: number): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
   if (result.exitCode !== 0) throw new Error("R1 process table unavailable");
@@ -29,13 +29,15 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
   const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
   const start = performance.now();
-  // Observe fixed-worker PIDs as well as the outer CLI group: the worker may own a separate detached group.
+  // Observe each fixed owned child as well as the outer CLI group; native metadata supervisors also own detached groups.
   // The test preload and its append overhead conservatively count inside actual CLI wall/RSS measurements.
   const result = Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
   const wallMs = performance.now() - start;
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
-  if (workers.length !== 1) throw new Error("fixed-worker observation did not match the executable event");
+  const buns = workers.filter(child => child.kind === "worker"), native = workers.filter(child => child.kind === "native");
+  if (event === "SessionStart" ? buns.length !== 0 || native.length < 1 || native.length > 65 : buns.length !== 1 || native.length !== 0)
+    throw new Error("owned-process observation did not match the single-boot executable event");
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);
@@ -45,6 +47,7 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
     try { process.kill(worker.pid, 0); running = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     const retained = worker.detached ? members(worker.pid).length : Number(running);
     leftoverProcesses += retained; checkedWorkers++;
+    if (worker.kind === "worker") checkedBunWorkers++; else checkedNativeSupervisors++;
     if (running || retained) throw new Error("R1 observed worker PID or owned group survived the invocation");
     ownedWorkers.delete(worker.pid);
   }
@@ -125,7 +128,7 @@ try {
     if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
   }
   const groups = { plain: summarize(plain), spoolAndExit: summarize(contended), sessionStart: summarize(sessionStart), drain: summarize(drains) };
-  const report = { capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, scope: "outer executable groups plus every observed fixed-worker PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   console.log(JSON.stringify(report, null, 2));
   if (!report.pass) process.exitCode = 1;
 } finally {

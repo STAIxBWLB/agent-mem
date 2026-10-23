@@ -8,15 +8,15 @@ const READER_LEASE_SCHEMA = "agent-mem.reader-lease/v1";
 const RENEW_MS = 25_000;
 interface Lease { schema: typeof READER_LEASE_SCHEMA; pid: number; signature: string; renewedAt: string }
 export interface ReaderLease { (): void; verify(): void }
-interface OpenLease { refs: number; timer: ReturnType<typeof setInterval> }
+interface OpenLease { refs: number; timer: ReturnType<typeof setInterval>; busyTimeoutMs: number }
 const open = new Map<string, OpenLease>();
 let activeIdentity: { pid: number; signature: string } | undefined;
 
 const fileFor = (memoryDir: string, pid: number, signature: string) => join(memoryDir, "readers", `${pid}-${signature}.json`);
 const record = (pid: number, signature: string): Lease => ({ schema: READER_LEASE_SCHEMA, pid, signature, renewedAt: new Date().toISOString() });
 
-function withFence<T>(memoryDir: string, work: () => T): T {
-  const db = readerAdmissionDatabase(memoryDir);
+function withFence<T>(memoryDir: string, work: () => T, busyTimeoutMs = 3000): T {
+  const db = readerAdmissionDatabase(memoryDir, busyTimeoutMs);
   try { return db.transaction(work).immediate(); } finally { db.close(); }
 }
 
@@ -53,13 +53,20 @@ function admitReader(memoryDir: string): void {
 }
 
 /** One lease per process, reference-counted across handles; an unref'd timer does not keep the process resident. */
-export function registerReaderLease(memoryDir: string): ReaderLease {
+export function registerReaderLease(memoryDir: string, options: { busyTimeoutMs?: number; signature?: string } = {}): ReaderLease {
+  const requestedTimeout = options.busyTimeoutMs ?? 3000;
+  if (!Number.isSafeInteger(requestedTimeout) || requestedTimeout < 0 || requestedTimeout > 3000) throw new Error("invalid reader admission busy timeout");
+  if (options.signature !== undefined && (typeof options.signature !== "string" || !/^[a-f0-9]{64}$/.test(options.signature))) throw new Error("invalid reader lease identity");
   const pid = process.pid;
   // A live reference already established this process lifetime; nested readers keep the same identity.
   // Ownership and admission are still checked under the fence for every registration.
-  const signature = open.size > 0 && activeIdentity?.pid === pid ? activeIdentity.signature : processSignature(pid);
+  const inherited = open.size > 0 && activeIdentity?.pid === pid ? activeIdentity.signature : undefined;
+  if (inherited && options.signature !== undefined && options.signature !== inherited) throw new Error("reader lease identity changed");
+  // Host-only: the supplied hash must already describe this process's pinned native ps identity.
+  const signature = inherited ?? options.signature ?? processSignature(pid);
   if (!signature) throw new Error("cannot establish reader lease identity");
   const file = fileFor(memoryDir, process.pid, signature);
+  const busyTimeoutMs = open.get(file)?.busyTimeoutMs ?? requestedTimeout;
   mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
   withFence(memoryDir, () => {
     admitReader(memoryDir);
@@ -81,13 +88,13 @@ export function registerReaderLease(memoryDir: string): ReaderLease {
         withFence(memoryDir, () => {
           ownedLease(memoryDir, file, signature);
           writeProfileJSON(file, record(process.pid, signature));
-        });
+        }, busyTimeoutMs);
       } catch { /* keep unknown evidence; migration admission remains fail-closed */ }
     }, RENEW_MS);
     timer.unref();
-    open.set(file, { refs: 1, timer });
+    open.set(file, { refs: 1, timer, busyTimeoutMs });
     activeIdentity = { pid, signature };
-  });
+  }, busyTimeoutMs);
   let released = false;
   const release = () => {
     if (released) return;
@@ -102,8 +109,8 @@ export function registerReaderLease(memoryDir: string): ReaderLease {
       withFence(memoryDir, () => {
         ownedLease(memoryDir, file, signature);
         rmSync(file);
-      });
-    } catch { /* another actor replaced it: never remove its lease */ }
+      }, held.busyTimeoutMs);
+    } catch { /* Contention or replacement keeps evidence; never remove another actor's lease. */ }
   };
   return Object.assign(release, {
     verify(): void {

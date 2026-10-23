@@ -76,13 +76,14 @@ function replayKey(row: WorkRow, position: number): string {
 }
 
 /** Stream log bytes with bounded carry; neither a long history nor an invalid oversized row is loaded at once. */
-function scan(path: string, consume?: (text: string, end: number) => void, prefixBytes = 0): { bytes: number; hash: string; prefix: string } {
+function scan(path: string, consume?: (text: string, end: number) => void, prefixBytes = 0, check: () => void = () => {}): { bytes: number; hash: string; prefix: string } {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("work log is not a regular file");
   const fd = openSync(path, "r"), buffer = Buffer.alloc(64 * 1024), full = createHash("sha256"), prefix = createHash("sha256"), decoder = new StringDecoder("utf8");
   let bytes = 0, text = "", lineEnd = 0;
   try {
     for (;;) {
+      check();
       const n = readSync(fd, buffer, 0, buffer.length, null); if (!n) break;
       const chunk = buffer.subarray(0, n); full.update(chunk);
       if (bytes < prefixBytes) prefix.update(chunk.subarray(0, Math.min(n, prefixBytes - bytes)));
@@ -91,6 +92,7 @@ function scan(path: string, consume?: (text: string, end: number) => void, prefi
         text += decoder.write(chunk);
         let end: number;
         while ((end = text.indexOf("\n")) >= 0) {
+          check();
           const line = text.slice(0, end); lineEnd += Buffer.byteLength(line + "\n"); text = text.slice(end + 1);
           if (!line || Buffer.byteLength(line) > ROW_BYTES) throw new Error("work log contains an invalid row");
           consume(line, lineEnd);
@@ -98,6 +100,7 @@ function scan(path: string, consume?: (text: string, end: number) => void, prefi
         if (Buffer.byteLength(text) > ROW_BYTES) throw new Error("work log contains an oversized row");
       }
     }
+    check();
     if (consume && (text + decoder.end()).length) throw new Error("work log has an incomplete row");
     return { bytes, hash: full.digest("hex"), prefix: prefix.digest("hex") };
   } finally { closeSync(fd); }
@@ -112,46 +115,78 @@ export class WorkListStore {
   private readonly machine: string;
   private readonly policy: WorkListPolicy;
   private readonly now: () => number;
+  private readonly timeRemaining: (() => number) | undefined;
+  private readonly busyTimeoutMs: number;
   private readonly readers = new Set<() => void>();
   private closed = false;
   /** #27: the work logs of keys aliased to this project that already have one; read beside this log through their own snapshot cursors, never written. */
   private readonly aliased: WorkListStore[] = [];
 
-  constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number; aliases?: readonly string[]; exact?: boolean }) {
+  constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number; aliases?: readonly string[]; exact?: boolean; timeRemaining?: () => number; busyTimeoutMs?: number }) {
     if (!bounded(options.project, 1000) || typeof options.policy !== "function") throw new Error("invalid work-list input");
+    this.timeRemaining = options.timeRemaining;
+    this.busyTimeoutMs = options.busyTimeoutMs ?? 3000;
+    if (this.timeRemaining !== undefined && typeof this.timeRemaining !== "function"
+      || !Number.isSafeInteger(this.busyTimeoutMs) || this.busyTimeoutMs < 0 || this.busyTimeoutMs > 3000) throw new Error("invalid work-list budget");
+    this.checkBudget();
     const base = canonicalPath(options.base);
     this.project = options.exact === true ? options.project : resolveAlias(base, options.project);
     regular(join(base, "projects"), true); regular(shardDir(base, this.project), true);
+    this.checkBudget();
     ensureShardDescriptor(base, this.project);
     this.dir = join(shardDir(base, this.project), "work");
     regular(this.dir, true); regular(join(this.dir, "log"), true);
     mkdirSync(this.dir, { recursive: true, mode: 0o700 }); chmodSync(this.dir, 0o700);
     mkdirSync(join(this.dir, "log"), { recursive: true, mode: 0o700 });
     if (lstatSync(this.dir).isSymbolicLink() || lstatSync(join(this.dir, "log")).isSymbolicLink()) throw new Error("work log directory is invalid");
+    this.checkBudget();
     this.machine = machineId(base).id;
     this.policy = options.policy; this.now = options.now ?? Date.now;
     for (const name of ["mutation-lock.db", "index.db", "index.db-wal", "index.db-shm"]) regular(join(this.dir, name));
-    this.mutation = mutationDatabase(this.dir);
-    this.db = new Database(join(this.dir, "index.db"), { create: true }); chmodSync(join(this.dir, "index.db"), 0o600);
-    this.db.run("PRAGMA busy_timeout = 3000"); this.db.run("PRAGMA journal_mode = WAL");
-    // The index is disposable. An older derived schema is replayed without changing a log row.
-    const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
-    if (columns.length && !columns.some(column => column.name === "position")) { this.db.run("DROP TABLE work_ops"); this.db.run("DROP TABLE IF EXISTS work_heads"); }
-    this.db.run("CREATE TABLE IF NOT EXISTS work_ops (id TEXT PRIMARY KEY, at INTEGER NOT NULL, machine TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT, position INTEGER NOT NULL, replay TEXT NOT NULL DEFAULT '')");
-    this.db.run("CREATE INDEX IF NOT EXISTS work_receipts ON work_ops(receipt)");
-    this.db.run("CREATE TABLE IF NOT EXISTS work_heads (file TEXT PRIMARY KEY, bytes INTEGER NOT NULL, hash TEXT NOT NULL)");
-    // Take the write transaction only when the replay column or its index is missing, so an ordinary open never
-    // waits on another process's refresh or rebuild (#383). The check repeats inside the transaction.
-    const migrated = () => (this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[]).some(column => column.name === "replay")
-      && (this.db.query("PRAGMA index_list(work_ops)").all() as { name: string }[]).some(index => index.name === "work_replay");
-    if (!migrated()) this.db.transaction(() => {
+    let openedMutation: Database | undefined, openedDb: Database | undefined;
+    try {
+      this.mutation = openedMutation = mutationDatabase(this.dir, this.busyTimeoutMs);
+      this.checkBudget();
+      this.db = openedDb = new Database(join(this.dir, "index.db"), { create: true }); chmodSync(join(this.dir, "index.db"), 0o600);
+      this.db.run(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`); this.db.run("PRAGMA journal_mode = WAL");
+      // The index is disposable. An older derived schema is replayed without changing a log row.
+      this.checkBudget();
       const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
-      if (!columns.some(column => column.name === "replay")) this.db.run("ALTER TABLE work_ops ADD COLUMN replay TEXT NOT NULL DEFAULT ''");
-      this.db.run("CREATE INDEX IF NOT EXISTS work_replay ON work_ops(replay)");
-    }).immediate();
-    for (const alias of options.exact === true ? [] : options.aliases ?? []) {
-      if (alias === this.project || !existsSync(join(shardDir(base, alias), "work", "log"))) continue;
-      this.aliased.push(new WorkListStore({ base, project: alias, policy: options.policy, ...(options.now ? { now: options.now } : {}), exact: true }));
+      if (columns.length && !columns.some(column => column.name === "position")) { this.db.run("DROP TABLE work_ops"); this.db.run("DROP TABLE IF EXISTS work_heads"); }
+      this.db.run("CREATE TABLE IF NOT EXISTS work_ops (id TEXT PRIMARY KEY, at INTEGER NOT NULL, machine TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT, position INTEGER NOT NULL, replay TEXT NOT NULL DEFAULT '')");
+      this.db.run("CREATE INDEX IF NOT EXISTS work_receipts ON work_ops(receipt)");
+      this.db.run("CREATE TABLE IF NOT EXISTS work_heads (file TEXT PRIMARY KEY, bytes INTEGER NOT NULL, hash TEXT NOT NULL)");
+      // Take the write transaction only when the replay column or its index is missing, so an ordinary open never
+      // waits on another process's refresh or rebuild (#383). The check repeats inside the transaction.
+      const migrated = () => (this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[]).some(column => column.name === "replay")
+        && (this.db.query("PRAGMA index_list(work_ops)").all() as { name: string }[]).some(index => index.name === "work_replay");
+      this.checkBudget();
+      if (!migrated()) this.db.transaction(() => {
+        this.checkBudget();
+        const columns = this.db.query("PRAGMA table_info(work_ops)").all() as { name: string }[];
+        if (!columns.some(column => column.name === "replay")) this.db.run("ALTER TABLE work_ops ADD COLUMN replay TEXT NOT NULL DEFAULT ''");
+        this.db.run("CREATE INDEX IF NOT EXISTS work_replay ON work_ops(replay)");
+      }).immediate();
+      this.checkBudget();
+      for (const alias of options.exact === true ? [] : options.aliases ?? []) {
+        this.checkBudget();
+        if (alias === this.project || !existsSync(join(shardDir(base, alias), "work", "log"))) continue;
+        this.aliased.push(new WorkListStore({ base, project: alias, policy: options.policy, ...(options.now ? { now: options.now } : {}), exact: true,
+          timeRemaining: this.timeRemaining, busyTimeoutMs: this.busyTimeoutMs }));
+      }
+      this.checkBudget();
+    } catch (error) {
+      for (const store of this.aliased) try { store.close(); } catch { /* Preserve the construction failure. */ }
+      try { openedDb?.close(); } catch { /* Preserve the construction failure. */ }
+      try { openedMutation?.close(); } catch { /* Preserve the construction failure. */ }
+      throw error;
+    }
+  }
+
+  private checkBudget(): void {
+    if (this.timeRemaining) {
+      const remaining = this.timeRemaining();
+      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("work-list read deadline");
     }
   }
 
@@ -166,7 +201,8 @@ export class WorkListStore {
   }
   private locked<T>(run: () => T): T {
     if (this.closed) throw new Error("work-list store is closed");
-    return this.mutation.transaction(run).immediate();
+    this.checkBudget();
+    return this.mutation.transaction(() => { const result = run(); this.checkBudget(); return result; }).immediate();
   }
   private decode(text: string): WorkRow {
     try {
@@ -179,23 +215,27 @@ export class WorkListStore {
     } catch { throw new Error("work log contains an invalid hashed row"); }
   }
   private index(row: WorkRow, position: number): void {
+    this.checkBudget();
     const key = receipt(row);
     if (key) for (const prior of this.db.query("SELECT payload FROM work_ops WHERE receipt = ?").iterate(key) as Iterable<{ payload: string }>) {
+      this.checkBudget();
       if (importPayload(this.decode(prior.payload)) !== importPayload(row)) throw new Error("work log contains conflicting source receipts");
     }
     this.db.query("INSERT OR IGNORE INTO work_ops (id, at, machine, payload, receipt, position, replay) VALUES (?, ?, ?, ?, ?, ?, ?)").run(row.id, row.at, row.machine, canonicalJSON(row), key, position, replayKey(row, position));
   }
   private refresh(force = false): void {
-    const files = readdirSync(join(this.dir, "log")).sort();
+    this.checkBudget();
+    const files = readdirSync(join(this.dir, "log")).sort((a, b) => { this.checkBudget(); return a < b ? -1 : a > b ? 1 : 0; });
     if (files.some(file => !/^[a-f0-9]{16}\.jsonl$/.test(file))) throw new Error("work log has an invalid segment name");
     const heads = new Map((this.db.query("SELECT file, bytes, hash FROM work_heads").all() as Head[]).map(head => [head.file, head]));
-    const scans = new Map(files.map(file => [file, scan(join(this.dir, "log", file), undefined, heads.get(file)?.bytes ?? 0)]));
+    const scans = new Map(files.map(file => [file, scan(join(this.dir, "log", file), undefined, heads.get(file)?.bytes ?? 0, () => this.checkBudget())]));
     const reset = force || [...heads].some(([file, head]) => !scans.has(file) || scans.get(file)!.bytes < head.bytes || scans.get(file)!.prefix !== head.hash);
     this.db.transaction(() => {
       if (reset) { this.db.run("DELETE FROM work_ops"); this.db.run("DELETE FROM work_heads"); }
       for (const file of files) {
+        this.checkBudget();
         const old = reset ? 0 : heads.get(file)?.bytes ?? 0, current = scans.get(file)!;
-        if (old !== current.bytes) scan(join(this.dir, "log", file), (line, end) => { if (end > old) this.index(this.decode(line), end); });
+        if (old !== current.bytes) scan(join(this.dir, "log", file), (line, end) => { if (end > old) this.index(this.decode(line), end); }, 0, () => this.checkBudget());
         this.db.query("INSERT OR REPLACE INTO work_heads (file, bytes, hash) VALUES (?, ?, ?)").run(file, current.bytes, current.hash);
       }
       // Old readers may rebuild/append this disposable index without the additive replay column. Backfill one
@@ -203,17 +243,23 @@ export class WorkListStore {
       const missing = this.db.query("SELECT id, payload, position FROM work_ops WHERE replay = '' LIMIT 1");
       const update = this.db.query("UPDATE work_ops SET replay = ? WHERE id = ?");
       for (;;) {
+        this.checkBudget();
         const old = missing.get() as { id: string; payload: string; position: number } | null;
         if (!old) break;
         update.run(replayKey(this.decode(old.payload), old.position), old.id);
       }
+      this.checkBudget();
     }).immediate();
   }
   rebuild(): void { this.locked(() => this.refresh(true)); }
   private async permitted(row: WorkRow): Promise<boolean> {
+    this.checkBudget();
     if (looksSecret(canonicalJSON(row))) return false;
     const copy = structuredClone(row); Object.freeze(copy.fields); if (copy.source) Object.freeze(copy.source); Object.freeze(copy);
-    try { return await this.policy(copy) === true; } catch { return false; }
+    let allowed = false;
+    try { allowed = await this.policy(copy) === true; } catch { /* Refusal remains a refusal. */ }
+    this.checkBudget();
+    return allowed;
   }
 
   /** An ordered, stable read snapshot. The separate read-only connection never holds the mutation lock across
@@ -226,7 +272,8 @@ export class WorkListStore {
       regular(join(this.dir, "index.db"));
       const db = opened = new Database(join(this.dir, "index.db"), { readonly: true });
       try {
-        db.run("PRAGMA busy_timeout = 3000"); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
+        db.run(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
+        this.checkBudget();
         db.run("BEGIN");
         const rows = db.query("SELECT payload, position, replay FROM work_ops ORDER BY replay").iterate() as IterableIterator<{ payload: string; position: number; replay: string }>;
         return { db, rows, first: rows.next() }; // Establish the snapshot before releasing the writer lock.
@@ -246,7 +293,9 @@ export class WorkListStore {
       next: () => {
         if (closed) return { done: true, value: undefined };
         try {
+          this.checkBudget();
           const next = first ? state.first : state.rows.next(); first = false;
+          this.checkBudget();
           if (next.done) { close(); return { done: true, value: undefined }; }
           return { done: false, value: { row: this.decode(next.value.payload), position: next.value.position, order: next.value.replay } };
         } catch (error) { close(); throw error; }
@@ -262,13 +311,17 @@ export class WorkListStore {
     const cursors: IterableIterator<IndexedRow>[] = [];
     try { for (const store of [this, ...this.aliased]) cursors.push(store.operations()); }
     catch (error) { for (const cursor of cursors) cursor.return?.(); throw error; }
-    const heads = cursors.map(cursor => cursor.next());
+    let heads: IteratorResult<IndexedRow>[];
+    try { heads = cursors.map(cursor => { this.checkBudget(); return cursor.next(); }); }
+    catch (error) { for (const cursor of cursors) try { cursor.return?.(); } catch { /* Preserve the first failure. */ } throw error; }
     const end = () => { for (const cursor of cursors) { try { cursor.return?.(); } catch { /* the first failure is the one reported */ } } };
     return {
       next: () => {
         try {
+          this.checkBudget();
           let pick = -1;
           for (let i = 0; i < heads.length; i++) {
+            this.checkBudget();
             const head = heads[i]!;
             if (!head.done && (pick < 0 || head.value.order < (heads[pick]! as IteratorYieldResult<IndexedRow>).value.order)) pick = i;
           }
@@ -316,6 +369,7 @@ export class WorkListStore {
   }
 
   async read(list?: string, includeClosed = false): Promise<WorkListView[]> {
+    this.checkBudget();
     if (list !== undefined && !bounded(list, 300) || typeof includeClosed !== "boolean") return invalid();
     const rows = this.merged();
     const views = new Map<string, { fields: WorkListFields; items: Map<string, WorkListFields> }>();
@@ -323,6 +377,7 @@ export class WorkListStore {
     // requesting an enormous current result still needs that result's memory; paged views are the upgrade path.
     try {
       for (const { row } of rows) {
+        this.checkBudget();
         const allowed = await this.permitted(row);
         if (this.closed) throw new Error("work-list store is closed");
         if (!allowed) continue;
@@ -331,12 +386,16 @@ export class WorkListStore {
         const task = row.fields.task;
         const target = typeof task === "string" ? view.items.get(task) ?? {} : view.fields;
         if (typeof task === "string") view.items.set(task, target);
-        for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
+        for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { this.checkBudget(); if (value === null) delete target[key]; else target[key] = value; }
       }
     } finally { rows.return?.(); }
-    return [...views].sort(([a], [b]) => a.localeCompare(b)).flatMap(([name, view]) => {
+    this.checkBudget();
+    const result = [...views].sort(([a], [b]) => { this.checkBudget(); return a.localeCompare(b); }).flatMap(([name, view]) => {
+      this.checkBudget();
       const closed = view.fields.status === "done";
-      return closed && !includeClosed ? [] : [{ list: name, fields: view.fields, items: [...view.items].sort(([a], [b]) => a.localeCompare(b)).map(([task, fields]) => ({ task, fields })), closed }];
+      return closed && !includeClosed ? [] : [{ list: name, fields: view.fields, items: [...view.items].sort(([a], [b]) => { this.checkBudget(); return a.localeCompare(b); }).map(([task, fields]) => { this.checkBudget(); return { task, fields }; }), closed }];
     });
+    this.checkBudget();
+    return result;
   }
 }

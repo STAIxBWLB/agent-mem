@@ -1,7 +1,10 @@
 import { fileURLToPath } from "node:url";
+import { resolveHookProjectAsync } from "./hook-project.ts";
+import { hookProcessSignature } from "./hook-native.ts";
+import { resolveAlias } from "./memory/aliases.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
 import { appendMetrics } from "./memory/metrics.ts";
-import { stageHookCapture, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
+import { stageHookCapture, hookCaptureScope, drainHookCaptures, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
@@ -85,9 +88,49 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   }
 }
 
+/** SessionStart spends one Bun boot on context. Capture remains durable/pending;
+ * only native metadata uses an owned, deadline-reaped shell supervisor. */
+async function sessionInParent(input: unknown, options: HookOptions, base: string, deadline: number) {
+  let pending: PendingHookCapture | undefined, full = false;
+  try { pending = await stageHookCapture("SessionStart", input, { ...options, base }); }
+  catch (error) { if (!(error instanceof HookSpoolFull)) throw error; full = true; }
+  if (!pending && !full) return undefined;
+  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);
+  const remaining = () => deadline - performance.now(), usage = { rssKB: 0, rawRssKB: 0 };
+  const result = { context: unavailable, captured: false, valid: false, pending: !!pending, ...usage };
+  if (!scope || remaining() <= 0) return result;
+  try {
+    const project = resolveAlias(base, await resolveHookProjectAsync({ cwd, base, scope, timeRemaining: remaining }, usage));
+    const signature = await hookProcessSignature(remaining, usage);
+    const { sessionStartBrief } = await import("./session-brief.ts");
+    const brief = await sessionStartBrief({ ...options, cwd, base, project, nativeSession: { signature }, timeRemaining: remaining });
+    // A full tier cannot cost a completed brief. Replay only with a reserve left,
+    // then stage the current normalized event; concurrent finite-cap refusal stays explicit.
+    if (full && remaining() > 15) {
+      let store: import("./memory/capture.ts").CaptureStore | undefined;
+      try {
+        const { CaptureStore } = await import("./memory/capture.ts");
+        await drainHookCaptures({ ...options, cwd, base, project, expectedScope: scope, timeRemaining: () => remaining() - 5 }, (value, receipt) => {
+          store ??= new CaptureStore({ memoryDir: base, project, busyTimeoutMs: 0 });
+          return store.append(value, { receipt });
+        });
+      } catch { /* Optional capture recovery never discards completed context. */ }
+      finally { store?.close(); }
+      try { pending = await stageHookCapture("SessionStart", input, { ...options, cwd, base }); }
+      catch (error) { if (!(error instanceof HookSpoolFull)) throw error; }
+    }
+    result.pending = !!pending;
+    if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;
+    result.context = brief.context; result.valid = true;
+    return result;
+  } catch { return result; }
+  finally { result.rssKB = usage.rssKB; result.rawRssKB = usage.rawRssKB; }
+}
+
 /** A full pending tier must still be drainable. Recover bounded old records before retrying
  * publication; this path uses one helper too, and the current normalized event stays pending. */
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
+  if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
   let result: Awaited<ReturnType<typeof hookWorker>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base }); }
