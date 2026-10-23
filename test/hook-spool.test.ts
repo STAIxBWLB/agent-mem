@@ -412,3 +412,40 @@ test("a full tier from another valid project retains this SessionStart and retur
   const quarantined = readdirSync(join(a.base, "hook-spool", ".quarantine"));
   expect(quarantined.length).toBeGreaterThan(0); expect(quarantined.length).toBeLessThanOrEqual(256);
 });
+
+test("SessionStart retires only the foreign capacity its own event needs", async () => {
+  const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
+  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `minimum foreign ${i}` }, { cwd: b.cwd, base: a.base });
+  const staged = await stageHookCapture("SessionStart", { prompt: "one reserved brief slot" }, a.options);
+  expect(staged).toBeDefined();
+  expect(a.pending().filter(row => row.value.cwd === b.cwd)).toHaveLength(255);
+  expect(a.pending().filter(row => row.value.capture.excerpt === "one reserved brief slot")).toHaveLength(1);
+  expect(readdirSync(join(a.base, "hook-spool", ".quarantine"))).toHaveLength(1);
+});
+
+test("SessionStart defers unrelated retirement when its capture already fits", async () => {
+  const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
+  await stageHookCapture("PostToolUse", { prompt: "deferred foreign orphan" }, { cwd: b.cwd, base: a.base });
+  rmSync(b.cwd, { recursive: true, force: true });
+  expect(await stageHookCapture("SessionStart", { prompt: "brief first" }, a.options)).toBeDefined();
+  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(1);
+  expect(await stageHookCapture("PostToolUse", { prompt: "ordinary retirement boundary" }, a.options)).toBeDefined();
+  expect(a.pending().filter(row => row.value.capture.excerpt === "deferred foreign orphan")).toHaveLength(0);
+  expect(readdirSync(join(a.base, "hook-spool", ".quarantine"))).toHaveLength(1);
+});
+
+test("minimal SessionStart retirement frees enough bytes as well as a file slot", async () => {
+  const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
+  const foreign = { cwd: b.cwd, base: a.base };
+  const input = { prompt: "b".repeat(2000), tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"p".repeat(370)}`) } };
+  let staged = 0;
+  for (; staged < 256; staged++) {
+    try { await stageHookCapture("PostToolUse", input, foreign); }
+    catch (error) { expect((error as Error).message).toBe("hook storage full"); break; }
+  }
+  expect(staged).toBeGreaterThan(0); expect(staged).toBeLessThan(256);
+  const payload = { prompt: "current byte-bound event", tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"가".repeat(350)}`) } };
+  await expect(stageHookCapture("SessionStart", payload, a.options)).resolves.toBeDefined();
+  expect(a.pending().filter(row => row.value.capture.excerpt === "current byte-bound event")).toHaveLength(1);
+  expect(readdirSync(join(a.base, "hook-spool", ".quarantine")).length).toBeGreaterThan(1);
+});

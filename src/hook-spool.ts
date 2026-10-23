@@ -239,11 +239,13 @@ function quarantineEntries(dir: string): Quarantined[] {
   } finally { reader.closeSync(); }
   return rows.sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
 }
-function trimQuarantine(base: string, files = 0, bytes = 0): boolean {
+interface QuarantineBatch { held?: Quarantined[] }
+function trimQuarantine(base: string, files = 0, bytes = 0, batch?: QuarantineBatch): boolean {
   const dir = join(directory(base), ".quarantine");
-  if (!lstatSync(dir, { throwIfNoEntry: false })) return true;
+  if (!lstatSync(dir, { throwIfNoEntry: false })) { if (batch) batch.held = []; return true; }
   privateDirectory(dir);
-  const held = quarantineEntries(dir);
+  const held = batch?.held ?? quarantineEntries(dir);
+  if (batch) batch.held = held;
   let size = held.reduce((sum, row) => sum + row.size, 0), count = held.length;
   for (const row of held) {
     if (count + files <= MAX_FILES && size + bytes <= MAX_BYTES) return true;
@@ -251,7 +253,10 @@ function trimQuarantine(base: string, files = 0, bytes = 0): boolean {
     try {
       file = openOwned(join(dir, row.name));
       if (file.initial.dev !== row.dev || file.initial.ino !== row.ino || file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
-      if (owns(file)) { rmSync(file.file); size -= row.size; count--; }
+      if (owns(file)) {
+        rmSync(file.file); size -= row.size; count--;
+        if (batch) batch.held = batch.held!.filter(kept => kept !== row);
+      }
     } catch { /* A replacement is never removed using an older inventory receipt. */ }
     finally { if (file) closeSync(file.fd); }
   }
@@ -261,24 +266,36 @@ function trimQuarantine(base: string, files = 0, bytes = 0): boolean {
  * body. Valid normalized rows are held privately outside active admission and never read as brief context.
  * ponytail: active and quarantine each have a 2MiB/256-file soft cap plus already in-flight publications;
  * cross-process hard admission accounting is the upgrade path. Bounded trims run on healthy admission too. */
-function retireClaim(base: string, file: OwnedFile, preserve: boolean): boolean {
+function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: QuarantineBatch): boolean {
   if (!owns(file)) return false;
   if (!preserve) { rmSync(file.file); return true; }
   const quarantine = join(directory(base), ".quarantine"); privateDirectory(quarantine);
-  if (!trimQuarantine(base, 1, file.initial.size) || !owns(file)) return false;
+  if (!trimQuarantine(base, 1, file.initial.size, batch) || !owns(file)) return false;
   const name = `${file.file.slice(file.file.lastIndexOf("/") + 1)}.quarantined-${randomBytes(12).toString("hex")}`;
   const destination = join(quarantine, name);
   renameSync(file.file, destination); chmodSync(destination, 0o600);
+  if (batch) {
+    batch.held!.push({ name, size: file.initial.size, modified: file.initial.mtimeMs, dev: file.initial.dev, ino: file.initial.ino });
+    batch.held!.sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
+  }
   return true;
 }
 
 /** Inspect at most the bounded active inventory before admission. Malformed matching publications cannot
  * occupy active capacity forever; current-policy rejection during drain uses the same retirement boundary. */
-function retireUnresolved(base: string, admittingCwd?: string): void {
-  trimQuarantine(base);
-  const active = entries(base).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
+function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean): Set<string> {
+  // One synchronous admission shares its inventories. Concurrent publishers can still
+  // overshoot the documented soft caps; every destructive operation rechecks ownership.
+  const batch: QuarantineBatch = {}, retired = new Set<string>();
+  trimQuarantine(base, 0, 0, batch);
+  let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
+  const fits = () => count < MAX_FILES && bytes + incomingBytes <= MAX_BYTES;
+  if (minimal && fits()) return retired;
+  const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
+  const removed = (row: typeof active[number]) => { retired.add(row.name); count--; bytes -= row.size; };
   let remaining = DRAIN_BYTES;
   for (const row of active.slice(0, DRAIN_FILES)) {
+    if (minimal && fits()) break; // Keep the brief's time for context, not unnecessary retirement.
     const match = namePattern.exec(row.name); if (!match) continue;
     if (row.size <= RECORD_BYTES && row.size > remaining) break;
     let file: OwnedFile | undefined;
@@ -289,7 +306,7 @@ function retireUnresolved(base: string, admittingCwd?: string): void {
       const record = decoded(file);
       if (record && (hash(record.value.cwd) !== match[2] || record.value.nonce !== match[4]
         || (record.value.scope ?? "0".repeat(64)) !== match[3])) {
-        const claim = claimOwned(base, row.name, file); if (claim) retireClaim(base, claim, false);
+        const claim = claimOwned(base, row.name, file); if (claim && retireClaim(base, claim, false, batch)) removed(row);
         continue;
       }
       if (record) {
@@ -299,10 +316,11 @@ function retireUnresolved(base: string, admittingCwd?: string): void {
           && (admittingCwd === undefined || value.cwd === admittingCwd)) continue;
       }
       const claim = claimOwned(base, row.name, file);
-      if (claim) retireClaim(base, claim, !!record);
+      if (claim && retireClaim(base, claim, !!record, batch)) removed(row);
     } catch { /* Transient I/O and changed evidence remain retryable; capture bodies never enter logs. */ }
     finally { if (file) closeSync(file.fd); }
   }
+  return retired;
 }
 
 /** INTERNAL worker recovery after a known fatal native Git resolution. No project is inferred and no
@@ -358,8 +376,8 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // A healthy foreign cwd cannot monopolize the home-wide active tier. Preserve its
   // oldest bounded records privately, without rebinding them to this project's capture.
   // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
-  retireUnresolved(base, full ? cwd : undefined);
-  const queued = entries(base);
+  const retired = retireUnresolved(base, full ? cwd : undefined, inventory, Buffer.byteLength(bytes), event === "SessionStart");
+  const queued = inventory.filter(row => !retired.has(row.name));
   // Soft per-home cap: concurrent publishers can exceed it by their already in-flight records.
   if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) throw new HookSpoolFull();
   const name = `hook-${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
