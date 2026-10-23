@@ -257,7 +257,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (options["--json"]) return JSON.stringify(rows, null, 2);
     if (!rows.length) return "no project shards yet";
     const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
-    return rows.map(p => `${p.key}  ${p.state}${p.local ? "  local-only key" : ""}${p.aliases.length ? `  aliases: ${p.aliases.join(", ")}` : ""}  capture ${p.captureRows} rows ${mb(p.captureBytes)}  curated ${p.curatedEntries ?? "unavailable"}  disk ${mb(p.diskBytes)}  last ${p.captureLastAt ?? "never"}`).join("\n");
+    // Per-project curated counts exist only after the split; before it every note is in one shared store, so the honest figure is unavailable, never 0.
+    const split = shardStatePresent();
+    return rows.map(p => `${p.key}  ${p.state}${p.local ? "  local-only key" : ""}${p.aliases.length ? `  aliases: ${p.aliases.join(", ")}` : ""}  capture ${p.captureRows} rows ${mb(p.captureBytes)}  curated ${split ? p.curatedEntries ?? "unavailable" : "unavailable (home not split)"}  disk ${mb(p.diskBytes)}  last ${p.captureLastAt ?? "never"}`).join("\n");
   }
   if (sub === "usage") {
     const limit = options["--limit"] === undefined ? undefined : Number(options["--limit"]);
@@ -282,7 +284,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const key = requireShard(memoryHome(), requested);
     if (op === "forget" && options["--confirm"] !== true) {
       const state = projectState(memoryHome(), key), shard = readCatalogFresh(memoryHome()).find(p => p.key === key);
-      return `preview: forget ${key} (now ${state}; capture ${shard?.captureRows ?? 0} rows, curated ${shard?.curatedEntries ?? "unavailable"}). Forget is an append-only record that takes the project out of recall and every listing for good; nothing is erased here and it cannot be undone. Re-run with --confirm to record it.`;
+      return `preview: forget ${key} (now ${state}; capture ${shard?.captureRows ?? 0} rows, curated ${shardStatePresent() ? shard?.curatedEntries ?? "unavailable" : "unavailable (home not split)"}). Forget is an append-only record that takes the project out of recall and every listing for good; nothing is erased here and it cannot be undone. Re-run with --confirm to record it.`;
     }
     const written = appendLifecycle(memoryHome(), { op: op as "archive" | "unarchive" | "forget", key, actor: "person", machine: machineId(memoryHome()).id });
     return options["--json"] ? JSON.stringify(written, null, 2) : `${op === "forget" ? "forgot" : op === "archive" ? "archived" : "unarchived"} ${written.key}${requested !== written.key ? ` (alias ${requested})` : ""}`;

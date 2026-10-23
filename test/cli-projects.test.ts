@@ -184,3 +184,20 @@ test("an archived project is out of recall: a writable capture open, and the CLI
   await runCli(["project", "unarchive", A], person);
   expect(() => new CaptureStore({ home: dir, project: A }).close()).not.toThrow();
 });
+
+test("curated counts are unavailable on an unsplit home, never 0: projects, usage and the forget preview all say so, and after the split they are real", async () => {
+  const { dir, person } = rig();
+  note(dir, A, "Decision: one curated note. Rationale: it exists."); capture(dir, A, ["alpha row"]);
+  const rows = await json(["projects", "--json"], person);
+  expect(rows[0].curatedAvailable === false || rows[0].curatedEntries === 0).toBe(true);     // the catalog's own field is a lower bound on an unsplit home
+  const text = await runCli(["projects"], person);
+  expect(text).toContain("curated unavailable (home not split)"); expect(text).not.toMatch(/curated 0\b/);
+  const usage = await json(["usage", "--json"], person);
+  expect(usage.curatedSplit).toBe(false); expect(usage.totals.curatedEntries).toBeNull();
+  expect(await runCli(["usage"], person)).toContain("home not split into shards");
+  expect(await runCli(["project", "forget", A], person)).toContain("curated unavailable (home not split)");
+  const { migrateShards } = await import("../src/memory/shard-migration.ts");
+  await migrateShards({ memoryDir: join(dir, "memory"), mode: "apply", authorizedPerson: true, tty: true });
+  expect(await runCli(["projects"], person)).toMatch(/curated 1\b/);
+  expect((await json(["usage", "--json"], person)).totals.curatedEntries).toBe(1);
+});

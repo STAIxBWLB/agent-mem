@@ -8,7 +8,7 @@ import { readCatalog, rebuildCatalog, scanCatalog } from "../src/memory/catalog.
 import { shardDir, shardMachineDir } from "../src/memory/shard.ts";
 import { machineId } from "../src/memory/store.ts";
 import { planGc, runGc } from "../src/memory/gc.ts";
-import { usageReport } from "../src/memory/usage.ts";
+import { usageReport, usageText } from "../src/memory/usage.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 
 // #15 T5 / D3: `amem usage` and `amem gc`. gc applies each shard's own retention and cap through the capture store's bounded evict(); it never opens a
@@ -151,7 +151,9 @@ test("usageReport totals the shards, ranks the largest, and is honest about an u
   expect(report.totals.diskBytes).toBeGreaterThanOrEqual(report.totals.captureBytes);
   expect(report.largest.map(p => p.key)).toEqual(["github.com/o/large", "github.com/o/medium"]);
   expect(report.projects).toHaveLength(3);
-  expect(report.totals.curatedEntries).toBe(0);
+  expect(report.curatedSplit).toBe(false);
+  expect(report.totals.curatedEntries).toBeNull();            // an unsplit home has no per-project curated count: unavailable, never 0
+  expect(usageText(report)).toContain("home not split into shards");
 });
 
 test("the catalog carries each project's state, lists archived ones, and leaves forgotten ones out of the default listing and usage totals", () => {
