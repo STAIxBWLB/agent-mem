@@ -50,16 +50,48 @@ export async function generationSyncGit(dir: string, args: string[], signal?: Ab
 }
 
 
-/** GitHub remotes are asked through `gh`; any other host, or a `gh` that cannot answer, is unknown. */
+/**
+ * The `owner/repo` of a remote URL whose host is EXACTLY `github.com` (case-insensitive) over `https://`, `ssh://git@github.com/` or the scp form
+ * `[git@]github.com:`; anything else is undefined, so it is `unknown` and never asked. An unanchored match let `https://notgithub.com/acme/notes`,
+ * `git@evil-github.com:acme/notes` and `https://git.example.org/mirror/github.com/acme/notes` resolve to `acme/notes` (task #121 review round 1; published 0.6.0
+ * has the unanchored form). `http://` and `git://` are not verifiable as private transports and an explicit port is not github.com's, so both are unknown.
+ */
+export function githubRepoOf(url: string): string | undefined {
+  const text = url.trim();
+  if (!text || /[\s\u0000-\u001f\u007f\\]/.test(text) || text.length > 512) return undefined;
+  let host: string, path: string;
+  const scp = /^(?:([A-Za-z0-9._-]+)@)?([^:/@]+):([^/].*)$/.exec(text); // `[user@]host:path`, never a URL with `://`
+  if (!text.includes("://") && scp) {
+    if (scp[1] !== undefined && scp[1] !== "git") return undefined;
+    host = scp[2]!; path = scp[3]!;
+  } else {
+    let parsed: URL;
+    try { parsed = new URL(text); } catch { return undefined; }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") return undefined;
+    if (parsed.port) return undefined;
+    if (parsed.search || parsed.hash) return undefined;
+    if (parsed.protocol === "ssh:" && parsed.username !== "git") return undefined;
+    host = parsed.hostname; path = parsed.pathname.replace(/^\//, "");
+  }
+  if (host.toLowerCase() !== "github.com") return undefined;
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100}?)(?:\.git)?\/?$/.exec(path);
+  return match && match[2] !== "." && match[2] !== ".." ? `${match[1]}/${match[2]}` : undefined;
+}
+
+/** GitHub remotes are asked through `gh`, pinned to github.com; any other host, or a `gh` that cannot answer, is unknown. */
 export async function remoteVisibility(url: string): Promise<Visibility> {
-  const repo = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url)?.[1];
+  const repo = githubRepoOf(url);
   if (!repo) return "unknown";
   try {
-    const p = Bun.spawn(["gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    // GH_HOST (and the enterprise token variables) would send `gh repo view` to a different server: pin it, so the answer is about github.com's repository.
+    const env: Record<string, string | undefined> = { ...process.env, GH_HOST: "github.com" };
+    delete env.GH_ENTERPRISE_TOKEN; delete env.GITHUB_ENTERPRISE_TOKEN;
+    const p = Bun.spawn(["gh", "repo", "view", repo, "--json", "visibility", "--jq", ".visibility"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: env as Record<string, string> });
     const timer = setTimeout(() => p.kill("SIGKILL"), 15_000);
     const [code, out] = await Promise.all([p.exited, new Response(p.stdout).text()]);
     clearTimeout(timer);
     const v = out.trim().toLowerCase();
+    // ponytail: `internal` (GitHub Enterprise Cloud: visible to the enterprise's members, not the public) counts as private, as `amem sync` always has. A stricter policy would map it to unknown.
     return code === 0 && (v === "private" || v === "internal") ? "private" : code === 0 && v === "public" ? "public" : "unknown";
   } catch { return "unknown"; }
 }

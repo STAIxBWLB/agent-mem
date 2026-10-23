@@ -27,11 +27,17 @@ import { usageReport, usageText } from "./memory/usage.ts";
 import { exportProject } from "./memory/project-export.ts";
 import { searchAllProjects, vaultCandidatesAll } from "./memory/cross-project.ts";
 import { requireShard } from "./memory/curated-read.ts";
+import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
+import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 
 export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
-export interface CliContext { cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean }
+export interface CliContext {
+  cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
+  /** Narrow seam for deterministic fixtures standing in for `gh` (#15 T4): the CLI always uses the native remote visibility check. */
+  visibility?: (url: string) => Promise<Visibility>;
+}
 
 /** Narrow descriptor seam for deterministic race fixtures; the CLI always uses the native implementation. */
 export interface PrunePlanFileIO {
@@ -320,6 +326,79 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");
+  // #15 T4 / D6: the repo scope. Person-only and a terminal were enforced above (agent markers, `mutates`); amem never runs git.
+  const repoCwd = context.cwd ?? process.cwd();
+  if (sub === "repo") {
+    const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project);
+    if (!root) throw new Error("this directory is not inside the working tree of the repository that is this project (amem repo works on the current repository only)");
+    if (parsed.path[1] === "attributes") {
+      const plan = planGitattributes(root);
+      if (plan.unsafe) throw new Error(plan.unsafe);
+      if (plan.present) return `${plan.path} already has the merge=union entry for .amem/log.jsonl`;
+      if (options["--confirm"] !== true) return `preview: append ".amem/log.jsonl merge=union" to ${plan.path} (nothing written; add --confirm). amem never commits it: you do.`;
+      const written = appendGitattributes(root);
+      return `${written.added ? "added" : "already had"} the merge=union entry in ${written.path}; commit it through normal review`;
+    }
+    const scoped = repoReadPolicy(root);
+    const read = "reason" in scoped ? undefined : await readRepoScope(root, scoped.policy);
+    const status = { root, file: repoLogPath(root), state: read?.state ?? "unavailable", entries: read?.views.length ?? 0, skipped: read?.skipped ?? null, ...(read?.reason ? { reason: read.reason } : {}), ...("reason" in scoped ? { reason: scoped.reason } : {}) };
+    return options["--json"] ? JSON.stringify(status, null, 2) : [`repo scope of ${project}: ${status.state}`, `file: ${status.file}`, `entries: ${status.entries}${read ? ` (skipped: ${read.skipped.malformed} malformed, ${read.skipped.mismatched} id mismatch, ${read.skipped.duplicate} duplicate, ${read.skipped.withheld} withheld by the screen)` : ""}`,
+      ...(status.reason ? [`unavailable: ${status.reason}`] : [])].join("\n");
+  }
+  if (sub === "promote" && options["--to"] === undefined && (options["--confirm"] !== undefined || options["--confirm-public"] !== undefined)) throw new Error("--confirm and --confirm-public only apply with --to repo");
+  if (sub === "promote" && options["--to"] !== undefined) {
+    const idText = parsed.positionals[0];
+    if (!idText || parsed.positionals.length !== 1) throw new Error("usage: amem promote <id> --to repo --policy-free [--confirm [--confirm-public <entry id prefix>]]");
+    const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project);
+    if (!root) throw new Error("repo scope needs the working tree of the repository that is this project: run it from inside that repository");
+    const store = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
+    let view;
+    try { view = store.get(idText, project); } finally { store.close(); }
+    if (!view) throw new Error(`no memory entry ${idText} in this project (amem list shows the ids)`);
+    // `get` also returns shared-scope notes of other projects: only this project's own private notes go into this repository.
+    if (resolveAlias(memoryHome(), view.project) !== project) throw new Error(`${view.id.slice(0, 8)} belongs to another project; only this project's notes can be promoted into its repository`);
+    const plan = await planRepoPromotion(root, view);
+    if (plan.refusals.length) throw new Error(`not promoted to repo scope:\n- ${plan.refusals.join("\n- ")}`);
+    const seen = await repoVisibility(root, context.visibility);
+    const preview = [`the exact line that would be appended to ${plan.path}:`, plan.text, ...(plan.droppedNodes.length ? [`(left out, private references: ${plan.droppedNodes.join(", ")})`] : []),
+      `repository visibility: ${seen.state}${seen.remotes.length ? ` (${[...new Set(seen.remotes.map(r => `${r.name}${r.kind === "push" ? " (push)" : ""} ${r.visibility}`))].join(", ")})` : " (no remote)"}`];
+    if (plan.alreadyPresent) return [...preview, "already in the file: nothing to write"].join("\n");
+    const entryPrefix = plan.line.id.slice(0, 8);
+    if (options["--confirm"] !== true) return [...preview, seen.state === "private" ? "nothing written; add --confirm to append it" : `NOT a verified private repository: add --confirm --confirm-public ${entryPrefix} to append this entry (per entry, never blanket)`].join("\n");
+    if (seen.state !== "private") {
+      const given = options["--confirm-public"];
+      if (typeof given !== "string" || given.length < 8 || !/^[a-f0-9]+$/.test(given) || !plan.line.id.startsWith(given)) throw new Error(`the repository is ${seen.state === "public" ? "public" : "not verified private"}: repo scope needs your confirmation of this entry: --confirm-public ${entryPrefix} (the first 8 characters of the id in the line above)`);
+    }
+    const written = appendRepoLine(root, plan.line);
+    return [...preview, `appended to ${written.path}. amem does not commit or push: review and commit it yourself.`,
+      ...(repoLogIgnored(root) ? ["WARNING: git ignores .amem/log.jsonl here, so `git status` will not show it and it cannot be committed until you un-ignore it (a .gitignore or .git/info/exclude rule)."] : [])].join("\n");
+  }
+  if (sub === "show" && /^repo:/.test(parsed.positionals[0] ?? "")) {
+    const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project), scoped = root ? repoReadPolicy(root) : undefined;
+    const rows = root && scoped && !("reason" in scoped) ? (await readRepoScope(root, scoped.policy)).views : [];
+    const wanted = parsed.positionals[0]!.slice(5), hit = rows.filter(row => row.id === wanted || wanted.length >= 6 && row.id.startsWith(wanted));
+    if (hit.length !== 1) throw new Error(`no repo entry ${parsed.positionals[0]} in this repository's .amem/log.jsonl`);
+    const row = hit[0]!;
+    return options["--json"] ? JSON.stringify(row, null, 2) : [`repo:${row.id}  ${row.kind}, repo scope, ${row.at}`, ...(row.about.length ? [`about: ${row.about.join(", ")}`] : []), "", ...(row.title ? [row.title] : []), row.text].join("\n");
+  }
+  // Recall (D4): the current project plus, when the repository IS this project, that repository's `.amem/`. Never another project's.
+  const withRepoRows = async (output: string): Promise<string> => {
+    if (sub !== "list" && sub !== "search") return output;
+    const root = boundRepoRoot(repoCwd, memoryHome(), boundProject());
+    if (!root) return output;
+    const scoped = repoReadPolicy(root);
+    if ("reason" in scoped) return options["--json"] ? output : `${output}\n(repo scope unavailable: ${scoped.reason})`;
+    const read = await readRepoScope(root, scoped.policy);
+    if (read.state === "absent" && !read.skipped.malformed) return output;
+    const words = sub === "search" ? parsed.positionals.join(" ").toLowerCase().split(/\s+/).filter(Boolean) : [];
+    const kind = options["--kind"], since = options["--since"], limit = options["--limit"] !== undefined ? Number(options["--limit"]) : 50;
+    const rows = read.views.filter(row => options["--tier"] !== "short" && (kind === undefined || row.kind === kind) && (typeof since !== "string" || Date.parse(row.at) >= Date.parse(since))
+      && words.every(word => `${row.title ?? ""}\n${row.text}\n${row.about.join(" ")}`.toLowerCase().includes(word))).slice(0, limit);
+    if (options["--json"]) { try { const base = JSON.parse(output) as unknown[]; return JSON.stringify([...base, ...rows], null, 2); } catch { return output; } }
+    const line = (row: RepoView) => `repo:${row.id.slice(0, 8)}  ${row.at.slice(0, 16).replace("T", " ")}  repo  ${row.kind.padEnd(8)} ${`${row.title ? `${row.title}: ` : ""}${row.text}`.replace(/\s+/g, " ").slice(0, 100)}`;
+    const note = read.state === "unsafe" ? [`(repo scope unavailable: ${read.reason})`] : read.skipped.malformed + read.skipped.mismatched + read.skipped.withheld ? [`(${read.skipped.malformed + read.skipped.mismatched} repo lines skipped as invalid, ${read.skipped.withheld} withheld by the screen)`] : [];
+    return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...rows.map(line)] : []), ...note].join("\n");
+  };
   const crosses = definition.policyFree === true && policyFree;
   const cwd = context.cwd ?? process.cwd();
   // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
@@ -327,8 +406,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
   if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};
-  const output = await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => () => false,
-    onBridgeStatus: status => { receipt.bridgeStatus = status; } });
+  const output = await withRepoRows(await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => () => false,
+    onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   if (sub === "import" && parsed.path[1] === "claude-mem") {
     const policy = createStandalonePolicy();
     const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });

@@ -22,12 +22,14 @@ function world() {
 test("confirm writes exactly the previewed values, even when the readings behind a recomputation have moved", () => {
   const w = world();
   const t0 = Date.now();
-  const preview = previewSplit(w.base, { diskShare: 0.05, now: () => t0 });
-  const seen = Object.fromEntries(preview.split.map(row => [row.key, row.target]));
+  const first = previewSplit(w.base, { diskShare: 0.05, now: () => t0 });
   // a recomputation with another disk share would give other caps: prove the readings differ, so the test can tell the two apart
   const fresh = previewSplit(w.base, { diskShare: 0.0001, now: () => t0 });
-  expect(fresh.split.map(row => row.target.capMb)).not.toEqual(preview.split.map(row => row.target.capMb));
-  previewSplit(w.base, { diskShare: 0.05, now: () => t0 });                       // the preview on disk is the one the person saw
+  expect(fresh.split.map(row => row.target.capMb)).not.toEqual(first.split.map(row => row.target.capMb));
+  // The preview on disk is the one the person saw, so it is the one `seen` comes from: free disk space moves between calls (a full suite writes files), and an
+  // earlier preview's caps may differ by a megabyte from the last one's. What the contract promises is that confirm writes the ON-DISK preview, not a recomputation.
+  const preview = previewSplit(w.base, { diskShare: 0.05, now: () => t0 });
+  const seen = Object.fromEntries(preview.split.map(row => [row.key, row.target]));
   const result = applySplit(w.base, { diskShare: 0.0001, now: () => t0 + 1000 });
   for (const key of [A, B]) {
     expect(readCaptureConfigFile(w.configOf(key))).toEqual(seen[key]!);

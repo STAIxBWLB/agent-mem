@@ -141,6 +141,20 @@ Project identity (#15 D2) keeps `memoryProjectKey`: a worktree, a submodule and 
 
 The R7 capacity advisor reports this machine's load and proposes capture bounds: `amem capacity [--json]` shows capture size and growth, disk, memory, the rolling `metrics.jsonl` readings and the proposal with its binding constraint; `amem capacity apply [--cap-mb N] [--retention-days N]` saves a preview, and only a matching later `--confirm` writes the home default config. Applying is person-only (agent markers refused, a terminal required); an agent may read the proposal through the library, never apply it. Under the 2026-10-17 owner decision (item 2) the proposal is the largest cap and retention that fit, and it may be above the current values: the cap is the disk-share bound itself (default 2% of free space, `--disk-share`), and retention is the share divided by the measured daily growth, up to a 365-day ceiling (a `ponytail:` constant, a person setting is the upgrade path). A hook p95 over 150 ms or hook RSS over 100 MB halves the proposed cap, and search RSS over 200 MB halves the retention. The reason names every binding constraint: `disk-share retention` or `retention ceiling`, `disk-share cap`, `R3 search RSS`, `R2 hook cost`. A proposal is never written by the advisor, and `apply` still takes `--cap-mb` and `--retention-days` to override it. Benchmark samples stay in the measuring script's synthetic home; only real hook and search invocations feed the advisor's rolling metrics.
 
+## Repo scope (#15 T4)
+
+Team-shareable decisions, contracts and `fail` lessons can live in the repository itself, in `.amem/log.jsonl`, and travel with git. Nothing enters it by itself.
+
+```sh
+amem promote <id> --to repo --policy-free            # preview: the exact line that would be committed, and the repository's visibility
+amem promote <id> --to repo --policy-free --confirm  # append it (private repository)
+amem promote <id> --to repo --policy-free --confirm --confirm-public <id prefix>   # public or unverified repository: per entry
+amem repo status                                     # the file, its entries, what the screen withheld
+amem repo attributes [--confirm]                     # add `.amem/log.jsonl merge=union` to .gitattributes, only when you ask
+```
+
+It is person-only and needs a terminal. The entry is screened (secrets, personal data, private paths, the repository's own `local.deny` and `pii.paths` with agent-hub's glob rules), and amem never commits or pushes: you review and commit the file. A repository counts as private only when every remote's effective URL (after `insteadOf`) is a `github.com` repository that `gh` reports private; any other host is unknown and asks for the per-entry confirmation. The file is read as untrusted input: the newest 1 MiB, no control characters, a future date shown as now. Recall, brief and MCP search include the current repository's `.amem/` when that repository is the project, never another project's.
+
 ## Managing the project shards (#15 T5)
 
 One catalog view across every project shard of the memory home, person-only for anything that changes state (an agent marker is refused, and a mutation needs a terminal on stdin):

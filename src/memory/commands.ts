@@ -47,6 +47,8 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const need = (v: View | undefined, id: string) => v ?? fail(`no memory entry ${id} (ahub memory list shows the ids)`);
   // #15 D4: this command is bound to one project. Crossing projects is the person's `amem search --all-projects`; here the flags would otherwise read as query words.
   for (const crossing of ["--all-projects", "--include-archived"]) if (rest.includes(crossing)) fail(`${crossing} crosses projects: run amem search --all-projects; ahub memory reads this project only`);
+  // #15 T4: repo scope is the person's `amem promote --to repo`, which screens, previews the committed line and checks the repository's visibility. Here the flag would otherwise be ignored and the note promoted privately.
+  for (const repoOnly of ["--to", "--confirm", "--confirm-public"]) if (rest.includes(repoOnly)) fail(`${repoOnly} belongs to the person's amem promote <id> --to repo; ahub memory never writes a repository file`);
   try {
     switch (sub) {
       case "list": case "search": {
