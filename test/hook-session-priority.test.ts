@@ -33,3 +33,16 @@ test("a native-sized brief budget keeps work and defers cold optional stores", a
     expect(brief.tokens).toBeLessThanOrEqual(1200);
   } finally { f.close(); }
 });
+
+test("a repeated full-tier refusal cannot discard the brief already computed by recovery", async () => {
+  const f = hookFixture(), preload = join(f.root, "repeat-full.ts");
+  try {
+    await f.seed();
+    writeFileSync(preload, `import {readFileSync} from 'node:fs';
+Bun.plugin({name:'repeat-full-admission',setup(b){b.onLoad({filter:/hook-spool\\.ts$/},({path})=>({loader:'ts',contents:readFileSync(path,'utf8').replace('export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {','export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> { throw new HookSpoolFull();')}));}});`);
+    const result = f.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.length).toBeGreaterThan(0);
+    expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
+  } finally { f.close(); }
+});

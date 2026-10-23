@@ -264,7 +264,7 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean): boolean 
 
 /** Inspect at most the bounded active inventory before admission. Malformed matching publications cannot
  * occupy active capacity forever; current-policy rejection during drain uses the same retirement boundary. */
-function retireUnresolved(base: string): void {
+function retireUnresolved(base: string, admittingCwd?: string): void {
   trimQuarantine(base);
   const active = entries(base).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)), scopes = new Map<string, string | undefined>();
   let remaining = DRAIN_BYTES;
@@ -285,7 +285,8 @@ function retireUnresolved(base: string): void {
       if (record) {
         const value = record.value;
         if (!scopes.has(value.cwd)) scopes.set(value.cwd, hookCaptureScope(value.cwd, base));
-        if (value.scope !== null && value.scope === scopes.get(value.cwd)) continue;
+        if (value.scope !== null && value.scope === scopes.get(value.cwd)
+          && (admittingCwd === undefined || value.cwd === admittingCwd)) continue;
       }
       const claim = claimOwned(base, row.name, file);
       if (claim) retireClaim(base, claim, !!record);
@@ -342,7 +343,12 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   const record: Record = { schema: SCHEMA, cwd, scope, nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
-  retireUnresolved(base);
+  const inventory = entries(base);
+  const full = inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES;
+  // A healthy foreign cwd cannot monopolize the home-wide active tier. Preserve its
+  // oldest bounded records privately, without rebinding them to this project's capture.
+  // Use one retirement pass, including at capacity; two passes duplicate cold I/O before the worker.
+  retireUnresolved(base, full ? cwd : undefined);
   const queued = entries(base);
   // Soft per-home cap: concurrent publishers can exceed it by their already in-flight records, never by eviction.
   if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) throw new HookSpoolFull();

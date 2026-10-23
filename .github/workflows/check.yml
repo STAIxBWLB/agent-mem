@@ -26,6 +26,8 @@ jobs:
       - run: bun scripts/check-boundary.ts
       - run: bun test --timeout 20000
       - run: npm pack --dry-run
+      - run: bun scripts/measure-hook-stages.ts
+        if: always() && !cancelled()
       - run: bun scripts/measure-hooks-budget.ts
         if: always() && !cancelled()
       - run: bun scripts/measure-budget.ts

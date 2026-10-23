@@ -79,7 +79,9 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     await exit;
     // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
     result.rawRssKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-    result.rssKB ||= result.rawRssKB;
+    // Darwin self samples can precede final residency; use the reaped peak as a floor.
+    // Linux wait4 inherits launcher high-water, so retain the proven per-image sampler there.
+    result.rssKB = process.platform === "darwin" ? Math.max(result.rssKB, result.rawRssKB) : result.rssKB || result.rawRssKB;
   }
 }
 
@@ -93,7 +95,13 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
     if (!(error instanceof HookSpoolFull)) throw error;
     const cwd = realPath(options.cwd);
     result = await hookWorker({ ...options, cwd }, base, deadline, { name: "", receipt: "", cwd }, event);
-    pending = await stageHookCapture(event, input, { ...options, base });
+    try { pending = await stageHookCapture(event, input, { ...options, base }); }
+    catch (retryError) {
+      // A concurrent publisher can refill the soft tier. Capture admission cannot discard
+      // a brief already computed by recovery; leave the finite-cap refusal capture-only.
+      if (!(retryError instanceof HookSpoolFull)) throw retryError;
+      return result;
+    }
   }
   if (!pending) return undefined;
   result ??= await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);

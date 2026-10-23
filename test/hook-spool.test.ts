@@ -393,3 +393,22 @@ test("native fatal Git resolution quarantines remote-bound pending instead of us
   expect(f.rows().filter(row => row.excerpt === "healthy recovery")).toHaveLength(1);
   expect(f.rows().some(row => row.excerpt === "remote-bound pending")).toBe(false);
 });
+
+test("a full tier from another valid project retains this SessionStart and returns its known work", async () => {
+  const a = fixture(), b = fixture();
+  process.env.HOME = a.env.HOME;
+  await a.seed();
+  const foreign = { cwd: b.cwd, base: a.base };
+  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `foreign valid ${i}` }, foreign);
+  for (let i = 0; i < 6; i++) {
+    const marker = `local full-tier ${i}`;
+    const result = a.run("SessionStart", { prompt: marker });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.length).toBeGreaterThan(0);
+    expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain("p3-work-marker");
+    expect(a.rows().filter(row => row.excerpt === marker).length + a.pending().filter(row => row.value.capture.excerpt === marker).length).toBe(1);
+  }
+  expect(a.rows().some(row => row.excerpt.startsWith("foreign valid"))).toBe(false);
+  const quarantined = readdirSync(join(a.base, "hook-spool", ".quarantine"));
+  expect(quarantined.length).toBeGreaterThan(0); expect(quarantined.length).toBeLessThanOrEqual(256);
+});
