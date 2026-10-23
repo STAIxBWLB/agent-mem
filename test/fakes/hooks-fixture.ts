@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -21,10 +21,22 @@ export function hookFixture(remote?: string) {
     if (configured.exitCode !== 0) throw new Error("fixture remote configuration failed");
   }
   const project = memoryProjectKey(cwd);
+  let functionalEntry: string | undefined;
+
   return { root, cwd, base, env, project,
     close: () => rmSync(root, { recursive: true, force: true }),
     run(event: string, payload: unknown = {}, extra: NodeJS.ProcessEnv = {}) {
       return Bun.spawnSync([hookBin, "hook", event], { cwd, env: { ...env, ...extra }, stdin: typeof payload === "string" ? Buffer.from(payload) : Buffer.from(JSON.stringify({ session_id: "p3-fixture", hook_event_name: event, cwd, ...payload as object })), stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    },
+    // Test-only transport: run the real parser/handler without making functional assertions depend on R2 timing.
+    // The actual bin path above and dedicated budget/cold probes keep their native 140/150/100 limits.
+    runFunctional(event: string, payload: unknown = {}, extra: NodeJS.ProcessEnv = {}) {
+      if (!functionalEntry) {
+        functionalEntry = join(root, "functional-hook.ts");
+        const hooks = resolve(import.meta.dir, "../../src/hooks.ts");
+        writeFileSync(functionalEntry, `import { hookMain } from ${JSON.stringify(hooks)};const startedAt=performance.now();const output=await hookMain(process.argv.slice(2),startedAt,{deadlineMs:2000});if(output)console.log(output);`, { mode: 0o600, flag: "wx" });
+      }
+      return Bun.spawnSync([process.execPath, "--smol", functionalEntry, event], { cwd, env: { ...env, ...extra }, stdin: typeof payload === "string" ? Buffer.from(payload) : Buffer.from(JSON.stringify({ session_id: "p3-fixture", hook_event_name: event, cwd, ...payload as object })), stdout: "pipe", stderr: "pipe", timeout: 3000 });
     },
     rows() { const capture = new CaptureStore({ home: root, project }); try { return capture.rows({ project }); } finally { capture.close(); } },
     async seed() {

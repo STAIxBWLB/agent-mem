@@ -9,6 +9,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
+import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 
 const RUNS = { plain: 40, contention: 15, sessionStart: 20 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
@@ -128,7 +129,19 @@ try {
     if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
   }
   const groups = { plain: summarize(plain), spoolAndExit: summarize(contended), sessionStart: summarize(sessionStart), drain: summarize(drains) };
-  const report = { capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  // These strict actual-CLI timeout legs moved from bun test; functional tests use host-only deadlines.
+  // The successful/contended/SessionStart sample counts and p95 assertions above are unchanged.
+  const timeoutPaths = [];
+  for (const event of ["SessionStart", "PreToolUse"] as const) {
+    const timeoutFixture = hookFixture();
+    try {
+      const sample = await hookTimeoutProbe(timeoutFixture, event, false);
+      if (!(sample.wallMs < WALL_MS) || !(sample.rssMB < RSS_MB)) throw new Error(`actual ${event} timeout exceeded R2: wall=${sample.wallMs}, rss=${sample.rssMB}`);
+      const { pending: _pending, ...numeric } = sample;
+      timeoutPaths.push({ ...numeric, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
+    } finally { timeoutFixture.close(); }
+  }
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   console.log(JSON.stringify(report, null, 2));
   if (!report.pass) process.exitCode = 1;
 } finally {

@@ -5,6 +5,16 @@ import { tmpdir } from "node:os";
 import { hookNative, hookProcessSignature } from "../src/hook-native.ts";
 import { processSignature } from "../src/memory/platform.ts";
 
+function existsPid(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+}
+async function observedPidExit(pid: number, maximumMs: number): Promise<{ gone: boolean; observedMs: number }> {
+  const started = performance.now();
+  while (existsPid(pid) && performance.now() - started < maximumMs) await Bun.sleep(5);
+  return { gone: !existsPid(pid), observedMs: performance.now() - started };
+}
+
 test("owned native metadata returns bounded output then reaps its still-live supervisor", async () => {
   const usage = { rssKB: 0, rawRssKB: 0 }, before = performance.now();
   expect(await hookNative(["/usr/bin/printf", "metadata\n"], { PATH: process.env.PATH }, () => 1000 - (performance.now() - before), usage)).toEqual({ status: 0, stdout: "metadata\n" });
@@ -21,12 +31,14 @@ test("a native metadata timeout reaps a blocked command and its descendant", asy
   const root = mkdtempSync(join(tmpdir(), "amem-native-stop-")), file = join(root, "pid");
   try {
     const before = performance.now(), usage = { rssKB: 0, rawRssKB: 0 };
-    await expect(hookNative(["/bin/sh", "-c", 'sleep 30 & child=$!; printf "%s\\n" "$child" > "$1"; wait', "fixture", file], { PATH: process.env.PATH }, () => 100 - (performance.now() - before), usage)).rejects.toThrow("deadline");
+    await expect(hookNative(["/bin/sh", "-c", 'sleep 30 & child=$!; printf "%s\\n" "$child" > "$1"; wait', "fixture", file], { PATH: process.env.PATH }, () => 1000 - (performance.now() - before), usage)).rejects.toThrow("deadline");
     expect(existsSync(file)).toBe(true);
     const pid = Number(readFileSync(file, "utf8").trim());
-    let live = true;
-    try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") live = false; else throw error; }
-    expect(live).toBe(false);
+    // SIGKILL reaches the whole group before hookNative returns, but init may
+    // briefly retain a non-executing zombie grandchild. Observe PID removal instead
+    // of asserting scheduler speed; a still-live orphan must still fail this assertion.
+    const observed = await observedPidExit(pid, 500);
+    expect(existsPid(pid), JSON.stringify(observed)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -37,7 +49,7 @@ test("native metadata self-reaps its owned group after the calling Bun is SIGKIL
   const command = 'printf "%s %s\\n" "$$" "$PPID" > "$1"; /bin/sleep 30 & printf "%s\\n" "$!" >> "$1"; wait';
   writeFileSync(caller, `import {writeFileSync} from 'node:fs';import {hookNative} from ${JSON.stringify(native)};
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>{const child=spawn(argv,options);writeFileSync(${JSON.stringify(metadata)},JSON.stringify({caller:process.pid,leader:child.pid}));return child;};
-const until=performance.now()+500;try{await hookNative(['/bin/sh','-c',${JSON.stringify(command)},'fixture',${JSON.stringify(entered)}],{PATH:'/usr/bin:/bin'},()=>until-performance.now(),{rssKB:0,rawRssKB:0});}catch{}`);
+const until=performance.now()+2000;try{await hookNative(['/bin/sh','-c',${JSON.stringify(command)},'fixture',${JSON.stringify(entered)}],{PATH:'/usr/bin:/bin'},()=>until-performance.now(),{rssKB:0,rawRssKB:0});}catch{}`);
   const child = Bun.spawn([process.execPath, "--smol", caller], { stdout: "ignore", stderr: "pipe" });
   let leader: number | undefined, signature: string | undefined, killed = false;
   const live = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } };
@@ -60,8 +72,9 @@ const until=performance.now()+500;try{await hookNative(['/bin/sh','-c',${JSON.st
     expect(processSignature(child.pid)).toBe(callerSignature);
     process.kill(child.pid, "SIGKILL"); killed = true; await child.exited;
     // Observe actual exit rather than assuming a sleep means the watchdog fired. This
-    // outer fixture bound does not alter the native command's original 500 ms deadline.
-    const observedUntil = performance.now() + 1500;
+    // outer fixture bound does not alter the command's explicit 2000 ms library-test budget.
+    // The published CLI's 140/150 ms limits are verified separately by measure-hooks-budget.
+    const observedUntil = performance.now() + 3000;
     while ([leader, nativePid!, descendantPid!].some(live) && performance.now() < observedUntil) await Bun.sleep(10);
     expect(live(leader)).toBe(false); expect(live(nativePid!)).toBe(false); expect(live(descendantPid!)).toBe(false);
   } finally {
@@ -70,7 +83,7 @@ const until=performance.now()+500;try{await hookNative(['/bin/sh','-c',${JSON.st
     await child.exited; await child.stderr.cancel().catch(() => {});
     rmSync(root, { recursive: true, force: true });
   }
-}, 5000);
+}, 10000);
 
 test("native completion is refused without proof that its watchdog armed", async () => {
   const spawn = Bun.spawn, usage = { rssKB: 0, rawRssKB: 0 }; let intercepted = false;
@@ -88,4 +101,14 @@ test("native completion is refused without proof that its watchdog armed", async
     await expect(hookNative(["/usr/bin/printf", "otherwise valid metadata"], { PATH: process.env.PATH }, () => 100 - (performance.now() - before), usage)).rejects.toThrow();
     expect(intercepted).toBe(true);
   } finally { Bun.spawn = spawn; }
+});
+
+
+test("the exit observation barrier does not mistake a running child for a reaped process", async () => {
+  const child = Bun.spawn(["/bin/sleep", "2"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  try {
+    expect((await observedPidExit(child.pid, 20)).gone).toBe(false);
+    child.kill("SIGKILL"); await child.exited;
+    expect((await observedPidExit(child.pid, 500)).gone).toBe(true);
+  } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
 });

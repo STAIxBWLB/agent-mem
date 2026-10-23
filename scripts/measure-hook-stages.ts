@@ -81,9 +81,11 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
     let context: unknown; try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Missing output is the diagnostic. */ }
     const stopped = [...rows].reverse().find(row => !row.child && row.stage === "output-ready");
+    const knownWork = typeof context === "string" && context.includes(workMarker), completedMs = stopped ? stopped.at - started : null;
     console.log(JSON.stringify({ diagnostic: "full-foreign-session-stages", exit: result.exitCode, outputBytes: result.stdout.length,
-      knownWork: typeof context === "string" && context.includes(workMarker), completedMs: stopped ? stopped.at - started : null,
+      knownWork, completedMs,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
+    if (!knownWork || completedMs === null || completedMs >= 140) throw new Error(`full foreign SessionStart did not return known work before 140 ms: knownWork=${knownWork}, completedMs=${completedMs}`);
   } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; full.close(); foreign.close(); }
   if (!cold?.knownWork || cold.ms === null || cold.ms >= 140)
     throw new Error(`cold SessionStart did not return known work before 140 ms: knownWork=${cold?.knownWork}, completedMs=${cold?.ms}`);

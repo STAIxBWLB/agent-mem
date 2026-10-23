@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readMetrics } from "../src/memory/capacity.ts";
-import { runHook } from "../src/hooks.ts";
+import { hookMain, runHook } from "../src/hooks.ts";
 import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { hookBin, hookEvents, hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
@@ -40,9 +40,9 @@ function pendingCaptures(f: ReturnType<typeof hookFixture>, item: AcceptedCaptur
 function replayThroughHooks(f: ReturnType<typeof hookFixture>, accepted: AcceptedCapture[]) {
   const barriers: AcceptedCapture[] = []; let rows = f.rows();
   const matching = (item: AcceptedCapture) => rows.filter(row => row.event === item.event && row.excerpt === item.excerpt && row.project === f.project);
-  // Real accepted work drives replay. The final barrier itself may still be durably pending.
+  // Functional accepted work drives replay. The final barrier itself may still be durably pending.
   for (let i = 0; i < 4; i++) {
-    const excerpt = `p3 replay barrier ${i}`, result = f.run("PostToolUse", { prompt: excerpt });
+    const excerpt = `p3 replay barrier ${i}`, result = f.runFunctional("PostToolUse", { prompt: excerpt });
     expect(result.exitCode).toBe(0);
     contextOnly(result.stdout.toString());
     barriers.push({ event: "PostToolUse", excerpt }); rows = f.rows();
@@ -78,7 +78,7 @@ for (const event of hookEvents) test(`actual CLI hook ${event} accepts agent mar
 
 test("SessionStart returns only bounded untrusted context with known open work and coverage", async () => {
   const f = fixture(); await f.seed();
-  const result = f.run("SessionStart"), stdout = result.stdout.toString(); expect(result.exitCode).toBe(0); contextOnly(stdout);
+  const result = f.runFunctional("SessionStart"), stdout = result.stdout.toString(); expect(result.exitCode).toBe(0); contextOnly(stdout);
   const output = JSON.parse(stdout), context = output.hookSpecificOutput?.additionalContext;
   expect(output.hookSpecificOutput?.hookEventName).toBe("SessionStart"); expect(typeof context).toBe("string");
   expect(context).toContain(workMarker); expect(context).toContain("Untrusted project memory"); expect(Buffer.byteLength(context)).toBeLessThanOrEqual(1200);
@@ -131,17 +131,17 @@ test("library hook intake preserves the policy boundary and skips unsupported ho
   const f = fixture(), oldHome = process.env.HOME;
   process.env.HOME = f.env.HOME;
   try {
-    const captured = await runHook("PostToolUse", { tool_name: "Read", tool_response: "public library capture" }, { cwd: f.cwd, base: f.base });
+    const captured = await runHook("PostToolUse", { tool_name: "Read", tool_response: "public library capture" }, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
     if (captured.captured) expect(captured).toEqual({ captured: true, skipped: false });
     else expect(captured).toMatchObject({ captured: false, pending: true });
     expect(readMetrics(f.base).filter(row => row.kind === "hook")).toHaveLength(1);
     replayThroughHooks(f, [{ event: "PostToolUse", excerpt: "public library capture" }]);
     const before = f.rows().length;
-    const skipped = await runHook("SessionStart", { prompt: "public host fixture" }, { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => true } } });
+    const skipped = await runHook("SessionStart", { prompt: "public host fixture" }, { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => true } } }, { deadlineMs: 2000 });
     expect(skipped).toEqual({ captured: false, skipped: true });
     let getterCalls = 0;
     const input = Object.defineProperty({}, "prompt", { enumerable: true, get() { getterCalls++; return "private getter"; } });
-    expect((await runHook("PostToolUse", input, { cwd: f.cwd, base: f.base })).skipped).toBe(true);
+    expect((await runHook("PostToolUse", input, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 })).skipped).toBe(true);
     expect(getterCalls).toBe(0); expect(f.rows()).toHaveLength(before);
   } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; }
 });
@@ -158,7 +158,7 @@ test("SessionStart preserves known open work while a durable capture backlog awa
       accepted.push({ event: "PostToolUse", excerpt });
     }
   } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; }
-  const excerpt = "p3 SessionStart with pending backlog", result = f.run("SessionStart", { prompt: excerpt });
+  const excerpt = "p3 SessionStart with pending backlog", result = f.runFunctional("SessionStart", { prompt: excerpt });
   expect(result.exitCode).toBe(0); contextOnly(result.stdout.toString());
   const output = JSON.parse(result.stdout.toString()), context = output.hookSpecificOutput?.additionalContext;
   expect(output.hookSpecificOutput?.hookEventName).toBe("SessionStart");
@@ -178,4 +178,13 @@ test("SessionStart preserves known open work while a durable capture backlog awa
     for (let pass = 0; pass < 3; pass++) await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project }, (input, receipt) => store!.append(input, { receipt }));
   } finally { store?.close(); if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; }
   replayThroughHooks(f, accepted);
+});
+
+
+test("host-only hook deadline validates explicit programmatic values before intake", async () => {
+  const f = fixture();
+  for (const deadlineMs of [0, -1, 1.5, NaN, Infinity, 10_001]) {
+    await expect(hookMain([], performance.now(), { deadlineMs })).rejects.toThrow("invalid hook host deadline");
+    await expect(runHook("PostToolUse", {}, { cwd: f.cwd, base: f.base }, { deadlineMs })).rejects.toThrow("invalid hook host deadline");
+  }
 });

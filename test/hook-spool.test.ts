@@ -118,13 +118,13 @@ test("an already expired hook deadline still publishes durable capture before op
 });
 
 
-for (const event of ["PostToolUse", "SessionStart"] as const) test(`native ${event} retains a full-tier event and drains its backlog exactly once within 24 following invocations`, async () => {
+for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional ${event} retains a full-tier event and drains its backlog exactly once within 24 following invocations`, async () => {
   const f = fixture();
   const accepted = Array.from({ length: 256 }, (_, i) => `backlog ${i}`);
   for (const prompt of accepted) await stageHookCapture("PostToolUse", { prompt }, f.options);
   accepted.push("full queue follow-up");
   const probe = hookRecoveryDiagnostic(f.root);
-  const result = f.run(event, { prompt: "full queue follow-up" }, probe);
+  const result = f.runFunctional(event, { prompt: "full queue follow-up" }, probe);
   expect(result.exitCode).toBe(0);
   const traces = [result.stderr.toString()];
   const codes = traces[0]!.trim().split("\n").map(line => JSON.parse(line) as number[]);
@@ -140,7 +140,7 @@ for (const event of ["PostToolUse", "SessionStart"] as const) test(`native ${eve
   for (let invocation = 0; invocation < 24; invocation++) {
     const complete = accepted.every(prompt => rows.filter(row => row.excerpt === prompt).length === 1 && !pending.some(row => row.value.capture.excerpt === prompt));
     if (complete) break;
-    const next = f.run("PostToolUse", { prompt: `replay barrier ${invocation}` }, probe);
+    const next = f.runFunctional("PostToolUse", { prompt: `replay barrier ${invocation}` }, probe);
     traces.push(next.stderr.toString()); expect(next.exitCode).toBe(0);
     rows = f.rows(); pending = f.pending();
   }
@@ -249,10 +249,10 @@ test("256 orphaned cwd records cannot disable actual hooks in another healthy cw
   }
   expect(f.pending()).toHaveLength(256);
   rmSync(removed, { recursive: true });
-  const first = f.run("PostToolUse", { prompt: "healthy after orphan cap" });
+  const first = f.runFunctional("PostToolUse", { prompt: "healthy after orphan cap" });
   expect(first.exitCode).toBe(0);
   for (let pass = 0; pass < 4 && !f.rows().some(row => row.excerpt === "healthy after orphan cap"); pass++) {
-    expect(f.run("PostToolUse", { prompt: `healthy recovery barrier ${pass}` }).exitCode).toBe(0);
+    expect(f.runFunctional("PostToolUse", { prompt: `healthy recovery barrier ${pass}` }).exitCode).toBe(0);
   }
   expect(f.rows().filter(row => row.excerpt === "healthy after orphan cap")).toHaveLength(1);
   expect(f.rows().some(row => row.excerpt.startsWith("orphan canary"))).toBe(false);
@@ -426,7 +426,7 @@ test("native fatal Git resolution quarantines remote-bound pending instead of us
   expect(staged).toBeDefined();
   appendFileSync(config, "\n[core]\nrepositoryformatversion = 999\n");
   expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
-  for (let i = 0; i < 3 && f.pending().length; i++) expect(f.run("PostToolUse", { prompt: "fatal admission" }).exitCode).toBe(0);
+  for (let i = 0; i < 3 && f.pending().length; i++) expect(f.runFunctional("PostToolUse", { prompt: "fatal admission" }).exitCode).toBe(0);
   expect(f.pending()).toHaveLength(0);
   const quarantine = join(f.base, "hook-spool", ".quarantine");
   expect(readdirSync(quarantine).map(name => readFileSync(join(quarantine, name), "utf8")).join("\n")).toContain("remote-bound pending");
@@ -435,7 +435,7 @@ test("native fatal Git resolution quarantines remote-bound pending instead of us
   const store = new CaptureStore({ memoryDir: f.base, project: fallback });
   try { expect(store.rows({ project: fallback })).toHaveLength(0); } finally { store.close(); }
   writeFileSync(config, original);
-  for (let i = 0; i < 4 && !f.rows().some(row => row.excerpt === "healthy recovery"); i++) expect(f.run("PostToolUse", { prompt: i === 0 ? "healthy recovery" : "replay barrier" }).exitCode).toBe(0);
+  for (let i = 0; i < 4 && !f.rows().some(row => row.excerpt === "healthy recovery"); i++) expect(f.runFunctional("PostToolUse", { prompt: i === 0 ? "healthy recovery" : "replay barrier" }).exitCode).toBe(0);
   expect(f.rows().filter(row => row.excerpt === "healthy recovery")).toHaveLength(1);
   expect(f.rows().some(row => row.excerpt === "remote-bound pending")).toBe(false);
 });
@@ -448,7 +448,7 @@ test("a full tier from another valid project retains this SessionStart and retur
   for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `foreign valid ${i}` }, foreign);
   for (let i = 0; i < 6; i++) {
     const marker = `local full-tier ${i}`;
-    const result = a.run("SessionStart", { prompt: marker });
+    const result = a.runFunctional("SessionStart", { prompt: marker });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.length).toBeGreaterThan(0);
     expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain("p3-work-marker");

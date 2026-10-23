@@ -47,12 +47,6 @@ if(process.argv[1]===worker){
  appendFileSync(receipt,JSON.stringify({kind:'loaded'})+'\\n');
  if(process.env.AMEM_BRIEF_TRIP_CONTROL==='1'){try{fetch('https://example.invalid');}catch{}}
 }
-// AC3 starts the handler clock after installing these expensive tripwires. R2 separately
-// measures the published executable from process start without this test-only clock port.
-if(process.argv[1]===hookBin){
- const uptime=process.uptime.bind(process), installedAt=uptime();
- process.uptime=()=>uptime()-installedAt;
-}
 `);
   for (const command of ["curl", "wget", "ssh", "scp", "npm", "npx", "claude", "codex", "kimi", "pi", "qwen", "jcode", "ollama", "openai"]) {
     writeFileSync(join(bin, command), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';\nappendFileSync(process.env.AMEM_NETWORK_MARKER,JSON.stringify({name:${JSON.stringify(command)}})+'\\n');process.exit(79);\n`, { mode: 0o700 });
@@ -62,6 +56,8 @@ if(process.argv[1]===hookBin){
     attempts: () => existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { name: string }) : [],
     receipts: () => existsSync(receipt) ? readFileSync(receipt, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { kind: string }) : [],
     child(args: string[], stdin = "", extra: NodeJS.ProcessEnv = {}) {
+      // This suite proves offline behavior and entered tripwires, independently of R2 runner speed.
+      if (args[0] === hookBin && args[1] === "hook") return f.runFunctional(args[2]!, stdin, { ...env, ...extra });
       return Bun.spawnSync([process.execPath, ...(args[0] === hookBin ? ["--smol"] : []), "--preload", preload, ...args], { cwd: f.cwd, env: { ...env, ...extra }, stdin: Buffer.from(stdin), stdout: "pipe", stderr: "pipe", timeout: 5000, maxBuffer: 64 * 1024 });
     },
   };

@@ -17,6 +17,13 @@ const HANDLER_MS = 140;
 // ponytail: reserve measured native teardown variance; an asynchronous hard-deadline transport
 // through storage/cleanup is the upgrade, not a longer external deadline.
 const WORKER_CLEANUP_MS = 25, FULL_TIER_BRIEF_RESERVE_MS = 40;
+/** Programmatic host-only timing port. Native CLI registration never supplies this object. */
+export interface HookHostPorts { deadlineMs?: number }
+function handlerMs(host?: HookHostPorts): number {
+  const value = host?.deadlineMs ?? HANDLER_MS;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10_000) throw new TypeError("invalid hook host deadline");
+  return value;
+}
 export interface HookOptions { cwd: string; base?: string; policy?: StandalonePolicyOptions; maxTokens?: number; startedAt?: number }
 export interface HookReceipt {
   captured: boolean; skipped: boolean;
@@ -158,9 +165,9 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
 }
 
 /** Context/capture intake only. It never supplies a permission decision or replaces native tool arguments. */
-export async function runHook(event: string, input: unknown, options: HookOptions): Promise<HookReceipt> {
+export async function runHook(event: string, input: unknown, options: HookOptions, host?: HookHostPorts): Promise<HookReceipt> {
   const now = performance.now(), started = options.startedAt !== undefined && Number.isFinite(options.startedAt) && options.startedAt <= now ? options.startedAt : now;
-  const deadline = started + HANDLER_MS;
+  const deadline = started + handlerMs(host);
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false;
   try {
     base = canonicalPath(options.base ?? memoryHome());
@@ -183,7 +190,8 @@ export async function runHook(event: string, input: unknown, options: HookOption
 }
 
 /** Bounded stdin and a fixed overall handler budget; failures produce no native decision and exit successfully. */
-export async function hookMain(args: readonly string[], startedAt = performance.now()): Promise<string> {
+export async function hookMain(args: readonly string[], startedAt = performance.now(), host?: HookHostPorts): Promise<string> {
+  const deadlineMs = handlerMs(host);
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0;
   try {
@@ -202,7 +210,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
     if ((HOOK_EVENTS as readonly string[]).includes(args[0]!)) {
       const base = canonicalPath(memoryHome());
-      const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + HANDLER_MS - 3);
+      const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + deadlineMs - 3);
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB;
       if (!result.valid || args[0] !== "SessionStart") return "";

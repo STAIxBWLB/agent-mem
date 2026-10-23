@@ -21,7 +21,7 @@ test("hook bootstrap enters smol before imports with the same PID stdin preload 
     const metric = readMetrics(f.base).filter(r => r.kind === "hook"); expect(metric).toHaveLength(1);
     expect(metric[0]!.wallMs).toBeGreaterThanOrEqual(records[1]!.at - records[0]!.at);
     expect(metric[0]!.wallMs).toBeLessThanOrEqual(wall + 5);
-    for (let pass = 0; pass < 4 && !f.rows().some(row => row.excerpt === "bootstrap stdin retained"); pass++) expect(f.run("PostToolUse", { prompt: `bootstrap replay barrier ${pass}` }).exitCode).toBe(0);
+    for (let pass = 0; pass < 4 && !f.rows().some(row => row.excerpt === "bootstrap stdin retained"); pass++) expect(f.runFunctional("PostToolUse", { prompt: `bootstrap replay barrier ${pass}` }).exitCode).toBe(0);
     expect(f.rows().filter(row => row.excerpt === "bootstrap stdin retained")).toHaveLength(1);
   } finally { f.close(); }
 });

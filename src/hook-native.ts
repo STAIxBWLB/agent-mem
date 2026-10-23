@@ -64,6 +64,9 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   } finally {
     if (timer) clearTimeout(timer);
     stop();
+    // SIGKILL was delivered to every member before waiting for our owned leader.
+    // Init can briefly retain zombie grandchildren; they cannot execute, and only
+    // their adopting reaper can remove those PIDs (we cannot waitpid a non-child).
     await exit;
     try { child.stdin.end(); } catch { /* pipe closed with the owned leader */ }
     await reader.cancel().catch(() => {}); reader.releaseLock();
