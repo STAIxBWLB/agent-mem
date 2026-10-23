@@ -13,6 +13,7 @@ import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
+import { boundRepoRoot, readRepoScope, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
@@ -51,6 +52,14 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true, ...(reconcile ? { reconcile } : {}) }) : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
     closers.push(() => store.close());
     const capture = new CaptureStore({ memoryDir: base, project }); closers.push(() => capture.close());
+    // #15 T4: the bound repository's `.amem/log.jsonl`, only when that repository's own key IS this project (AC3). The root is fixed at start like the project; the file is read per call.
+    const repoRoot = boundRepoRoot(cwd, base, project);
+    const repoRows = async (): Promise<RepoView[]> => {
+      const scoped = repoRoot ? repoReadPolicy(repoRoot, options.policy) : undefined;
+      if (!scoped || "reason" in scoped) return [];
+      const read = await readRepoScope(repoRoot, scoped.policy); guard();
+      return read.state === "ok" ? read.views : [];
+    };
     const candidates = new CandidateStore({ memoryDir: base, ...(reconcile ? { reconcile } : {}) }); closers.push(() => candidates.close());
     const work = new WorkListStore({ base, project, aliases, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
     const guard = () => {
@@ -111,7 +120,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const useFts = index.available && captureState.engine !== "substring";
           const notes = await readPermitted(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since }, SEARCH_CANDIDATES,
             view => useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
+          const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)));
           const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
+            ...repoNotes.map(view => ({ source: "repo" as const, evidence: false, view, ref: `repo:${view.id}`, at: view.at, tier: "long", body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
             ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => !since || Date.parse(hit.at) >= Date.parse(since));
           if (useFts) {
             index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
@@ -123,13 +134,14 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
             if (useFts ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
             const weight = hit.tier === "long" ? 1 : hit.tier === "capture" ? 0.5 : 0.9;
             const score = -(rank ?? -1) * weight / (1 + Math.max(0, Date.now() - Date.parse(hit.at)) / (30 * 86400_000));
-            return [{ source: hit.source, evidence: hit.evidence, ...(hit.source === "curated" ? { view: hit.view } : { capture: hit.capture }), score }];
+            return [{ source: hit.source, evidence: hit.evidence, ...(hit.source === "capture" ? { capture: hit.capture } : { view: hit.view }), score }];
           }).sort((a, b) => b.score - a.score).slice(0, limit);
           guard(); return { engine: useFts ? "fts5" : "substring", hits: selected };
         } finally { index.close(); }
       },
       async amem_show(args) {
         bound(args, ["id"]); guard(); const id = textOf(args, "id")!;
+        if (/^repo:[a-f0-9]{32}$/.test(id)) { const row = (await repoRows()).find(view => `repo:${view.id}` === id); guard(); return row ? { source: "repo", evidence: false, view: row } : null; }
         if (/^capture:[1-9][0-9]*$/.test(id)) {
           const row = (await readPermitted(window => capture.readPage(window), { id: id.slice(8) }, 1))[0];
           guard(); return row ? { source: "capture", evidence: false, capture: row } : null;

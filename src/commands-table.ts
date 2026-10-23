@@ -47,7 +47,12 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   suggestions: { description: "List pending suggestions", options: json },
   confirm: { description: "Confirm a suggestion", options: json, args: [{ name: "id" }], mutates: true },
   reject: { description: "Reject a suggestion", options: json, args: [{ name: "id" }], mutates: true },
-  promote: { description: "Promote a note", options: { ...json, ...policy }, args: [{ name: "id" }], mutates: true, policyFree: true },
+  promote: { description: "Promote a note (--to repo: append its screened line to this repository's .amem/log.jsonl)", options: { ...json, ...policy, "--to": { description: "Promote into the repository scope", value: ["repo"] },
+    "--confirm": flag("With --to repo: append the previewed line"), "--confirm-public": text("With --to repo, unless the repository is verified private: the first 8 characters of the entry id") }, args: [{ name: "id" }], mutates: true, policyFree: true },
+  repo: { description: "The repository scope (#15 D6): this repository's .amem/log.jsonl", options: json, defaultCommand: "status", commands: {
+    status: { description: "Show the repository log, its entries and what the screen withheld" },
+    attributes: { description: "Add the merge=union entry for .amem/log.jsonl to .gitattributes (preview without --confirm; never committed)", mutates: "confirm", options: { "--confirm": flag("Write after the preview") } },
+  } },
   demote: { description: "Demote a note", options: json, args: [{ name: "id" }], mutates: true },
   forget: { description: "Forget a note", options: json, args: [{ name: "id" }], mutates: true },
   supersede: { description: "Replace a note", options: json, args: [{ name: "old-id" }, { name: "new-id" }], mutates: true },
