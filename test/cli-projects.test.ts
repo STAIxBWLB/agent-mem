@@ -9,6 +9,7 @@ import { lifecyclePath, listLifecycle, projectState } from "../src/memory/lifecy
 import { MemoryStore, machineId } from "../src/memory/store.ts";
 import { readCaptureConfigFile } from "../src/memory/capture.ts";
 import { ensureShardDescriptor } from "../src/memory/shard.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
 
 // #15 T5 through the real `runCli` entry: authority (an agent marker and a non-terminal stdin are refused for every mutation), previews before effects,
 // one project at a time, and the all-projects replies that say they crossed.
@@ -202,4 +203,20 @@ test("curated counts are unavailable on an unsplit home, never 0: projects, usag
   await migrateShards({ memoryDir: join(dir, "memory"), mode: "apply", authorizedPerson: true, tty: true });
   expect(await runCli(["projects"], person)).toMatch(/curated 1\b/);
   expect((await json(["usage", "--json"], person)).totals.curatedEntries).toBe(1);
+});
+
+// #15 T5 review (codex-connector P1): the person's own project-local recall from inside an archived or forgotten project goes through curatedStore.
+test("search, list and goals run from inside an archived or forgotten project are refused, on a home that is not split too, and work again after unarchive", async () => {
+  const { dir, person } = rig();
+  const here = memoryProjectKey(dir);                                               // the project the rig's cwd is bound to
+  capture(dir, here, ["alpha"]); note(dir, here, "a decision nobody may recall once archived");
+  expect(await runCli(["search", "decision"], person)).toContain("decision");       // active: recall works
+  await runCli(["project", "archive", here], person);
+  for (const argv of [["search", "decision"], ["list"], ["goal", "list"]]) await expect(runCli(argv, person)).rejects.toThrow(/archived/);
+  const crossed = await json(["search", "--all-projects", "--include-archived", "decision", "--json"], person);
+  expect(crossed.projects).toContain(here);                                         // the explicit way to reach an archived project stays
+  await runCli(["project", "unarchive", here], person);
+  expect(await runCli(["search", "decision"], person)).toContain("decision");
+  await runCli(["project", "forget", here, "--confirm"], person);
+  for (const argv of [["search", "decision"], ["list"]]) await expect(runCli(argv, person)).rejects.toThrow(/forgotten/);
 });

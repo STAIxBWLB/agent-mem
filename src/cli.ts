@@ -21,7 +21,7 @@ import { migrate } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
 import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
 import { readCatalogFresh } from "./memory/catalog.ts";
-import { appendLifecycle, projectState } from "./memory/lifecycle.ts";
+import { appendLifecycle, assertProjectActive, projectState } from "./memory/lifecycle.ts";
 import { gcText, runGc } from "./memory/gc.ts";
 import { usageReport, usageText } from "./memory/usage.ts";
 import { exportProject } from "./memory/project-export.ts";
@@ -80,6 +80,9 @@ function shardStatePresent(): boolean {
 
 /** `reconciled` (#27): the project filter also covers every key aliased to `project`; prune and other planners keep the exact key. */
 function curatedStore(project: string, opts: StoreOptions, reconciled = true): MemoryStore {
+  // #15 T5: the person's own project-local recall (search, list, show, graph, goals, prune) leaves an archived or forgotten project too, on a split home and on
+  // an unsplit one alike. `search --all-projects --include-archived` and `project export` are the explicit ways to reach an archived project.
+  assertProjectActive(memoryHome(), project);
   const aliases = reconciled ? aliasedKeys(memoryHome(), project) : [];
   const withAliases: StoreOptions = aliases.length ? { ...opts, reconcile: { canonical: project, aliases } } : opts;
   if (shardStatePresent()) {
