@@ -6,7 +6,7 @@ import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA } from "./shard.t
 import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
-import { lifecycleStates, type LifecycleState } from "./lifecycle.ts";
+import { lifecycleResolver, type LifecycleState } from "./lifecycle.ts";
 
 /**
  * #15 D3 (storage part only): the user-level catalog of project shards. `catalog.db` in the memory home is derived
@@ -97,7 +97,7 @@ export function scanCatalog(base: string): CatalogProject[] {
   const captured = capturedSelection(base);
   // The latest op per alias (a removal included): an alias lists only under the key it currently points at, never under a past target or after `alias remove`.
   const latest = effectiveAliases(base);
-  const states = lifecycleStates(base);
+  const stateOf = lifecycleResolver(base);
   const out: CatalogProject[] = [];
   for (const shard of walkShards(base)) {
     let rows = 0, bytes = 0, lastAt: string | null = null;
@@ -112,7 +112,7 @@ export function scanCatalog(base: string): CatalogProject[] {
     out.push({ hash: shard.hash, key: shard.key, local: shard.local,
       aliases: [...latest.entries()].filter(([, key]) => key === shard.key).map(([alias]) => alias).sort(),
       captureRows: rows, captureBytes: bytes, captureLastAt: lastAt, curatedEntries: curated.entries, curatedLastAt: curated.lastAt, curatedAvailable: curated.entries !== null, capMb: config.capMb, retentionDays: config.retentionDays,
-      state: states.get(shard.key) ?? "active", diskBytes: directoryBytes(join(base, "projects", shard.hash)) });
+      state: stateOf(shard.key), diskBytes: directoryBytes(join(base, "projects", shard.hash)) });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
 }

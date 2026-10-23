@@ -6,7 +6,7 @@ import { memoryBase } from "./home.ts";
 import { readMetrics, type MetricSample } from "./metrics.ts";
 export { appendMetrics, readMetrics, metricsPath, type MetricSample } from "./metrics.ts";
 import { walkShards } from "./catalog.ts";
-import { lifecycleStates } from "./lifecycle.ts";
+import { lifecycleResolver } from "./lifecycle.ts";
 import { captureShardGrowth, captureShardStats, readCaptureConfigFile, CAPTURE_DEFAULT_CAP_MB, CAPTURE_DEFAULT_RETENTION_DAYS, type CaptureConfig } from "./capture.ts";
 
 /**
@@ -151,7 +151,7 @@ export function capacityReport(opts: {
   mkdirSync(base, { recursive: true, mode: 0o700 }); // a report on a fresh home still needs a path df can read
   const now = opts.now ?? Date.now;
   const since = new Date(now() - GROWTH_DAYS * 24 * 3600_000).toISOString();
-  const shards = walkShards(base), states = lifecycleStates(base);
+  const shards = walkShards(base), stateOf = lifecycleResolver(base);
   let bytes = 0, rows = 0, growthRows = 0, growthBytes = 0, forgottenBytes = 0;
   const perShard: SplitInput["shards"] = [];
   for (const shard of shards) {
@@ -167,7 +167,7 @@ export function capacityReport(opts: {
       growthBytes += growth.bytes;
       growthShard += growth.bytes;
     }
-    if (states.get(shard.key) === "forgotten") forgottenBytes += useBytes;
+    if (stateOf(shard.key) === "forgotten") forgottenBytes += useBytes;
     else perShard.push({ key: shard.key, useBytes, growthBytesPerDay: growthShard / GROWTH_DAYS, lastAt });
   }
   const rowsPerDay = growthRows / GROWTH_DAYS, bytesPerDay = growthBytes / GROWTH_DAYS;

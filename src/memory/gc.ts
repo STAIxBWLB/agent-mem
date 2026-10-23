@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CAPTURE_EVICT_MAX_BATCHES, CaptureStore, captureShardStats, readCaptureConfig } from "./capture.ts";
 import { walkShards } from "./catalog.ts";
-import { lifecycleStates } from "./lifecycle.ts";
+import { lifecycleResolver } from "./lifecycle.ts";
 
 /**
  * #15 T5 / D3: `amem gc`. Applies each shard's own R6 bounds (its retention window and size cap, the shard config over the home default) across every
@@ -22,9 +22,9 @@ export interface GcOptions { now?: () => number; dryRun?: boolean; /** Calls to 
 
 /** What gc would do: read-only counts per shard, nothing opened for writing. */
 export function planGc(base: string, opts: { now?: () => number } = {}): GcShardPlan[] {
-  const now = opts.now ?? Date.now, states = lifecycleStates(base), out: GcShardPlan[] = [];
+  const now = opts.now ?? Date.now, stateOf = lifecycleResolver(base), out: GcShardPlan[] = [];
   for (const shard of walkShards(base)) {
-    const state = states.get(shard.key) ?? "active";
+    const state = stateOf(shard.key);
     if (state === "forgotten") continue;
     let rows = 0, bytes = 0, expiredRows = 0, capMb = 0, retentionDays = 0;
     for (const dir of shard.machineDirs) {
@@ -51,15 +51,15 @@ function expiredIn(dir: string, cutoff: string): number {
 export function runGc(base: string, opts: GcOptions = {}): GcResult {
   const maxBatches = opts.maxBatchesPerShard ?? 1;
   if (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 1000) throw new Error("maxBatchesPerShard takes a number from 1 to 1000");
-  const now = opts.now ?? Date.now, states = lifecycleStates(base);
+  const now = opts.now ?? Date.now, stateOf = lifecycleResolver(base);
   const result: GcResult = { dryRun: opts.dryRun === true, shards: [], skipped: [] };
   if (opts.dryRun === true) {
     for (const plan of planGc(base, { now })) result.shards.push({ key: plan.key, expired: plan.expiredRows, trimmed: 0, batches: 0, remainingOverCap: plan.overCap });
-    for (const [key, state] of states) if (state === "forgotten" && walkShards(base).some(shard => shard.key === key)) result.skipped.push({ key, reason: "forgotten" });
+    for (const shard of walkShards(base)) if (stateOf(shard.key) === "forgotten") result.skipped.push({ key: shard.key, reason: "forgotten" });
     return result;
   }
   for (const shard of walkShards(base)) {
-    if ((states.get(shard.key) ?? "active") === "forgotten") { result.skipped.push({ key: shard.key, reason: "forgotten" }); continue; }
+    if (stateOf(shard.key) === "forgotten") { result.skipped.push({ key: shard.key, reason: "forgotten" }); continue; }
     let expired = 0, trimmed = 0, batches = 0, over = false;
     try {
       for (const dir of shard.machineDirs) {

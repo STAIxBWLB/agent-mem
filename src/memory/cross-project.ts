@@ -2,7 +2,7 @@ import { captureSearch } from "./search-fts.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { walkShards } from "./catalog.ts";
 import { openCuratedForRead } from "./curated-read.ts";
-import { lifecycleStates } from "./lifecycle.ts";
+import { lifecycleResolver } from "./lifecycle.ts";
 import type { MemoryPolicy } from "./policy.ts";
 import type { SearchHit, View } from "./store.ts";
 import { vaultCandidates } from "./vault.ts";
@@ -23,8 +23,8 @@ export interface CrossHit extends SearchHit { project: string }
 export interface CrossSearchResult { crossedProjects: true; projects: string[]; hits: CrossHit[]; engine: "fts5" | "substring" }
 
 function readableProjects(base: string, opts: { includeArchived?: boolean }): { key: string; machineDirs: string[] }[] {
-  const states = lifecycleStates(base);
-  return walkShards(base).filter(shard => { const state = states.get(shard.key) ?? "active"; return state === "active" || state === "archived" && opts.includeArchived === true; });
+  const stateOf = lifecycleResolver(base);
+  return walkShards(base).filter(shard => { const state = stateOf(shard.key); return state === "active" || state === "archived" && opts.includeArchived === true; });
 }
 
 export function searchAllProjects(base: string, query: string, opts: { limit?: number; includeArchived?: boolean; includeCapture?: boolean; now?: () => number } = {}): CrossSearchResult {

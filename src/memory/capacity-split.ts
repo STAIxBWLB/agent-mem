@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { capacityReport, type ShardSplit } from "./capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./capture.ts";
 import { walkShards } from "./catalog.ts";
-import { lifecycleStates } from "./lifecycle.ts";
+import { lifecycleResolver } from "./lifecycle.ts";
 import { machineId } from "./store.ts";
 
 /**
@@ -22,9 +22,9 @@ const previewPath = (base: string): string => join(base, "capacity-split.preview
 
 function targets(base: string, split: ShardSplit[]): SplitTarget[] {
   const dirs = new Map(walkShards(base).map(shard => [shard.key, shard.machineDirs]));
-  const states = lifecycleStates(base);
+  const stateOf = lifecycleResolver(base);
   const machine = machineId(base).id;
-  return split.filter(row => states.get(row.key) !== "forgotten").map(row => {
+  return split.filter(row => stateOf(row.key) !== "forgotten").map(row => {
     const known = dirs.get(row.key) ?? [];
     const dir = known.find(candidate => candidate.endsWith(`/${machine}`)) ?? known[0];
     if (!dir) throw new Error(`shard ${row.key} has no machine directory on this machine; nothing to write`);

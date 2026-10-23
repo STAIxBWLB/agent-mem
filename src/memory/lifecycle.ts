@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { SHARD_SCHEMA, resolveAlias } from "./aliases.ts";
+import { SHARD_SCHEMA, effectiveAliases, resolveAlias } from "./aliases.ts";
 import { readShardDescriptor, shardKeyHash } from "./shard.ts";
 
 /**
@@ -45,16 +45,22 @@ export function listLifecycle(base: string): LifecycleOp[] {
   return ops;
 }
 
-/** The state of the canonical key of `key`. Terminal: after one `forget`, no later line moves it back. */
+const SEVERITY: Record<LifecycleState, number> = { active: 0, archived: 1, forgotten: 2 };
+const worse = (a: LifecycleState, b: LifecycleState): LifecycleState => SEVERITY[a] >= SEVERITY[b] ? a : b;
+
+/**
+ * The state of `key`, alias-aware in both directions: the worse of the key's own state and its canonical key's. An op is recorded on the canonical key, so
+ * an alias to an archived or forgotten project is that state, and a key forgotten before it became an alias of an active project stays forgotten (its own
+ * op is not erased by a later alias line). Terminal: after one `forget`, no later line moves a key back.
+ */
 export function projectState(base: string, key: string): LifecycleState {
-  const canonical = resolveAlias(base, key);
-  let state: LifecycleState = "active";
-  for (const op of listLifecycle(base)) {
-    if (op.key !== canonical) continue;
-    if (state === "forgotten") break;
-    state = op.op === "forget" ? "forgotten" : op.op === "archive" ? "archived" : "active";
-  }
-  return state;
+  return lifecycleResolver(base)(key);
+}
+
+/** One pass over both logs, then a lookup per key for a walk of many shards: `state(key)` is exactly `projectState(base, key)`. */
+export function lifecycleResolver(base: string): (key: string) => LifecycleState {
+  const states = lifecycleStates(base), aliases = effectiveAliases(base);
+  return key => worse(states.get(key) ?? "active", states.get(aliases.get(key) ?? key) ?? "active");
 }
 
 /** Every project key with a non-active state, for the catalog: one pass over the log. */
