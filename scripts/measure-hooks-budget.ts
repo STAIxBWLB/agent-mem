@@ -13,7 +13,7 @@ import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
-interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number }
+interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0;
@@ -61,12 +61,12 @@ function invoke(event: "PostToolUse" | "SessionStart"): Sample {
     if (output.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof context !== "string" || !context.includes(workMarker) || !/coverage|complete|partial/i.test(context) || Buffer.byteLength(context) > 1200) throw new Error(`SessionStart fixture lacked bounded known work and coverage: wall=${wallMs}, metric=${metric.wallMs}, context=${JSON.stringify(context)}`);
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
   }
-  // Production hook metrics include parent peak + brief child peak. CLI rusage independently covers the executable.
-  return { wallMs, cliRssMB, recordedRssMB, rssMB: Math.max(cliRssMB, recordedRssMB) };
+  // Production metrics sum each exec-image peak; raw inherited-rusage peaks remain separate diagnostics. CLI rusage independently covers the executable.
+  return { wallMs, cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB ?? recordedRssMB, rssMB: Math.max(cliRssMB, recordedRssMB) };
 }
 function summarize(samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
-  return { runs: samples.length, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), pass: wallP95Ms < WALL_MS && peakRssMB < RSS_MB };
+  return { runs: samples.length, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.rawRssMB))), pass: wallP95Ms < WALL_MS && peakRssMB < RSS_MB };
 }
 try {
   await f.seed();

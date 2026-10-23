@@ -27,6 +27,7 @@ jobs:
       - run: bun test --timeout 20000
       - run: npm pack --dry-run
       - run: bun scripts/measure-hooks-budget.ts
+        if: always() && !cancelled()
       - run: bun scripts/measure-budget.ts
       - run: bun scripts/measure-mcp-budget.ts
       - run: bun scripts/measure-shard-ac8.ts

@@ -1,6 +1,8 @@
 import type { BriefOptions } from "./session-brief.ts";
 import { CaptureStore } from "./memory/capture.ts";
 import { memoryProjectKey } from "./memory/project.ts";
+import { hookGit } from "./hook-git.ts";
+import { hookPeakRssKB } from "./hook-resources.ts";
 import { resolveAlias } from "./memory/shard.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
@@ -22,21 +24,34 @@ async function readOptions(): Promise<string> {
 
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
 if (import.meta.main) {
+  let owned = false;
+  const stop = (): never => {
+    // This leader is still alive in the detached group created by hookWorker, so its
+    // native descendants cannot outlive a timeout, transport failure or normal completion.
+    if (owned) try { process.kill(-process.pid, "SIGKILL"); } catch { /* No group exists in a direct, non-owned invocation. */ }
+    process.exit(0);
+  };
+  const emit = async (result: unknown) => {
+    const body = JSON.stringify({ ...(result as object), complete: true });
+    const rssKB = hookPeakRssKB();
+    await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
+    stop();
+  };
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; deadlineAt: number };
-    if (!Number.isFinite(options.deadlineAt)) process.exit(0);
+    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; deadlineAt: number; ownedGroup: boolean };
+    if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
+    owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
-    if (remaining() <= 0) process.exit(0);
-    setTimeout(() => process.exit(0), remaining()).unref();
+    if (remaining() <= 0) stop();
+    setTimeout(stop, remaining()).unref();
     const policy = createStandalonePolicy(options.policy), event = options.event;
-    if (!(HOOK_EVENTS as readonly string[]).includes(event)) process.exit(0);
-    const expectedScope = hookCaptureScope(options.cwd, options.base!);
-    if (!expectedScope) process.exit(0);
+    if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
+    const expectedScope = hookCaptureScope(options.cwd, options.base!) ?? stop();
     let project: string;
-    try { project = resolveAlias(options.base!, memoryProjectKey(options.cwd, { repositoryIsolation: true, strictGitErrors: true })); }
+    try { project = resolveAlias(options.base!, memoryProjectKey(options.cwd, { repositoryIsolation: true, strictGitErrors: true, gitRead: hookGit(remaining) })); }
     catch {
       quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
-      process.exit(0);
+      project = stop();
     }
     let store: CaptureStore | undefined;
     let captured = false;
@@ -51,7 +66,7 @@ if (import.meta.main) {
       const { sessionStartBrief } = await import("./session-brief.ts");
       const result = await sessionStartBrief({ ...options, project,
         timeRemaining: () => options.deadlineAt - (performance.timeOrigin + performance.now()) });
-      console.log(JSON.stringify({ ...result, captured, valid: await policy.screen({ context: result.context }) }));
-    } else console.log(JSON.stringify({ context: "", captured, valid: true }));
-  } catch { process.exitCode = 1; }
+      await emit({ ...result, captured, valid: await policy.screen({ context: result.context }) });
+    } else await emit({ context: "", captured, valid: true });
+  } catch { if (owned) stop(); process.exitCode = 1; }
 }
