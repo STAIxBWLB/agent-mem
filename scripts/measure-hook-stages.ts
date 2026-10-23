@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
+import { singleAttemptTiming } from "./hook-timing-check.ts";
 
 const f = hookFixture(), preload = join(f.root, "hook-stages.ts"), trace = join(f.root, "hook-stages.jsonl");
 const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
@@ -52,19 +53,21 @@ note('loaded');const spawn=Bun.spawn.bind(Bun),sync=Bun.spawnSync.bind(Bun),kill
 Bun.spawn=(argv,options)=>{if(!Array.isArray(argv)||argv[2]!==${JSON.stringify(worker)})return spawn(argv,options);note('spawn');const p=spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options);p.exited.then(()=>note('reaped'));return p;};
 Bun.spawnSync=(argv,options)=>{const kind=Array.isArray(argv)&&argv.includes('remote')?'git-origin':Array.isArray(argv)&&argv.includes('rev-parse')?'git-metadata':Array.isArray(argv)&&argv[0]==='ps'?'lease-signature':'native';note(kind+'-start');const r=sync(argv,options);note(kind+'-end');return r;};
 process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o600 });
-  let cold: { knownWork: boolean; ms: number | null } | undefined;
+  let cold: { knownWork: boolean; ms: number | null; wallMs: number } | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     writeFileSync(trace, "", { mode: 0o600 });
     const started = performance.timeOrigin + performance.now();
     const result = f.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
+    const wallMs = performance.timeOrigin + performance.now() - started;
+    if (result.exitCode !== 0 || result.signalCode) throw new Error("cold SessionStart executable failed");
     const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
     let context: unknown;
     try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Report missing context explicitly. */ }
     const knownWork = typeof context === "string" && context.includes(workMarker);
     const stopped = [...rows].reverse().find(row => !row.child && row.stage === "output-ready");
     const completedMs = stopped ? stopped.at - started : null;
-    if (attempt === 0) cold = { knownWork, ms: completedMs };
-    console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length, knownWork, completedMs,
+    if (attempt === 0) cold = { knownWork, ms: completedMs, wallMs };
+    console.log(JSON.stringify({ diagnostic: "cold-session-stages", attempt, exit: result.exitCode, outputBytes: result.stdout.length, knownWork, completedMs, wallMs,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
   }
   // Reproduce the full foreign tier separately from the cold/plain budget; preparation
@@ -77,15 +80,18 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     writeFileSync(trace, "", { mode: 0o600 });
     const started = performance.timeOrigin + performance.now();
     const result = full.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
+    const wallMs = performance.timeOrigin + performance.now() - started;
+    if (result.exitCode !== 0 || result.signalCode) throw new Error("full foreign SessionStart executable failed");
     const rows = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { child: boolean; stage: string; at: number });
     let context: unknown; try { context = JSON.parse(result.stdout.toString()).hookSpecificOutput?.additionalContext; } catch { /* Missing output is the diagnostic. */ }
     const stopped = [...rows].reverse().find(row => !row.child && row.stage === "output-ready");
     const knownWork = typeof context === "string" && context.includes(workMarker), completedMs = stopped ? stopped.at - started : null;
     console.log(JSON.stringify({ diagnostic: "full-foreign-session-stages", exit: result.exitCode, outputBytes: result.stdout.length,
-      knownWork, completedMs,
+      knownWork, completedMs, wallMs,
       stages: rows.map(row => ({ process: row.child ? "worker" : "cli", stage: row.stage, ms: Math.round((row.at - started) * 100) / 100 })) }));
-    if (!knownWork || completedMs === null || completedMs >= 140) throw new Error(`full foreign SessionStart did not return known work before 140 ms: knownWork=${knownWork}, completedMs=${completedMs}`);
+    singleAttemptTiming("full foreign SessionStart known work before 140 ms", knownWork && completedMs !== null && completedMs < 140,
+      { knownWork, completedMs, wallMs, limitMs: 140 });
   } finally { if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; full.close(); foreign.close(); }
-  if (!cold?.knownWork || cold.ms === null || cold.ms >= 140)
-    throw new Error(`cold SessionStart did not return known work before 140 ms: knownWork=${cold?.knownWork}, completedMs=${cold?.ms}`);
+  singleAttemptTiming("cold SessionStart known work before 140 ms", !!cold?.knownWork && cold.ms !== null && cold.ms < 140,
+    { knownWork: cold?.knownWork ?? false, completedMs: cold?.ms ?? null, wallMs: cold?.wallMs ?? null, limitMs: 140 });
 } finally { f.close(); }
