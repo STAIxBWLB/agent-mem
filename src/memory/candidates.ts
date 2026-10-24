@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { CANDIDATE_SHOWN_GRACE_MS, hasShownColumn } from "./candidate-pending.ts";
+import { oneLine } from "./note-add.ts";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
@@ -72,6 +74,23 @@ function counterKey(key: CounterKey): CounterKey {
 }
 
 /** Explicitly opened machine-local data. Importing this module never opens a store or registers a consumer. */
+/** Run `work`, retrying only SQLite's "database is locked" for at most about two seconds; any other error, or the last lock error, is thrown. */
+function retryLocked(work: () => void): void {
+  const until = Date.now() + 2000;
+  for (let delay = 5;; delay = Math.min(delay * 2, 100)) {
+    try { work(); return; }
+    catch (error) {
+      if (!/database is locked|SQLITE_BUSY/i.test((error as Error).message) || Date.now() >= until) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    }
+  }
+}
+
+/** The queue holds the cap's worth of candidates nobody has seen. Named so a caller (the MCP tool) can map it; the message is worded for an agent, which cannot run the person-only commands itself. */
+export class CandidateQueueFull extends Error {
+  readonly code = "candidate_queue_full";
+  constructor(readonly waiting: number) { super(`${waiting} unshown candidates await the person's review; no more are accepted until they have run \`amem review\`. Ask the person to review them`); this.name = "CandidateQueueFull"; }
+}
 export class CandidateStore {
   readonly dir: string;
   readonly path: string;
@@ -89,18 +108,27 @@ export class CandidateStore {
     this.path = join(this.dir, "candidates.db");
     this.db = new Database(this.path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${CANDIDATE_DB_BUSY_TIMEOUT_MS}`);
-    chmodSync(this.path, 0o600); this.db.run("PRAGMA journal_mode = WAL");
+    chmodSync(this.path, 0o600);
+    // `journal_mode = WAL` takes a lock that busy_timeout does not always wait for, so several processes opening a brand-new home at once (every `amem mcp` builds this store at
+    // startup) can see "database is locked". It is retried for a bounded time: the first caller switches the mode, the others then find it already WAL.
+    retryLocked(() => this.db.run("PRAGMA journal_mode = WAL"));
     this.db.run("CREATE TABLE IF NOT EXISTS candidates (id TEXT PRIMARY KEY, project TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, note_id TEXT)");
+    // F7 / AC4: when a candidate was first shown to the person. In place and nullable: an older database gains it here, and a reader without it treats every row as unshown.
+    // Several processes open this store at once (every `amem mcp` builds it at startup), so the check and the ALTER are one immediate transaction: the loser waits, then sees the column.
+    if (!hasShownColumn(this.db)) this.db.transaction(() => { if (!hasShownColumn(this.db)) this.db.run("ALTER TABLE candidates ADD COLUMN shown_at INTEGER"); }).immediate();
     this.db.run("CREATE TABLE IF NOT EXISTS counters (id TEXT PRIMARY KEY, project TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL, rendered INTEGER, delivered INTEGER, cited INTEGER)");
     this.prune();
   }
   close(): void { this.db.close(); }
   private prune(): void {
     this.db.transaction(() => {
-      for (const [table, retention] of [["candidates", CANDIDATE_RETENTION], ["counters", COUNTER_RETENTION]] as const) {
-        this.db.query(`DELETE FROM ${table} WHERE at <= ?`).run(this.now() - retention.ageMs);
-        this.db.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY at DESC, rowid DESC) AS rank FROM ${table}) WHERE rank > ?)`).run(retention.count);
-      }
+      const now = this.now();
+      // Candidates (AC4, no candidate expires unshown): by age only a decided one, or a pending one that was shown and has had its grace period, goes. By count three tiers decide who is
+      // kept: unshown pending first, then shown pending, then decided, so a cap eviction takes decided rows before a shown one (which is owed its grace) and shown ones before an unseen one.
+      this.db.query("DELETE FROM candidates WHERE at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))").run(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS);
+      this.db.query(`DELETE FROM candidates WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC, rowid DESC) AS rank FROM candidates) WHERE rank > ?)`).run(CANDIDATE_RETENTION.count);
+      this.db.query("DELETE FROM counters WHERE at <= ?").run(now - COUNTER_RETENTION.ageMs);
+      this.db.query("DELETE FROM counters WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY at DESC, rowid DESC) AS rank FROM counters) WHERE rank > ?)").run(COUNTER_RETENTION.count);
     }).immediate();
   }
   private decode(row: { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null }): Candidate {
@@ -111,10 +139,19 @@ export class CandidateStore {
   put(rawInput: CandidateInput, verdict: CandidateVerdict): string {
     // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
     const input = stripPrivateDeep(rawInput);
-    publicOnly(verdict); validate(input); this.prune();
+    publicOnly(verdict); validate(input);
     const payload = canonical(input), id = hash({ schema: "agent-mem.candidate/v1", input });
-    this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, input.project, input.kind, payload, this.now());
-    this.prune(); return id;
+    // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
+    return this.db.transaction((): string => {
+      this.prune();
+      // AC4: a new candidate never pushes an unshown one out. With the cap's worth waiting the person has to review first, and the refusal says so (a named error an MCP tool can map).
+      const waiting = (this.db.query("SELECT COUNT(*) AS n FROM candidates WHERE project = ? AND status IN ('pending', 'accepting') AND shown_at IS NULL").get(input.project) as { n: number }).n;
+      const known = this.db.query("SELECT 1 FROM candidates WHERE id = ?").get(id);
+      if (!known && waiting >= CANDIDATE_RETENTION.count) throw new CandidateQueueFull(waiting);
+      this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, input.project, input.kind, payload, this.now());
+      this.prune();
+      return id;
+    }).immediate();
   }
   get(id: string, project: string): Candidate | undefined {
     if (!candidateId(id) || !text(project, 400)) throw new Error("invalid candidate identity");
@@ -176,7 +213,8 @@ export class CandidateStore {
     };
     const target = resolve(), data = candidate.input;
     const body = data.kind === "memory" ? data.text : data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
-      : `Approach: ${data.approach}\nSymptom: ${data.symptom}\nCause: ${data.cause}\nEvidence: ${data.evidenceRefs.join(", ")}\nRetry when: ${data.retryWhen}`;
+      // Each field is one line (every line-break character collapses): a candidate from an agent cannot forge a labelled line in the note the person accepts.
+      : `Approach: ${oneLine(data.approach)}\nSymptom: ${oneLine(data.symptom)}\nCause: ${oneLine(data.cause)}\nEvidence: ${data.evidenceRefs.map(oneLine).join(", ")}\nRetry when: ${oneLine(data.retryWhen)}`;
     const note: NoteInput = { op: "note", ...(data.kind === "memory" && data.title ? { title: data.title } : {}), project: data.kind === "correction" ? target!.project : context.project,
       scope: data.kind === "correction" ? target!.scope : "project",
       // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).

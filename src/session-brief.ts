@@ -6,6 +6,7 @@ import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { pendingLine, pendingSummary } from "./memory/candidate-pending.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
@@ -22,6 +23,8 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
   nativeSession?: { signature: string };
   /** Set only by the SessionStart hook, whose `project` was resolved from this very `cwd`: the repo section then finds its root by `lstat` and spawns no git process. */
   projectFromCwd?: true;
+  /** Test seam for the pending-candidate line's clock. */
+  now?: () => number;
 }
 type Coverage = "complete" | "partial" | "unavailable";
 export interface BriefResult {
@@ -134,6 +137,12 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const reasons: Partial<Record<Section, string>> = {};
     // Reserve the longest possible fixed header before selecting data; later coverage changes cannot overrun it.
     let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture history deferred" } : {}));
+    // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
+    // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
+    // same byte budget as everything else; when it does not fit it is left out.
+    let candidateLine: string | undefined;
+    const line = pendingLine(pendingSummary(base, [project, ...aliases], (options.now ?? Date.now)()));
+    if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
     const add = async (section: Section, shown: { data: unknown; partial: boolean }, evidence: boolean) => {
       if (!await screen(shown.data)) return;
       coverage[section] = shown.partial ? "partial" : coverage[section] ?? "complete";
@@ -222,7 +231,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         await recent("capture", window => capture.readPage(window), captureDisplay);
       });
       guard();
-      const context = [header(coverage, reasons), ...lines].join("\n");
+      const context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       result = { context, tokens: Buffer.byteLength(context), partial: Object.values(coverage).some(value => value !== "complete"), coverage };
     }
   } catch { result = unavailable(); }
