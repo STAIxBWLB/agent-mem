@@ -34,6 +34,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--include-archived": flag("With --all-projects, also read archived projects") }, args: [{ name: "words", variadic: true }] },
   projects: { description: "List the project shards of this memory home (#15 D3)", options: { ...json, "--all": flag("Include forgotten projects (archived ones are always listed)") } },
   usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
+  eval: { description: "Replay a local question set against the ranked store.search (the ranking MCP and hub recall use, not the `search` command's substring filter) and report recall@k and MRR (no model, no network; the built-in synthetic set without --set)", options: { ...json,
+    "--set": { description: "A question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") } },
   gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
     ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },
   project: { description: "Per-project lifecycle and export (#15 D3): one project only", options: json, commands: {
