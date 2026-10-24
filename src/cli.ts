@@ -33,6 +33,9 @@ import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 import { evalText, parseKs } from "./memory/eval.ts";
 import { evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
+import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
+import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
+import { runEditor } from "./memory/editor.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -42,8 +45,28 @@ export interface CliContext {
   visibility?: (url: string) => Promise<Visibility>;
   /** Trusted isolated-HOME setup fixture; ordinary CLI use asks through its terminal. */
   setupConfirm?: (plan: import("./setup.ts").SetupPlan) => Promise<boolean>;
+  /** Narrow seams for `amem note add` and `amem review walk`; each defaults to the real terminal. Fixtures stand in for the person at the keyboard. */
+  prompt?: (question: string) => string | null | Promise<string | null>;
+  /** Where `review walk` prints each candidate BEFORE it asks about it; defaults to stdout, which must then be a terminal. A fixture that supplies this stands in for the terminal. */
+  write?: (text: string) => void;
+  /** Whether stdout is a terminal, for the real stdout only (default `process.stdout.isTTY`). */
+  stdoutTTY?: boolean;
+  edit?: (initial: string) => string | Promise<string>;
+  stdin?: () => string;
 }
 
+/** Candidate and note text came from an agent or the person, and goes to a terminal: flatten control characters (an ANSI escape included) and bound it. */
+const terminalSafe = (value: string, max = 600): string => { const flat = value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/ {2,}/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max)}...` : flat; };
+/** Every value given for a repeatable flag, in order (`parseCommand` keeps only the last). */
+function repeated(argv: readonly string[], flag: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token === flag) { const value = argv[++i]; if (value !== undefined && !value.startsWith("--")) out.push(value); }
+    else if (token.startsWith(`${flag}=`)) out.push(token.slice(flag.length + 1));
+  }
+  return out;
+}
 /** Narrow descriptor seam for deterministic race fixtures; the CLI always uses the native implementation. */
 export interface PrunePlanFileIO {
   open(path: string, flags: number): number;
@@ -183,6 +206,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       config: { machine: source.machine, repo: source.repo, denyPaths: config.denyPaths.length, piiPatterns: config.piiPatterns.length,
         ...(config.briefBytes !== undefined ? { briefBytes: config.briefBytes } : {}), ...(config.excerptBytes !== undefined ? { excerptBytes: config.excerptBytes } : {}),
         ...(config.capturePaths !== undefined ? { capturePaths: config.capturePaths } : {}), ...(Object.keys(config.capture).length ? { capture: config.capture } : {}) },
+      // F7: pending candidates, and a warning when any is within 7 days of its age expiry (a shown one is then deleted after its grace period; an unshown one is kept until it is shown).
+      candidates: (() => { const bound = boundProject(), summary = pendingSummary(where.home, [bound, ...aliasedKeys(where.home, bound)], Date.now(), true);
+        if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
+        return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home) }, null, 2);
   }
   if (sub === "prune") {
@@ -205,17 +232,86 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
     } finally { store.close(); }
   }
+  if (sub === "note") {
+    // F6: the person writes a curated note. Person-only (the agent-marker refusal and the terminal requirement above already ran, because `note add` mutates).
+    const env = context.env ?? process.env, edit = context.edit ?? ((initial: string) => runEditor(env, initial));
+    const kind = (options["--kind"] ?? "finding") as Parameters<typeof buildNote>[0]["kind"];
+    const fail: Partial<FailFields> = { ...(typeof options["--approach"] === "string" ? { approach: options["--approach"] } : {}), ...(typeof options["--symptom"] === "string" ? { symptom: options["--symptom"] } : {}),
+      ...(typeof options["--cause"] === "string" ? { cause: options["--cause"] } : {}), ...(typeof options["--retry-when"] === "string" ? { retryWhen: options["--retry-when"] } : {}) };
+    const evidence = repeated(argv, "--evidence"); if (evidence.length) fail.evidence = evidence;
+    let text: string | undefined = parsed.positionals.join(" ");
+    if (text === "-") text = (context.stdin ?? (() => readFileSync(0, "utf8")))();
+    else if (!text.trim()) {
+      text = undefined;
+      // No text: a fail note with no field given opens the labelled template, any other note opens an empty file.
+      if (kind === "fail" && !Object.keys(fail).length) Object.assign(fail, parseFailTemplate(await edit(FAIL_TEMPLATE)));
+      else if (kind !== "fail") text = await edit("");
+    }
+    const project = boundProject(), policy = policyOf();
+    const store = curatedStore(project, { deferPromotions: true, screen: note => policy.screenStandalone(note) ? "promote" : "keep" });
+    try {
+      const { id } = noteAdd(store, project, { kind, tier: (options["--tier"] ?? "long") as "short" | "long", scope: (options["--scope"] ?? "project") as "project" | "shared",
+        ...(text !== undefined ? { text } : {}), ...(typeof options["--title"] === "string" ? { title: options["--title"] } : {}), ...(Object.keys(fail).length ? { fail } : {}) }, policy);
+      return options["--json"] ? JSON.stringify({ id, kind }, null, 2) : `added ${kind} note ${id}`;
+    } finally { store.close(); }
+  }
   if (review) {
     if (sub === "accept" && options["--kind"] !== "memory" && shardStatePresent()) throw new Error("candidate acceptance requires shard-aware review integration; use --kind memory only for a general memory candidate");
     if (sub === "accept" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; use --kind memory only for a general memory candidate");
     if (sub === "list" && options["--kind"] !== "memory" && resolveProfile(memoryHome()).kind === "generation") throw new Error("candidate review is not yet integrated with this generation; select --kind memory for the standalone memory candidate surface");
     const id = parsed.positionals[0];
-    if (sub !== "list" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
+    if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
     const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
     try {
+      if (sub === "walk") {
+        // F7 / AC4: each candidate is stamped shown as it is put in front of the person, then accepted, edited (written as the person's own note and the candidate closed), rejected or skipped.
+        // The candidate is WRITTEN to the terminal before the question, and stamped shown only after that write succeeded: a person who answers a/e/r must have seen what it is, and a Ctrl-C
+        // or a closed pipe before the print leaves nothing stamped. Each outcome is written as it happens, so an interrupted walk still shows what it did.
+        // The walk asks accept, edit or reject questions, so what it prints must reach a person: with stdout redirected to a file or a pipe nobody sees the candidate, and stamping it shown
+        // would start the 7-day clock for something unread. Refused before anything is read or stamped. (A caller-supplied `write` is a fixture standing in for the terminal.)
+        if (context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("review walk prints each candidate and asks about it, so stdout must be a terminal (not redirected to a file or a pipe)");
+        const write = context.write ?? ((text: string) => { process.stdout.write(`${text}\n`); });
+        const ask = context.prompt ?? ((question: string) => prompt(question)), scope = [project, ...aliases];
+        // Oldest first: those are the ones nearest their expiry (`list` is newest first).
+        const rows = candidates.list({ project, status: "pending", ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}) }).reverse();
+        if (!rows.length) return "no candidates pending";
+        const done = { accepted: 0, edited: 0, rejected: 0, skipped: 0, failed: 0 };
+        const lines = { push: (...texts: string[]) => { for (const text of texts) write(text); return 0; } };
+        const body = (candidate: (typeof rows)[number]): string => { const input = candidate.input;
+          return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
+            : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
+        const step = async (args: string[]) => { try { await runCli(args, context); return true; } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; return false; } };
+        for (const [index, candidate] of rows.entries()) {
+          lines.push(`${index + 1}/${rows.length}  ${candidate.id.slice(0, 12)}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${terminalSafe(body(candidate))}`);
+          markShown(memoryHome(), scope, Date.now(), [candidate.id]);     // after the write: shown means the person could read it
+          const answer = ((await ask("[a]ccept [e]dit [r]eject [s]kip [q]uit: ")) ?? "q").trim().toLowerCase()[0] ?? "s";
+          if (answer === "q") break;
+          if (answer === "a") { if (await step(["review", "accept", candidate.id, ...(candidate.input.kind === "memory" ? ["--kind", "memory"] : []), "--json"])) done.accepted++; }
+          else if (answer === "r") { if (await step(["review", "reject", candidate.id])) done.rejected++; }
+          else if (answer === "e") {
+            const input = candidate.input;
+            if (input.kind !== "memory" && input.kind !== "fail") { lines.push("  edit is for memory and fail candidates; accept, reject or skip this one"); done.failed++; continue; }
+            const edit = context.edit ?? ((initial: string) => runEditor(context.env ?? process.env, initial));
+            // A memory candidate proposed as a fail note opens the template (its own text pre-filled under Approach when it is not already labelled), so the person can structure it.
+            const first = input.kind === "fail" ? `Approach: ${input.approach}\nSymptom: ${input.symptom}\nCause: ${input.cause}\nEvidence: ${input.evidenceRefs.join(", ")}\nRetry when: ${input.retryWhen}\n`
+              : input.noteKind === "fail" && !hasFailLabel(input.text) ? `Approach: ${input.text}\nSymptom: \nCause: \nEvidence: \nRetry when: \n` : input.text;
+            try {
+              const edited = await edit(first), standalone = policyOf(), store = curatedStore(project, { deferPromotions: true, screen: note => standalone.screenStandalone(note) ? "promote" : "keep" });
+              // A fail candidate, and a general memory candidate proposed as a fail note, are both written as a structured fail note from the labelled body the person edited.
+              const asFail = input.kind === "fail" || input.noteKind === "fail";
+              try { noteAdd(store, project, asFail ? { kind: "fail", tier: "long", scope: "project", fail: parseFailTemplate(edited), ...(input.kind === "memory" && input.title ? { title: input.title } : {}) } : { kind: input.kind === "memory" ? input.noteKind ?? "finding" : "finding", tier: "long", scope: "project", text: edited, ...(input.kind === "memory" && input.title ? { title: input.title } : {}) }, standalone); }
+              finally { store.close(); }
+              candidates.reject(candidate.id, { project, actor: "person", verdict: "public" }); done.edited++;
+            } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; }
+          } else done.skipped++;
+        }
+        return `accepted ${done.accepted}, edited ${done.edited}, rejected ${done.rejected}, skipped ${done.skipped}, failed ${done.failed}`;
+      }
       if (sub === "list") {
         const rows = candidates.list({ project, ...(options["--status"] ? { status: options["--status"] as CandidateFilter["status"] } : {}),
           ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+        // AC4, "shown" means the person read the candidate's content, and the list cannot know that: it prints an id, a kind and a date (no content), it is run by scripts and cron, and
+        // `--json` may be piped to a program. So `review list` stamps nothing, exactly like the hook; only `review walk`, which prints each candidate before it asks, does.
         return options["--json"] ? JSON.stringify(rows, null, 2) : rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
       }
       if (sub === "reject") {

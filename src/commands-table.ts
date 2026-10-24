@@ -58,6 +58,13 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   } },
   demote: { description: "Demote a note", options: json, args: [{ name: "id" }], mutates: true },
   forget: { description: "Forget a note", options: json, args: [{ name: "id" }], mutates: true },
+  note: { description: "Write notes as the person (F6)", options: json, commands: {
+    add: { description: "Add one curated note: text as arguments, `-` to type it on the terminal until end of input, or no text to open $EDITOR. A fail note takes --approach, --symptom, --cause, --evidence (repeatable) and --retry-when", mutates: true, options: {
+      "--kind": { description: "Note kind (default finding)", value: KINDS }, "--tier": { description: "Memory tier (default long)", value: ["short", "long"] },
+      "--scope": { description: "Scope (default project)", value: ["project", "shared"] }, "--title": text("One-line title"),
+      "--approach": text("fail: what was tried"), "--symptom": text("fail: what went wrong"), "--cause": text("fail: why"), "--evidence": text("fail: a reference (repeatable)"), "--retry-when": text("fail: what would make the approach worth retrying") },
+      args: [{ name: "text", variadic: true }] },
+  } },
   supersede: { description: "Replace a note", options: json, args: [{ name: "old-id" }, { name: "new-id" }], mutates: true },
   rebuild: { description: "Rebuild the derived index", options: json, mutates: true },
   dedupe: { description: "Preview duplicate reconciliation", options: { ...json, "--apply": flag("Append reconciliation operations") }, mutates: "apply" },
@@ -81,6 +88,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     } },
     accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Explicit standalone candidate kind for selected profiles", value: ["memory"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
+    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory"] } } },
   } },
   migrate: { description: "Select a person-approved generation or deactivate it", mutates: true, options: {
     ...json, "--dry-run": flag("Read-only migration receipt"), "--generation": text("Explicit 32-hex generation ID"),

@@ -193,17 +193,28 @@ test("counter unknowns differ from observed zero and idempotent upserts retain d
   expect(bytes(f.memory)).toEqual(before);
 });
 
-test("candidate retention enforces 500 per project and the 30-day age boundary", () => {
+test("candidate retention enforces 500 per project and the 30-day age boundary, for candidates that were shown or decided (an unshown pending one is kept: agent-mem#40 AC4)", () => {
   expect(CANDIDATE_RETENTION).toEqual({ count: 500, ageMs: 30 * 86400_000 });
   const f = fixture(), ids: string[] = [];
-  for (let i = 0; i <= CANDIDATE_RETENTION.count; i++) { f.clock.now++; ids.push(f.candidates.put(correction(f.view, `reason ${i}`), "public")); }
+  const project = (id: string) => f.candidates.get(id, PROJECT);
+  for (let i = 0; i < CANDIDATE_RETENTION.count; i++) { f.clock.now++; ids.push(f.candidates.put(correction(f.view, `reason ${i}`), "public")); }
   const lastAt = f.clock.now;
-  f.clock.now++; f.candidates.put({ ...correction(f.view), project: "other" }, "public");
+  // The cap is full of unshown candidates: a new one is refused rather than pushing an unseen one out (AC4).
+  f.clock.now++;
+  expect(() => f.candidates.put(correction(f.view, "one more"), "public")).toThrow("500 unshown candidates await the person");
+  expect(f.candidates.list({ project: PROJECT, status: "all" })).toHaveLength(500); expect(project(ids[0]!)).toBeDefined();
+  // Once the person has decided the oldest, there is room, and that decided row is the one the cap takes.
+  f.candidates.reject(ids[0]!, { project: PROJECT, actor: "person", verdict: "public" });
+  f.clock.now++; const newest = f.candidates.put(correction(f.view, "fits now"), "public");
   expect(f.candidates.list({ project: PROJECT, status: "all" })).toHaveLength(500);
-  expect(f.candidates.get(ids[0]!, PROJECT)).toBeUndefined(); expect(f.candidates.get(ids.at(-1)!, PROJECT)).toBeDefined();
+  expect(project(ids[0]!)).toBeUndefined(); expect(project(newest)).toBeDefined();
+  f.clock.now++; f.candidates.put({ ...correction(f.view), project: "other" }, "public");
   expect(f.candidates.list({ project: "other" })).toHaveLength(1);
+  // Age: a decided candidate leaves at 30 days, an unshown pending one stays however old.
+  f.candidates.reject(ids[1]!, { project: PROJECT, actor: "person", verdict: "public" });
   f.clock.now = lastAt + CANDIDATE_RETENTION.ageMs;
-  expect(f.candidates.list({ project: PROJECT, status: "all" })).toEqual([]);
+  expect(project(ids[1]!)).toBeUndefined();
+  expect(f.candidates.list({ project: PROJECT, status: "pending" }).length).toBeGreaterThan(0);
   expect(f.candidates.list({ project: "other" })).toHaveLength(1);
 });
 

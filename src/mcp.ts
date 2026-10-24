@@ -94,7 +94,12 @@ export async function serveMcp(options: McpOptions): Promise<void> {
       const value = await options.tools[definition.name](args as Record<string, unknown>), text = JSON.stringify(value);
       if (text === undefined || Buffer.byteLength(text) > RESULT_BYTES) throw new Error("result unavailable");
       result = { content: [{ type: "text", text }] };
-    } catch { result = { isError: true, content: [{ type: "text", text: "Memory operation unavailable or refused; no partial result is shown." }] }; }
+    } catch (failure) {
+      // Every failure is opaque to the model except one named, fixed, text-free condition: the person's review queue is full. It carries no stored content, so it is safe to say, and it
+      // tells the agent what to do (stop proposing, ask the person) instead of leaving it to retry blindly.
+      const full = typeof failure === "object" && failure !== null && (failure as { code?: unknown }).code === "candidate_queue_full";
+      result = { isError: true, content: [{ type: "text", text: full ? "The person's review queue is full: no more candidates are accepted until the person runs `amem review`. Do not retry; ask the person to review the pending candidates." : "Memory operation unavailable or refused; no partial result is shown." }] };
+    }
     await send({ jsonrpc: "2.0", id, result });
   };
   let pending = "", overflow = false;
