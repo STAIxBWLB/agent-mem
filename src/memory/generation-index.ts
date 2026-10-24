@@ -63,6 +63,7 @@ export class GenerationIndex {
   pruned = new Set<string>();
   private readonly reader = new SegmentReader();
   private fullCapture = false;
+  private retainedTail = false;
   private replayProvenance = false;
   constructor(private readonly options: GenerationIndexOptions) {
     this.profile = options.profile;
@@ -165,6 +166,8 @@ export class GenerationIndex {
   private recordSkipped(segment: LegacySegment): void {
     this.options.db.query("INSERT INTO generation_state VALUES (?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(`skipped:${segment.source}:${segment.path}`);
   }
+  /** Read-only diagnostics of opened retained inputs, not unrouteable pre-split global rows or prune proof state. */
+  recallDiagnostics(): { malformed: number; incomplete: boolean } { return { malformed: this.skippedRows(), incomplete: this.retainedTail }; }
   skippedRows(): number {
     return (this.options.db.query("SELECT COALESCE(SUM(CAST(value AS INTEGER)),0) AS n FROM generation_state WHERE key LIKE 'skipped:%'").get() as { n: number }).n;
   }
@@ -185,9 +188,10 @@ export class GenerationIndex {
     const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
     const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null) && row.stamp === (segment.stamp ?? null)));
-    if (unchanged) { this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
+    if (unchanged) { this.retainedTail = input.segments.some(segment => segment.tailBytes > 0); this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
     const committed = db.transaction(() => { if (this.frontier() !== before) return false; this.index(input); return true; }).immediate();
     if (!committed) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
+    this.retainedTail = input.segments.some(segment => segment.tailBytes > 0);
   }
   rebuild(attempt = 0, reader: SegmentReader = this.reader): void {
     const before = this.frontier();
@@ -202,6 +206,7 @@ export class GenerationIndex {
     }).immediate();
     if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1, reader); return fail(); }
     this.replayProvenance = false;
+    this.retainedTail = input.segments.some(segment => segment.tailBytes > 0);
   }
   vaultWitnesses(ids: readonly string[]): Map<string, string> {
     if (ids.length > 5000) throw new Error("vault scan budget exceeded");

@@ -6,7 +6,7 @@ import { nodePath } from "./project.ts";
 import type { View } from "./store.ts";
 
 export interface RecallStalenessOptions {
-  cwd: string; deny?: readonly string[]; policy?: () => StandalonePolicy;
+  cwd: string; rootConfirmed?: boolean; deny?: readonly string[]; policy?: () => StandalonePolicy;
   /** Host-only lexical glob/private-path checks run before any filesystem probe. */
   allowedPath?: (path: string) => boolean;
   maxProbes?: number;
@@ -48,7 +48,7 @@ export function createRecallStalenessProbe(options: RecallStalenessOptions): (vi
     for (const node of view.about) {
       const path = nodePath(node); if (path === undefined) continue;
       const state = inspect(path);
-      if (state.state === "missing" || state.state === "present" && state.mtime > at) return true;
+      if (state.state === "missing" && options.rootConfirmed === true || state.state === "present" && state.mtime > at) return true;
       known ||= state.state === "present";
     }
     return known ? false : undefined;

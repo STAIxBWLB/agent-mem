@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -9,7 +9,7 @@ import { serveMcp } from "../src/mcp.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
-import { realPath } from "../src/memory/platform.ts";
+import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { createIntentBriefSource } from "../src/memory/recall.ts";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
@@ -104,10 +104,11 @@ test("host PII blocks startup before base creation and late calls/observations; 
   const result = await session.tools.amem_brief({ intent: "fixture", paths: ["public.ts"] }); allowed = false;
   await expect(session.tools.amem_brief({ intent: "fixture" })).rejects.toThrow("unavailable"); await session.onEmitted("amem_brief", 4, result); expect(f.counters()).toEqual([]);
 });
-test("bounded brief source marks an unseen lookahead row even when the structural page has no continuation", () => {
-  let calls = 0;
-  const fake = { withDeferredPromotions: <T>(work: () => T) => work(), readNow: () => Date.now(), readPage: () => { calls++; return calls <= 20 ? { rows: [], next: { position: calls, id: "a".repeat(32) } } : { rows: [{ id: "b".repeat(32), project: "project", at: "2020-01-01T00:00:00.000Z", supersededBy: null, expiresAt: null }], next: undefined }; } } as unknown as MemoryStore;
-  const source = createIntentBriefSource(fake, "project"); expect(source.notes()).toEqual([]); expect(calls).toBe(21); expect(source.truncated()).toBe(true);
+test("bounded intent snapshot source prepares once and preserves unknown-coverage truncation", () => {
+  let calls = 0, checks = 0;
+  const rows: import("../src/memory/store.ts").View[] = [];
+  const fake = { intentSnapshot: (project: string) => { calls++; expect(project).toBe("project"); return { rows, truncated: true, assertCurrent: () => { checks++; } }; } } as unknown as MemoryStore;
+  const source = createIntentBriefSource(fake, "project"); expect(source.notes()).toBe(rows); expect(source.notes()).toBe(rows); expect(calls).toBe(1); expect(source.truncated()).toBe(true); source.assertCurrent(); expect(checks).toBe(1);
 });
 test("CLI output closed while its write callback is pending rejects promptly without rendering its prepared receipt", async () => {
   const f = await briefFixture("legacy"); await f.bound(async () => {
@@ -121,4 +122,24 @@ test("CLI output closed while its write callback is pending rejects promptly wit
     finally { if (timer) clearTimeout(timer); output.destroy(); }
     expect(callbackCalls).toBe(0); expect(f.counters()).toEqual([]);
   });
+});
+
+test("CLI human and MCP show from a real Git subdirectory use root-relative path staleness", async () => {
+  const f = await fixture(); await f.bound(async () => {
+    expect(memoryProjectKey(f.root)).toBe(f.project);
+    const env = { ...memoryGitEnv(process.env, { repositoryIsolation: true }), HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+    expect(memoryGitSync(["init", "--quiet", f.root], { encoding: "utf8", env }).status).toBe(0);
+    const subdir = join(f.root, "nested", "work"), file = join(f.root, "src", "file.ts"); mkdirSync(subdir, { recursive: true }); mkdirSync(join(f.root, "src")); writeFileSync(file, "original source");
+    expect(memoryProjectKey(f.root)).toBe(f.project); expect(memoryProjectKey(subdir)).toBe(f.project);
+    const id = f.note("root relative path evidence", { about: ["path:src/file.ts"] }), at = Date.parse(f.use(store => store.get(id, f.project)!.at)); utimesSync(file, new Date(at - 1000), new Date(at - 1000));
+    const session = createMemoryMcp({ cwd: subdir, base: f.base }); cleanup.push(() => session.close());
+    const human = await f.cli(["show", id], { cwd: subdir }); expect(human).toContain("root relative path evidence"); expect(human).not.toContain("(stale?)");
+    expect(await session.tools.amem_show({ id })).toMatchObject({ id }); expect(await session.tools.amem_show({ id })).not.toHaveProperty("stale");
+    writeFileSync(file, "changed source"); utimesSync(file, new Date(at + 1000), new Date(at + 1000));
+    expect(await f.cli(["show", id], { cwd: subdir })).toContain("(stale?)"); expect(await session.tools.amem_show({ id })).toMatchObject({ id, stale: true });
+  });
+});
+test("missing paths at an unconfirmed non-repository root remain unknown in CLI and MCP", async () => {
+  const f = await fixture(), id = f.note("unconfirmed missing path evidence", { about: ["path:missing-root/file.ts"] }), session = f.mcp();
+  expect(existsSync(join(f.root, ".git"))).toBe(false); expect(await f.cli(["show", id])).not.toContain("(stale?)"); expect(await session.tools.amem_show({ id })).not.toHaveProperty("stale");
 });

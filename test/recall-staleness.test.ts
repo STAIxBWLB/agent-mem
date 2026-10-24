@@ -9,7 +9,7 @@ const root = () => { const dir = mkdtempSync(join(tmpdir(), "amem-path-stale-"))
 const at = "2026-10-20T00:00:00.000Z", time = Date.parse(at);
 const stat = (mtimeMs = time, directory = false, symbolic = false) => ({ mtimeMs, isDirectory: () => directory, isSymbolicLink: () => symbolic });
 test("only changed-after-note or missing paths produce advisory stale hints", () => {
-  const cwd = root(), calls: string[] = [], probe = createRecallStalenessProbe({ cwd, probe: path => { calls.push(path); if (path.endsWith("gone.ts")) throw Object.assign(Error(), { code: "ENOENT" }); return stat(path.endsWith("/changed.ts") ? time + 1 : time); } });
+  const cwd = root(), calls: string[] = [], probe = createRecallStalenessProbe({ cwd, rootConfirmed: true, probe: path => { calls.push(path); if (path.endsWith("gone.ts")) throw Object.assign(Error(), { code: "ENOENT" }); return stat(path.endsWith("/changed.ts") ? time + 1 : time); } });
   expect(probe({ at, about: ["path:unchanged.ts"] })).toBe(false); expect(probe({ at, about: ["symbol:parse@changed.ts"] })).toBe(true); expect(probe({ at, about: ["path:gone.ts"] })).toBe(true);
   expect(probe({ at, about: ["issue:o/r#1"] })).toBeUndefined(); expect(calls).toHaveLength(3);
 });
@@ -27,4 +27,9 @@ test("shared call budget and cache are bounded; policy tightening suppresses cac
   expect(probe({ at, about: ["path:src/a.ts"] })).toBe(true); expect(reads).toBe(2); expect(probe({ at, about: ["path:b.ts"] })).toBeUndefined();
   denyAncestor = true; expect(probe({ at, about: ["path:src/a.ts"] })).toBeUndefined(); expect(reads).toBe(2);
   const invalid = createRecallStalenessProbe({ cwd: root(), maxProbes: NaN, probe: () => { reads++; return stat(); } }); expect(invalid({ at, about: ["path:a.ts"] })).toBeUndefined(); expect(reads).toBe(2);
+});
+
+test("a missing path without a confirmed root stays unknown", () => {
+  const probe = createRecallStalenessProbe({ cwd: root(), probe: () => { throw Object.assign(Error(), { code: "ENOENT" }); } });
+  expect(probe({ at, about: ["path:unbound.ts"] })).toBeUndefined();
 });

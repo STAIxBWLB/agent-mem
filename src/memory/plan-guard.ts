@@ -1,7 +1,7 @@
 import { extractNodes, type View } from "./store.ts";
 import { nodePath } from "./project.ts";
 
-export interface PlanGuardContext { cwd: string; project: string; repo: string; deny?: string[] }
+export interface PlanGuardContext { cwd: string; project: string; repo: string; deny?: string[]; now?: () => number }
 /** Structural input accepts host task adapters without importing a host or a task board. */
 export interface PlanGuardInput {
   paths?: readonly string[]; symbols?: readonly string[];
@@ -41,7 +41,7 @@ export function planNodesIntersect(left: string, right: string): boolean {
   return !!a && !!b && samePath(a, b);
 }
 /** Callers screen complete live notes first; this pure matcher performs no I/O or writes. */
-export function matchingPlanFails<T extends Pick<View, "kind" | "about" | "supersededBy">>(input: PlanGuardInput, notes: readonly T[], context: PlanGuardContext): T[] {
-  const nodes = planGuardNodes(input, context);
-  return nodes.length ? notes.filter(note => note.kind === "fail" && !note.supersededBy && note.about.some(about => nodes.some(node => planNodesIntersect(node, about)))) : [];
+export function matchingPlanFails<T extends Pick<View, "kind" | "about" | "supersededBy"> & Partial<Pick<View, "expiresAt">>>(input: PlanGuardInput, notes: readonly T[], context: PlanGuardContext): T[] {
+  const nodes = planGuardNodes(input, context), now = (context.now ?? Date.now)();
+  return nodes.length && Number.isFinite(now) ? notes.filter(note => note.kind === "fail" && !note.supersededBy && (note.expiresAt == null || Number.isFinite(Date.parse(note.expiresAt)) && Date.parse(note.expiresAt) > now) && note.about.some(about => nodes.some(node => planNodesIntersect(node, about)))) : [];
 }

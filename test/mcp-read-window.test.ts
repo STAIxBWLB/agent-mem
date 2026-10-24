@@ -66,7 +66,7 @@ test("current curated recall hides invalid lifecycle bodies while person history
     expect(timeline.map(row => row.id)).toEqual([current]);
     expect(await mcp.tools.amem_show({ id: old })).toBeNull();
     const reader = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
-    try { expect(reader.recallState(f.project, { history: true }).views.map(row => row.id).sort()).toEqual([old, current].sort()); }
+    try { expect(reader.recallState(f.project, { history: true, person: true }).views.map(row => row.id).sort()).toEqual([old, current].sort()); }
     finally { reader.close(); }
     expect(await mcp.tools.amem_timeline({ id: forgotten })).toEqual([]);
   } finally { mcp.close(); }

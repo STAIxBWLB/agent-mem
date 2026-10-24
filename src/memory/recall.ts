@@ -1,12 +1,22 @@
-import type { MemoryStore, RecallStateOptions, RetainedRecallState, View } from "./store.ts";
+import type { MemoryStore, RecallStateOptions, RetainedRecallState, Graph, View } from "./store.ts";
 
 export interface RecallOptions extends RecallStateOptions { query?: string; limit?: number }
 /** Only public read semantics; mutation and exact-revision callers continue to use Store.get directly. */
 export function recallViewIsLive(view: View, now: number): boolean {
-  return !view.supersededBy && Number.isFinite(Date.parse(view.at)) && Date.parse(view.at) <= now
+  return !view.supersededBy && Number.isFinite(Date.parse(view.at))
     && (view.expiresAt === null || Number.isFinite(Date.parse(view.expiresAt)) && Date.parse(view.expiresAt) > now);
 }
+const PROMOTION_NOTICE = "promotion time unknown: tier before promotion cannot be recovered";
+/** Narrow promotion uncertainty to emitted rows while retaining independent source diagnostics. */
+export function recallForViews(state: RetainedRecallState, views: View[]): RetainedRecallState {
+  const notices = state.notices.filter(notice => notice !== PROMOTION_NOTICE || views.some(view => view.promotedFrom));
+  return { ...state, views, notices, incomplete: state.sourceIncomplete === true || state.malformed > 0 || notices.length > 0 };
+}
+function personRecall(options: RecallStateOptions): void {
+  if ((options.history || options.asOf !== undefined) && options.person !== true) throw Error("historical recall requires authenticated person intent from the host");
+}
 export function recallRows(store: MemoryStore, project: string, options: RecallOptions = {}): RetainedRecallState {
+  personRecall(options);
   const limit = options.limit ?? 5000;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > Number.MAX_SAFE_INTEGER) throw Error("recall limit must be a positive safe integer");
   const state: RetainedRecallState = options.history || options.asOf !== undefined ? store.recallState(project, options)
@@ -14,10 +24,12 @@ export function recallRows(store: MemoryStore, project: string, options: RecallO
   const words = options.query?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
   const rows = state.views.filter(view => words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word)))
     .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
-  return { ...state, views: rows.slice(0, limit), incomplete: state.incomplete || rows.length > limit };
+  const selected = recallForViews(state, rows.slice(0, limit));
+  return { ...selected, incomplete: selected.incomplete || rows.length > limit };
 }
 export interface RecallShown { entry?: View; state?: RetainedRecallState; ids: string[] }
 export function recallShow(store: MemoryStore, project: string, rawId: string, options: RecallStateOptions = {}): RecallShown {
+  personRecall(options);
   const id = rawId.replace(/^mem:/, "");
   if (!/^[a-f0-9]{6,32}$/.test(id)) return { ids: [] };
   if (!options.history && options.asOf === undefined) {
@@ -35,25 +47,28 @@ export function recallShow(store: MemoryStore, project: string, rawId: string, o
   }
   if (queue.length > 64) throw Error("recall history chain exceeds 64 retained entries");
   const views = state.views.filter(view => selected.has(view.id));
-  return { entry: views.find(view => view.id === matches[0]), ids: [...selected], state: { ...state, views, forgotten: state.forgotten.filter(row => selected.has(row.id)), relations: state.relations.filter(edge => selected.has(edge.from) && selected.has(edge.to)) } };
+  return { entry: views.find(view => view.id === matches[0]), ids: [...selected], state: { ...recallForViews(state, views), forgotten: state.forgotten.filter(row => selected.has(row.id)), relations: state.relations.filter(edge => selected.has(edge.from) && selected.has(edge.to)) } };
 }
 
-/** Exact-project source for both standalone hosts. Selection is bounded before bodies and never follows foreign shares. */
-export function createIntentBriefSource(store: MemoryStore, project: string): { notes(): View[]; truncated(): boolean } {
-  let cut = false;
+/** Public graph over live recall rows; retained history requires host-authenticated person intent. */
+export function recallGraph(store: MemoryStore, project: string, start: string, hops = 1, options: RecallOptions = {}, readable: (rows: View[]) => View[] = rows => rows): Graph {
+  personRecall(options);
+  const rows = readable(recallRows(store, project, { ...options, limit: Number.MAX_SAFE_INTEGER }).views);
+  let node = start;
+  if (!start.includes(":") || start.startsWith("mem:")) {
+    const id = start.replace(/^mem:/, ""), exact = rows.find(view => view.id === id), matches = exact ? [exact] : id.length >= 6 ? rows.filter(view => view.id.startsWith(id)) : [];
+    if (matches.length !== 1) return { nodes: [], edges: [] };
+    node = `mem:${matches[0]!.id}`;
+  }
+  return store.withDeferredPromotions(() => store.graph(project, node, hops, 200, rows));
+}
+
+/** One prepared snapshot; its revision guard rejects changes after asynchronous host policy work. */
+export function createIntentBriefSource(store: MemoryStore, project: string): { notes(): View[]; assertCurrent(): void; truncated(): boolean } {
+  let snapshot: ReturnType<MemoryStore["intentSnapshot"]> | undefined;
   return {
-    notes: () => store.withDeferredPromotions(() => {
-      const rows: View[] = []; let after: { position: number; id: string } | undefined, exhausted = false; cut = false;
-      for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
-        const page = store.readPage({ project, limit: 256, after });
-        rows.push(...page.rows.filter(view => view.project === project && recallViewIsLive(view, store.readNow())));
-        if (!page.next) { exhausted = true; break; }
-        after = page.next;
-        if (rows.length > 5000) { cut = true; break; }
-      }
-      if (!exhausted && !cut && after) { const probe = store.readPage({ project, limit: 1, after }); cut = probe.rows.length > 0 || probe.next !== undefined; }
-      return rows.slice(0, 5001);
-    }),
-    truncated: () => cut,
+    notes: () => { snapshot ??= store.intentSnapshot(project); return snapshot.rows; },
+    assertCurrent: () => { if (!snapshot) throw Error("intent snapshot has not been prepared"); snapshot.assertCurrent(); },
+    truncated: () => snapshot?.truncated ?? false,
   };
 }

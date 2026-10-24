@@ -31,3 +31,9 @@ test("deny paths, traversal and absolute inputs do not become plan nodes", () =>
   const nodes = planGuardNodes({ paths: ["../outside.ts", "/private/x.ts", "secrets/key.ts"], symbols: ["read@secrets/key.ts", "read@../outside.ts"] }, { ...context, deny: ["secrets/"] });
   expect(nodes).toEqual([]);
 });
+
+test("explicit expired or invalid expiry fail notes never match a live plan guard", () => {
+  const base = { kind: "fail" as const, about: ["path:src/write.ts"], supersededBy: null }, now = Date.parse("2026-10-25T00:00:00.000Z");
+  const rows = [{ ...base, expiresAt: new Date(now).toISOString() }, { ...base, expiresAt: "invalid" }, { ...base, expiresAt: new Date(now + 1).toISOString() }];
+  expect(matchingPlanFails({ paths: ["src/write.ts"] }, rows, { ...context, now: () => now })).toEqual([rows[2]!]);
+});

@@ -25,7 +25,7 @@ import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
-import { readSelector, resolveProfile } from "./memory/generation.ts";
+import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
 import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
@@ -236,9 +236,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (paths.length > 150 || symbols.length > 150 || [...paths, ...symbols].some(value => value.length > 512)) throw Error("brief paths and symbols exceed the input bound");
     const store = curatedStore(project, { deferPromotions: true });
     try {
-      const assertCurrent = commandBinding(base, project), policy = () => configuredPolicy(base, policyCwd);
+      const assertCurrent = commandBinding(base, project), repository = boundRepoRoot(policyCwd, base, project), root = repository ?? policyCwd;
+      const rootConfirmed = repository !== undefined || project.startsWith("local:") && resolveAlias(base, memoryProjectKey(policyCwd)) === project;
+      const settings = () => configuredPolicyOptions(base, policyCwd), policyKey = () => hashJSON(settings()), revision = policyKey(), snapshot = createStandalonePolicy(settings());
+      const policy = () => snapshot, policyVersion = () => policyKey();
+      if (policyVersion() !== revision) throw Error("brief policy changed before read");
       const result = await buildIntentBrief(createIntentBriefSource(store, project),
-        { project, cwd: policyCwd, repo: project, intent, paths, symbols, maxBytes, policy, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: policyCwd, policy }) });
+        { project, cwd: root, repo: project, intent, paths, symbols, maxBytes, policy, policyVersion, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: root, rootConfirmed, policy }) });
       assertCurrent(); outputReady(result.items.map(view => view.id), project);
       return options["--json"] ? JSON.stringify({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, null, 2) : result.text;
     } finally { store.close(); }
@@ -639,7 +643,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   };
   const crosses = definition.policyFree === true;
   const cwd = context.cwd ?? process.cwd();
-  const configured = policyOf();
+  const configured = policyOf(), recallRoot = boundRepoRoot(cwd, memoryHome(), boundProject());
+  const rootConfirmed = recallRoot !== undefined || boundProject().startsWith("local:") && resolveAlias(memoryHome(), memoryProjectKey(cwd)) === boundProject();
   // Reads can trigger held-note reconciliation. Defer it unless this command is one that moves notes across the boundary (promote, sync, import, review accept), and then the configured policy decides each note.
   const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : configured.screenStandalone(note) ? "promote" : "keep" });
   // A person's reads are unscreened. A write is screened by the configured policy, which includes the built-in secret screen.
@@ -674,7 +679,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd, policy: policyOf }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) { if (sub === "sync") stampSync((error as Error).message, stop?.cause()); throw error; }

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
@@ -9,10 +10,10 @@ import type { McpHandlers, McpOptions } from "./mcp.ts";
 import { CandidateStore, acceptedCorrectionText, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore } from "./memory/capture.ts";
-import { readSelector } from "./memory/generation.ts";
+import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
-import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
@@ -29,7 +30,7 @@ export const MCP_SCAN_LIMIT = 5000;
 // ponytail: rank the newest 5000 permitted matching candidates per tier; use since to narrow or upgrade to a policy-bound persistent index for global ranking.
 const SEARCH_CANDIDATES = 5000;
 const READ_PAGE = 256;
-export interface MemoryMcpOptions { cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean }
+export interface MemoryMcpOptions { cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void }
 export interface MemoryMcp { tools: McpHandlers; close(): void; onEmitted: NonNullable<McpOptions["onEmitted"]> }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
 const bound = (args: Record<string, unknown>, keys: string[]) => { if (Object.keys(args).some(key => !keys.includes(key))) unavailable(); };
@@ -49,7 +50,11 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
   // #15 T5: an archived or forgotten project has no MCP server: the person took it out of recall.
   if (projectState(base, project) !== "active") unavailable();
   // F4: the person's configured policy (machine file, plus this repository's narrowing file) screens every MCP answer; a host passes a stricter one through `options.policy`.
-  const currentPolicy = () => createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
+  const calls = new AsyncLocalStorage<{ policy: StandalonePolicy; revision: string; configured: StandalonePolicyOptions }>();
+  const policyOptions = () => configuredPolicyOptions(base, cwd, options.policy);
+  const policyKey = (value: StandalonePolicyOptions) => hashJSON({ denyPaths: value.denyPaths ?? [], piiPatterns: value.piiPatterns ?? [], hostRevision: options.policyVersion?.() ?? null });
+  const currentPolicy = () => calls.getStore()?.policy ?? createStandalonePolicy(policyOptions());
+  const policyRevisionForCall = () => { const revision = policyKey(policyOptions()), active = calls.getStore(); if (active && active.revision !== revision) return unavailable(); return revision; };
   const policy = currentPolicy(), release = registerReaderLease(base);
   const closers: (() => void)[] = [release]; let closed = false;
   const close = () => { if (closed) return; closed = true; let failure: unknown; for (const closer of closers.reverse()) { try { closer(); } catch (error) { failure ??= error; } } if (failure) throw failure; };
@@ -65,34 +70,36 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     // #15 T4: the bound repository's `.amem/log.jsonl`, only when that repository's own key IS this project (AC3). The root is fixed at start like the project; the file is read per call.
     const repoRoot = boundRepoRoot(cwd, base, project);
     const repoRows = async (): Promise<RepoView[]> => {
-      const scoped = repoRoot ? repoReadPolicy(repoRoot, configuredPolicyOptions(base, cwd, options.policy)) : undefined;
+      const scoped = repoRoot ? repoReadPolicy(repoRoot, calls.getStore()?.configured ?? policyOptions()) : undefined;
       if (!scoped || "reason" in scoped) return [];
       const read = await readRepoScope(repoRoot, scoped.policy); guard();
       return read.state === "ok" ? read.views : [];
     };
     const candidates = new CandidateStore({ memoryDir: base, ...(reconcile ? { reconcile } : {}) }); closers.push(() => candidates.close());
     const work = new WorkListStore({ base, project, aliases, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
-    const guard = () => {
+    const fullGuard = () => {
       if (!permitted()) unavailable();
-      if (closed) unavailable();
+      if (closed) unavailable(); options.assertCurrent?.();
       release.verify();
       if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n") || readSelector(base).revision !== selection || projectState(base, project) !== "active") unavailable();
       const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
       if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) unavailable();
     };
+    const guard = () => { if (!permitted() || closed) return unavailable(); if (!calls.getStore()) fullGuard(); };
     const emitted = new WeakMap<object, { ids: string[]; deliveryId: string }>(), session = randomUUID(); let sequence = 0;
-    const observed = <T>(value: T, ids: readonly string[], rows: readonly unknown[] = []): T => { guard(); if (rows.some(row => !currentPolicy().screenStandalone(row))) return unavailable(); if (value && typeof value === "object") emitted.set(value, { ids: [...new Set(ids)].filter(id => /^[a-f0-9]{32}$/.test(id)).slice(0, 256), deliveryId: `mcp:${session}:${++sequence}` }); return value; };
+    const observed = <T>(value: T, ids: readonly string[], _rows: readonly unknown[] = []): T => { guard(); if (value && typeof value === "object") emitted.set(value, { ids: [...new Set(ids)].filter(id => /^[a-f0-9]{32}$/.test(id)).slice(0, 256), deliveryId: `mcp:${session}:${++sequence}` }); return value; };
     const onEmitted: MemoryMcp["onEmitted"] = (_tool, _requestId, value) => {
       if (!value || typeof value !== "object") return;
       const receipt = emitted.get(value); emitted.delete(value); if (!receipt?.ids.length) return;
       const { ids, deliveryId } = receipt;
       for (const entryId of ids) recordMemoryUse(candidates, { project, entryId, deliveryId, session }, { rendered: 1 }, { allowed: permitted, assertCurrent: guard });
     };
-    const stale = () => createRecallStalenessProbe({ cwd, policy: currentPolicy });
+    const staleRoot = repoRoot ?? cwd, rootConfirmed = repoRoot !== undefined || project.startsWith("local:") && resolveAlias(base, memoryProjectKey(cwd)) === project;
+    const stale = () => { policyRevisionForCall(); return createRecallStalenessProbe({ cwd: staleRoot, rootConfirmed, policy: currentPolicy }); };
     const decorate = (view: View, probe: ReturnType<typeof stale>) => ({ ...view, ...(probe(view) === true ? { stale: true } : {}) });
     const screen = async <T>(rows: T[]): Promise<T[]> => {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
-      const publicRows: T[] = []; for (const row of rows) { guard(); if (await currentPolicy().screen(row) && currentPolicy().screenStandalone(row)) publicRows.push(row); guard(); } return publicRows.filter(row => currentPolicy().screenStandalone(row));
+      const publicRows: T[] = []; for (const row of rows) { guard(); if (await currentPolicy().screen(row)) publicRows.push(row); guard(); } return publicRows;
     };
     const curated = async (superseded = false) => {
       guard();
@@ -107,14 +114,14 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       while (result.length < cap) {
         guard();
         const page = read({ ...options, project, limit: READ_PAGE, after });
-        for (const row of page.rows) if (await currentPolicy().screen(row) && currentPolicy().screenStandalone(row) && matches(row, page.engine)) {
+        for (const row of page.rows) if (await currentPolicy().screen(row) && matches(row, page.engine)) {
           result.push(row); if (result.length === cap) break;
         }
         guard();
         if (!page.next) break;
         after = { position: page.next.position, id: page.next.id };
       }
-      return result.filter(row => currentPolicy().screenStandalone(row));
+      return result;
     };
     const anchorAt = async (id: string): Promise<string | undefined> => {
       if (/^capture:[1-9][0-9]*$/.test(id)) {
@@ -165,7 +172,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
             ...repoNotes.map(view => ({ source: "repo" as const, evidence: false, view, ref: `repo:${view.id}`, at: view.at, tier: "long", body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
-            ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => (!since || Date.parse(hit.at) >= Date.parse(since)) && currentPolicy().screenStandalone(hit.source === "capture" ? hit.capture : hit.view));
+            ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => (!since || Date.parse(hit.at) >= Date.parse(since)) && (hit.source !== "curated" || recallViewIsLive(hit.view, store.readNow())));
           if (useFts) {
             index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
             if (index.needsResync(hits.length)) unavailable();
@@ -203,7 +210,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const recalls = await readPermitted(window => capture.readPage(window), { since, anchor }, limit);
         const entries: { at: string; ref: string; value: unknown; memoryId?: string }[] = [...rows.map(row => ({ at: row.at, ref: row.id, value: row as unknown, memoryId: row.id })),
           ...recalls.map(row => ({ at: row.at, ref: `capture:${row.id}`, value: { source: "capture", evidence: false, capture: row } as unknown }))];
-        const currentEntries = entries.filter(row => currentPolicy().screenStandalone(row.value));
+        const currentEntries = entries.filter(row => !row.memoryId || recallViewIsLive(row.value as View, store.readNow()));
         currentEntries.sort((a, b) => (anchor ? Math.abs(Date.parse(a.at) - Date.parse(anchor)) - Math.abs(Date.parse(b.at) - Date.parse(anchor)) : Date.parse(b.at) - Date.parse(a.at)) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
         const selected = currentEntries.slice(0, limit), probe = stale();
         const values = selected.map(row => row.memoryId ? decorate(row.value as View, probe) : row.value);
@@ -215,14 +222,14 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const intent = textOf(args, "intent")!, paths = values("paths"), symbols = values("symbols"), maxBytes = args.maxBytes ?? 2048;
         if (intent.length > 1000 || !Number.isSafeInteger(maxBytes) || Number(maxBytes) < 1 || Number(maxBytes) > 8192) return unavailable();
         const result = await buildIntentBrief(createIntentBriefSource(store, project),
-          { project, cwd, repo: project, intent, paths, symbols, maxBytes: Number(maxBytes), policy: currentPolicy, allowed: permitted, assertCurrent: guard, now: () => store.readNow(), stale: stale() });
-        guard(); if (!currentPolicy().screenStandalone({ intent, paths, symbols })) return unavailable();
+          { project, cwd: staleRoot, repo: project, intent, paths, symbols, maxBytes: Number(maxBytes), policy: currentPolicy, policyVersion: policyRevisionForCall, allowed: permitted, assertCurrent: guard, now: () => store.readNow(), stale: stale() });
+        guard();
         return observed({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, result.items.map(view => view.id), result.items);
       },
       async amem_graph(args) {
         bound(args, ["start", "hops", "limit"]); const start = textOf(args, "start")!, cap = limitOf(args), hops = args.hops ?? 1;
         if (hops !== 1 && hops !== 2) unavailable();
-        const rows = (await curated()).filter(row => currentPolicy().screenStandalone(row)); const result = screenedGraph(rows, start, Number(hops), cap); guard(); return observed(result, result.nodes.filter(node => node.id.startsWith("mem:")).map(node => node.id.slice(4)), rows.filter(row => result.nodes.some(node => node.id === `mem:${row.id}`)));
+        const rows = (await curated()).filter(row => recallViewIsLive(row, store.readNow())); const result = screenedGraph(rows, start, Number(hops), cap); guard(); return observed(result, result.nodes.filter(node => node.id.startsWith("mem:")).map(node => node.id.slice(4)), rows.filter(row => result.nodes.some(node => node.id === `mem:${row.id}`)));
       },
       async amem_work_state_read(args) {
         bound(args, ["list", "includeClosed"]); guard();
@@ -256,10 +263,24 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           ...(args.kind === undefined ? {} : { noteKind: args.kind as "decision" | "contract" | "fail" }) };
         return propose(input, target);
       },
-      async amem_vault_candidates(args) { bound(args, ["limit"]); guard(); const result = await vaultCandidates(store, { project, policy, limit: limitOf(args) }); guard(); return result; },
+      async amem_vault_candidates(args) { bound(args, ["limit"]); guard(); const result = await vaultCandidates(store, { project, policy: currentPolicy(), limit: limitOf(args) }); guard(); return result; },
       async amem_capacity(args) { bound(args, []); guard(); const report = capacityReport({ memoryDir: base }); if (!await policy.screen(report)) unavailable(); guard(); return report; },
     };
-    return { tools, close, onEmitted };
+    const exposed = { ...tools };
+    const readTools = ["amem_search", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
+    for (const name of readTools) exposed[name] = async args => {
+      fullGuard();
+      const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
+      const sourceCurrent = store.beginRecallRead();
+      if (policyKey(policyOptions()) !== revision) return unavailable();
+      return calls.run({ policy: snapshot, revision, configured }, async () => {
+        const result = await tools[name](args);
+        fullGuard(); sourceCurrent();
+        if (policyKey(policyOptions()) !== revision) return unavailable();
+        return result;
+      });
+    };
+    return { tools: exposed, close, onEmitted };
   } catch (error) { close(); throw error; }
 }
 

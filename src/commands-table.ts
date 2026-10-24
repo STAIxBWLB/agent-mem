@@ -49,7 +49,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     forget: { description: "Forget one project for good (append-only op; preview without --confirm)", options: { "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
   } },
   show: { description: "Show a note", options: { ...json, ...history }, args: [{ name: "id" }] },
-  graph: { description: "Show a graph", options: { ...json, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
+  graph: { description: "Show a graph", options: { ...json, ...history, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
   suggestions: { description: "List pending suggestions", options: json },
   confirm: { description: "Confirm a suggestion", options: json, args: [{ name: "id" }], mutates: true },
   reject: { description: "Reject a suggestion", options: json, args: [{ name: "id" }], mutates: true },
