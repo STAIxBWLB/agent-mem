@@ -101,7 +101,8 @@ try {
   if (initialized.serverInfo?.name !== "amem") throw new Error("expected the amem MCP server");
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
   const listing = await request("tools/list");
-  if (listing.tools?.length !== 9 || !listing.tools.some((tool: { name: string }) => tool.name === "amem_search")) throw new Error("frozen MCP tool surface missing");
+  const expectedTools = ["amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
+  if (listing.tools?.length !== 10 || JSON.stringify(listing.tools.map((tool: { name: string }) => tool.name).sort()) !== JSON.stringify(expectedTools)) throw new Error("frozen MCP tool surface missing");
   const call = async (name: string, args: Record<string, unknown>) => {
     const result = await request("tools/call", { name, arguments: args });
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
