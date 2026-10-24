@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
@@ -7,9 +8,9 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { appendAlias, shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { syncMemory } from "../src/memory/sync.ts";
-import { applyPrune, planPrune, pruneId, reducePruneRows, pruneRowHash } from "../src/memory/prune.ts";
+import { applyPrune, planPrune, pruneId, reducePruneRows, pruneRowHash, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
-import { canonicalJSON } from "../src/memory/generation.ts";
+import { canonicalJSON, hashJSON, writeProfileJSON } from "../src/memory/generation.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 
 const A = "example.test/team/alpha", B = "example.test/team/beta", G1 = "1".repeat(32), G2 = "2".repeat(32);
@@ -339,3 +340,120 @@ test("successive appends do not republish old rows inside overlapping immutable 
   const wireRows = current.flatMap(file => git(url, "show", `${refA}:${file}`).split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
   expect(wireRows.map(row => row.id).sort()).toEqual([first, second].sort());
 }, 60_000);
+
+
+const recoveryDigest = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+type ImportCrash = "plan" | "claim" | "partial" | "complete";
+function pendingClaim(store: MemoryStore, row: PruneRow, plan: PrunePlan, line: string, offset: number, prefix: Buffer) {
+  const pending = join(store.dir, "prune-plans", `pending-log-${row.machine}.json`);
+  writeProfileJSON(pending, { schema: "agent-mem.prune-append/v1", seal: plan.seal, rowId: row.id, lineHash: recoveryDigest(line), offset, prefixHash: recoveryDigest(prefix) });
+  return pending;
+}
+async function interruptedPruneImport(mode: ImportCrash) {
+  const url = remote(), source = await split(G1), target = source.a.note(note(A, "transport prune recovery target"));
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const receiver = await split(G1);
+  expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const row = publicPrune(source.a, target, source.clock);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const originalPort = receiver.a.prunePort.bind(receiver.a);
+  let plan: PrunePlan | undefined;
+  const line = canonicalJSON(row) + "\n", segment = join(receiver.a.dir, "log", `${row.machine}.jsonl`);
+  receiver.a.prunePort = () => {
+    const port = originalPort();
+    return { ...port, appendPrune: (payload, exactLine, seal) => {
+      if (payload.id !== row.id) return port.appendPrune(payload, exactLine, seal);
+      plan = JSON.parse(readFileSync(join(receiver.a.dir, "prune-plans", `${seal}.json`), "utf8")) as PrunePlan;
+      if (mode !== "plan") {
+        const fd = openSync(segment, "a"); try { fsyncSync(fd); } finally { closeSync(fd); }
+        const prefix = readFileSync(segment);
+        pendingClaim(receiver.a, row, plan, exactLine, prefix.length, prefix);
+        if (mode === "partial" || mode === "complete") {
+          appendFileSync(segment, Buffer.from(exactLine).subarray(0, mode === "complete" ? Buffer.byteLength(exactLine) : 23));
+          const fd = openSync(segment, "a"); try { fsyncSync(fd); } finally { closeSync(fd); }
+        }
+      }
+      throw new Error("fixture interrupted transport append");
+    } };
+  };
+  try { expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: true }); }
+  finally { receiver.a.prunePort = originalPort; }
+  expect(plan).toBeDefined(); expect(row.machine).not.toBe(receiver.a.machine.id);
+  const pending = join(receiver.a.dir, "prune-plans", `pending-log-${row.machine}.json`);
+  return { url, receiver, target, row, plan: plan!, line, segment, pending };
+}
+
+for (const crash of ["plan", "claim", "partial", "complete"] as const) test(`transport prune resumes exact ${crash} crash after full preflight and survives rebuild once`, async () => {
+  const f = await interruptedPruneImport(crash);
+  expect(existsSync(f.pending)).toBe(crash !== "plan");
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(existsSync(f.pending)).toBe(false); expect(f.receiver.a.get(f.target, A)).toBeUndefined();
+  const port = f.receiver.a.prunePort(), before = canonicalJSON(port.snapshot());
+  expect(port.snapshot().pruned).toContain(f.target);
+  expect(port.snapshot().durablePruneIds?.filter(id => id === f.row.id)).toHaveLength(1);
+  f.receiver.a.rebuild(); expect(canonicalJSON(port.snapshot())).toBe(before);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  const appended = readFileSync(f.segment, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  expect(appended.filter(row => row.id === f.row.id)).toHaveLength(1);
+}, 20_000);
+
+for (const invalid of ["seal", "realm", "prefix"] as const) test(`pending transport ${invalid} mismatch refuses before publication or local append`, async () => {
+  const f = await interruptedPruneImport("partial");
+  const claim = JSON.parse(readFileSync(f.pending, "utf8"));
+  if (invalid === "prefix") claim.prefixHash = "f".repeat(64);
+  else {
+    const { seal: _seal, ...body } = f.plan;
+    const changed = invalid === "realm" ? { ...body, project: "user", policyRevision: hashJSON({ schema: "agent-mem.shard-sync/v1", realm: { scope: "user" } }) } : body;
+    const plan = { ...changed, seal: invalid === "seal" ? "f".repeat(64) : hashJSON(changed) };
+    writeProfileJSON(join(f.receiver.a.dir, "prune-plans", `${plan.seal}.json`), plan); claim.seal = plan.seal;
+  }
+  writeProfileJSON(f.pending, claim);
+  const bytes = jsonlBytes(f.receiver.a.dir), pending = readFileSync(f.pending), before = refs(f.url);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
+  expect(jsonlBytes(f.receiver.a.dir)).toEqual(bytes); expect(readFileSync(f.pending)).toEqual(pending); expect(refs(f.url)).toBe(before);
+}, 20_000);
+
+test("a pending transport prune absent from fetched history refuses before publication or append", async () => {
+  const f = await interruptedPruneImport("partial"), { id: _id, ...body } = f.row;
+  const changed = { ...body, cutoff: new Date(Date.parse(body.cutoff) - 1).toISOString() }, row = { ...changed, id: pruneId(changed) };
+  const { seal: _seal, ...original } = f.plan;
+  const next = { ...original, rows: [{ placement: "synced" as const, payload: row }] }, plan = { ...next, seal: hashJSON(next) };
+  writeProfileJSON(join(f.receiver.a.dir, "prune-plans", `${plan.seal}.json`), plan);
+  const claim = { ...JSON.parse(readFileSync(f.pending, "utf8")), seal: plan.seal, rowId: row.id, lineHash: recoveryDigest(canonicalJSON(row) + "\n") };
+  writeProfileJSON(f.pending, claim);
+  const bytes = jsonlBytes(f.receiver.a.dir), pending = readFileSync(f.pending), before = refs(f.url);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("no exact fetched transport row") });
+  expect(jsonlBytes(f.receiver.a.dir)).toEqual(bytes); expect(readFileSync(f.pending)).toEqual(pending); expect(refs(f.url)).toBe(before);
+}, 20_000);
+
+test("an unrelated person-authored pending prune is not resumed by shard transport", async () => {
+  const url = remote(), source = await split(G1), target = source.a.note(note(A, "person pending target"));
+  const row = publicPrune(source.a, target, source.clock), planDir = join(source.a.dir, "prune-plans");
+  const plan = readdirSync(planDir).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).map(name => JSON.parse(readFileSync(join(planDir, name), "utf8")) as PrunePlan).find(plan => plan.rows.some(item => item.payload.id === row.id))!;
+  const segment = join(source.a.dir, "log", `${row.machine}.jsonl`), data = readFileSync(segment), line = canonicalJSON(row) + "\n", offset = data.lastIndexOf(Buffer.from(line));
+  expect(offset).toBeGreaterThanOrEqual(0); pendingClaim(source.a, row, plan, line, offset, data.subarray(0, offset));
+  const bytes = jsonlBytes(source.a.dir), before = refs(url);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
+  expect(jsonlBytes(source.a.dir)).toEqual(bytes); expect(refs(url)).toBe(before);
+}, 20_000);
+
+test("pending transport recovery cannot append before another selected realm passes complete preflight", async () => {
+  const f = await interruptedPruneImport("partial"), attacker = temp();
+  git(attacker, "init", "-q"); git(attacker, "fetch", "-q", f.url, refUser); git(attacker, "checkout", "-qb", "fixture", "FETCH_HEAD");
+  writeFileSync(join(attacker, "forbidden-private-file"), "not a transport tree"); git(attacker, "add", "forbidden-private-file");
+  git(attacker, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "later realm invalid fixture"); git(attacker, "push", "-q", f.url, `HEAD:${refUser}`);
+  const bytes = jsonlBytes(f.receiver.a.dir), pending = readFileSync(f.pending), before = refs(f.url);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("forbidden historical tree entry") });
+  expect(jsonlBytes(f.receiver.a.dir)).toEqual(bytes); expect(readFileSync(f.pending)).toEqual(pending); expect(refs(f.url)).toBe(before);
+}, 20_000);
+
+test("pending transport recovery cannot append when atomic publication fails", async () => {
+  const f = await interruptedPruneImport("partial"), binaries = temp(), actualGit = Bun.which("git");
+  expect(actualGit).toBeDefined();
+  writeFileSync(join(binaries, "git"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.includes("push"))process.exit(1);const result=Bun.spawnSync([${JSON.stringify(actualGit)},...args],{stdin:"inherit",stdout:"inherit",stderr:"inherit"});process.exit(result.exitCode);\n`, { mode: 0o755 });
+  const originalPath = process.env.PATH, bytes = jsonlBytes(f.receiver.a.dir), pending = readFileSync(f.pending), before = refs(f.url);
+  process.env.PATH = `${binaries}:${originalPath}`;
+  try { expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("selected-ref push failed") }); }
+  finally { process.env.PATH = originalPath; }
+  expect(jsonlBytes(f.receiver.a.dir)).toEqual(bytes); expect(readFileSync(f.pending)).toEqual(pending); expect(refs(f.url)).toBe(before);
+}, 20_000);

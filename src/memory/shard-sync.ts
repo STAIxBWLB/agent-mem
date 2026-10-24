@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, fsyncDirectory, hashJSON } from "./generation.ts";
+import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
 import { acquireMutation } from "./mutation.ts";
 import { realPath } from "./platform.ts";
@@ -14,7 +14,8 @@ import type { Entry, MemoryStore } from "./store.ts";
 const OID = /^[a-f0-9]{40}$/, PACK = /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/;
 const digest = (bytes: string | Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const zero = "0".repeat(40);
-type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; generation: string; local?: string; remote?: string; commit?: string };
+type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string };
+type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; generation: string; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
@@ -32,15 +33,59 @@ function mergeRows(into: Map<string, ShardSyncRow>, rows: readonly ShardSyncRow[
     into.set(row.id, row);
   }
 }
+function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRow): PrunePlan {
+  const body: Omit<PrunePlan, "seal"> = { schema: "agent-mem.prune-plan/v1", generation: store.profile.generation!,
+    selectorRevision: store.prunePort().selectorRevision(), project: realm.scope === "project" ? realm.key : "user",
+    policyRevision: hashJSON({ schema: "agent-mem.shard-sync/v1", realm }), rows: [{ placement: "synced", payload: row }],
+    counts: { eligible: row.targets.length, selected: row.targets.length, local: 0, synced: row.targets.length }, hasMore: false };
+  return validatePrunePlan({ ...body, seal: hashJSON(body) });
+}
+/** Recognize only the exact persisted transport shape; this reads metadata and never resumes an append. */
+function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[] {
+  const dir = join(store.dir, "prune-plans"), pending: PendingPrune[] = [];
+  if (!existsSync(dir)) return pending;
+  directory(dir);
+  try {
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.startsWith("pending-log-")) continue;
+      if (!/^pending-log-[a-f0-9]{16}\.json$/.test(name)) throw new Error("claim name");
+      const claimFile = join(dir, name); regular(claimFile);
+      const claim = readProfileJSON(claimFile, 4096) as { schema?: unknown; seal?: unknown; rowId?: unknown; lineHash?: unknown; offset?: unknown; prefixHash?: unknown } | undefined;
+      if (!claim || typeof claim !== "object" || Array.isArray(claim) || Object.keys(claim).length !== 6
+        || claim.schema !== "agent-mem.prune-append/v1" || typeof claim.seal !== "string" || !/^[a-f0-9]{64}$/.test(claim.seal)
+        || typeof claim.offset !== "number" || !Number.isSafeInteger(claim.offset) || claim.offset < 0
+        || typeof claim.prefixHash !== "string" || !/^[a-f0-9]{64}$/.test(claim.prefixHash)) throw new Error("claim shape");
+      const planFile = join(dir, `${claim.seal}.json`); regular(planFile);
+      const plan = validatePrunePlan(readProfileJSON(planFile));
+      if (plan.rows.length !== 1) throw new Error("plan shape");
+      const row = plan.rows[0]!.payload, line = canonicalJSON(row) + "\n";
+      if (plan.seal !== claim.seal || canonicalJSON(plan) !== canonicalJSON(importPrunePlan(store, realm, row))
+        || name !== `pending-log-${row.machine}.json` || claim.rowId !== row.id || claim.lineHash !== digest(line)) throw new Error("plan binding");
+      regular(join(store.dir, "log", `${row.machine}.jsonl`));
+      pending.push({ plan, row, line, offset: claim.offset, prefixHash: claim.prefixHash });
+    }
+    return pending;
+  } catch { return refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`); }
+}
 /** Stream complete authored lines without a permanent file-size/history ceiling. */
-function* lines(file: string): Generator<string> {
+function* lines(file: string, claim?: PendingPrune): Generator<string> {
   regular(file);
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const before = fstatSync(fd), chunk = Buffer.alloc(64 * 1024); let pending = Buffer.alloc(0), offset = 0;
+    const before = fstatSync(fd), chunk = Buffer.alloc(64 * 1024), prefixHash = createHash("sha256"), exact = claim ? Buffer.from(claim.line) : undefined;
+    if (claim && (before.size < claim.offset || before.size > claim.offset + exact!.length)) refuse("shard sync pending append length mismatch");
+    let pending = Buffer.alloc(0), offset = 0;
     for (;;) {
-      const n = readSync(fd, chunk, 0, chunk.length, offset); if (!n) break; offset += n;
-      pending = Buffer.concat([pending, chunk.subarray(0, n)]);
+      const n = readSync(fd, chunk, 0, chunk.length, offset); if (!n) break;
+      const prefix = claim ? Math.min(n, Math.max(0, claim.offset - offset)) : n;
+      if (claim) {
+        prefixHash.update(chunk.subarray(0, prefix));
+        const start = offset + prefix - claim.offset;
+        if (prefix < n && !chunk.subarray(prefix, n).equals(exact!.subarray(start, start + n - prefix))) refuse("shard sync pending append bytes mismatch");
+      }
+      offset += n;
+      // Only the complete prefix is authored input. The pending canonical row must be fetched and proved before replay.
+      pending = Buffer.concat([pending, chunk.subarray(0, prefix)]);
       let boundary: number;
       while ((boundary = pending.indexOf(10)) >= 0) {
         if (boundary + 1 > SHARD_PACK_MAX_BYTES) refuse("shard sync authored row exceeds wire pack bound");
@@ -50,26 +95,23 @@ function* lines(file: string): Generator<string> {
       if (pending.length > SHARD_PACK_MAX_BYTES) refuse("shard sync authored row exceeds wire pack bound");
     }
     const after = fstatSync(fd), named = lstatSync(file);
+    if (claim && prefixHash.digest("hex") !== claim.prefixHash) refuse("shard sync pending append prefix mismatch");
     if (pending.length || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs
       || named.dev !== before.dev || named.ino !== before.ino || offset !== before.size) refuse("shard sync authored segment changed or has an incomplete tail");
   } finally { closeSync(fd); }
 }
-function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[] } {
+function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[]; pending: PendingPrune[] } {
+  const pending = pendingPrunes(store, realm), claims = new Map(pending.map(claim => [`${claim.row.machine}.jsonl`, claim]));
   const snapshot = store.prunePort().snapshot();
   const pruned = new Set(snapshot.pruned ?? []);
   // Placement decides transport; the verified snapshot retains separate prune provenance.
   // A local tombstone must prevent the first publication of an unwitnessed original.
   const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced" && (source.publicWitness || !pruned.has(source.row.id))).map(source => source.row);
   const folder = join(store.dir, "log"); directory(folder);
-  const plans = join(store.dir, "prune-plans");
-  if (existsSync(plans)) {
-    directory(plans);
-    if (readdirSync(plans).some(name => /^pending-log-/.test(name))) refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`);
-  }
   for (const name of readdirSync(folder).sort()) {
     if (!name.endsWith(".jsonl")) continue;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) refuse(`${shardSyncLabel(realm)}: invalid authored segment name`);
-    for (const line of lines(join(folder, name))) {
+    for (const line of lines(join(folder, name), claims.get(name))) {
       const value = JSON.parse(line) as { schema?: unknown; op?: unknown };
       if (value.schema === "agent-mem.prune/v1") {
         const row = validatePruneRow(value, store.profile.generation, "synced");
@@ -80,10 +122,14 @@ function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyn
   }
   // Round-trip public originals through the wire validator before touching remote refs or imported rows.
   for (const [path, bytes] of encodeShardPacks(rows)) decodeShardPack(path, bytes, realm, store.profile.generation!);
-  return { rows, sources: [...snapshot.rows] };
+  return { rows, sources: [...snapshot.rows], pending };
 }
 function provePrunes(targets: readonly Target[]): void {
   for (const target of targets) {
+    for (const pending of target.pending) {
+      const fetched = target.rows.get(pending.row.id);
+      if (!target.fetched.has(pending.row.id) || !fetched || canonicalJSON(fetched) + "\n" !== pending.line) refuse(`${shardSyncLabel(target.realm)}: pending prune has no exact fetched transport row`);
+    }
     // Each physical shard's reducer must be able to prove its own tombstones after restart.
     // A witness present only in another selected realm does not make this realm replayable.
     const sources = new Map<string, PruneSourceRow>();
@@ -125,14 +171,16 @@ function importRows(target: Target): void {
   const ordinary = [...target.rows.values()].filter((row): row is Entry => row.op !== "prune" && target.fetched.has(row.id) && !known.has(row.id));
   for (const bytes of encodeShardPacks(ordinary).values()) installPack(target.store, bytes);
   port.refresh();
+  const resumed = new Set<string>();
+  // The caller has proved all selected refs and atomically published them. Resume originals before other rows of their author.
+  for (const pending of target.pending) {
+    port.persistPrunePlan(pending.plan); port.appendPrune(pending.row, pending.line, pending.plan.seal); resumed.add(pending.row.id);
+  }
   for (const row of target.rows.values()) if (row.op === "prune") {
+    if (resumed.has(row.id)) continue;
     // A transport imports an already-authored person row without changing its author or generation.
     // Native durable-plan append confirms fsync even for an already parsed id after a crash.
-    const body: Omit<PrunePlan, "seal"> = { schema: "agent-mem.prune-plan/v1", generation: target.generation,
-      selectorRevision: port.selectorRevision(), project: target.realm.scope === "project" ? target.realm.key : "user",
-      policyRevision: hashJSON({ schema: "agent-mem.shard-sync/v1", realm: target.realm }), rows: [{ placement: "synced", payload: row }],
-      counts: { eligible: row.targets.length, selected: row.targets.length, local: 0, synced: row.targets.length }, hasMore: false };
-    const plan = validatePrunePlan({ ...body, seal: hashJSON(body) });
+    const plan = importPrunePlan(target.store, target.realm, row);
     port.persistPrunePlan(plan); port.appendPrune(row, canonicalJSON(row) + "\n", plan.seal);
   }
   port.refresh();
@@ -165,7 +213,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     targets = borrowed.map(opened => {
       const profile = opened.profile;
       if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.shardUser && !profile.shardKey) refuse("shard sync target identity unavailable");
-      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], generation: profile.generation };
+      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], pending: [], generation: profile.generation };
     });
     if (!targets.length || targets.length > 2 || targets.some(target => target.store.profile.home !== store.profile.home)
       || new Set(targets.map(target => shardSyncRef(target.realm))).size !== targets.length
@@ -294,13 +342,13 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         if (target.local) await required(["merge-base", "--is-ancestor", target.local, tip], `${shardSyncLabel(target.realm)}: remote history is not fast-forward`);
         const remote = await history(tip, target); target.remote = tip;
         mergeRows(target.rows, Array.from(remote.rows.values()), target.realm);
-        for (const row of remote.rows.values()) if (row.op !== "prune") target.fetched.add(row.id);
+        for (const row of remote.rows.values()) target.fetched.add(row.id);
       }
     };
     const localTargets = () => {
       check();
       for (const target of targets) {
-        const source = sourceRows(target.store, target.realm); target.sources = source.sources;
+        const source = sourceRows(target.store, target.realm); target.sources = source.sources; target.pending = source.pending;
         mergeRows(target.rows, source.rows, target.realm);
       }
     };
