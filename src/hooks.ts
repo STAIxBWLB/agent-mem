@@ -8,6 +8,7 @@ import { stageHookCapture, hookCaptureScope, HookSpoolFull, type PendingHookCapt
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
@@ -74,7 +75,9 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>): Promise<string
 async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
-  const maxTokens = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
+  const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
+  const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
+  // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
   const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
@@ -149,11 +152,12 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     const losses = captureDropSummary(base);
     if (!pending) losses.spool_full = (losses.spool_full ?? 0) + 1;
     const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
-    const contextLimit = Math.min(HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
+    const configuredBrief = loadAmemConfig(base, repoConfigRoot(cwd)).config.briefBytes;
+    const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
     const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, contextLimit - Buffer.byteLength(dropNotice) - (dropNotice ? 1 : 0)), cwd, base, project, nativeSession: { signature }, projectFromCwd: true, timeRemaining: remaining });
     result.pending = !!pending && !result.captured;
     result.dropped = !pending;
-    if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(options.policy).screen({ context: brief.context })) return result;
+    if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)).screen({ context: brief.context })) return result;
     result.context = joinedContext(brief.context, dropNotice, contextLimit);
     result.valid = result.context.length > 0;
     return result;
@@ -193,7 +197,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
-    const policy = createStandalonePolicy(options.policy);
+    const policy = createStandalonePolicy(configuredPolicyOptions(base, options.cwd, options.policy));
     // Persist screened capture before the optional worker can exhaust its time slice.
     const result = await captureAndWork(event, input, options, base, deadline - 3);
     if (!result) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };

@@ -18,7 +18,7 @@ From a checkout, install development dependencies with `bun install` and run `bu
 
 ## CLI
 
-The flat `amem` commands mirror `ahub memory` arguments; goals use `amem goal`:
+The flat `amem` commands are the memory commands of the library (a host such as agent-hub exposes the same ones under its own name); goals use `amem goal`:
 
 ```sh
 amem list --json
@@ -30,21 +30,39 @@ amem goal list --all --json
 amem goal new "Ship a release" --milestone "Review changes"
 ```
 
-`amem goal link` requires the host task boundary; use `ahub goal link` for board links.
+`amem goal link` needs a host that has a task board; amem alone has none, so it refuses.
 
-Memory commands: `list`, `search`, `show`, `graph`, `suggestions`, `confirm`, `reject`, `promote`, `demote`, `forget`, `supersede`, `rebuild`, `dedupe`, `sync`, `machine`, and `import`. Use `--json` where supported by the corresponding `ahub memory` command. `dedupe` previews candidates; `dedupe --apply` appends reconciliation operations. `amem alias add|list` manages person-reviewed project key aliases; `amem capacity` reports and proposes capture bounds (see below).
+Memory commands: `list`, `search`, `show`, `graph`, `suggestions`, `confirm`, `reject`, `promote`, `demote`, `forget`, `supersede`, `rebuild`, `dedupe`, `sync`, `machine`, and `import`. Use `--json` where the command supports it. `dedupe` previews candidates; `dedupe --apply` appends reconciliation operations. `amem alias add|list` manages person-reviewed project key aliases; `amem capacity` reports and proposes capture bounds (see below).
 
-Ordinary `amem` commands are for the person and refuse agent-session markers, including `AGENTHUB_PEER_ID`, `CLAUDECODE`, and `CODEX_THREAD_ID`. `amem mcp`, `amem hook` and `amem ingest` are intentional session entrypoints. MCP supplies scoped reads and bounded candidate/work-list writes; hooks and ingest write capture only. None writes curated notes directly. Hosted agents can also use the hub's `hub_memory_*` read tools. Environment-marker detection is an honest-session guard, not authentication. Ordinary CLI mutations remain person-only and require a TTY on stdin.
+Ordinary `amem` commands are for the person and refuse agent-session markers, including `AGENTHUB_PEER_ID`, `CLAUDECODE`, and `CODEX_THREAD_ID`. `amem mcp`, `amem hook` and `amem ingest` are intentional session entrypoints. MCP supplies scoped reads and bounded candidate/work-list writes; hooks and ingest write capture only. None writes curated notes directly. `amem --help` and `amem --version` only print text, so they also work in an agent shell; every other command is refused there, with a message that points an agent at `amem mcp` and the person at `amem review`. Environment-marker detection is an honest-session guard, not authentication. Ordinary CLI mutations remain person-only and require a TTY on stdin.
 
-This package does not ship the host's privacy policy. Ordinary person reads show stored data without screening; the vault-candidate listing uses its current policy. Import and promotion retain the built-in secret screen. Commands that cross the privacy boundary require the person's explicit `--policy-free` choice:
+## Configuration and privacy policy
 
-```sh
-amem promote <id> --policy-free
-amem import claude-mem --db <path> --policy-free
-amem sync --remote <private-git-url> --policy-free
+amem applies one privacy policy everywhere it reads or writes on its own: capture (hooks and `amem ingest`), the MCP server, the SessionStart brief, `amem review accept`, `promote`, `import`, `sync`, repo promotion and the vault-candidate listing. The policy is the built-in secret and personal-data screen plus what you configure. Ordinary person reads (`list`, `search`, `show`) show stored data without screening.
+
+The machine-local file `amem.config.json` in the memory home (see `amem status` for where that is) holds your own policy:
+
+```json
+{
+  "denyPaths": ["confidential-vault", "customers/"],
+  "piiPatterns": ["codename-zebra", "acme corp"],
+  "briefBytes": 900,
+  "excerptBytes": 800,
+  "capturePaths": 16,
+  "capture": { "capMb": 256, "retentionDays": 30 }
+}
 ```
 
-Use `ahub memory` for the policy-applying path. `--policy-free` does not bypass the secret screen or the sync remote's privacy checks. Forgetting a shared note appends an operation; its previous content remains in the remote's git history.
+- `denyPaths`: substrings of a path that are never captured and that decline any note, candidate or MCP answer naming them. `piiPatterns`: case-insensitive literal substrings (never regular expressions) that decline a value and redact a capture excerpt. Each list holds up to 64 entries of up to 256 bytes.
+- `briefBytes`, `excerptBytes`, `capturePaths` can only lower the built-in ceilings (the 1200-byte SessionStart context, 2000-character capture excerpt, 32 captured paths). `capture.capMb` and `capture.retentionDays` are the lowest layer of the capture size and retention bounds: a shard's own `config.json` and the home's `capture-config.json` still override them.
+- A file with an unknown key, a bad value, a link, or more than 64 KiB is an error that names the file. An unreadable policy is never treated as no policy.
+- `<private>...</private>` spans are dropped before anything else reads the text, at every write boundary (capture, MCP candidates and work lists, notes, goals, promotion and import), so they are never screened, counted or stored. Tags match like HTML (case-insensitive, with attributes or spaces, and `<private/>` opens a span); an unclosed span drops the rest of the text.
+
+A repository may add `.amem/config` (same shape, only `denyPaths`, `piiPatterns`, `briefBytes`, `excerptBytes` and `capturePaths`). It can only narrow: its lists are added to yours and its budgets count only when lower. It cannot remove an entry, raise a budget, move the home or change the capture bounds, and any other key is an error (a malformed repository file stops amem in that repository until fixed; it never falls back to no policy). A stricter policy a host passes through the library always wins over both files.
+
+`amem sync` reads this machine's own long-term notes through the configured policy before it stages anything. One declined note refuses the whole sync and names its id (never its text); the log is append-only and sync never skips a row. It does not read other machines' segments, which were screened where they were written.
+
+`--policy-free` is still accepted by `promote`, `import`, `sync` and `review accept` so existing scripts keep working, and it means nothing more: the configured policy always applies. It does not bypass the secret screen or the sync remote's privacy checks. Forgetting a shared note appends an operation; its previous content remains in the remote's git history.
 
 ## Candidate review
 
@@ -57,7 +75,7 @@ amem review accept <full-candidate-id> --policy-free --json
 amem review reject <full-candidate-id> --json
 ```
 
-All review commands remain person-only; acceptance and rejection require a terminal on stdin. Acceptance additionally requires `--policy-free`, acknowledging that the standalone CLI cannot apply a host's privacy policy; use `ahub memory` for the host policy path. The CLI refuses secret-looking candidate input or proposed note content. Listing does not open the ordinary memory index, and acceptance defers unrelated held-note promotions.
+All review commands remain person-only; acceptance and rejection require a terminal on stdin. Acceptance screens the candidate and the proposed note with the configured policy (`--policy-free` is still accepted and ignored). The CLI refuses secret-looking candidate input or proposed note content. Listing does not open the ordinary memory index, and acceptance defers unrelated held-note promotions.
 
 Candidates live in `candidates.db` beside the memory logs. This sidecar is machine-local: it is never synced, imported, or read by recall, briefs, ask or graph evidence. Hosts must supply an explicit public privacy verdict before putting candidates or counters; private, PII and unknown verdicts are refused. Library APIs are available, but this phase adds no automatic candidate producer or telemetry consumer. Candidate retention is 500 per project and 30 days; counters retain 10,000 per project and 90 days. Candidate payloads are capped at 16 KiB.
 
@@ -127,7 +145,7 @@ These interactive checks remain unrun until a person checks them in each install
 
 ## Data directory
 
-`memoryHome()` selects `AMEM_HOME` first, otherwise `$AGENTHUB_HOME/memory`, otherwise `~/.agenthub/memory`. `AMEM_HOME` names the memory directory itself; `AGENTHUB_HOME` names its parent. Existing agent-hub memory directories need no migration. An explicit `StoreOptions.home` retains the parent-directory convention and appends `/memory`.
+`memoryHome()` selects `AMEM_HOME` first; then the `home` of a pointer file `amem.config.json` in the default home (a file with `home` carries nothing else, and a redirected home's own file cannot redirect again); then `$AGENTHUB_HOME/memory`, otherwise `~/.agenthub/memory`. `amem status` prints the home in use, which of these chose it, and the configuration files in effect. `AMEM_HOME` names the memory directory itself; `AGENTHUB_HOME` names its parent. Existing agent-hub memory directories need no migration. An explicit `StoreOptions.home` retains the parent-directory convention and appends `/memory`.
 
 The JSONL segments are authoritative. `index.db` is derived and can be rebuilt. Entries are immutable; changes append operations. The compatibility schema remains `agent-hub.memory/v1` because it participates in entry IDs.
 
@@ -174,7 +192,7 @@ amem capacity apply --split [--confirm]   # each shard's share of the global cap
 - `archive`, `unarchive` and `forget` are append-only ops in `lifecycle.jsonl` of the memory home (local, never synced, like `aliases.jsonl`): nothing rewrites a line and nothing deletes a shard. The latest op wins and `forgotten` is terminal. An alias resolves to its one canonical project, and the reply names it. An archived or forgotten project has no writable capture store, no SessionStart brief and no MCP server; `unarchive` restores an archived one. A forgotten project's bytes stay on disk: `forget` is the person's record, not an erase. An alias shard of an archived or forgotten project counts as that state, `alias add` to or from a forgotten key is refused, and hooks that staged capture for a project before it was archived or forgotten are retired at the next drain (counted as `project_archived` or `project_forgotten`). `openShardStore` refuses such a project at the open, so a library caller such as agent-hub is gated too once it pins this release.
 - `gc` opens only the capture store of each shard and calls its bounded `evict()` (at most four batches of 256 rows and 25 ms per call), so a cap shrink never takes a shard in one pass: the report says `remainingOverCap` and the next run continues. It never opens a curated store, a goal or a work list. An archived shard is still bounded; a forgotten one is skipped and listed as skipped.
 - `export` changes no content under the memory home: it opens the capture databases read-only and reads the curated store, and the only files that may appear or refresh are derived (the curated `index.db` and `search.db`, SQLite sidecars and `catalog.db`), which every reader rebuilds from the logs. A destination inside the home is refused. The bundle is screened like sync and promotion are, so a secret-looking value, a PII pattern or a denied path is withheld and counted in `withheld`.
-- `search --all-projects` runs one ordinary project-scoped search per active project and merges by score. It is a person command: the MCP server stays bound to one project and has no all-projects argument, and `ahub memory` (the raw command) refuses the flag.
+- `search --all-projects` runs one ordinary project-scoped search per active project and merges by score. It is a person command: the MCP server stays bound to one project and has no all-projects argument, and the raw memory command (what a host exposes as its own `memory` command) refuses the flag.
 - `capacity` also prints a per-shard split of the global disk-share budget. Each shard's weight halves every 14 days since its last capture, so recently used projects keep more capture and cold ones shrink first; the split never exceeds the budget, gives every shard at least 1 MB, keeps every shard at what it holds whenever the total fits, never proposes a retention shorter than a shard's idle time plus 30 days, and says when the budget forces a shard below what it holds. When the budget holds fewer whole MB than there are shards, no split is proposed and `capacity` says why (`splitRefused`). It proposes capture bounds only, and never evicts curated notes, goals or work lists. `capacity apply --split` previews, then `--confirm` writes exactly the previewed values to each shard's `config.json`, and only if the preview is under an hour old and the set of shards and every shard's config are unchanged since then (a `--disk-share` given only to `--confirm` changes nothing that is written).
 - amem lists vault candidates and never writes the vault.
 

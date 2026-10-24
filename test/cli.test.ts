@@ -20,7 +20,9 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
   const home = join(temp(), "must-not-open"); process.env.AMEM_HOME = home;
   for (const value of ["", "invalid marker", "1", "codex"]) {
     expect(agentMarked({ [key]: value })).toBe(true);
-    for (const args of [["--help"], ["--version"], ["list"], ["forget", "missing"]]) await expect(runCli(args, { env: { [key]: value }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
+    // F1: only the two commands that print text work in an agent shell; every other command keeps the honest-session refusal.
+    for (const args of [["list"], ["forget", "missing"], ["--help", "--json"], ["list", "--help"], ["review", "--help"], ["sync"]]) await expect(runCli(args, { env: { [key]: value }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
+    for (const args of [["--help"], ["help"], ["--version"], ["version"]]) expect(await runCli(args, { env: { [key]: value }, stdinTTY: true })).toMatch(/^usage: amem|^amem \d/);
   }
   expect(existsSync(home)).toBe(false);
 });
@@ -28,8 +30,11 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
 test("mutations need stdin TTY and crossing policy needs explicit acknowledgement before store open", async () => {
   const root = temp(), home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
   for (const args of [["promote", "missing", "--policy-free"], ["dedupe", "--apply"], ["machine", "--label", "fixture"], ["goal", "new", "fixture"], ["sync", "--policy-free"]]) await expect(runCli(args, context(root))).rejects.toThrow("terminal on stdin");
-  for (const sub of ["promote", "import", "sync"]) await expect(runCli([sub], context(root, true))).rejects.toThrow(`use ahub memory ${sub}`);
-  expect(existsSync(home)).toBe(false);
+  // F4: the configured policy applies, so these no longer demand `--policy-free`; each reaches its own usage check instead, never a hub-worded one.
+  for (const sub of ["promote", "import", "sync"]) {
+    const refusal = await runCli([sub], context(root, true)).then(() => "", error => (error as Error).message);
+    expect(refusal).not.toContain("--policy-free"); expect(refusal).not.toMatch(/\bahub\b|hub_memory/);
+  }
 });
 
 test("person reads are unscreened and flags keep their list default; promotion remains secret-screened", async () => {
@@ -45,11 +50,13 @@ test("person reads are unscreened and flags keep their list default; promotion r
   expect(JSON.parse(await runCli(["goal", "list", "--json"], context(root)))).toHaveLength(1);
 });
 
-test("bin refuses Node before TS and actual agent-marked CLI refuses help", () => {
+test("bin refuses Node before TS, and an agent-marked CLI prints help and version (F1) but refuses a command", () => {
   const bin = join(import.meta.dir, "../bin/amem.js");
   const node = Bun.spawnSync(["node", bin, "--help"], { stdout: "pipe", stderr: "pipe" });
   expect(node.exitCode).toBe(1); expect(node.stderr.toString()).toContain("Bun >=1.4.2 is required");
-  const child = Bun.spawnSync([process.execPath, bin, "--help"], { env: { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" }, stdout: "pipe", stderr: "pipe" });
+  const help = Bun.spawnSync([process.execPath, bin, "--help"], { env: { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" }, stdout: "pipe", stderr: "pipe" });
+  expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem");
+  const child = Bun.spawnSync([process.execPath, bin, "list"], { env: { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" }, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain(PERSON_ONLY);
 });
 
@@ -75,7 +82,7 @@ test("a person read never promotes a settled held note without TTY and policy-fr
 
 test("standalone import counts secret skips and goal links fail explicitly before store access", async () => {
   const root = temp(); process.env.AMEM_HOME = join(root, "memory");
-  await expect(runCli(["goal", "link", "missing", "1"], context(root, true))).rejects.toThrow("use ahub goal link");
+  await expect(runCli(["goal", "link", "missing", "1"], context(root, true))).rejects.toThrow("amem alone has none");
   expect(existsSync(process.env.AMEM_HOME!)).toBe(false);
   const file = join(root, "fixture.db"), db = new Database(file);
   db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");

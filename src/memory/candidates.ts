@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
+import { stripPrivateDeep } from "./private-spans.ts";
 import { MemoryStore, type NoteInput, type View } from "./store.ts";
 
 export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
@@ -107,7 +108,9 @@ export class CandidateStore {
     if (hash({ schema: "agent-mem.candidate/v1", input }) !== row.id) throw new Error("candidate content hash mismatch");
     return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id };
   }
-  put(input: CandidateInput, verdict: CandidateVerdict): string {
+  put(rawInput: CandidateInput, verdict: CandidateVerdict): string {
+    // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
+    const input = stripPrivateDeep(rawInput);
     publicOnly(verdict); validate(input); this.prune();
     const payload = canonical(input), id = hash({ schema: "agent-mem.candidate/v1", input });
     this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, input.project, input.kind, payload, this.now());

@@ -9,6 +9,8 @@ import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, readShardDescriptor, resolveAlias, shardKeyHash } from "./shard.ts";
 import { assertProjectActive } from "./lifecycle.ts";
 import { machineId } from "./machine.ts";
+import { loadAmemConfig, repoConfigRoot } from "./config.ts";
+import { fold } from "./policy.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, ftsTerms, fts5Available } from "./search-fts.ts";
 
 /**
@@ -82,6 +84,10 @@ export interface CaptureOptions {
   recentReadRows?: boolean;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
+  /** Caps a caller may lower (F4); the built-in caps and the person's configured caps are the ceiling, so a larger value is ignored (a host can tighten, never loosen). */
+  excerptBytes?: number; capturePaths?: number;
+  /** The working directory the capture belongs to: its repository's `.amem/config` narrows the policy (deny paths, caps) for this store. Absent: the machine configuration only. */
+  cwd?: string;
   /**
    * #15 T5: a writable open of an archived or forgotten project is refused (the person took it out of recall; `amem project unarchive` brings an archived one back).
    * `ignore` is for the maintenance that must still reach the shard (gc, export): it never appends.
@@ -131,13 +137,17 @@ export function writeCaptureConfigFile(path: string, config: Partial<CaptureConf
   return next;
 }
 
-/** The effective R6 settings for a shard directory: shard config over the home default over the built-in defaults. */
+/**
+ * The effective R6 settings for a shard directory: the shard's config over the home default (`capture-config.json`, which the capacity advisor writes)
+ * over the person's machine configuration (`amem.config.json` `capture`, F4) over the built-in defaults. A malformed machine configuration throws.
+ */
 export function readCaptureConfig(dir: string, base?: string): CaptureConfig {
   const homeDefault = base === undefined ? {} : readCaptureConfigFile(join(base, "capture-config.json"));
   const shard = readCaptureConfigFile(join(dir, "config.json"));
+  const machine = base === undefined ? {} : loadAmemConfig(base).config.capture;
   return {
-    capMb: shard.capMb ?? homeDefault.capMb ?? CAPTURE_DEFAULT_CAP_MB,
-    retentionDays: shard.retentionDays ?? homeDefault.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS,
+    capMb: shard.capMb ?? homeDefault.capMb ?? machine.capMb ?? CAPTURE_DEFAULT_CAP_MB,
+    retentionDays: shard.retentionDays ?? homeDefault.retentionDays ?? machine.retentionDays ?? CAPTURE_DEFAULT_RETENTION_DAYS,
   };
 }
 
@@ -163,6 +173,7 @@ export class CaptureStore {
   private readonly db: Database;
   private readonly now: () => number;
   private readonly screen: (text: string) => boolean;
+  private readonly caps: import("./capture-input.ts").CaptureCaps;
   private readonly capMb: number;
   private readonly retentionDays: number;
   /** Set when the schema setup itself met the lock: appends spool without touching the database again. */
@@ -204,7 +215,14 @@ export class CaptureStore {
     this.capMb = opts.capMb ?? config.capMb;
     this.retentionDays = opts.retentionDays ?? config.retentionDays;
     this.now = opts.now ?? Date.now;
-    this.screen = opts.screen ?? looksSecret;
+    const configured = loadAmemConfig(this.base, opts.cwd === undefined ? undefined : repoConfigRoot(opts.cwd)).config;
+    // F4: the person's PII patterns screen every excerpt and their deny paths filter every path, whoever appends (hook, ingest or library). A host's own `screen` replaces only the secret part.
+    const patterns = configured.piiPatterns.map(fold).filter(Boolean);
+    const base = opts.screen ?? looksSecret;
+    this.screen = patterns.length ? (text: string) => base(text) || patterns.some(pattern => fold(text).includes(pattern)) : base;
+    const lowest = (a: number | undefined, b: number | undefined) => a === undefined ? b : b === undefined ? a : Math.min(a, b);
+    this.caps = { excerptBytes: lowest(opts.excerptBytes, configured.excerptBytes), paths: lowest(opts.capturePaths, configured.capturePaths),
+      ...(configured.denyPaths.length ? { denyPaths: configured.denyPaths } : {}) };
     const file = join(this.dir, "capture.db");
     if (this.readOnly) {
       // Refuse absent/cold state without authoring machine, shard, schema, FTS or spool metadata.
@@ -419,7 +437,7 @@ export class CaptureStore {
 
   /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
   private normalize(input: CaptureInput): NormalizedCapture {
-    const { at, agent, event, tool, paths, status, excerpt, bytes } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text));
+    const { at, agent, event, tool, paths, status, excerpt, bytes } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text), this.caps);
     return { at, project: input.project, agent, event, tool, paths, status, excerpt, bytes };
   }
 

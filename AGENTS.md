@@ -41,9 +41,9 @@
 
 ## CLI and policy boundaries
 
-- Refuse ordinary CLI commands in agent-marked sessions. `amem mcp` writes only candidates and work lists; `amem hook <event>` and `amem ingest <codex|kimi|pi>` append only capture rows; none writes curated notes or goals. Keep ordinary CLI mutations person-only and require stdin TTY. Hooks never deny, replace a tool call or perform network/model work.
-- Require explicit `--policy-free` for promote, import and sync. Keep host privacy policy out of this package; ordinary person reads are unscreened, vault-candidate listings use current policy, and import/promotion retain the secret screen.
-- Resolve data storage with `memoryHome()`: `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. Keep tests isolated through `test/home.ts`.
+- Refuse ordinary CLI commands in agent-marked sessions, except a lone `--help` or `--version` (the usage text and the version carry no data and no mutation). `amem mcp` writes only candidates and work lists; `amem hook <event>` and `amem ingest <codex|kimi|pi>` append only capture rows; none writes curated notes or goals. Keep ordinary CLI mutations person-only and require stdin TTY. Hooks never deny, replace a tool call or perform network/model work.
+- Promote, import, sync, review accept and project export apply the configured standalone policy (`amem.config.json` in the memory home, narrowed only by a repository's `.amem/config`; secrets, personal data, PII patterns, deny paths) instead of requiring `--policy-free` (agent-mem#40 F4). The flag is still accepted and means nothing more, so it never bypasses the screen, and sync screens the rows it would actually publish. Keep host privacy policy out of this package; ordinary person reads are unscreened, vault-candidate listings use current policy, and import/promotion retain the secret screen.
+- Resolve data storage with `memoryHome()`: `AMEM_HOME`, then the `home` pointer in the `amem.config.json` that sits in the default home (`$AGENTHUB_HOME/memory`, else `~/.agenthub/memory`; a pointer only, the policy keys live in the file inside the home it names), then that default home itself. Keep tests isolated through `test/home.ts`.
 
 ## Things agents get wrong
 

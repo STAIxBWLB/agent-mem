@@ -105,11 +105,15 @@ test("private flags and secret-bearing metadata or tool input cannot enter hook 
   expect(JSON.stringify(f.rows())).not.toContain("p3 private marker"); expect(JSON.stringify(f.rows())).not.toContain(secret);
 });
 
-test("hook exception never admits ordinary agent-marked CLI reads or writes", () => {
+test("hook exception never admits ordinary agent-marked CLI reads or writes; only the text-printing --help and --version are allowed (F1)", () => {
   const f = fixture();
-  for (const args of [["--help"], ["list", "--json"], ["note", "forbidden"]]) {
+  for (const args of [["list", "--json"], ["note", "forbidden"], ["--help", "--json"], ["list", "--help"]]) {
     const result = Bun.spawnSync([process.execPath, hookBin, ...args], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
     expect(result.exitCode).toBe(1); expect(result.stderr.toString()).toContain("person");
+  }
+  for (const args of [["--help"], ["--version"]]) {
+    const result = Bun.spawnSync([process.execPath, hookBin, ...args], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(result.exitCode, args.join(" ")).toBe(0); expect(result.stdout.toString()).toMatch(/usage: amem|^amem \d/);
   }
 });
 

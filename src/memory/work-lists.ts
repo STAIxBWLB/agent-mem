@@ -7,6 +7,7 @@ import { canonicalJSON, hashJSON } from "./generation.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { canonicalPath } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
+import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./machine.ts";
 
@@ -337,9 +338,12 @@ export class WorkListStore {
     };
   }
 
-  async write(list: string, input: WorkListFields, source?: WorkListSource): Promise<{ id: string; already: boolean }> {
+  async write(rawList: string, input: WorkListFields, source?: WorkListSource): Promise<{ id: string; already: boolean }> {
+    if (!bounded(rawList, 300)) return invalid();
+    // The list NAME is text too: a `<private>` span in it is never stored (a name that is nothing but a span is invalid), and the MCP write and the claude-mem import both land here.
+    const list = stripPrivateSpans(rawList).trim();   // trimmed so "queue <private>x</private>" and "queue" are one list
     if (!bounded(list, 300)) return invalid();
-    const fields = fieldsOf(input), origin = sourceOf(source);
+    const fields = fieldsOf(stripPrivateDeep(input)), origin = sourceOf(source);   // `<private>` spans are never stored
     const at = origin?.at ?? this.locked(() => {
       this.refresh();
       const previous = this.db.query("SELECT max(at) AS at FROM work_ops WHERE machine = ?").get(this.machine) as { at: number | null };
@@ -369,9 +373,11 @@ export class WorkListStore {
     });
   }
 
-  async read(list?: string, includeClosed = false): Promise<WorkListView[]> {
+  async read(rawList?: string, includeClosed = false): Promise<WorkListView[]> {
     this.checkBudget();
-    if (list !== undefined && !bounded(list, 300) || typeof includeClosed !== "boolean") return invalid();
+    if (rawList !== undefined && !bounded(rawList, 300) || typeof includeClosed !== "boolean") return invalid();
+    const list = rawList === undefined ? undefined : stripPrivateSpans(rawList).trim();   // the same name a write stored
+    if (list !== undefined && !bounded(list, 300)) return invalid();
     const rows = this.merged();
     const views = new Map<string, { fields: WorkListFields; items: Map<string, WorkListFields> }>();
     // ponytail: memory scales with the current distinct lists/items/fields, not historical operations. A caller

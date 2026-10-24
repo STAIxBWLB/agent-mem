@@ -8,6 +8,7 @@ import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { configuredPolicyOptions } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
@@ -40,7 +41,8 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
   const requested = options.project ?? memoryProjectKey(cwd), project = resolveAlias(base, requested);
   // #15 T5: an archived or forgotten project has no MCP server: the person took it out of recall.
   if (projectState(base, project) !== "active") unavailable();
-  const policy = createStandalonePolicy(options.policy), release = registerReaderLease(base);
+  // F4: the person's configured policy (machine file, plus this repository's narrowing file) screens every MCP answer; a host passes a stricter one through `options.policy`.
+  const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)), release = registerReaderLease(base);
   const closers: (() => void)[] = [release]; let closed = false;
   const close = () => { if (closed) return; closed = true; let failure: unknown; for (const closer of closers.reverse()) { try { closer(); } catch (error) { failure ??= error; } } if (failure) throw failure; };
   try {
@@ -51,11 +53,11 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const aliases = aliasedKeys(base, project), reconcile = aliases.length ? { canonical: project, aliases } : undefined;
     const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true, ...(reconcile ? { reconcile } : {}) }) : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
     closers.push(() => store.close());
-    const capture = new CaptureStore({ memoryDir: base, project }); closers.push(() => capture.close());
+    const capture = new CaptureStore({ memoryDir: base, project, cwd }); closers.push(() => capture.close());
     // #15 T4: the bound repository's `.amem/log.jsonl`, only when that repository's own key IS this project (AC3). The root is fixed at start like the project; the file is read per call.
     const repoRoot = boundRepoRoot(cwd, base, project);
     const repoRows = async (): Promise<RepoView[]> => {
-      const scoped = repoRoot ? repoReadPolicy(repoRoot, options.policy) : undefined;
+      const scoped = repoRoot ? repoReadPolicy(repoRoot, configuredPolicyOptions(base, cwd, options.policy)) : undefined;
       if (!scoped || "reason" in scoped) return [];
       const read = await readRepoScope(repoRoot, scoped.policy); guard();
       return read.state === "ok" ? read.views : [];

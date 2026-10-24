@@ -299,7 +299,7 @@ export interface PromotionPlan {
  * What `amem promote <id> --to repo` would commit, and why it may not. Pure of effects: nothing is written, no remote is asked.
  * `refusals` is empty only for a long-term decision, contract or fail note that passes the full screen.
  */
-export async function planRepoPromotion(root: string, note: View): Promise<PromotionPlan> {
+export async function planRepoPromotion(root: string, note: View, base: StandalonePolicyOptions = {}): Promise<PromotionPlan> {
   const refusals: string[] = [];
   const about = note.about.filter(committableNode), droppedNodes = note.about.filter(node => !committableNode(node));
   const body: Omit<RepoLine, "id"> = { schema: REPO_SCHEMA, op: "note", at: note.at, kind: note.kind as RepoKind, ...(note.title ? { title: note.title } : {}), text: note.text, about: about.slice(0, MAX_ABOUT), actor: "person" };
@@ -311,7 +311,7 @@ export async function planRepoPromotion(root: string, note: View): Promise<Promo
   const flat = `${note.title ?? ""}\n${note.text}\n${about.join("\n")}`;
   if (namesPrivatePath(flat)) refusals.push("it names a private path (a home directory or a credential location)");
   let policy: MemoryPolicy | undefined;
-  try { policy = repoPolicy(repoPolicyOptions(root)); } catch (error) { refusals.push((error as Error).message); }
+  try { policy = repoPolicy(repoPolicyOptions(root), base); } catch (error) { refusals.push((error as Error).message); }
   // The policy's shape check refuses `undefined` values, so the screened value is exactly the committed line's own fields.
   const { id: _lineId, ...committed } = line;
   // The writer and every reader must agree: a line the reader's own parser rejects (a byte limit, a shape) is never appended, whatever the checks above said.

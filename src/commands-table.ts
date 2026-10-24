@@ -16,7 +16,7 @@ export interface CommandDefinition {
 const flag = (description: string): OptionDefinition => ({ description });
 const text = (description: string): OptionDefinition => ({ description, value: "text" });
 const json = { "--json": flag("Print JSON where supported") };
-const policy = { "--policy-free": flag("Explicitly bypass host privacy policy") };
+const policy = { "--policy-free": flag("Accepted and ignored: the configured privacy policy always applies") };
 const filters = { ...json, "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
   "--kind": { description: "Note kind", value: KINDS }, "--peer": text("Author peer"), "--machine": text("Machine ID"),
   "--since": text("ISO date or time"), "--limit": text("Maximum results") };
@@ -66,7 +66,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     list: { description: "List goals", options: { "--all": flag("Include completed goals") } },
     show: { description: "Show a goal", args: [{ name: "id" }] },
     new: { description: "Create a goal", options: { "--milestone": text("Milestone"), "--depends": text("Dependency goal ID"), "--shared": flag("Share across projects") }, args: [{ name: "title", variadic: true }], mutates: true },
-    link: { description: "Link through ahub goal link", args: [{ name: "id" }, { name: "task-id" }], mutates: true },
+    link: { description: "Link a goal to a task of a host that has a task board (not available in amem alone)", args: [{ name: "id" }, { name: "task-id" }], mutates: true },
     state: { description: "Set goal state", args: [{ name: "id" }, { name: "state", values: GOAL_STATES }], mutates: true },
     done: { description: "Complete a goal", args: [{ name: "id" }], mutates: true },
     take: { description: "Take a goal lease", options: { "--force": flag("Override the prior lease") }, args: [{ name: "id" }], mutates: true },
@@ -172,5 +172,5 @@ export function commandHelp(): string {
   return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => {
     const names = [...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ");
     return `  ${names}${Object.entries(row.options).map(([name, option]) => ` [${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}]`).join("")}`;
-  }), "--policy-free: use ahub memory for the host's privacy policy.", "Mutating commands require a terminal on stdin. Agents use the hub's hub_memory_* tools."].join("\n");
+  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Mutating commands require a terminal on stdin. Agents use the `amem mcp` server; the person reviews what agents propose with `amem review`."].join("\n");
 }
