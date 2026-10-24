@@ -139,3 +139,11 @@ test("promotion acceptance receives current goal metadata so newly private goal 
   } })).toThrow("policy");
   expect(checked).toBe(true); expect(f.bytes()).toEqual(before); expect(f.candidates.get(id, f.project)?.status).toBe("pending"); expect(f.store.get(target, f.project)?.tier).toBe("short");
 });
+
+test("a previously opened generation cannot offer after its selector changed before invocation", async () => {
+  const f = await fixture("generation"), goal = f.goal(); f.note({ task: goal.task });
+  await migrate({ memoryDir: f.base, mode: "deactivate", authorizedPerson: true, tty: true });
+  const before = f.bytes(); let screens = 0;
+  await expect(offerGoalPromotions(f.store, f.candidates, f.project, goal.id, { policy: () => { screens++; return createStandalonePolicy(); } })).rejects.toThrow("selector changed");
+  expect(screens).toBe(0); expect(f.candidates.list({ project: f.project })).toEqual([]); expect(f.bytes()).toEqual(before);
+});

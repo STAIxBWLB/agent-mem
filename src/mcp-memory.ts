@@ -108,7 +108,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       guard();
       const current = store.get(id, project);
       // Shared entries retain their source project/scope through the existing correction acceptance contract.
-      if (!current || current.id !== id || current.supersededBy || current.project !== project && current.scope !== "shared") unavailable();
+      if (!current || current.id !== id || current.supersededBy || current.project !== project && current.scope !== "shared") return unavailable();
       return current;
     };
     const propose = async (input: CandidateInput, target?: View): Promise<{ id: string }> => {
@@ -206,7 +206,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const kind = args.kind ?? "finding";
         if (typeof kind !== "string" || !["decision", "finding", "contract", "fail"].includes(kind)) unavailable();
         if (structured.some(key => args[key] !== undefined)) {
-          if (kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) unavailable();
+          if (kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
           const evidenceRefs = args.evidenceRefs.map(value => typeof value === "string" && value.trim() && value.length <= 400 && !value.includes("\0") ? value : unavailable());
           return propose({ project, kind: "fail", approach: textOf(args, "approach")!, symptom: textOf(args, "symptom")!, cause: textOf(args, "cause")!, evidenceRefs, retryWhen: textOf(args, "retryWhen")! });
         }

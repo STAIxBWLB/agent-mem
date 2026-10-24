@@ -37,7 +37,7 @@ test("legacy remember defaults and explicit memory kinds remain compatible", asy
   const f = fixture(), mcp = f.open();
   const fallback = idOf(await mcp.tools.amem_remember({ text: "legacy public choice" }));
   expect(f.sidecar.get(fallback, f.project)?.input).toEqual({ project: f.project, kind: "memory", text: "legacy public choice", noteKind: "finding" });
-  for (const kind of ["decision", "finding", "contract", "fail"]) {
+  for (const kind of ["decision", "finding", "contract", "fail"] as const) {
     const id = idOf(await mcp.tools.amem_remember({ text: "public explicit choice", title: "Choice", kind }));
     expect(f.sidecar.get(id, f.project)?.input).toEqual({ project: f.project, kind: "memory", text: "public explicit choice", title: "Choice", noteKind: kind });
   }

@@ -27,6 +27,7 @@ export async function offerGoalPromotions(store: MemoryStore, candidates: Candid
   if (realPath(candidates.dir) !== base) throw Error("goal promotion sidecar does not match its store");
   project = resolveAlias(base, project);
   const selector = readSelector(base).revision, aliases = aliasedKeys(base, project).join("\n");
+  if (selector !== store.profile.selectorRevision) throw Error("goal promotion store selector changed");
   const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false }), shards = split ? JSON.stringify(readShardedSelection(base)) : undefined;
   const read = <T>(work: () => T) => store.withDeferredPromotions(work);
   const guard = () => {

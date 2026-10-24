@@ -1,3 +1,6 @@
+import { Database } from "bun:sqlite";
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
 import { hashJSON } from "./generation.ts";
 import { candidateTargetRevision, type CandidateTarget, type Counter } from "./candidates.ts";
 import { MemoryStore, type View } from "./store.ts";
@@ -18,6 +21,19 @@ function idsOf(ids: readonly string[]): string[] {
   const normalized = ids.map(id => id.replace(/^mem:/, ""));
   if (normalized.length > DECAY_PREVIEW_LIMIT || new Set(normalized).size !== normalized.length || normalized.some(id => !/^[a-f0-9]{32}$/.test(id))) throw Error("name up to 64 distinct exact entry ids");
   return normalized;
+}
+/** Advisory telemetry without opening/pruning the candidate writer. Unavailable is unknown, never zero. */
+export function readDecayCounters(base: string, projects: readonly string[]): Counter[] | undefined {
+  const file = join(base, "candidates.db");
+  let db: Database | undefined;
+  try {
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (!stat || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return undefined;
+    db = new Database(file, { readonly: true }); db.run("PRAGMA busy_timeout = 0");
+    const rows = db.query("SELECT id,payload,at,rendered,delivered,cited FROM counters WHERE project IN (SELECT value FROM json_each(?)) AND cited > 0 ORDER BY at DESC").all(JSON.stringify(projects)) as { id: string; payload: string; at: number; rendered: number | null; delivered: number | null; cited: number | null }[];
+    return rows.map(row => ({ id: row.id, key: JSON.parse(row.payload), createdAt: new Date(row.at).toISOString(), rendered: row.rendered, delivered: row.delivered, cited: row.cited }));
+  } catch { return undefined; }
+  finally { try { db?.close(); } catch { /* An unavailable telemetry close cannot authorize a mutation. */ } }
 }
 function citedIds(project: string, aliases: readonly string[], counters: readonly Counter[] | undefined, cutoff: number, now: number): Set<string> {
   const ids = new Set<string>();
@@ -41,6 +57,7 @@ export function decayPreview(store: MemoryStore, project: string, options: Decay
     let counters: readonly Counter[] | undefined;
     try { counters = options.counters?.(); } catch { /* Telemetry is advisory; an unreadable snapshot is unknown. */ }
     const cited = citedIds(project, options.aliases ?? [], counters, cutoff, now);
+    // ponytail: list materializes the existing core corpus before slicing; a scoped pager is the upgrade for large homes.
     const rows = requested ? requested.map(id => store.get(id, project)) : store.list({ project, tier: "long", limit: DECAY_SCAN_LIMIT + 1 });
     if (rows.length > DECAY_SCAN_LIMIT) throw Error("decay preview scan bound exceeded; name exact ids to narrow it");
     const entries: DecayEntry[] = []; let withheld = 0, citedExemptions = 0;
