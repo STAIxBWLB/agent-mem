@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
 import { MCP_TOOLS, serveMcp, type McpHandlers } from "../src/mcp.ts";
 
-const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
+const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_evidence", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
 
 const request = (id: number, method: string, params?: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) }) + "\n";
 const initialize = request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-client", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n";
@@ -17,11 +17,11 @@ async function session(lines: string, handlers: Partial<McpHandlers> = {}) {
   return { replies: text.trim().split("\n").filter(Boolean).map(line => JSON.parse(line)), closed, calls };
 }
 
-test("stdio client initializes, lists the eleven startup-bound tools, calls one and closes on EOF", async () => {
+test("stdio client initializes, lists the twelve startup-bound tools, calls one and closes on EOF", async () => {
   const s = await session(initialize + request(2, "tools/list", {}) + request(3, "tools/call", { name: "amem_search", arguments: { query: "policy", limit: 1 } }));
   expect(s.replies.map(r => r.id)).toEqual([1, 2, 3]);
   expect(s.replies[0].result.protocolVersion).toBe("2025-06-18");
-  expect(s.replies[1].result.tools).toHaveLength(11);
+  expect(s.replies[1].result.tools).toHaveLength(12);
   expect(s.replies[1].result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
   expect(s.replies[1].result.tools.every((t: any) => t.inputSchema.additionalProperties === false && !t.inputSchema.properties.project && !t.inputSchema.properties.home && !t.inputSchema.properties.cwd)).toBe(true);
   expect(s.replies[2].result.content).toEqual([{ type: "text", text: '{"ok":true}' }]);
@@ -76,7 +76,7 @@ test("a fake client uses a real stdio child, whose EOF closes once and exits wit
     expect(exit).toBe(0); expect(stderr).toBe("closed\n");
     const replies = stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(replies.map(row => row.id)).toEqual([1, 2, 3]);
-    expect(replies[1].result.tools).toHaveLength(11);
+    expect(replies[1].result.tools).toHaveLength(12);
     expect(replies[1].result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
     expect(JSON.parse(replies[2].result.content[0].text)).toEqual({ args: { id: "abcdef123456" } });
   } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await child.exited; } }
@@ -86,7 +86,7 @@ test("tools/list accepts MCP null cursor and metadata forms without widening too
   const accepted = [null, { cursor: null }, { _meta: {} }];
   for (const params of accepted) {
     const s = await session(initialize + request(2, "tools/list", params));
-    expect(s.replies.find(r => r.id === 2)?.result.tools).toHaveLength(11);
+    expect(s.replies.find(r => r.id === 2)?.result.tools).toHaveLength(12);
     expect(s.replies.find(r => r.id === 2)?.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
     expect(s.calls).toBe(0);
   }

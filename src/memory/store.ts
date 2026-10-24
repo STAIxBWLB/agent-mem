@@ -15,10 +15,10 @@ import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, re
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, readSelector, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
-import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
+import { GenerationIndex, coalesceGenerationSource, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
 import { legacyEntries, readLegacySnapshot, SegmentReader, type LegacyCheckpoint } from "./bridge.ts";
 import { readMigrationSources } from "./migrate.ts";
-import type { PruneStorePort } from "./prune.ts";
+import type { PruneSourceRow, PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
 import { registerReaderLease } from "./reader-lease.ts";
 
@@ -380,6 +380,34 @@ export class MemoryStore {
         return view;
       });
       return work(entries);
+    });
+  }
+  /** Exact original transport placement; View.local describes tier, not a verified publication choice. */
+  entryPlacements(ids: readonly string[], project: string): ReadonlyMap<string, "local" | "synced"> {
+    if (!ids.length || ids.length > 256 || new Set(ids).size !== ids.length || ids.some(id => !/^[a-f0-9]{32}$/.test(id)) || !project.trim()) throw Error("invalid placement batch");
+    return this.withStoreFences(stores => {
+      const wanted = new Set(ids), found = new Map<string, "local" | "synced">(), reader = new SegmentReader(32 * 1024 * 1024);
+      const add = (id: string, placement: "local" | "synced") => { if (wanted.has(id) && (placement === "synced" || !found.has(id))) found.set(id, placement); };
+      assertProjectActive(this.profile.home, project);
+      for (const store of stores) {
+        if (store.generationIndex) {
+          store.generationIndex.refresh(0, reader);
+          const rows = store.db.query("SELECT id,local FROM generation_rows WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; local: number }[];
+          for (const row of rows) add(row.id, row.local ? "local" : "synced");
+        } else {
+          // Strict bounded verification includes locations, never guesses transport from tier or View.local.
+          const presence = new Map<string, PruneSourceRow>();
+          for (const segment of readLegacySnapshot(store.dir, { reader })) for (const row of legacyEntries([segment], { strict: true })) {
+            if (row.op === "note" && wanted.has(row.id)) {
+              const located = coalesceGenerationSource(presence.get(row.id), row, segment);
+              presence.set(row.id, located); add(row.id, located.placement);
+            }
+          }
+          store.ensureFresh(); // Refresh only after the strict bounded source read succeeds.
+        }
+      }
+      for (const id of ids) { const view = this.get(id, project); if (!view || view.id !== id || view.project !== project || !found.has(id)) throw Error("entry placement unavailable"); }
+      return found;
     });
   }
   private withStoreFences<T>(work: (stores: readonly MemoryStore[]) => T): T {

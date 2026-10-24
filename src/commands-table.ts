@@ -24,6 +24,7 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
+  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("Explicit active project key (default current project)") } },
   setup: { description: "Preview reversible MCP and hook setup for native coding CLIs; apply and undo are person-only", options: { "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
@@ -88,11 +89,11 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
     list: { description: "List review candidates", options: {
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
-      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] }, "--limit": text("Maximum candidates (1..500)"),
+      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] }, "--limit": text("Maximum candidates (1..500)"),
     } },
-    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Require the selected candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
+    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Require the selected candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
-    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] } } },
+    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } } },
   } },
   decay: { description: "Preview old live long-term notes unprotected by open goals; apply only after person review", mutates: "apply", options: {
     ...json, "--days": text("Age in whole days (default 90)"), "--apply": flag("Show the exact revision preview and ask before applying"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
