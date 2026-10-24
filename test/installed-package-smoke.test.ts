@@ -21,7 +21,7 @@ test("installed smoke public API resolution refuses checkout fallback and siblin
   for (const file of [join(CHECKOUT, "src", "index.ts"), join(ROOT, "..", "other", "index.ts"), "relative/index.ts"]) expect(() => assertInstalledModule(file, ROOT, CHECKOUT)).toThrow();
 });
 test("installed smoke child environment is an allowlist with isolated config/cache/tmp and no inherited authority", () => {
-  const env = allowlistedSmokeEnv(HOME, "/runtime/bin:/usr/bin:/bin");
+  const env = allowlistedSmokeEnv(HOME, "/runtime/bin:/usr/bin:/bin"); expect(env.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe("0");
   expect(env.HOME).toBe(HOME); expect(env.TMPDIR).toBe(TMP); expect(env.AMEM_HOME).toBe(join(HOME, "memory")); expect(env.XDG_CONFIG_HOME).toBe(join(HOME, ".config")); expect(env.BUN_INSTALL_CACHE_DIR).toBe(join(HOME, ".cache", "bun"));
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS", "NODE_PATH", "BUN_OPTIONS", "AMEM_HOOK_BOOT_AT", "AGENTHUB_HOME", "AGENTHUB_PEER_ID", "CLAUDECODE", "CODEX_THREAD_ID"]) expect(Object.hasOwn(env, key)).toBe(false);
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);

@@ -28,7 +28,8 @@ export function assertSmokeCliArgs(args: readonly string[]): void {
 }
 export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.ProcessEnv {
   requireSmoke(isAbsolute(home), "installed smoke HOME must be absolute");
-  return { HOME: home, PATH: runtimePath, AMEM_HOME: join(home, "memory"), TMPDIR: join(home, "tmp"), TMP: join(home, "tmp"), TEMP: join(home, "tmp"),
+  // Keep the read-only HOME proof about application effects: Bun's transpiler otherwise caches .pile files during module load.
+  return { HOME: home, PATH: runtimePath, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", AMEM_HOME: join(home, "memory"), TMPDIR: join(home, "tmp"), TMP: join(home, "tmp"), TEMP: join(home, "tmp"),
     XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
     CLAUDE_CONFIG_DIR: join(home, "clients", "claude"), CODEX_HOME: join(home, "clients", "codex"), KIMI_CODE_HOME: join(home, "clients", "kimi"), PI_CODING_AGENT_DIR: join(home, "clients", "pi"),
     BUN_INSTALL: join(home, ".bun"), BUN_INSTALL_CACHE_DIR: join(home, ".cache", "bun"), npm_config_cache: join(home, ".cache", "npm"), npm_config_userconfig: join(home, ".config", "npmrc"), npm_config_globalconfig: join(home, ".config", "global-npmrc"), npm_config_prefix: join(home, ".npm-prefix"), npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
@@ -72,7 +73,12 @@ export function snapshotPrivateHome(home: string): HomeSnapshotEntry[] {
   };
   walk(home); return rows.sort((a, b) => a.path.localeCompare(b.path));
 }
-export function assertHomeUnchanged(before: HomeSnapshotEntry[], after: HomeSnapshotEntry[]): void { requireSmoke(JSON.stringify(before) === JSON.stringify(after), "setup dry run changed its private HOME"); }
+export function assertHomeUnchanged(before: HomeSnapshotEntry[], after: HomeSnapshotEntry[]): void {
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  const prior = new Map(before.map(row => [row.path, JSON.stringify(row)])), next = new Map(after.map(row => [row.path, JSON.stringify(row)]));
+  const changed = [...new Set([...prior.keys(), ...next.keys()])].filter(path => prior.get(path) !== next.get(path)).sort();
+  throw Error(`setup dry run changed its private HOME (${changed.slice(0, 8).join(", ")})`);
+}
 export function assertHookMetric(before: string, after: string): void {
   requireSmoke(after.startsWith(before), "hook metric history changed rather than appending");
   const rows = after.slice(before.length).split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
