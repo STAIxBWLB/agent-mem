@@ -30,15 +30,17 @@ try {
   const at = (index: number, capture = false) => new Date(start + index * 2000 + (capture ? 1000 : 0)).toISOString();
   const since = at(CURATED - 10), anchorIndex = Math.floor(CURATED / 2);
   let curatedAnchor = "", captureAnchor = "";
+  const briefPath = "src/budget-writer.ts", briefExpected = new Map<string, "fail" | "decision">();
   const curated = new MemoryStore({ home });
   try {
     // Authentic hashed log replay avoids quadratic setup; migration and the measured child read the real index.
     const machine = curated.machine.id;
     let segment = "";
     for (let i = 0; i < CURATED; i++) {
-      const body: Omit<NoteEntry, "id"> = { schema: MEMORY_SCHEMA, op: "note", at: at(i), machine, project, scope: "project", tier: "long", kind: "finding", peer: "budget", source: "person",
-        text: `bounded retrieval storage engine mcpbudgetneedle variant ${i}`, about: [] };
-      const id = entryId(body);
+      const briefKind = i >= CURATED - 3 ? "fail" : "decision", inBrief = i >= CURATED - 6;
+      const body: Omit<NoteEntry, "id"> = { schema: MEMORY_SCHEMA, op: "note", at: at(i), machine, project, scope: "project", tier: "long", kind: inBrief ? briefKind : "finding", peer: "budget", source: "person",
+        text: `bounded retrieval storage engine mcpbudgetneedle variant ${i}`, about: inBrief ? [`path:${briefPath}`] : [] };
+      const id = entryId(body); if (inBrief) briefExpected.set(`mem:${id}`, briefKind);
       if (i === anchorIndex) curatedAnchor = id;
       segment += JSON.stringify({ ...body, id }) + "\n";
     }
@@ -152,9 +154,12 @@ try {
       if (rows[0]?.at !== at(CAPTURE - 1, true) || rows.some((row, i) => i > 0 && rows[i - 1]!.at < row.at)) throw new Error("timeline is not newest first");
     }
   }
-  const brief = await call("amem_brief", { intent: "bounded retrieval storage", maxBytes: 2048 });
-  // The frozen curated corpus contains findings only; none is eligible for an intent brief.
-  if (brief.state !== "known" || brief.brief !== "" || brief.bytes !== Buffer.byteLength(brief.brief) || brief.bytes > 2048 || typeof brief.truncated !== "boolean") throw new Error("intent brief lost its bounded eligible-kind contract");
+  const brief = await call("amem_brief", { intent: "bounded retrieval storage", paths: [briefPath], maxBytes: 2048 });
+  // Six newest rows in the same-sized corpus exercise real fail-first rendering, not just the scan.
+  if (brief.state !== "known" || typeof brief.brief !== "string" || !brief.brief.startsWith("Untrusted memory data") || brief.bytes !== Buffer.byteLength(brief.brief) || brief.bytes > 2048 || typeof brief.truncated !== "boolean") throw new Error("intent brief lost its bounded render contract");
+  const briefRows = brief.brief.split("\n").slice(1).map((line: string) => JSON.parse(line)) as { id: string; kind: string; text: string }[];
+  if (briefRows.length !== briefExpected.size || new Set(briefRows.map(row => row.id)).size !== briefExpected.size
+    || briefRows.some((row, index) => briefExpected.get(row.id) !== row.kind || row.kind !== (index < 3 ? "fail" : "decision") || typeof row.text !== "string" || !row.text.includes("mcpbudgetneedle"))) throw new Error("intent brief did not render all seeded fails before decisions");
   for (const args of [{ includeClosed: true }, { list: "budget-work", includeClosed: true }]) {
     const result = await request("tools/call", { name: "amem_work_state_read", arguments: args });
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
@@ -180,7 +185,7 @@ try {
   const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && !remains;
   const report = { platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
-    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
+    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
   console.log(JSON.stringify(report, null, 2));
   if (!pass) throw new Error("MCP memory or EOF budget failed");
   return report;
