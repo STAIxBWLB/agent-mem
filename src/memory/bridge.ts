@@ -38,6 +38,10 @@ function directory(path: string, optional = false): boolean {
   catch (error) { if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
+export class SegmentReadBudgetError extends Error {
+  readonly code = "retained_read_budget";
+  constructor() { super("retained history unavailable within the read byte budget"); this.name = "SegmentReadBudgetError"; }
+}
 export interface SegmentReadMetrics { bytesRead: number; bytesHashed: number; coldChanged: number }
 interface PrefixState { offset: number; hash: string; hasher: Hash; bytes: Buffer }
 type SegmentBytes = Pick<LegacySegment, "bytes" | "offset" | "hash" | "tailBytes" | "stamp" | "start">;
@@ -47,6 +51,7 @@ const statStamp = (stat: { dev: bigint | number; ino: bigint | number; size: big
 export class SegmentReader {
   private readonly prefixes = new Map<string, PrefixState>();
   private measured: SegmentReadMetrics = { bytesRead: 0, bytesHashed: 0, coldChanged: 0 };
+  constructor(private remainingBytes = Infinity) { if (remainingBytes !== Infinity && (!Number.isSafeInteger(remainingBytes) || remainingBytes < 0)) failure(); }
   metrics(): SegmentReadMetrics { return { ...this.measured }; }
   resetMetrics(): void { this.measured = { bytesRead: 0, bytesHashed: 0, coldChanged: 0 }; }
   read(path: string, prior?: LegacyCheckpoint, full = false, immutable = false): SegmentBytes {
@@ -60,8 +65,9 @@ export class SegmentReader {
       const opened = fstatSync(fd, { bigint: true });
       if (statStamp(opened) !== stamp) failure();
       const read = (length: number): Buffer => {
+        if (length > this.remainingBytes) throw new SegmentReadBudgetError();
         const bytes = Buffer.alloc(length); let at = 0;
-        while (at < length) { const n = readSync(fd, bytes, at, length - at, at); if (!n) failure(); at += n; this.measured.bytesRead += n; }
+        while (at < length) { const n = readSync(fd, bytes, at, length - at, at); if (!n) failure(); at += n; this.measured.bytesRead += n; this.remainingBytes -= n; }
         return bytes;
       };
       const all = read(size), end = all.lastIndexOf(10) + 1, bytes = all.subarray(0, end);
@@ -273,7 +279,7 @@ function head(homeM: string, generation: string): string | undefined {
 
 
 export function readLegacySnapshot(homeM: string, options: LegacySnapshotOptions = {}): LegacySegment[] {
-  try { return snapshot(homeM, options); } catch { return failure(); }
+  try { return snapshot(homeM, options); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
 export function legacyHead(homeM: string, generation: string): string | undefined {
   try { return head(homeM, generation); } catch { return failure(); }

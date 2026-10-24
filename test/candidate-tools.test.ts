@@ -123,7 +123,7 @@ test("closing a bound MCP server during privacy await refuses the pending candid
   mcp = f.open({ host: { screen: async () => { await Promise.resolve(); mcp.close(); return true; } } }); const before = f.bytes();
   await expect(mcp.tools.amem_remember(fail)).rejects.toThrow(); expect(f.sidecar.list({ project: f.project })).toEqual([]); expect(f.bytes()).toEqual(before);
 });
-test("stdio exposes ten project-bound tools and validates structured evidence arrays before handler effects", async () => {
+test("stdio exposes eleven project-bound tools and validates structured evidence arrays before handler effects", async () => {
   const f = fixture(), mcp = f.open(), input = new PassThrough(), output = new PassThrough(); let encoded = "";
   output.on("data", chunk => { encoded += chunk.toString(); });
   const request = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
@@ -132,7 +132,8 @@ test("stdio exposes ten project-bound tools and validates structured evidence ar
     + request(3, "tools/call", { name: "amem_remember", arguments: { ...fail, evidenceRefs: [1] } }) + request(4, "tools/call", { name: "amem_remember", arguments: { ...fail, evidenceRefs: Array(17).fill("test:x") } })
     + request(5, "tools/call", { name: "amem_remember", arguments: fail }));
   await run;
-  const replies = encoded.trim().split("\n").map(line => JSON.parse(line)); expect(replies.find(row => row.id === 2).result.tools).toHaveLength(10); expect(MCP_TOOLS.find(tool => tool.name === "amem_correct")?.annotations.readOnlyHint).toBe(false);
+  const replies = encoded.trim().split("\n").map(line => JSON.parse(line)); expect(replies.find(row => row.id === 2).result.tools).toHaveLength(11);
+  expect(replies.find(row => row.id === 2).result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(["amem_brief", "amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"]); expect(MCP_TOOLS.find(tool => tool.name === "amem_correct")?.annotations.readOnlyHint).toBe(false);
   for (const id of [3, 4]) expect(replies.find(row => row.id === id).error.code).toBe(-32602);
   expect(JSON.parse(replies.find(row => row.id === 5).result.content[0].text).id).toMatch(/^[a-f0-9]{64}$/); expect(f.sidecar.list({ project: f.project })).toHaveLength(1);
 });

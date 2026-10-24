@@ -79,6 +79,9 @@ function snapshot(value: unknown): { value: unknown; texts: string[] } | undefin
   catch { return undefined; }
 }
 
+/** Safe structural data copy for optional readers, before any getters/toJSON can run. It is not a public verdict. */
+export function memoryPolicySnapshot<T>(value: T): T | undefined { return snapshot(value)?.value as T | undefined; }
+
 function literals(value: unknown, label: string): string[] {
   if (value === undefined) return [];
   if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 64 || Object.getOwnPropertySymbols(value).length) throw new Error(`invalid ${label}`);

@@ -442,3 +442,11 @@ CI runs the typecheck, boundary check and tests on Ubuntu and macOS with Bun 1.4
 After setup, a `v*` tag triggers both operating-system gates. The tag must equal `v` plus `package.json`'s version. Only after both gates pass does the release job install npm 11.20.0 (trusted publishing needs 11.5.1 or later) and run `npm publish --access public`, authenticated through GitHub OIDC with `id-token: write`; npm adds provenance itself. The workflow uses no `NPM_TOKEN`.
 
 License: MIT.
+
+## Intent recall and history
+
+Use `amem brief --for "repair the writer" --paths src/writer.ts` for a byte-capped, fail-first brief. Repeat `--paths` or `--symbols` for explicit scope; `--bytes 2048` sets the complete brief-body cap. Agents use the project-bound `amem_brief` MCP tool. Memory is untrusted data, not instructions.
+
+Current recall omits superseded and expired entries. `amem show <id> --history` shows retained versions, `amem graph <id> --history` follows retained history, and `amem search writer --as-of 2026-10-20 --history` reads retained state at UTC midnight. Current forget/prune removals still hide the text at every past date. Promotion event time is not serialized, so affected history reports `promotion time unknown: tier before promotion cannot be recovered`. `(stale?)` is only a bounded path-metadata hint. See `docs/contracts.md` for retention and history limits.
+
+The library exports `buildIntentBrief`, `planGuardNodes`, `matchingPlanFails` and nullable usage callbacks. Emitted output may record rendered counts; delivered and cited counts need explicit host observations. Missing evidence stays unknown. Agent-hub adoption is a separate follow-up after a published library release.

@@ -1,6 +1,12 @@
+import { randomUUID } from "node:crypto";
+import type { Writable } from "node:stream";
+import { buildIntentBrief } from "./memory/intent-brief.ts";
+import { createIntentBriefSource } from "./memory/recall.ts";
+import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
+import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
-import { serveMcp } from "./mcp.ts";
+import { serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { vaultCandidates } from "./memory/vault.ts";
@@ -19,7 +25,7 @@ import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
-import { readSelector, resolveProfile } from "./memory/generation.ts";
+import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
 import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
@@ -43,7 +49,10 @@ import { nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+export interface CliOutputReceipt { project: string; ids: readonly string[]; rendered(): boolean }
 export interface CliContext {
+  /** Prepared output metadata only. Invoke rendered only after the output writer succeeds. */
+  onOutputReady?: (receipt: CliOutputReceipt) => void;
   cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
   /** Narrow seam for deterministic fixtures standing in for `gh` (#15 T4): the CLI always uses the native remote visibility check. */
   visibility?: (url: string) => Promise<Visibility>;
@@ -142,7 +151,7 @@ function curatedStoreAt(base: string, project: string, opts: StoreOptions): Memo
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   if (argv.length === 1 && argv[0] === "mcp") {
     const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
-    await serveMcp({ tools: memory.tools, close: memory.close, version: VERSION });
+    await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
   }
   if (argv[0] === "hook") {
@@ -207,6 +216,38 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       if (realPath(memoryHome()) !== base || resolveAlias(base, memoryProjectKey(policyCwd)) !== project || readSelector(base).revision !== selector || aliasedKeys(base, project).join("\n") !== aliases || projectState(base, project) !== "active" || split !== currentSplit || split && JSON.stringify(readShardedSelection(base)) !== shards) throw new Error("memory command binding changed since preview");
     };
   };
+  const outputReady = (ids: readonly string[], project = boundProject()) => {
+    if (!context.onOutputReady || !ids.length) return;
+    const base = realPath(memoryHome()), assertCurrent = commandBinding(base, project), deliveryId = `cli:${randomUUID()}`, selected = [...new Set(ids)].slice(0, 256);
+    context.onOutputReady({ project, ids: selected, rendered: () => {
+      let candidates: CandidateStore | undefined;
+      try { assertCurrent(); candidates = new CandidateStore({ memoryDir: base }); let known = true;
+        for (const entryId of selected) known = recordMemoryUse(candidates, { project, entryId, deliveryId }, { rendered: 1 }, { assertCurrent }) && known;
+        return known;
+      } catch { return false; } finally { try { candidates?.close(); } catch { /* optional telemetry cannot fail emitted output */ } }
+    } });
+  };
+  if (sub === "brief") {
+    const intent = options["--for"]; if (typeof intent !== "string" || !intent.trim() || intent.length > 1000 || parsed.positionals.length) throw Error("usage: amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]");
+    const rawBytes = options["--bytes"];
+    if (rawBytes !== undefined && !/^[1-9][0-9]*$/.test(String(rawBytes))) throw Error("brief bytes must be a positive decimal integer");
+    const maxBytes = rawBytes === undefined ? 2048 : Number(rawBytes); if (!Number.isSafeInteger(maxBytes) || maxBytes > 8192) throw Error("brief bytes must be 1..8192");
+    const project = boundProject(), base = realPath(memoryHome()), paths = repeated(argv, "--paths"), symbols = repeated(argv, "--symbols");
+    if (paths.length > 150 || symbols.length > 150 || [...paths, ...symbols].some(value => value.length > 512)) throw Error("brief paths and symbols exceed the input bound");
+    const store = curatedStore(project, { deferPromotions: true });
+    try {
+      const assertCurrent = commandBinding(base, project), repository = boundRepoRoot(policyCwd, base, project), root = repository ?? policyCwd;
+      const rootConfirmed = repository !== undefined || project.startsWith("local:") && resolveAlias(base, memoryProjectKey(policyCwd)) === project;
+      const settings = () => configuredPolicyOptions(base, policyCwd), policyKey = () => hashJSON(settings()), revision = policyKey(), snapshot = createStandalonePolicy(settings());
+      const policy = () => snapshot, policyVersion = () => policyKey();
+      if (policyVersion() !== revision) throw Error("brief policy changed before read");
+      const result = await buildIntentBrief(createIntentBriefSource(store, project),
+        { project, cwd: root, repo: project, intent, paths, symbols, maxBytes, policy, policyVersion, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: root, rootConfirmed, policy }) });
+      assertCurrent(); outputReady(result.items.map(view => view.id), project);
+      return options["--json"] ? JSON.stringify({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, null, 2) : result.text;
+    } finally { store.close(); }
+  }
+  if ((options["--history"] === true || options["--as-of"] !== undefined) && (options["--all-projects"] === true || options["--tier"] === "repo")) throw Error("historical recall selects this active project's curated store; cross-project/repo history is unavailable");
   if (sub === "migrate") {
     const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
@@ -583,6 +624,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   // Recall (D4): the current project plus, when the repository IS this project, that repository's `.amem/`. Never another project's.
   const withRepoRows = async (output: string): Promise<string> => {
+    if (options["--history"] === true || options["--as-of"] !== undefined) return output;
     if (sub !== "list" && sub !== "search") return output;
     const root = boundRepoRoot(repoCwd, memoryHome(), boundProject());
     if (!root) return output;
@@ -601,7 +643,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   };
   const crosses = definition.policyFree === true;
   const cwd = context.cwd ?? process.cwd();
-  const configured = policyOf();
+  const configured = policyOf(), recallRoot = boundRepoRoot(cwd, memoryHome(), boundProject());
+  const rootConfirmed = recallRoot !== undefined || boundProject().startsWith("local:") && resolveAlias(memoryHome(), memoryProjectKey(cwd)) === boundProject();
   // Reads can trigger held-note reconciliation. Defer it unless this command is one that moves notes across the boundary (promote, sync, import, review accept), and then the configured policy decides each note.
   const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : configured.screenStandalone(note) ? "promote" : "keep" });
   // A person's reads are unscreened. A write is screened by the configured policy, which includes the built-in secret screen.
@@ -636,7 +679,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) { if (sub === "sync") stampSync((error as Error).message, stop?.cause()); throw error; }
@@ -658,9 +701,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
 
 export function formatCliError(error: unknown): string { return error instanceof DecayApplyError ? error.render() : `amem: ${(error as Error).message}`; }
 
+/** A completed write means rendered output, never evidence of host delivery or citation. */
+export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> { await writeConfirmed(output, text); }
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  try { const output = await runCli(argv); if (output) console.log(output); }
-  catch (error) { console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
+  try {
+    const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt) });
+    if (output) { await writeCliOutput(output + "\n"); for (const receipt of receipts) { try { receipt.rendered(); } catch { /* telemetry stays optional */ } } }
+  } catch (error) { console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
 }
 
 if (import.meta.main) await main();

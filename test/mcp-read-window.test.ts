@@ -51,7 +51,7 @@ test("metadata substring false positives and more than 5000 denied matches canno
   } finally { mcp.close(); }
 }, 20000);
 
-test("curated candidate bodies retain forgotten and superseded lifecycle visibility", async () => {
+test("current curated recall hides invalid lifecycle bodies while person history retains superseded originals", async () => {
   const f = fixture();
   const note = (text: string) => f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "test", source: "person", text, about: [] });
   const old = note("lifecycleneedle old"), forgotten = note("lifecycleneedle forgotten"), current = note("lifecycleneedle current");
@@ -63,7 +63,11 @@ test("curated candidate bodies retain forgotten and superseded lifecycle visibil
     const result = await mcp.tools.amem_search({ query: "lifecycleneedle" }) as { hits: { view: { id: string } }[] };
     expect(result.hits.map(hit => hit.view.id)).toEqual([current]);
     const timeline = await mcp.tools.amem_timeline({}) as { id: string }[];
-    expect(timeline.map(row => row.id).sort()).toEqual([old, current].sort());
+    expect(timeline.map(row => row.id)).toEqual([current]);
+    expect(await mcp.tools.amem_show({ id: old })).toBeNull();
+    const reader = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    try { expect(reader.recallState(f.project, { history: true, person: true }).views.map(row => row.id).sort()).toEqual([old, current].sort()); }
+    finally { reader.close(); }
     expect(await mcp.tools.amem_timeline({ id: forgotten })).toEqual([]);
   } finally { mcp.close(); }
 });

@@ -11,12 +11,12 @@ import { machineId, type Machine } from "./machine.ts";
 import { assertProjectActive } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
-import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
+import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
-import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
+import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, readSelector, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
 import { GenerationIndex, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
-import { legacyEntries, type LegacyCheckpoint } from "./bridge.ts";
+import { legacyEntries, readLegacySnapshot, SegmentReader, type LegacyCheckpoint } from "./bridge.ts";
 import { readMigrationSources } from "./migrate.ts";
 import type { PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -144,6 +144,20 @@ export interface View {
   local: boolean;
 }
 export interface VaultEntry { view: View; /** Full authored hash in generation profiles; empty for read-only shared-v1. */ rowHash: string }
+export interface RecallStateOptions { person?: boolean; asOf?: string; history?: boolean; maxRows?: number; maxBytes?: number }
+export interface RecallRelation { from: string; to: string; at: string; kind: "supersede" | "promote" }
+export interface RetainedRecallState {
+  at: string; views: View[]; forgotten: { id: string; at: string }[]; relations: RecallRelation[];
+  malformed: number; incomplete: boolean; notices: string[];
+  /** Present only when retained source diagnostics independently make the result incomplete. */
+  sourceIncomplete?: true;
+}
+interface RecallViewProjection {
+  now: number; rows: Record<string, string | null>[];
+  ops: { id: string; op: string; at: string; target: string; by: string | null }[];
+  realms?: Map<string, { id: string; own: number; legacy: number }>;
+  pruned: Set<string>; forgotten: Set<string>; includePromoted: boolean;
+}
 export interface GoalView {
   id: string; at: string; machine: string; project: string; scope: Scope; title: string; milestones: string[]; dependsOn: string[];
   state: GoalState; links: { task: string; at: string; machine: string }[];
@@ -357,10 +371,7 @@ export class MemoryStore {
   /** Synchronous exact-target work under every opened shard's existing writer fence. No read-time promotions. */
   withCurrentEntries<T>(ids: readonly string[], project: string, work: (entries: readonly View[]) => T): T {
     if (!ids.length || ids.length > MAX_TARGETS || new Set(ids).size !== ids.length || ids.some(id => !/^[a-f0-9]{32}$/.test(id)) || !project.trim()) throw new Error("invalid exact-entry batch");
-    const unique = new Map<string, MemoryStore>();
-    for (const store of this.readStores()) { const dir = realPath(store.dir); if (!unique.has(dir)) unique.set(dir, store); }
-    const stores = [...unique.keys()].sort().map(dir => unique.get(dir)!);
-    const execute = (): T => {
+    return this.withStoreFences(stores => {
       assertProjectActive(this.profile.home, project);
       for (const store of stores) store.ensureFresh();
       const entries = ids.map(id => {
@@ -369,8 +380,13 @@ export class MemoryStore {
         return view;
       });
       return work(entries);
-    };
-    const lock = (index: number): T => index === stores.length ? execute() : stores[index]!.withMutation(() => lock(index + 1));
+    });
+  }
+  private withStoreFences<T>(work: (stores: readonly MemoryStore[]) => T): T {
+    const unique = new Map<string, MemoryStore>();
+    for (const store of this.readStores()) { const dir = realPath(store.dir); if (!unique.has(dir)) unique.set(dir, store); }
+    const stores = [...unique.keys()].sort().map(dir => unique.get(dir)!);
+    const lock = (index: number): T => index === stores.length ? work(stores) : stores[index]!.withMutation(() => lock(index + 1));
     // Older/raw writers that bypass mutation-lock.db retain the existing mutation.ts ceiling.
     return this.withDeferredPromotions(() => lock(0));
   }
@@ -784,18 +800,18 @@ export class MemoryStore {
     return nest(this.readStores());
   }
 
-  private viewRows(expired: boolean, selection: (Filter & { ids?: string[] }) | undefined, expiredOnly: boolean): View[] {
-    const now = this.now(), selecting = selection !== undefined || expiredOnly;
-    const pruned = this.generationIndex ? new Set((this.readRows("SELECT id FROM generation_targets") as { id: string }[]).map(row => row.id)) : undefined;
-    if (this.generationIndex) this.generationIndex.pruned = new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id));
+  private viewRows(expired: boolean, selection: (Filter & { ids?: string[] }) | undefined, expiredOnly: boolean, projection?: RecallViewProjection): View[] {
+    const now = projection?.now ?? this.now(), selecting = selection !== undefined || expiredOnly;
+    const pruned = projection?.pruned ?? (this.generationIndex ? new Set((this.readRows("SELECT id FROM generation_targets") as { id: string }[]).map(row => row.id)) : undefined);
+    if (!projection && this.generationIndex) this.generationIndex.pruned = new Set((this.db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id));
     // Relations may cross projects and promoted copies: fold their small metadata globally, never filtered bodies.
-    const rows = this.readRows(selecting
+    const rows = projection?.rows ?? this.readRows(selecting
       ? "SELECT id, at, tier, kind, task, expires, supersedes, promoted_from FROM entries"
       : "SELECT * FROM entries") as Record<string, string | null>[];
-    const ops = this.readRows("SELECT id, op, at, target, by FROM ops ORDER BY at, id") as { id: string; op: string; at: string; target: string; by: string | null }[];
-    const realms = this.generationIndex ? new Map((this.readRows("SELECT id,own,legacy FROM generation_rows") as { id: string; own: number; legacy: number }[]).map(row => [row.id, row])) : undefined;
+    const ops = projection?.ops ?? this.readRows("SELECT id, op, at, target, by FROM ops ORDER BY at, id") as { id: string; op: string; at: string; target: string; by: string | null }[];
+    const realms = projection ? projection.realms : this.generationIndex ? new Map((this.readRows("SELECT id,own,legacy FROM generation_rows") as { id: string; own: number; legacy: number }[]).map(row => [row.id, row])) : undefined;
     const born = realms ? new Set([...realms.values()].filter(row => row.own).map(row => row.id)) : undefined;
-    const forgotten = new Set(ops.filter((o) => o.op === "forget").map((o) => o.target));
+    const forgotten = new Set([...ops.filter((o) => o.op === "forget").map((o) => o.target), ...(projection?.forgotten ?? [])]);
     // Deadlines were fixed when the entries were written, so every process (whatever its own TTL) prunes the same rows.
     const deadline = (o: { at: string; by: string | null }) => o.by && !Number.isNaN(Date.parse(o.by)) ? o.by : new Date(Date.parse(o.at) + this.ttl).toISOString();
     const demoted = new Map(ops.filter((o) => o.op === "demote").map((o) => [o.target, deadline(o)]));
@@ -901,7 +917,7 @@ export class MemoryStore {
     for (const r of candidates) {
       const id = r.id!;
       // A forgotten entry is gone, and so is its promoted copy's source or copy: forgetting either forgets both.
-      if (pruned?.has(id) || forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id)) continue;
+      if (pruned?.has(id) || forgotten.has(id) || (r.promoted_from && forgotten.has(r.promoted_from)) || promoted.has(id) && !projection?.includePromoted) continue;
       const tier: Tier = demoted.has(id) ? "short" : r.tier as Tier;
       const expiresAt = expiry(r);
       if (!expired && expiresAt !== null && Date.parse(expiresAt) <= now) continue;
@@ -1053,6 +1069,191 @@ export class MemoryStore {
     });
   }
 
+  /** Metadata-only revision of the opened read set, never a note body or an unopened project shard. */
+  recallRevision(): string { return this.recallFingerprint(true); }
+  private recallFingerprint(databases: boolean): string {
+    const entries: unknown[] = [];
+    const stamp = (file: string, directory = false) => {
+      try {
+        const stat = lstatSync(file, { bigint: true });
+        if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) throw Error("recall input path unavailable");
+        entries.push([file, String(stat.dev), String(stat.ino), ...(directory ? [] : [String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)])]);
+        return true;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { entries.push([file, "absent"]); return false; } throw error; }
+    };
+    const roots = new Set<string>(), fixed = new Set<string>();
+    for (const store of this.readStores()) {
+      roots.add(store.dir);
+      for (const name of ["profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "machine.json"]) fixed.add(join(store.profile.home, name));
+      for (const name of ["generation.json", "generation-seal.json", "migration-sources.json", "machine.json"]) fixed.add(join(store.dir, name));
+      if (store.generationIndex) {
+        const legacy = store.profile.legacyHome ?? store.profile.home; roots.add(legacy);
+        if (store.profile.legacyMainHome) roots.add(store.profile.legacyMainHome);
+        if (!store.profile.sharded && store.profile.generation) {
+          const dir = generationDir(legacy, store.profile.generation), pointer = join(dir, "bridge-snapshot.json"); fixed.add(pointer);
+          // Only the small sealed pointer is parsed to locate its active archive; JSONL bodies are never read here.
+          const head = readProfileJSON(pointer, 4096) as { commit?: unknown } | undefined;
+          if (head !== undefined) {
+            if (typeof head.commit !== "string" || !/^[a-f0-9]{40,64}$/.test(head.commit)) throw Error("recall bridge pointer unavailable");
+            const archive = join(dir, "bridge-snapshots", head.commit); roots.add(archive); fixed.add(join(archive, "snapshot.json"));
+          }
+        }
+      }
+      if (databases) entries.push([store.dir, store.db.query("PRAGMA data_version").get(), store.db.query("SELECT total_changes() AS n").get()]);
+    }
+    for (const root of [...roots].sort()) {
+      if (!stamp(root, true)) continue;
+      fixed.add(join(root, "machine.json"));
+      for (const folder of ["log", "local"]) {
+        const dir = join(root, folder); if (!stamp(dir, true)) continue;
+        for (const name of readdirSync(dir).filter(name => name.endsWith(".jsonl")).sort()) stamp(join(dir, name));
+      }
+    }
+    for (const file of [...fixed].sort()) stamp(file);
+    return hashJSON(entries);
+  }
+  private prepareRecallRead(stores: readonly MemoryStore[]): void {
+    for (const store of stores) {
+      const active = readSelector(store.profile.home);
+      if (active.revision !== store.profile.selectorRevision) throw Error("recall profile changed");
+      if (store.profile.sharded) {
+        const selected = readShardedSelection(store.profile.home);
+        if (selected.generation !== store.profile.generation || selected.selectorRevision !== store.profile.selectorRevision) throw Error("recall shard binding changed");
+      } else if ((readProfileJSON(join(store.profile.home, "shards.json")) as { phase?: unknown } | undefined)?.phase === "active"
+        || (active.selector?.kind ?? "shared-v1") !== store.profile.kind || store.profile.kind === "generation" && active.selector?.generation !== store.profile.generation) throw Error("recall profile changed");
+      if (store.reconcile && (resolveAlias(store.profile.home, store.reconcile.canonical) !== store.reconcile.canonical || canonicalJSON(aliasedKeys(store.profile.home, store.reconcile.canonical).sort()) !== canonicalJSON([...store.reconcile.aliases].sort()))) throw Error("recall alias binding changed");
+      if (store.generationIndex) store.generationIndex.refresh();
+      else if (store.stale || store.shape() !== store.seen) {
+        store.stale = false; store.refresh();
+        if (store.stale || store.shape() !== store.seen) throw Error("recall refresh unavailable");
+      }
+    }
+  }
+  /** Strict preparation once; callers release the fences before awaiting policy or optional overlays. */
+  beginRecallRead(): () => void {
+    return this.withStoreFences(stores => {
+      const before = this.recallFingerprint(false);
+      this.prepareRecallRead(stores);
+      for (const store of stores) store.prune(); // readPage performs this too; settle its derived writes before the revision.
+      const captured = this.recallRevision();
+      if (this.recallFingerprint(false) !== before) throw Error("recall inputs changed during preparation");
+      return () => { if (this.recallRevision() !== captured) throw Error("recall inputs changed"); };
+    });
+  }
+  /** One lifecycle fold for a bounded exact-project set of useful intent-brief genres. */
+  intentSnapshot(project: string, limit = 5000): { rows: View[]; truncated: boolean; assertCurrent(): void } {
+    if (!project.trim() || project.length > 400 || !Number.isSafeInteger(limit) || limit < 1 || limit > 5000 || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw Error("invalid intent snapshot scope or limit");
+    return this.withStoreFences(stores => {
+      const before = this.recallFingerprint(false);
+      assertProjectActive(this.profile.home, project); this.prepareRecallRead(stores);
+      const revision = this.recallRevision(), ids = new Map<string, { id: string; at: string }>();
+      if (this.recallFingerprint(false) !== before) throw Error("recall inputs changed during preparation");
+      for (const store of stores) {
+        const rows = store.db.query("SELECT id,at FROM entries WHERE project IN (SELECT value FROM json_each(?)) AND kind IN ('fail','decision','contract') ORDER BY at DESC,id LIMIT ?").all(JSON.stringify(this.scopeKeys(project)), limit + 1) as { id: string; at: string }[];
+        for (const row of rows) ids.set(row.id, row);
+      }
+      const refs = [...ids.values()].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)), selected = refs.slice(0, limit);
+      const rows = selected.length ? this.views(false, { project, ids: selected.map(row => row.id) }).filter(view => view.project === project && !view.supersededBy && Number.isFinite(Date.parse(view.at))) : [];
+      const order = new Map(selected.map((row, index) => [row.id, index])); rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+      const assertCurrent = () => { if (this.recallRevision() !== revision) throw Error("recall inputs changed"); };
+      assertCurrent(); return { rows, truncated: refs.length > limit, assertCurrent };
+    });
+  }
+
+  /** The same injected clock used by validity, expiry and projection; callers must not substitute wall time. */
+  readNow(): number { return this.now(); }
+
+  /** Person historical recall over verified retained rows. Current removals always override past state. */
+  recallState(project: string, options: RecallStateOptions = {}): RetainedRecallState {
+    if ((options.history || options.asOf !== undefined) && options.person !== true) throw Error("historical recall requires authenticated person intent from the host");
+    if (!project.trim() || project.length > 400 || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw Error("recall project does not match the bound store");
+    const maximumRows = options.maxRows ?? 50_000, maximumBytes = options.maxBytes ?? 32 * 1024 * 1024, present = this.now();
+    if (!Number.isSafeInteger(maximumRows) || maximumRows < 1 || maximumRows > 50_000 || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 32 * 1024 * 1024) throw Error("invalid retained recall budget");
+    let time = present;
+    if (options.asOf !== undefined) {
+      const value = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(options.asOf) ? `${options.asOf}T00:00:00.000Z` : options.asOf;
+      time = Date.parse(value);
+      if (!Number.isFinite(time) || new Date(time).toISOString() !== value || time > present) throw Error("as-of must be a past canonical UTC date or timestamp");
+    }
+    const frontier = () => {
+      const active = readSelector(this.profile.home);
+      if (active.revision !== this.profile.selectorRevision) throw Error("recall profile changed or is not active");
+      if (this.profile.sharded) {
+        const shards = readShardedSelection(this.profile.home);
+        if (shards.generation !== this.profile.generation || shards.selectorRevision !== this.profile.selectorRevision) throw Error("recall shard binding changed");
+      } else if ((readProfileJSON(join(this.profile.home, "shards.json")) as { phase?: unknown } | undefined)?.phase === "active"
+        || (active.selector?.kind ?? "shared-v1") !== this.profile.kind || this.profile.kind === "generation" && active.selector?.generation !== this.profile.generation) throw Error("recall profile changed or is not active");
+      assertProjectActive(this.profile.home, project);
+    };
+    return this.withStoreFences(() => {
+      frontier();
+      const source = new Map<string, Entry>(), realm = new Map<string, { id: string; own: number; legacy: number }>(), pruned = new Set<string>();
+      const reader = new SegmentReader(maximumBytes); let records = 0, bytes = 0, malformed = 0, incomplete = false;
+      const add = (row: Entry, own: boolean, legacy: boolean) => {
+        const { id, ...body } = row;
+        if (row.schema !== MEMORY_SCHEMA || !/^[a-f0-9]{32}$/.test(id) || entryId(body as Omit<Entry, "id">) !== id) throw Error("retained recall row verification failed");
+        const canonical = canonicalJSON(row); records++; bytes += Buffer.byteLength(canonical);
+        if (records > maximumRows || bytes > maximumBytes) throw Error("retained recall budget exceeded");
+        const previous = source.get(id); if (previous && canonicalJSON(previous) !== canonical) throw Error("retained recall identity conflict");
+        source.set(id, row); realm.set(id, { id, own: Number(own), legacy: Number(legacy) });
+      };
+      // Same bound read handles as ordinary views. Never opens an unopened project's private shard.
+      for (const store of this.readStores()) {
+        if (store.generationIndex) {
+          store.generationIndex.refresh(0, reader);
+          store.db.transaction(() => {
+            const size = store.db.query("SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(line AS BLOB))),0) AS bytes FROM generation_rows").get() as { n: number; bytes: number };
+            if (size.n > maximumRows - records || size.bytes > maximumBytes - bytes) throw Error("retained recall budget exceeded");
+            const diagnostics = store.generationIndex!.recallDiagnostics(); malformed += diagnostics.malformed; incomplete ||= diagnostics.incomplete;
+            const state = store.generationIndex!.snapshot(false);
+            for (const item of state.rows) add(item.row, item.own === true, item.legacy ?? item.own !== true);
+            for (const id of state.pruned ?? []) pruned.add(id);
+          }).deferred();
+        } else {
+          const segments = readLegacySnapshot(store.dir, { reader });
+          incomplete ||= segments.some(segment => segment.tailBytes > 0);
+          for (const row of legacyEntries(segments, { onMalformed: () => { malformed++; } })) add(row, false, true);
+        }
+      }
+      frontier();
+      const all = [...source.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+      const notes = all.filter((row): row is NoteEntry => row.op === "note");
+      const removed = new Set(pruned), forgottenAt = new Map<string, string>();
+      for (const row of all) if (row.op === "forget") { removed.add(row.target); if (!forgottenAt.has(row.target)) forgottenAt.set(row.target, row.at); }
+      // Forgetting either end removes known promotion ancestry, in linear bounded graph work.
+      const ancestry = new Map<string, string[]>();
+      for (const note of notes) if (note.promotedFrom) {
+        ancestry.set(note.id, [...ancestry.get(note.id) ?? [], note.promotedFrom]);
+        ancestry.set(note.promotedFrom, [...ancestry.get(note.promotedFrom) ?? [], note.id]);
+      }
+      const queue = [...removed];
+      for (let index = 0; index < queue.length; index++) {
+        const id = queue[index]!, at = forgottenAt.get(id);
+        for (const next of ancestry.get(id) ?? []) {
+          const fresh = !removed.has(next);
+          if (fresh) { removed.add(next); queue.push(next); }
+          if (at && !forgottenAt.has(next)) { forgottenAt.set(next, at); if (!fresh) queue.push(next); }
+        }
+      }
+      const visible = (note: NoteEntry) => this.inScope(note.project, project) || note.scope === "shared";
+      const dated = notes.filter(note => options.asOf === undefined || Date.parse(note.at) <= time), retained = new Map(dated.filter(visible).map(note => [note.id, note]));
+      const rows = dated.map(note => ({ id: note.id, at: note.at, machine: note.machine, project: note.project, scope: note.scope, tier: note.tier, kind: note.kind, peer: note.peer, title: note.title ?? null, text: note.text,
+        task: note.task ?? null, about: JSON.stringify(note.about), source: note.source ?? "hub", supersedes: note.supersedes ?? null, promoted_from: note.promotedFrom ?? null, expires: note.expires ?? null }));
+      const ops = all.filter((row): row is OpEntry => row.op !== "note" && row.op !== "goal" && (options.asOf === undefined || Date.parse(row.at) <= time)).map(row => ({ id: row.id, op: row.op, at: row.at, target: row.target, by: row.by ?? null }));
+      const views = this.viewRows(options.history === true, undefined, false, { now: time, rows, ops, ...(this.generationIndex ? { realms: realm } : {}), pruned, forgotten: removed, includePromoted: options.history === true })
+        .filter(view => (this.inScope(view.project, project) || view.scope === "shared") && (options.history === true || !view.supersededBy));
+      const forgotten = [...forgottenAt].flatMap(([id, at]) => retained.has(id) ? [{ id, at }] : []).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+      const relations: RecallRelation[] = [];
+      const link = (from: string, to: string, at: string, kind: RecallRelation["kind"]) => { if (retained.has(from) && retained.has(to) && !pruned.has(from) && !pruned.has(to)) relations.push({ from, to, at, kind }); };
+      for (const note of dated) { if (note.supersedes) link(note.supersedes, note.id, note.at, "supersede"); if (note.promotedFrom) link(note.promotedFrom, note.id, note.at, "promote"); }
+      for (const op of ops) if (op.op === "supersede" && op.by) link(op.target, op.by, op.at, "supersede");
+      const notices = (options.asOf !== undefined || options.history === true) && views.some(view => view.promotedFrom)
+        ? ["promotion time unknown: tier before promotion cannot be recovered"] : [];
+      frontier();
+      return { at: new Date(time).toISOString(), views, forgotten, relations, malformed, notices, incomplete: incomplete || malformed > 0 || notices.length > 0, ...(incomplete || malformed > 0 ? { sourceIncomplete: true as const } : {}) };
+    });
+  }
+
   /** One entry by id or unique id prefix; with `project`, only one that project may read (its own or shared). */
   get(id: string, project?: string): View | undefined {
     id = id.replace(/^mem:/, ""); // briefs and recall print `mem:<id>`
@@ -1098,10 +1299,10 @@ export class MemoryStore {
   }
 
   /** The neighbourhood of one node for the dashboard: up to `hops` (1 or 2) steps, at most `cap` nodes. */
-  graph(project: string, start: Node, hops = 1, cap = 200): Graph {
+  graph(project: string, start: Node, hops = 1, cap = 200, projection?: readonly View[]): Graph {
     this.ensureFresh();
     if (start.startsWith("mem:") && this.generationIndex?.pruned.has(start.slice(4))) return { nodes: [], edges: [] };
-    const live = new Map(this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map((v) => [`mem:${v.id}`, v]));
+    const live = new Map((projection ?? this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })).map((v) => [`mem:${v.id}`, v]));
     const nodes = new Map<Node, Graph["nodes"][number]>(), edges = new Map<string, Graph["edges"][number]>();
     const goals = new Map(this.goals(project).map((g) => [`goal:${g.id}`, g]));
     const suggestions = this.suggestions().filter((x) => x.status !== "rejected");
@@ -1148,6 +1349,8 @@ export class MemoryStore {
         return ids;
       }
       const ids = (this.db.query("SELECT src FROM edges WHERE dst = ?").all(id) as { src: string }[]).map((r) => `mem:${r.src}`).filter((m) => live.has(m));
+      // Retained expired rows may no longer have derived edges; only their verified authored about nodes supply them.
+      if (projection) for (const view of projection) if (view.about.includes(id) && !ids.includes(`mem:${view.id}`)) ids.push(`mem:${view.id}`);
       for (const m of ids) { const v2 = live.get(m)!; link(m, id, v2.kind === "fail" ? "rules_out" : "about"); }
       return [...ids, ...parts];
     };

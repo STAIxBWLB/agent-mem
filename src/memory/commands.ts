@@ -2,6 +2,7 @@ import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type Go
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem } from "./import.ts";
 import { memoryProjectKey, projectChain } from "./project.ts";
+import { recallForViews, recallGraph, recallRows, recallShow } from "./recall.ts";
 import type { GoalPromotionReport } from "./goal-promotion.ts";
 
 /**
@@ -12,6 +13,8 @@ export interface CommandNames { memory: string; goal: string }
 export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 
 export interface MemoryCommandOptions {
+  /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
+  person?: boolean;
   /** Defaults to amem's own names. */
   names?: CommandNames;
   /** Startup-bound canonical project supplied by a host; no model-facing selector. */
@@ -20,6 +23,9 @@ export interface MemoryCommandOptions {
   sync?: Omit<SyncOptions, "remote">;
   open: () => MemoryStore;
   readable: (notes: View[]) => View[];
+  stale?: (view: View) => boolean | undefined;
+  /** Prepared row ids only: the host must wait for successful output before recording rendered. */
+  outputReady?: (notes: readonly View[]) => void;
   importPolicy: () => (text: string) => boolean;
   /** Explicit person-status receipt; model-facing hosts omit this callback. */
   onBridgeStatus?: (status: { skippedRows: number } | undefined) => void;
@@ -41,7 +47,7 @@ export interface GoalCommandOptions {
  * supersede and rebuild are a person's (the identity gate refuses agent shells).
  */
 /** The usage line of the memory commands under `name` (`amem` by default; agent-hub passes `ahub memory`). */
-export const memoryUsage = (name: string = AMEM_NAMES.memory): string => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
+export const memoryUsage = (name: string = AMEM_NAMES.memory): string => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
 export const MEMORY_USAGE = memoryUsage();
 /** The usage line of the goal commands under `name` (`amem goal` by default; agent-hub passes `ahub goal`). */
 export const goalUsage = (name: string = AMEM_NAMES.goal): string => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`;
@@ -60,6 +66,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const flag = (name: string) => { const i = rest.indexOf(name); if (i < 0) return undefined; const v = rest[i + 1] ?? fail(`${name} needs a value`); rest.splice(i, 2); return v; };
   const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
   const names = opts.names ?? AMEM_NAMES, usage = memoryUsage(names.memory);
+  if (args.some(arg => arg === "--history" || arg === "--as-of" || arg.startsWith("--history=") || arg.startsWith("--as-of=")) && opts.person !== true) fail("historical recall requires authenticated person intent from the host");
   const store = opts.store ?? opts.open();
   const actor = "user";
   const project = opts.project ?? memoryProjectKey(cwd);
@@ -68,40 +75,56 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   for (const crossing of ["--all-projects", "--include-archived"]) if (rest.includes(crossing)) fail(`${crossing} crosses projects: run amem search --all-projects; ${names.memory} reads this project only`);
   // #15 T4: repo scope is the person's `amem promote --to repo`, which screens, previews the committed line and checks the repository's visibility. Here the flag would otherwise be ignored and the note promoted privately.
   for (const repoOnly of ["--to", "--confirm", "--confirm-public"]) if (rest.includes(repoOnly)) fail(`${repoOnly} belongs to the person's amem promote <id> --to repo; ${names.memory} never writes a repository file`);
+  const stale = (view: View) => { try { return opts.stale?.(view) === true; } catch { return false; } };
+  const ready = (rows: readonly View[]) => { try { opts.outputReady?.(rows); } catch { /* optional output metadata cannot fail recall */ } };
+  const decorated = (view: View) => ({ ...view, ...(stale(view) ? { stale: true } : {}) });
+  if (!["list", "search", "show", "graph"].includes(sub) && (rest.includes("--history") || rest.includes("--as-of"))) fail("history/as-of apply only to memory reads");
   try {
     switch (sub) {
       case "list": case "search": {
-        const tier = flag("--tier"), kind = flag("--kind"), peer = flag("--peer"), machine = flag("--machine"), since = flag("--since"), limit = flag("--limit");
+        const tier = flag("--tier"), kind = flag("--kind"), peer = flag("--peer"), machine = flag("--machine"), since = flag("--since"), limit = flag("--limit"), asOf = flag("--as-of");
+        const history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
         if (since !== undefined && Number.isNaN(Date.parse(since))) fail(`--since needs a date or time (ISO 8601), not ${since}`);
         if (tier && tier !== "short" && tier !== "long") fail("--tier takes short or long");
         if (kind && !KINDS.includes(kind as Kind)) fail(`--kind takes ${KINDS.join(", ")}`);
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
-        const q = sub === "search" ? rest.join(" ") || fail(`usage: ${names.memory} search <words>`) : rest.length ? fail(usage) : undefined;
-        // Agent shells may run this: notes are screened under this project's current PII policy, as briefs and recall are
-        // (a shared note was accepted under another project's patterns). The dashboard shows a person everything.
-        const all = store.list({ project, ...(tier ? { tier: tier as Tier } : {}), ...(kind ? { kind: kind as Kind } : {}), ...(peer ? { peer } : {}), ...(machine ? { machine } : {}), ...(since ? { since } : {}), ...(q ? { q } : {}), limit: Number.MAX_SAFE_INTEGER });
-        // Screened first, then cut to the limit: withheld entries never crowd out readable ones.
+        const q = sub === "search" ? rest.join(" ") : undefined;
+        const state = recallRows(store, project, { person: opts.person, history, asOf, query: q, limit: Number.MAX_SAFE_INTEGER });
+        const all = state.views.filter(view => (!tier || view.tier === tier) && (!kind || view.kind === kind) && (!peer || view.peer === peer) && (!machine || view.machine === machine) && (!since || Date.parse(view.at) >= Date.parse(since)));
         const readable = opts.readable(all), rows = readable.slice(0, limit ? Number(limit) : 50);
+        ready(rows);
+        if (history || asOf !== undefined) {
+          const emitted = recallForViews(state, rows), publicIds = new Set(rows.map(view => view.id)), allForgotten = q?.trim() ? [] : state.forgotten;
+          const forgotten = allForgotten.slice(0, Math.max(0, (limit ? Math.floor(Number(limit)) : 50) - rows.length));
+          const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
+          return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+        }
         if (json) return JSON.stringify(rows, null, 2);
-        // Preserve project-wide header semantics, but count only rows the host policy lets this reader see.
-        const counted = opts.readable(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }));
-        const c = { machine: store.machine, long: counted.filter(v => v.tier === "long").length, short: counted.filter(v => v.tier === "short").length };
+        const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
-        return [`memory for ${project} on machine ${c.machine.label}: ${c.long} long-term, ${c.short} short-term`, ...(rows.length ? rows.map(one) : ["(nothing)"]),
+        return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
       }
       case "show": {
-        const id = rest[0] ?? fail(`usage: ${names.memory} show <id>`);
-        const v = need(store.get(id, project), id);
-        if (!opts.readable([v]).length) fail(`${v.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        return json ? JSON.stringify(v, null, 2) : detail(v).join("\n");
+        const asOf = flag("--as-of"), history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
+        const id = rest[0] ?? fail(`usage: ${names.memory} show <id>`), shown = recallShow(store, project, id, { person: opts.person, history, asOf });
+        if (!shown.ids.length) return fail(`no memory entry ${id} (${names.memory} list shows the ids)`);
+        if (shown.state) {
+          const rows = opts.readable(shown.state.views), ids = new Set(rows.map(view => view.id)); ready(rows);
+          const state = { ...recallForViews(shown.state, rows), views: rows.map(decorated), relations: shown.state.relations.filter(edge => ids.has(edge.from) && ids.has(edge.to)) };
+          return json ? JSON.stringify(state, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...(stale(view) ? ["(stale?)"] : []), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+        }
+        const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
+        ready([view]); return json ? JSON.stringify(view, null, 2) : [...(stale(view) ? ["(stale?)"] : []), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);
         if (hops !== 1 && hops !== 2) fail("--hops takes 1 or 2");
+        const asOf = flag("--as-of"), history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
         const start = rest[0] ?? fail(`usage: ${names.memory} graph <id|node>`);
-        const node = start.includes(":") && !start.startsWith("mem:") ? start : `mem:${need(store.get(start, project), start).id}`;
-        const g = store.graph(project, node, hops);
+        const g = recallGraph(store, project, start, hops, { person: opts.person, history, asOf });
+        if ((!start.includes(":") || start.startsWith("mem:")) && !g.nodes.length) fail(`no memory entry ${start} (${names.memory} list shows the ids)`);
+        const node = !start.includes(":") || start.startsWith("mem:") ? g.nodes[0]!.id : start;
         return json ? JSON.stringify(g, null, 2) : [`${g.nodes.length} nodes, ${g.edges.length} edges around ${node}`, ...g.edges.map((e) => `${e.from} -${e.rel}-> ${e.to}`)].join("\n");
       }
       case "promote": { const v = need(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.supersededBy) fail(`${v.id.slice(0, 8)} is replaced by ${v.supersededBy.slice(0, 8)}: promote that one instead`); const id = store.promote(v.id, actor, project) ?? fail(v.project !== project ? `${v.id.slice(0, 8)} is another project's note: promote it from that project` : `${v.id.slice(0, 8)} stays short-term: it holds a secret, matches a PII pattern or is about a private path`); return id === v.id ? `${v.id.slice(0, 8)} is already long-term` : `promoted to long-term as ${id.slice(0, 8)}`; }
