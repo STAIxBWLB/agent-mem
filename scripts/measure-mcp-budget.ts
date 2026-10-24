@@ -103,8 +103,8 @@ try {
   if (initialized.serverInfo?.name !== "amem") throw new Error("expected the amem MCP server");
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
   const listing = await request("tools/list");
-  const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
-  if (listing.tools?.length !== 11 || JSON.stringify(listing.tools.map((tool: { name: string }) => tool.name).sort()) !== JSON.stringify(expectedTools)) throw new Error("frozen MCP tool surface missing");
+  const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_evidence", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
+  if (listing.tools?.length !== 12 || JSON.stringify(listing.tools.map((tool: { name: string }) => tool.name).sort()) !== JSON.stringify(expectedTools)) throw new Error("frozen MCP tool surface missing");
   const call = async (name: string, args: Record<string, unknown>) => {
     const result = await request("tools/call", { name, arguments: args });
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
@@ -160,6 +160,9 @@ try {
   const briefRows = brief.brief.split("\n").slice(1).map((line: string) => JSON.parse(line)) as { id: string; kind: string; text: string }[];
   if (briefRows.length !== briefExpected.size || new Set(briefRows.map(row => row.id)).size !== briefExpected.size
     || briefRows.some((row, index) => briefExpected.get(row.id) !== row.kind || row.kind !== (index < 3 ? "fail" : "decision") || typeof row.text !== "string" || !row.text.includes("mcpbudgetneedle"))) throw new Error("intent brief did not render all seeded fails before decisions");
+  const evidence = await call("amem_evidence", { question: "bounded retrieval storage", limit: 6, maxBytes: 4096 });
+  if (evidence.schema !== "amem.evidence/v1" || evidence.state !== "known" || !Array.isArray(evidence.entries) || !evidence.entries.length || Buffer.byteLength(JSON.stringify(evidence)) > 4096
+    || evidence.entries.some((row: { citation: string; text: string }) => !/^mem:[a-f0-9]{32}$/.test(row.citation) || !row.text.includes("mcpbudgetneedle"))) throw Error("evidence lost its cited bounded render contract");
   for (const args of [{ includeClosed: true }, { list: "budget-work", includeClosed: true }]) {
     const result = await request("tools/call", { name: "amem_work_state_read", arguments: args });
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
@@ -180,12 +183,12 @@ try {
   if (exitCode !== 0) throw new Error(`MCP EOF exit ${exitCode}: ${stderr}`);
   let remains = true;
   try { process.kill(proc.pid!, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") remains = false; else throw error; }
-  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number };
+  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number; evidenceReads: number };
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
-  const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && !remains;
+  const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && measured.evidenceReads === 1 && !remains;
   const report = { platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
-    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
+    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, evidenceReads: measured.evidenceReads, evidenceRendered: evidence.entries.length, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
   console.log(JSON.stringify(report, null, 2));
   if (!pass) throw new Error("MCP memory or EOF budget failed");
   return report;

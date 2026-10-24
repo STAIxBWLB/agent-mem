@@ -41,3 +41,7 @@ export * from "./memory/recall-staleness.ts";
 export * from "./memory/intent-brief.ts";
 export * from "./memory/plan-guard.ts";
 export * from "./memory/use-telemetry.ts";
+export * from "./memory/consolidate.ts";
+export * from "./memory/consolidation-clusters.ts";
+export * from "./memory/consolidation-model.ts";
+export * from "./memory/evidence.ts";

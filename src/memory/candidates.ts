@@ -20,6 +20,8 @@ export type CandidateInput = { project: string } & (
   | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" }
   | { kind: "decay"; target: CandidateTarget; reason: string }
   | { kind: "promotion"; target: CandidateTarget; goalId: string }
+  | { kind: "consolidation"; action: "merge" | "supersession" | "recurring-fix"; targets: CandidateTarget[]; text: string; about: string[]; noteKind: "decision" | "finding" | "contract" | "fail" }
+  | { kind: "model-answer"; marker: "model-answer"; targets: CandidateTarget[]; text: string }
 );
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
 export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null }
@@ -34,6 +36,8 @@ export interface CandidateAcceptance {
   verdict: CandidateVerdict;
   store: MemoryStore;
   policy: (candidate: Candidate, target: View | undefined, note: NoteInput, goal?: GoalView) => boolean;
+  /** Required for multi-source consolidation; must change with the effective host policy. */
+  policyVersion?: () => string;
 }
 export interface CandidateAcceptanceResult { candidateId: string; noteId: string; alreadyAccepted: boolean }
 
@@ -59,6 +63,13 @@ function validate(input: CandidateInput): void {
     if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid memory candidate");
   } else if (input.kind === "promotion") {
     if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
+  } else if (input.kind === "consolidation") {
+    if (!["merge", "supersession", "recurring-fix"].includes(input.action) || !Array.isArray(input.targets) || input.targets.length < 1 || input.targets.length > 8 || !input.targets.every(validTarget)
+      || new Set(input.targets.map(target => target.id)).size !== input.targets.length || !text(input.text, 3000) || !["decision", "finding", "contract", "fail"].includes(input.noteKind)
+      || !Array.isArray(input.about) || input.about.length > 32 || !input.about.every(node => text(node, 400))) throw Error("invalid consolidation candidate");
+  } else if (input.kind === "model-answer") {
+    if (input.marker !== "model-answer" || !text(input.text, 3000) || !input.text.startsWith("Model answer:\n") || !input.text.slice("Model answer:\n".length).trim() || !Array.isArray(input.targets) || input.targets.length < 1 || input.targets.length > 8 || !input.targets.every(validTarget)
+      || new Set(input.targets.map(target => target.id)).size !== input.targets.length) throw Error("invalid model answer candidate");
   } else if (input.kind === "decay") {
     if (!validTarget(input.target) || !text(input.reason)) throw new Error("invalid decay candidate");
   } else throw new Error("invalid candidate kind");
@@ -177,7 +188,7 @@ export class CandidateStore {
     return row ? this.decode(row) : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
-    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory", "promotion"].includes(filter.kind)) throw new Error("invalid candidate filter");
+    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"].includes(filter.kind)) throw new Error("invalid candidate filter");
     const limit = filter.limit ?? CANDIDATE_RETENTION.count;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANDIDATE_RETENTION.count) throw new Error("candidate limit must be 1..500");
     this.prune();
@@ -221,8 +232,10 @@ export class CandidateStore {
     if (candidate.status === "accepted") return { candidateId: id, noteId: candidate.acceptedNoteId!, alreadyAccepted: true };
     if (candidate.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
     const data = candidate.input;
+    if (data.kind === "model-answer") throw Error("model answers cannot become curated memory; use amem note add to author an independent note");
     if (data.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
     if (data.kind === "promotion") return this.acceptPromotion(candidate, data, context);
+    if (data.kind === "consolidation") return this.acceptConsolidation(candidate, data, context);
     const execute = () => {
       const resolve = () => {
         const target = data.kind === "memory" ? undefined : data.target;
@@ -260,6 +273,55 @@ export class CandidateStore {
     if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
     return context.store.withCurrentEntries([target.id], context.project, execute);
   }
+  private acceptConsolidation(candidate: Candidate, data: Extract<CandidateInput, { kind: "consolidation" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
+    if (typeof context.policyVersion !== "function") throw Error("consolidation requires a policy revision guard");
+    const boundStore = context.store, boundProject = context.project, boundPolicy = context.policy;
+    const policyVersion = context.policyVersion(); if (typeof policyVersion !== "string") throw Error("consolidation policy revision unavailable");
+    return context.store.withCurrentEntries(data.targets.map(target => target.id), context.project, () => {
+      const sourcePlacements = context.store.entryPlacements(data.targets.map(target => target.id), context.project);
+      if (data.targets.some(target => sourcePlacements.get(target.id) !== "synced")) throw Error("consolidation requires verified synced source placement");
+      const policyCurrent = () => {
+        if (context.actor !== "person" || context.store !== boundStore || context.project !== boundProject || context.policy !== boundPolicy) throw Error("consolidation acceptance context changed");
+        if (context.policyVersion!() !== policyVersion) throw Error("consolidation policy changed");
+      };
+      const check = () => {
+        policyCurrent();
+        const current = data.targets.map(target => {
+          const row = context.store.get(target.id, context.project);
+          if (!row || row.id !== target.id || row.project !== context.project || row.supersededBy || candidateTargetRevision(row) !== target.revision) throw Error("consolidation source revision is stale");
+          return row;
+        });
+        const placements = context.store.entryPlacements(data.targets.map(target => target.id), context.project);
+        if (current.some(row => row.scope !== current[0]!.scope || placements.get(row.id) !== placements.get(current[0]!.id))) throw Error("consolidation sources must have the same placement and scope");
+        if (data.targets.some(target => placements.get(target.id) !== sourcePlacements.get(target.id))) throw Error("consolidation source placement changed");
+        policyCurrent(); // The proof scan can be long; fence policy changes after it, not only before it.
+        return current;
+      };
+      const sources = check(), first = sources[0]!;
+      const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: "person", source: "person", about: [...data.about],
+        text: `Accepted consolidation candidate: ${candidate.id}\nAction: ${data.action}\nSources: ${data.targets.map(target => `mem:${target.id}`).join(", ")}\n\n${data.text}` };
+      if (note.text.length > 4000) throw Error("accepted consolidation exceeds the v1 note limit");
+      for (const source of sources) if (context.policy(structuredClone(candidate), structuredClone(source), structuredClone(note)) !== true) throw Error("consolidation refused by current host policy");
+      check();
+      return context.store.withAcceptedNote(note, append => {
+        check();
+        const replay = this.beginAcceptance(candidate.id, context.project, policyCurrent); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
+        const noteId = append(), applied: string[] = [];
+        try {
+          if (data.action !== "recurring-fix") for (const target of data.targets) {
+            if (!context.store.supersede(target.id, noteId, "person", context.project)) throw Error("supersession refused");
+            applied.push(target.id);
+          }
+        } catch {
+          // ponytail: v1 appends cannot form an atomic multi-source replacement. Keep 'accepting' and
+          // report every confirmed effect; recovery requires person inspection before any replay.
+          throw Error(`consolidation interrupted: inspect note ${noteId}; superseded ${applied.join(", ") || "none"}; remaining or uncertain ${data.targets.filter(target => !applied.includes(target.id)).map(target => target.id).join(", ")}`);
+        }
+        this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, candidate.id, this.scope(context.project));
+        return { candidateId: candidate.id, noteId, alreadyAccepted: false };
+      });
+    });
+  }
   private acceptPromotion(candidate: Candidate, data: Extract<CandidateInput, { kind: "promotion" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
     const resolve = () => {
       const target = context.store.get(data.target.id, context.project);
@@ -288,12 +350,30 @@ export class CandidateStore {
       return { candidateId: candidate.id, noteId, alreadyAccepted: false };
     });
   }
-  private beginAcceptance(id: string, project: string): string | undefined {
+  /** Reserve before the optional callback, including failed attempts. No table is created on capture/MCP reads. */
+  reserveConsolidationModel(inputBytes: number): boolean {
+    if (!Number.isSafeInteger(inputBytes) || inputBytes < 1 || inputBytes > 8192) throw Error("invalid model input budget");
+    const at = this.now(); if (!Number.isFinite(at)) throw Error("model budget clock unavailable");
+    const day = new Date(at).toISOString().slice(0, 10);
+    return this.db.transaction(() => {
+      this.db.run("CREATE TABLE IF NOT EXISTS consolidation_budget (day TEXT PRIMARY KEY, calls INTEGER NOT NULL, input_bytes INTEGER NOT NULL)");
+      const latest = this.db.query("SELECT MAX(day) AS day FROM consolidation_budget").get() as { day: string | null };
+      if (latest.day && latest.day > day) return false;
+      const row = this.db.query("SELECT calls,input_bytes FROM consolidation_budget WHERE day = ?").get(day) as { calls: number; input_bytes: number } | null;
+      if (row && (!Number.isSafeInteger(row.calls) || row.calls < 0 || !Number.isSafeInteger(row.input_bytes) || row.input_bytes < 0)) throw Error("model budget state unavailable");
+      if (row && (row.calls >= 4 || row.input_bytes + inputBytes > 32768)) return false;
+      this.db.query("INSERT INTO consolidation_budget (day,calls,input_bytes) VALUES (?,1,?) ON CONFLICT(day) DO UPDATE SET calls = calls + 1, input_bytes = input_bytes + excluded.input_bytes").run(day, inputBytes);
+      this.db.query("DELETE FROM consolidation_budget WHERE day < ?").run(new Date(at - 30 * 86400_000).toISOString().slice(0, 10));
+      return true;
+    }).immediate();
+  }
+  private beginAcceptance(id: string, project: string, before?: () => void): string | undefined {
     return this.db.transaction(() => {
       const current = this.get(id, project);
       if (!current) throw Error("candidate unavailable");
       if (current.status === "accepted") return current.acceptedNoteId!;
       if (current.status !== "pending") throw Error("candidate is rejected or acceptance was interrupted; no automatic replay");
+      before?.();
       this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(id, this.scope(project));
       return undefined;
     }).immediate();
