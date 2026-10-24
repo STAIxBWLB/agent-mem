@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath } from "../src/memory/platform.ts";
 
-const PACKAGE = "@staix/agent-mem", MARKER = "installedpublicsmokeneedle", OUTPUT_BYTES = 2 * 1024 * 1024;
+const PACKAGE = "@staix/agent-mem", MARKER = "installedpublicsmokeneedle", HOOK_MARKER = "installednativesmokehookmarker", OUTPUT_BYTES = 2 * 1024 * 1024;
 const inside = (root: string, file: string) => { const part = relative(resolve(root), resolve(file)); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); };
 const requireSmoke = (condition: unknown, message: string): void => { if (!condition) throw Error(message); };
 const object = (value: unknown): Record<string, any> => { requireSmoke(value && typeof value === "object" && !Array.isArray(value), "installed smoke expected an object"); return value as Record<string, any>; };
@@ -21,7 +22,7 @@ export function assertInstalledAlias(alias: string, resolvedAlias: string, entry
 export function assertInstalledModule(modulePath: string, installedRoot: string, checkout: string): void {
   requireSmoke(isAbsolute(modulePath) && inside(installedRoot, modulePath) && !inside(checkout, modulePath), "public API fell back outside the installed artifact");
 }
-export function assertNoHubBranding(output: string): void { requireSmoke(!/\bahub\b/i.test(output), "legacy host command appeared in installed output"); }
+export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
   requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse"), "installed smoke refuses mutating or unsupported CLI arguments");
 }
@@ -33,20 +34,24 @@ export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.P
     BUN_INSTALL: join(home, ".bun"), BUN_INSTALL_CACHE_DIR: join(home, ".cache", "bun"), npm_config_cache: join(home, ".cache", "npm"), npm_config_userconfig: join(home, ".config", "npmrc"), npm_config_globalconfig: join(home, ".config", "global-npmrc"), npm_config_prefix: join(home, ".npm-prefix"), npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", TZ: "UTC", NO_COLOR: "1", TERM: "dumb" };
 }
-export function assertSetupPreview(value: unknown, home: string): string[] {
+export function assertSetupPreview(value: unknown, home: string, entry: string): string[] {
   const plan = object(value);
   requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi"]) && Array.isArray(plan.actions) && plan.actions.length === 4, "installed setup did not return the all-target dry-run plan");
   requireSmoke(JSON.stringify(plan.actions.map((action: any) => action?.target)) === JSON.stringify(plan.targets), "installed setup target inventory is incomplete");
   const files: string[] = [];
   for (const raw of plan.actions) { const action = object(raw); requireSmoke(Array.isArray(action.files) && action.files.length > 0 && typeof action.receipt === "string", "installed setup inventory is incomplete");
+    if (action.registration !== null) requireSmoke(Array.isArray(action.registration) && action.registration.includes(entry), "installed setup registration uses a stale package entry");
+    if (action.target === "kimi" && action.hooks !== undefined) requireSmoke(Array.isArray(action.hooks) && action.hooks.length > 0 && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed Kimi hooks use a stale package entry");
     for (const file of [...action.files, action.receipt]) { requireSmoke(typeof file === "string" && isAbsolute(file) && inside(home, file), "installed setup escaped its isolated HOME"); files.push(file); }
   }
   return files;
 }
 export function assertMcpResult(output: string, version: string, seedId: string, project: string): void {
   assertNoHubBranding(output);
-  const replies = output.trim().split("\n").filter(Boolean).map(line => object(JSON.parse(line))), initialized = replies.find(row => row.id === 1), search = replies.find(row => row.id === 2);
-  requireSmoke(replies.length === 2 && initialized?.result?.serverInfo?.name === "amem" && initialized.result.serverInfo.version === version && !search?.error && search?.result?.isError !== true, "installed MCP initialization/search failed");
+  const replies = output.trim().split("\n").filter(Boolean).map(line => object(JSON.parse(line))), initialized = replies.find(row => row.id === 1), search = replies.find(row => row.id === 2), listing = replies.find(row => row.id === 3);
+  requireSmoke(replies.length === 3 && initialized?.result?.serverInfo?.name === "amem" && initialized.result.serverInfo.version === version && !search?.error && search?.result?.isError !== true, "installed MCP initialization/search failed");
+  requireSmoke(!listing?.error && Array.isArray(listing?.result?.tools) && listing.result.tools.some((tool: any) => tool.name === "amem_search"), "installed MCP tool listing unavailable");
+  for (const tool of listing.result.tools) { requireSmoke(typeof tool.description === "string", "installed MCP tool description missing"); assertNoHubBranding(tool.description); }
   const content = search?.result?.content?.find((item: any) => item.type === "text" && typeof item.text === "string");
   requireSmoke(content, "installed MCP search has no JSON result");
   const result = object(JSON.parse(content.text));
@@ -55,9 +60,47 @@ export function assertMcpResult(output: string, version: string, seedId: string,
 export function assertPostToolUseOutput(output: string): void {
   requireSmoke(output.trim() === "", "native PostToolUse emitted output reserved for SessionStart context");
 }
-export function assertHookMetric(metrics: string): void {
-  const rows = metrics.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
-  requireSmoke(rows.some(row => row.kind === "hook" && typeof row.at === "string" && Number.isFinite(Date.parse(row.at)) && Number.isFinite(row.wallMs) && row.wallMs >= 0 && Number.isFinite(row.rssMB) && row.rssMB >= 0), "installed native hook produced no load/metric evidence");
+export interface HomeSnapshotEntry { path: string; type: "directory" | "file" | "symlink" | "other"; size: number; mode: number; hash?: string; link?: string }
+export function snapshotPrivateHome(home: string): HomeSnapshotEntry[] {
+  const rows: HomeSnapshotEntry[] = [];
+  const walk = (file: string) => {
+    const stat = lstatSync(file), path = relative(home, file) || ".", mode = stat.mode & 0o7777, size = stat.size;
+    if (stat.isSymbolicLink()) rows.push({ path, type: "symlink", size, mode, link: readlinkSync(file) });
+    else if (stat.isDirectory()) { rows.push({ path, type: "directory", size, mode }); for (const name of readdirSync(file).sort()) walk(join(file, name)); }
+    else if (stat.isFile()) rows.push({ path, type: "file", size, mode, hash: createHash("sha256").update(readFileSync(file)).digest("hex") });
+    else rows.push({ path, type: "other", size, mode });
+  };
+  walk(home); return rows.sort((a, b) => a.path.localeCompare(b.path));
+}
+export function assertHomeUnchanged(before: HomeSnapshotEntry[], after: HomeSnapshotEntry[]): void { requireSmoke(JSON.stringify(before) === JSON.stringify(after), "setup dry run changed its private HOME"); }
+export function assertHookMetric(before: string, after: string): void {
+  requireSmoke(after.startsWith(before), "hook metric history changed rather than appending");
+  const rows = after.slice(before.length).split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
+  requireSmoke(rows.length === 1 && rows[0]!.kind === "hook" && typeof rows[0]!.at === "string" && Number.isFinite(Date.parse(rows[0]!.at)) && Number.isFinite(rows[0]!.wallMs) && rows[0]!.wallMs >= 0 && Number.isFinite(rows[0]!.rssMB) && rows[0]!.rssMB >= 0, "installed hook must append exactly one fresh hook metric");
+}
+export interface HookExpectation { project: string; cwd: string; event: string; agent: string; marker: string }
+export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, raw: unknown, expected: HookExpectation): void {
+  assertHookMetric(beforeMetrics, afterMetrics);
+  const evidence = object(raw), capture = (row: any) => row && row.agent === expected.agent && row.event === expected.event && row.excerpt === expected.marker;
+  const retained = Array.isArray(evidence.rows) && evidence.rows.some((row: any) => row.project === expected.project && capture(row));
+  const pending = Array.isArray(evidence.pending) && evidence.pending.some((item: any) => {
+    if (!item || item.type !== "file" || item.nlink !== 1 || item.project !== expected.project || typeof item.path !== "string") return false;
+    const name = /^hook-spool\/(?:\.capacity\/)?hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
+    return !!name && name[1] === createHash("sha256").update(expected.cwd).digest("hex") && row?.schema === "agent-mem.hook-capture/v1" && row.cwd === expected.cwd && row.nonce === name[3]
+      && (row.scope === null ? name[2] === "0".repeat(64) : row.scope === name[2]) && capture(row.capture) && typeof row.capture.at === "string" && Number.isFinite(Date.parse(row.capture.at));
+  });
+  requireSmoke(retained || pending, "installed hook metric lacks the matching durable capture or pending record");
+}
+/** Cache one bounded reap for both normal completion and finally, never extending cleanup by retrying. */
+export function createReapWaiter(reaped: Promise<void>, failed: () => void, timeoutMs = 3000): () => Promise<void> {
+  requireSmoke(Number.isInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 3000, "invalid smoke reap bound");
+  let cached: Promise<void> | undefined;
+  return () => cached ??= (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([reaped, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(Error("owned smoke command was not reaped")), timeoutMs); })]); }
+    catch (error) { try { failed(); } catch {} throw error; }
+    finally { if (timer) clearTimeout(timer); }
+  })();
 }
 
 // The leader stays alive after its command exits so cleanup can safely stop its still-owned process group.
@@ -75,6 +118,7 @@ async function ownedCommand(bun: string, argv: readonly string[], cwd: string, e
   const completed = new Promise<number>((yes, no) => { resolveCode = yes; rejectCode = no; });
   const stop = () => { if (!exited && child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} } } };
   const reaped = new Promise<void>(resolveClose => { child.once("exit", () => { exited = true; rejectCode(Error("installed smoke leader exited before command completion")); }); child.once("close", () => { exited = true; resolveClose(); }); });
+  const waitForReap = createReapWaiter(reaped, () => { for (const pipe of child.stdio) try { (pipe as { destroy?(): void } | null)?.destroy?.(); } catch {} child.unref(); });
   child.once("error", () => rejectCode(Error("installed smoke could not start its owned command")));
   const collect = (target: Buffer[]) => (data: Buffer) => { if ((bytes += data.length) > OUTPUT_BYTES) { rejectCode(Error("installed smoke command output exceeded its bound")); stop(); } else target.push(data); };
   child.stdout?.on("data", collect(stdout)); child.stderr?.on("data", collect(stderr));
@@ -88,12 +132,12 @@ async function ownedCommand(bun: string, argv: readonly string[], cwd: string, e
   const timer = setTimeout(() => { rejectCode(Error("installed smoke command timed out")); stop(); }, timeoutMs);
   child.stdin?.on("error", () => {}); child.stdin?.end(input);
   try {
-    const code = await completed; stop(); await reaped;
+    const code = await completed; stop(); await waitForReap();
     const output = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stdout)), errors = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stderr));
     assertNoHubBranding(output); assertNoHubBranding(errors);
     requireSmoke(code === 0, `installed smoke command failed (${basename(argv[0] ?? "command")}, exit ${code})`);
     return output;
-  } finally { clearTimeout(timer); process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); stop(); await reaped; }
+  } finally { clearTimeout(timer); process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); stop(); await waitForReap(); }
 }
 
 /** A fixed, provider-free mini probe of the same owned launcher used by the artifact smoke. */
@@ -104,8 +148,8 @@ export async function probeSmokeLauncher(cwd: string, env: NodeJS.ProcessEnv): P
   requireSmoke(JSON.stringify(observed) === JSON.stringify(args), "owned launcher did not forward the fixed argument vector");
   return observed as string[];
 }
-export interface InstalledSmokeReport { package: string; version: string; setup: "dry-run"; mcp: "seeded search"; hook: "native metric observed"; timing: "not measured; existing R2 gates remain separate" }
-export async function runInstalledPackageSmoke(): Promise<InstalledSmokeReport> {
+export interface InstalledSmokeReport { package: string; version: string; setup: "dry-run"; mcp: "seeded search"; hook: "durable native capture observed"; timing: "not measured; existing R2 gates remain separate" }
+export async function runInstalledPackageSmoke(options: { afterInstall?: (installedRoot: string) => void } = {}): Promise<InstalledSmokeReport> {
   const checkout = realPath(fileURLToPath(new URL("../", import.meta.url))), metadata = object(JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")));
   requireSmoke(metadata.name === PACKAGE && typeof metadata.version === "string", "unexpected source package metadata");
   const bun = process.execPath, npm = Bun.which("npm"), node = Bun.which("node"); requireSmoke(npm && node, "installed smoke requires npm and Node for offline local tarball installation");
@@ -129,27 +173,34 @@ export async function runInstalledPackageSmoke(): Promise<InstalledSmokeReport> 
     const appBin = join(app, "node_modules", ".bin"), installedEnv = { ...env, PATH: `${appBin}${delimiter}${runtimePath}` };
     const executable = Bun.which("amem", { PATH: installedEnv.PATH }); requireSmoke(executable, "installed package did not register its executable");
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
+    options.afterInstall?.(installed);
     const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input); };
     const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
     for (const file of ruleFiles) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "installed smoke instruction/rule sentinel, keep exact bytes\n", { mode: 0o600 }); }
     const rules = ruleFiles.map(file => ({ file, bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }));
     const verifyRules = () => { for (const rule of rules) requireSmoke(readFileSync(rule.file).equals(rule.bytes) && (lstatSync(rule.file).mode & 0o777) === rule.mode, "setup or runtime changed an instruction/rule sentinel"); };
     requireSmoke((await cli(["--version"])).trim() === `amem ${metadata.version}`, "installed CLI version output differs"); await cli(["--help"]);
-    const plan = JSON.parse(await cli(["setup", "all"])); const plannedFiles = assertSetupPreview(plan, home);
+    const beforeSetup = snapshotPrivateHome(home);
+    const plan = JSON.parse(await cli(["setup", "all"])); const afterSetup = snapshotPrivateHome(home); assertHomeUnchanged(beforeSetup, afterSetup);
+    const plannedFiles = assertSetupPreview(plan, home, entry);
     requireSmoke(plannedFiles.every(file => !existsSync(file)) && !existsSync(nativeCalls), "setup dry run wrote configuration or invoked a native client"); verifyRules();
     const seedFile = join(app, "seed-installed.ts");
     writeFileSync(seedFile, `import {MemoryStore,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';const resolved=realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem')));const project=memoryProjectKey(process.cwd());const store=new MemoryStore({memoryDir:process.env.AMEM_HOME,deferPromotions:true});try{const id=store.note({op:'note',project,scope:'project',tier:'long',kind:'contract',peer:'person',source:'person',text:${JSON.stringify(MARKER)},about:[]});console.log(JSON.stringify({id,project,resolved}));}finally{store.close();}\n`);
     const seed = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", seedFile], projectDir, installedEnv))); assertInstalledModule(seed.resolved, installed, checkout); requireSmoke(/^[a-f0-9]{32}$/.test(seed.id) && typeof seed.project === "string", "installed API seed failed");
     const frame = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
-    const mcpInput = frame(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "installed-smoke", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n" + frame(2, "tools/call", { name: "amem_search", arguments: { query: MARKER, includeCapture: false, limit: 5 } });
+    const mcpInput = frame(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "installed-smoke", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n" + frame(3, "tools/list", {}) + frame(2, "tools/call", { name: "amem_search", arguments: { query: MARKER, includeCapture: false, limit: 5 } });
     assertMcpResult(await cli(["mcp"], mcpInput), metadata.version, seed.id, seed.project);
-    const metrics = join(env.AMEM_HOME!, "metrics.jsonl"); requireSmoke(!existsSync(metrics) || !readFileSync(metrics, "utf8").includes('"kind":"hook"'), "hook evidence unexpectedly predates native execution");
+    const metrics = join(env.AMEM_HOME!, "metrics.jsonl"), beforeMetrics = existsSync(metrics) ? readFileSync(metrics, "utf8") : "";
     writeFileSync(join(projectDir, "public.txt"), "public installed hook fixture\n");
-    const hookOutput = await cli(["hook", "PostToolUse"], JSON.stringify({ session_id: "installed-smoke", hook_event_name: "PostToolUse", cwd: projectDir, tool_name: "Read", tool_input: { file_path: "public.txt" }, tool_response: "public installed hook result" }));
+    const hookOutput = await cli(["hook", "PostToolUse"], JSON.stringify({ session_id: "installed-smoke", hook_event_name: "PostToolUse", cwd: projectDir, tool_name: "Read", tool_input: { file_path: "public.txt" }, tool_response: HOOK_MARKER }));
     assertPostToolUseOutput(hookOutput); verifyRules();
-    requireSmoke(existsSync(metrics), "installed native hook did not load its metric path"); assertHookMetric(readFileSync(metrics, "utf8"));
+    requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
+    const reader = join(app, "read-hook-installed.ts");
+    writeFileSync(reader, `import {CaptureStore,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';import {lstatSync,readdirSync,readFileSync} from 'node:fs';import {join} from 'node:path';const base=process.env.AMEM_HOME;const project=memoryProjectKey(process.cwd());let rows=[];try{const store=new CaptureStore({memoryDir:base,project,readOnly:true,maxReadRows:32});try{rows=store.rows({project,limit:32});}finally{store.close();}}catch{}const pending=[];for(const rel of ['hook-spool','hook-spool/.capacity']){const dir=join(base,rel);let stat;try{stat=lstatSync(dir);}catch{continue;}if(!stat.isDirectory()||stat.isSymbolicLink())continue;for(const name of readdirSync(dir)){const file=join(dir,name),s=lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>73728)continue;try{const value=JSON.parse(readFileSync(file,'utf8'));pending.push({path:rel+'/'+name,type:'file',nlink:s.nlink,project:value.cwd===process.cwd()?project:'',value});}catch{}}}console.log(JSON.stringify({resolved:realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem'))),rows,pending}));\n`);
+    const evidence = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", reader], projectDir, installedEnv))); assertInstalledModule(evidence.resolved, installed, checkout);
+    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), evidence, { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
     requireSmoke(!existsSync(nativeCalls), "installed smoke unexpectedly invoked a native coding client");
-    return { package: PACKAGE, version: metadata.version, setup: "dry-run", mcp: "seeded search", hook: "native metric observed", timing: "not measured; existing R2 gates remain separate" };
+    return { package: PACKAGE, version: metadata.version, setup: "dry-run", mcp: "seeded search", hook: "durable native capture observed", timing: "not measured; existing R2 gates remain separate" };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 if (import.meta.main) {
