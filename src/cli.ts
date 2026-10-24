@@ -79,7 +79,7 @@ export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO
 
 /** Honest native-shell defaults, matching every marker detectCliIdentity treats as non-console (invalid included). */
 export function agentMarked(env: Readonly<Record<string, string | undefined>>): boolean {
-  return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].some(key => env[key] !== undefined);
+  return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"].some(key => env[key] !== undefined);
 }
 
 function shardStatePresent(): boolean {

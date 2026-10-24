@@ -1,3 +1,5 @@
+import { SETUP_CONFIG_BYTES, setTomlPath } from "./setup-toml.ts";
+import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -13,23 +15,25 @@ import { canonicalPath, processLiveness, processSignature, realPath } from "./me
 export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi"] as const;
 export type SetupTarget = typeof SETUP_TARGETS[number];
 type Env = Readonly<Record<string, string | undefined>>;
-interface Image { bytes: string | null; mode: number }
+type Image = ConfigImage;
 interface PlannedHook { event: string; command: string; timeout: number }
-interface Change { key: string; path: string; before: Image; after: Image }
+interface Change { key: string; path: string; before: Image; after: Image; start?: Image }
 interface Receipt { version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
   env?: Env; bun?: string; entry?: string; stdinTTY?: boolean;
   /** Trusted confirmation seam; ordinary CLI use always asks the person through stdin. */
   confirm?: (plan: SetupPlan) => Promise<boolean>;
+  /** Host-only race fixture, called after temporary-file fsync and before the final comparison/rename. */
+  beforePublish?: (file: string) => void;
   /** Trusted test seam; production always runs the named native CLI in a private staging HOME. */
   native?: (argv: readonly string[], env: Env, cwd: string) => void;
 }
 export interface SetupPlan {
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo";
-  actions: { target: SetupTarget; files: string[]; receipt: string; registration: string[] | null; lifecycle: string; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
+  actions: { target: SetupTarget; files: string[]; receipt: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
 }
-const MAX = 1024 * 1024, JOURNAL_MAX = 24 * MAX;
+const MAX = SETUP_CONFIG_BYTES, JOURNAL_MAX = 12 * MAX;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 function record(value: unknown): Record<string, unknown> {
@@ -62,21 +66,23 @@ function read(file: string, max = MAX): Image {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > max) throw Error("setup configuration unavailable or oversized");
-    const data = Buffer.alloc(max + 1), size = readSync(fd, data, 0, data.length, 0), after = fstatSync(fd);
+    const data = Buffer.alloc(stat.size + 1), size = readSync(fd, data, 0, data.length, 0), after = fstatSync(fd);
     if (size !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw Error("setup configuration changed while reading");
     return { bytes: data.subarray(0, size).toString("base64"), mode: stat.mode & 0o777 };
   } finally { closeSync(fd); }
 }
-function write(file: string, value: Image): void {
+function write(file: string, value: Image, expected?: Image, beforePublish?: (file: string) => void): void {
   names(file);
-  if (value.bytes === null) { rmSync(file, { force: true }); return; }
+  if (value.bytes === null) { beforePublish?.(file); if (expected && !sameImage(read(file), expected)) throw Error("setup configuration changed before removal"); rmSync(file, { force: true }); return; }
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); names(dirname(file));
   const temporary = join(dirname(file), `.amem-setup-${randomUUID()}`);
   try {
     const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { writeFileSync(fd, Buffer.from(value.bytes, "base64")); fchmodSync(fd, value.mode); fsyncSync(fd); }
     finally { closeSync(fd); }
-    renameSync(temporary, file); const parent = openSync(dirname(file), constants.O_RDONLY); try { fsyncSync(parent); } finally { closeSync(parent); }
+    beforePublish?.(file);
+    if (expected && !sameImage(read(file), expected)) throw Error("setup configuration changed before publication");
+    names(file); renameSync(temporary, file); const parent = openSync(dirname(file), constants.O_RDONLY); try { fsyncSync(parent); } finally { closeSync(parent); }
   } finally { rmSync(temporary, { force: true }); }
 }
 function context(options: SetupContext) {
@@ -94,8 +100,8 @@ function context(options: SetupContext) {
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
   };
-  const bun = options.bun ?? process.execPath, entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
-  if (![bun, entry].every(isAbsolute)) throw Error("setup executable paths must be absolute");
+  const bun = options.bun ?? "bun", entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
+  if (!isAbsolute(entry) || bun !== "bun" && !isAbsolute(bun)) throw Error("setup entry must be absolute and runtime must be bun or an absolute host path");
   return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
@@ -104,13 +110,13 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, `${target}.json`); }
-function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = true): Receipt | undefined {
+function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
   if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
     const change = record(value.changes[i]); if (change.path !== c.paths[target][i] || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
-    for (const key of ["before", "after"]) {
+    for (const key of ["before", "after", ...(change.start !== undefined ? ["start"] : [])]) {
       const v = record(change[key]);
       if (!Number.isInteger(v.mode) || Number(v.mode) < 0 || Number(v.mode) > 0o777 || v.bytes !== null && (typeof v.bytes !== "string" || v.bytes.length > 2 * MAX || Buffer.from(v.bytes, "base64").toString("base64") !== v.bytes)) throw Error("setup receipt invalid");
     }
@@ -131,10 +137,10 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const original = read(c.paths[target][0]!);
     const document = target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
     const hasAmem = Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
-    const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every(change => digest(read(change.path)) === digest(change.after));
+    const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"];
-    return { target, files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior || !add ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; undo before applying again" : prior?.phase ?? "not installed" };
-  }), notes: ["Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original bytes, file modes and absence are backed up privately; undo refuses later configuration edits.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust."] };
+    return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
+  }), notes: ["Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use stable bun; setup all reports and skips missing clients."] };
 }
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
   // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
@@ -158,9 +164,16 @@ function hookDocument(before: Image, events: readonly string[], commandFor: (eve
 function piExtension(bun: string, entry: string): string {
   return `// amem setup managed session-end ingest; no resident worker or instruction injection.\nimport { spawnSync } from 'node:child_process';\nexport default function (pi) {\n  pi.on('session_shutdown', (_event, ctx) => {\n    try { spawnSync(${JSON.stringify(bun)}, ['--smol', ${JSON.stringify(entry)}, 'ingest', 'pi'], { cwd: ctx.cwd, stdio: 'ignore', timeout: 2500 }); } catch {}\n  });\n}\n`;
 }
-function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Receipt {
-  const prior = receipt(c, target); if (prior) return prior;
-  const changes = c.paths[target].map((path, i) => { const before = read(path); return { key: `${target}:${i}`, path, before, after: before }; });
+interface Prepared { value: Receipt; expected: Image[]; unchanged: boolean }
+function restoreChange(value: Receipt, change: Change, index: number, live: Image): Image {
+  try { return restoreOwned(value.target, index, change.before, change.after, live); }
+  catch (error) { if (value.phase === "prepared" && change.start) return restoreOwned(value.target, index, change.before, change.start, live); throw error; }
+}
+function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
+  const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
+  const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
+  if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
+  const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
     const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent") };
@@ -170,12 +183,14 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     const staged = context({ ...options, env });
     // Codex refuses an explicit CODEX_HOME that does not exist, even for mcp add.
     mkdirSync(dirname(staged.paths[target][0]!), { recursive: true, mode: 0o700 });
-    for (let i = 0; i < changes.length; i++) if (changes[i]!.before.bytes !== null) write(staged.paths[target][i]!, changes[i]!.before);
+    for (let i = 0; i < changes.length; i++) if (expected[i]!.bytes !== null) write(staged.paths[target][i]!, expected[i]!);
     const argv = command(target, c.bun, c.entry);
-    if (argv) {
+    if (argv && prior?.intent === intent(c, target)) {
+      changes[0]!.after = putMcpRecord(target, changes[0]!.before, mcpRecord(target, prior.changes[0]!.after));
+    } else if (argv) {
       if (!options.native) verifyNativeMcp(target, env, staging);
-      const text = changes[0]!.before.bytes === null ? "" : Buffer.from(changes[0]!.before.bytes!, "base64").toString("utf8");
-      const document = target === "codex" ? toml(text) : json(changes[0]!.before);
+      const text = expected[0]!.bytes === null ? "" : Buffer.from(expected[0]!.bytes!, "base64").toString("utf8");
+      const document = target === "codex" ? toml(text) : json(expected[0]!);
       const servers = document[target === "codex" ? "mcp_servers" : "mcpServers"];
       if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"], env, staging);
       (options.native ?? native)(argv, env, staging);
@@ -207,43 +222,44 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
       const parsed = toml(old), hooks = parsed.hooks ?? [];
       if (!Array.isArray(hooks)) throw Error("Kimi hooks must be an array");
-      changes[1]!.after = hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi")) ? changes[1]!.before : image(`${old}${old.endsWith("\n") || !old ? "" : "\n"}\n[[hooks]]\nevent = "SessionEnd"\ncommand = ${JSON.stringify(capture("kimi"))}\ntimeout = 3\n`, changes[1]!.before.mode);
+      if (!hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi"))) hooks.push({ event: "SessionEnd", command: capture("kimi"), timeout: 3 });
+      changes[1]!.after = image(setTomlPath(old, ["hooks"], hooks), changes[1]!.before.mode);
     }
     if (target === "pi") {
       const content = piExtension(c.bun, c.entry);
-      if (changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes) throw Error("Pi amem-session extension already exists and is not this setup's file");
+      if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes) throw Error("Pi amem-session extension already exists and is not this setup's file");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.
     if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
-    return { version: 1, target, intent: intent(c, target), phase: "prepared", changes };
+    return { value: { version: 1, target, intent: intent(c, target), phase: "prepared", changes }, expected, unchanged: false };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
-function current(change: Change): "before" | "after" {
-  const found = read(change.path), hash = digest(found);
-  if (hash === digest(change.after)) return "after";
-  if (hash === digest(change.before)) return "before";
-  throw Error("setup configuration changed; refusing to overwrite later edits");
-}
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
-/** Caller must enforce person markers/TTY and obtain confirmation before this mutation boundary. */
-function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): { applied: SetupTarget[]; unchanged: SetupTarget[] } {
-  const c = context(options), receipts = plan.targets.map(target => prepare(c, target, options));
-  for (const value of receipts) for (const change of value.changes) current(change);
+function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
+export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[] }
+/** Caller enforces person markers/TTY and confirmation; CLI-owned unrelated fields remain live. */
+function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
+  const c = context(options), skipped: { target: SetupTarget; reason: string }[] = [];
+  const targets = plan.targets.filter(target => { if (available(c, target, options)) return true; if (plan.targets.length === 1) throw Error(`${target} CLI is not installed`); skipped.push({ target, reason: "CLI not installed" }); return false; });
+  const prepared = targets.map(target => prepare(c, target, options));
+  for (const item of prepared) if (!item.unchanged) for (let i = 0; i < item.value.changes.length; i++) if (!sameImage(read(item.value.changes[i]!.path), item.expected[i]!)) throw Error("setup configuration changed during preparation");
   const applied: SetupTarget[] = [], unchanged: SetupTarget[] = [];
-  for (const value of receipts) {
-    if (value.phase === "applied" && value.changes.every(change => current(change) === "after")) { unchanged.push(value.target); continue; }
+  for (const item of prepared) {
+    const value = item.value;
+    if (item.unchanged) { unchanged.push(value.target); continue; }
     save(c, value);
-    for (const change of value.changes) { current(change); write(change.path, change.after); }
+    for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, options.beforePublish); }
     value.phase = "applied"; save(c, value); applied.push(value.target);
   }
-  return { applied, unchanged };
+  return { applied, unchanged, ...(skipped.length ? { skipped } : {}) };
 }
-/** Restore only exact known target states; a later person's edit is never overwritten. */
+/** Byte-exact for untouched files, otherwise remove/restore only this installer's owned entries. */
 function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
   const c = context(options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
-  for (const value of receipts) for (const change of value.changes) current(change);
-  for (const value of receipts) { for (const change of value.changes) { current(change); write(change.path, change.before); } rmSync(journal(c, value.target)); }
+  const pending = receipts.map(value => ({ value, files: value.changes.map((change, index) => { const expected = read(change.path); return { change, expected, restored: restoreChange(value, change, index, expected) }; }) }));
+  for (const item of pending) for (const file of item.files) if (!sameImage(read(file.change.path), file.expected)) throw Error("setup configuration changed during undo preparation");
+  for (const item of pending) { for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, options.beforePublish); rmSync(journal(c, item.value.target)); }
   return { restored: receipts.map(value => value.target) };
 }
 
@@ -267,7 +283,7 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
   try { writeFileSync(fd, token); fsyncSync(fd); return run(); }
   finally { closeSync(fd); if (read(file).bytes === Buffer.from(token).toString("base64")) rmSync(file); }
 }
-export function applySetup(plan: SetupPlan, options: SetupContext = {}): { applied: SetupTarget[]; unchanged: SetupTarget[] } {
+export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
   return withSetupLock(options, () => applyUnlocked(plan, options));
 }
 export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {

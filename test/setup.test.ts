@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applySetup, planSetup, runSetup, SETUP_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
 import { realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -119,11 +120,11 @@ test("runSetup cancellation and missing terminal cause no registration or file c
   expect(confirmations).toBe(1); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
   expect(JSON.parse(await runSetup("kimi", "apply", { ...f.options, stdinTTY: true, confirm: async plan => plan.targets.join() === "kimi" }))).toEqual({ applied: ["kimi"], unchanged: [] });
 });
-test("later config edits refuse both apply and undo without overwriting any target", () => {
+test("edits to the owned MCP entry refuse apply and undo without overwriting any target", () => {
   const f = fixture(); seedOtherFiles(f); applySetup(f.plan("all", "apply"), f.options);
-  const changed = f.file("codex"), later = text(changed) + '\n# later person edit\n'; put(changed, later, 0o640);
+  const changed = f.file("codex"), later = text(changed).replace(JSON.stringify(f.bun), JSON.stringify("changed-owned-runtime")); put(changed, later, 0o640);
   const before = snapshot(f.home), calls = f.calls.length;
-  expect(() => applySetup(f.plan("all", "apply"), f.options)).toThrow("later edits"); expect(() => undoSetup(f.plan("all", "undo"), f.options)).toThrow("later edits");
+  expect(() => applySetup(f.plan("all", "apply"), f.options)).toThrow("changed"); expect(() => undoSetup(f.plan("all", "undo"), f.options)).toThrow("changed");
   expect(snapshot(f.home)).toEqual(before); expect(f.calls).toHaveLength(calls);
 });
 for (const kind of ["symlink", "hardlink"] as const) test(`setup refuses ${kind} configuration and receipt paths before effects`, () => {
@@ -204,16 +205,15 @@ test("valid native amem output that drops another MCP server refuses before any 
     expect(f.calls.every(call => !existsSync(call.cwd))).toBe(true);
   }
 });
-test("runtime relocation requires undo before apply but still restores original bytes, modes and absence", () => {
+test("runtime relocation updates managed entries and still restores original bytes, modes and absence", () => {
   const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
-  expect(originals.some(value => value.bytes === null)).toBe(true); applySetup(plan, f.options);
-  const installed = files.map(image), receipts = plan.actions.map(action => image(action.receipt)), calls = f.calls.length;
+  applySetup(plan, f.options); const calls = f.calls.length;
   const moved: SetupContext = { ...f.options, bun: join(f.home, "relocated-runtime", "bun"), entry: join(f.home, "relocated-package", "bin", "amem.js") };
-  expect(() => applySetup(planSetup("all", "apply", moved), moved)).toThrow("does not match this installation");
-  expect(files.map(image)).toEqual(installed); expect(plan.actions.map(action => image(action.receipt))).toEqual(receipts); expect(f.calls).toHaveLength(calls);
+  expect(applySetup(planSetup("all", "apply", moved), moved).applied).toEqual([...SETUP_TARGETS]);
+  expect(f.calls.length).toBeGreaterThan(calls); const updatedCalls = f.calls.length;
+  for (const target of SETUP_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject({ command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
   expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_TARGETS] });
-  expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
-  for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false);
+  expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(updatedCalls);
 });
 
 test("idempotent dry-run exposes no native commands or new hooks and lists every first-install hook", () => {
@@ -257,8 +257,8 @@ test("native config writers cannot widen an existing configuration file's permis
 });
 
 test("a bounded input cannot grow into an oversized configuration that undo could not reopen", () => {
-  const f = fixture(), file = f.file("kimi", 1), size = 1024 * 1024, original = "#" + "x".repeat(size - 2) + "\n"; put(file, original);
-  expect(() => applySetup(f.plan("kimi", "apply"), f.options)).toThrow("exceeds the size bound");
+  const f = fixture(), file = f.file("kimi", 1), size = SETUP_CONFIG_BYTES, original = "#" + "x".repeat(size - 2) + "\n"; put(file, original);
+  expect(() => applySetup(f.plan("kimi", "apply"), f.options)).toThrow("setup TOML");
   expect(readFileSync(file).length).toBe(size); expect(readFileSync(file).equals(Buffer.from(original))).toBe(true);
   expect(existsSync(f.file("kimi"))).toBe(false); expect(existsSync(f.receiptFile("kimi"))).toBe(false);
 });

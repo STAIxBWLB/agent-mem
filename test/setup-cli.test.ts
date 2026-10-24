@@ -45,7 +45,7 @@ test("default setup CLI previews every target with no commands, home writes or c
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });
-for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`setup apply/undo refuse defined ${marker}, including empty, before confirmation/effects`, async () => {
+for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) test(`setup apply/undo refuse defined ${marker}, including empty, before confirmation/effects`, async () => {
   const f = fixture(), before = snapshot(f.root); let confirmations = 0;
   for (const value of ["", "fixture"]) for (const target of targets) for (const flag of ["--apply", "--undo"]) {
     await expect(runCli(["setup", target, flag], { ...f.context, env: { ...f.env, [marker]: value }, stdinTTY: true, setupConfirm: async () => { confirmations++; return true; } })).rejects.toThrow(PERSON_ONLY);
@@ -78,7 +78,7 @@ test("confirmed actual CLI apply uses only fake native registration in staging a
   expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: ["claude"], unchanged: [] });
   const calls = f.calls(); expect(calls).toHaveLength(1); expect(calls[0]?.argv.slice(0, 8)).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem"]); expect(calls[0]?.home).not.toBe(f.home); expect(calls[0]?.cwd).toBe(calls[0]?.home); expect(existsSync(calls[0]!.home)).toBe(false);
   const document = JSON.parse(readFileSync(config, "utf8")); expect(document.mcpServers.other).toEqual({ command: "keep" });
-  expect(document.mcpServers.amem).toEqual({ command: process.execPath, args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
+  expect(document.mcpServers.amem).toEqual({ command: "bun", args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
   const receipt = readFileSync(join(f.home, "memory", "setup", "claude.json"));
   expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
   expect(JSON.parse(await runCli(["setup", "claude", "--undo"], context))).toEqual({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);
@@ -89,4 +89,11 @@ test("a native CLI without MCP administration is refused before free-form prompt
   put(binary, `#!/bin/sh\nif [ "$1" = "--help" ]; then printf 'Usage: chat assistant'; exit 0; fi\nprintf called > '${called}'\n`, 0o700);
   await expect(runCli(["setup", "claude", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true })).rejects.toThrow("does not expose MCP registration");
   expect(existsSync(called)).toBe(false); expect(f.calls()).toEqual([]);
+});
+test("all setup skips and reports absent CLIs while configuring the available client", async () => {
+  const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
+  const result = JSON.parse(await runCli(["setup", "all", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true }));
+  expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi"]);
+  expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
+  expect(f.calls()).toHaveLength(1);
 });
