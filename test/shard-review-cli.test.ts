@@ -50,15 +50,17 @@ test("#15 CLI routes explicit shard modes and resumes while refusing ordinary ge
   expect(JSON.parse(await runCli(["migrate", "--shards", "--resume"], f.context)).alreadyActive).toBe(true);
 });
 
-test("#15 split-home candidate acceptance refuses before touching the sidecar or legacy logs", async () => {
+test("#40 split-home person acceptance writes the bound shard and preserves legacy logs", async () => {
   const f = fixture(), candidates = new CandidateStore({ home: f.dir });
   const id = candidates.put({ project: f.project, kind: "fail", approach: "fixture", symptom: "fixture", cause: "retained candidate", evidenceRefs: ["test:shards"], retryWhen: "shard-aware review is available" }, "public"); candidates.close();
   await f.split();
   const before = bytes(f.memory);
-  await expect(runCli(["review", "accept", id, "--policy-free"], f.context)).rejects.toThrow("shard-aware");
-  expect(bytes(f.memory)).toEqual(before);
+  const receipt = JSON.parse(await runCli(["review", "accept", id, "--policy-free", "--json"], f.context)) as { noteId: string };
+  for (const [file, value] of Object.entries(before).filter(([name]) => /^\/(log|local)\//.test(name))) expect(bytes(f.memory)[file]).toBe(value);
+  const store = openShardStore({ memoryDir: f.memory, project: f.project, deferPromotions: true });
+  try { expect(store.get(receipt.noteId, f.project)).toMatchObject({ project: f.project, kind: "fail", tier: "long", source: "person" }); } finally { store.close(); }
   const after = new CandidateStore({ home: f.dir });
-  try { expect(after.get(id, f.project)?.status).toBe("pending"); } finally { after.close(); }
+  try { expect(after.get(id, f.project)?.status).toBe("accepted"); } finally { after.close(); }
 });
 
 test("#15 prune --user is explicit, current-project authorized, and preserves the default project-only port", async () => {

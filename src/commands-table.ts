@@ -85,12 +85,14 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
     list: { description: "List review candidates", options: {
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
-      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory"] }, "--limit": text("Maximum candidates (1..500)"),
+      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] }, "--limit": text("Maximum candidates (1..500)"),
     } },
-    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Explicit standalone candidate kind for selected profiles", value: ["memory"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
+    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Require the selected candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
-    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory"] } } },
+    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion"] } } },
   } },
+  decay: { description: "Preview old live long-term notes unprotected by open goals; apply only after person review", mutates: "apply", options: {
+    ...json, "--days": text("Age in whole days (default 90)"), "--apply": flag("Show the exact revision preview and ask before applying"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
   migrate: { description: "Select a person-approved generation or deactivate it", mutates: true, options: {
     ...json, "--dry-run": flag("Read-only migration receipt"), "--generation": text("Explicit 32-hex generation ID"),
     "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),

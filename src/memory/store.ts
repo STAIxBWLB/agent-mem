@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
-import { isDenied } from "./platform.ts";
+import { isDenied, realPath } from "./platform.ts";
 import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
@@ -345,13 +345,34 @@ export class MemoryStore {
 
   /** A synchronous host-authorized mutation whose reads must not implicitly promote unrelated notes. */
   withDeferredPromotions<T>(work: () => T): T {
-    const previous = this.promoting;
-    this.promoting = true;
-    try { return work(); } finally { this.promoting = previous; }
+    const previous = this.readStores().map(store => [store, store.promoting] as const);
+    for (const [store] of previous) store.promoting = true;
+    try { return work(); } finally { for (const [store, promoting] of previous) store.promoting = promoting; }
   }
 
   private withMutation<T>(work: () => T): T {
     return this.mutationDb.transaction(work).immediate();
+  }
+
+  /** Synchronous exact-target work under every opened shard's existing writer fence. No read-time promotions. */
+  withCurrentEntries<T>(ids: readonly string[], project: string, work: (entries: readonly View[]) => T): T {
+    if (!ids.length || ids.length > MAX_TARGETS || new Set(ids).size !== ids.length || ids.some(id => !/^[a-f0-9]{32}$/.test(id)) || !project.trim()) throw new Error("invalid exact-entry batch");
+    const unique = new Map<string, MemoryStore>();
+    for (const store of this.readStores()) { const dir = realPath(store.dir); if (!unique.has(dir)) unique.set(dir, store); }
+    const stores = [...unique.keys()].sort().map(dir => unique.get(dir)!);
+    const execute = (): T => {
+      assertProjectActive(this.profile.home, project);
+      for (const store of stores) store.ensureFresh();
+      const entries = ids.map(id => {
+        const view = this.get(id, project);
+        if (!view || view.id !== id || view.supersededBy) throw new Error("exact entry changed or unavailable");
+        return view;
+      });
+      return work(entries);
+    };
+    const lock = (index: number): T => index === stores.length ? execute() : stores[index]!.withMutation(() => lock(index + 1));
+    // Older/raw writers that bypass mutation-lock.db retain the existing mutation.ts ceiling.
+    return this.withDeferredPromotions(() => lock(0));
   }
 
   /** Serialize current-store writers, screen one normalized body, and expose a one-shot append of that body. */
@@ -446,11 +467,19 @@ export class MemoryStore {
   private op(op: OpEntry["op"], target: View, actor: string, by?: string): string {
     return this.append({ op, target: target.id, actor, ...(by ? { by } : {}) }, target.local);
   }
-  forget(id: string, actor: string, project?: string): View | undefined {
+  /** Complete existing forget expansion, including superseded legacy-import copies. Reads author no ops. */
+  forgetTargets(id: string, project?: string): View[] {
+    const v = this.get(id, project); return v ? this.forgetGroup(v) : [];
+  }
+  private forgetGroup(v: View): View[] {
+    return v.source === "claude-mem" ? this.live().filter(x => x.source === v.source && x.project === v.project && x.at === v.at && x.text === v.text) : [v];
+  }
+  forget(id: string, actor: string, project?: string, exactOnly = false): View | undefined {
     const v = this.get(id, project);
     if (!v) return undefined;
-    // Legacy imports may have different node-derived ids. Forget every known copy, including hidden ones.
-    const group = v.source === "claude-mem" ? this.live().filter(x => x.source === v.source && x.project === v.project && x.at === v.at && x.text === v.text) : [v];
+    const group = this.forgetGroup(v);
+    if (exactOnly && (group.length !== 1 || group[0]?.id !== id)) throw Error("forget expands beyond the reviewed exact entry");
+    // Ordinary person forget retains its legacy-import copy expansion; reviewed decay is exact-only.
     for (const member of group) this.op("forget", member, actor);
     return v;
   }
@@ -497,7 +526,17 @@ export class MemoryStore {
   }
   /** A short-term note kept short-term: it expires like any other and is never promoted (its demote entry stays local). */
   keepShort(id: string, actor: string): void { const v = this.get(id); if (v?.tier === "short" && v.local && v.expiresAt === null) this.op("demote", v, actor, this.until()); } // once: a deadline is never pushed out
-  demote(id: string, actor: string, project?: string): View | undefined { const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, this.until()); return v; }
+  /** The short-tier deadline to display before a person confirms a demotion. */
+  shortExpiry(): string { return this.until(); }
+  /** A confirmed deadline may be older than a fresh one, but cannot extend the configured TTL beyond one hour. */
+  assertDemotionExpiry(expiresAt: string): void {
+    const at = Date.parse(expiresAt), now = this.now();
+    if (!Number.isFinite(at) || new Date(at).toISOString() !== expiresAt || at <= now || at > now + this.ttl + 3600_000) throw Error("demotion expiry must be future UTC within the short-tier deadline plus one hour");
+  }
+  demote(id: string, actor: string, project?: string, expiresAt?: string): View | undefined {
+    if (expiresAt !== undefined) this.assertDemotionExpiry(expiresAt);
+    const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, expiresAt ?? this.until()); return v;
+  }
   supersede(oldId: string, newId: string, actor: string, project?: string): boolean {
     const a = this.get(oldId, project), b = this.get(newId, project);
     if (!a || !b || a.id === b.id) return false;

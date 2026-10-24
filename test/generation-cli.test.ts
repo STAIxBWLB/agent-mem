@@ -51,7 +51,9 @@ test("generation CLI dry-run is readonly; migrate/prune apply/resume/deactivate 
   const applied = JSON.parse(await f.command(["prune", "--apply", "--plan", planFile])); expect(applied.completed).toHaveLength(1);
   const gen = new MemoryStore(); try { expect(gen.get(f.id)).toBeUndefined(); } finally { gen.close(); }
   expect(JSON.parse(await f.command(["migrate", "--resume"])).profile.generation).toBe(g);
-  await expect(f.command(["review", "--json"])).rejects.toThrow("not yet integrated");
+  const beforeReview = bytes(f.memory);
+  expect(JSON.parse(await f.command(["review", "--json"]))).toEqual([]);
+  for (const [file, value] of Object.entries(beforeReview).filter(([name]) => name.endsWith(".jsonl"))) expect(bytes(f.memory)[file]).toBe(value);
   const deactivated = JSON.parse(await f.command(["migrate", "--deactivate"])); expect(deactivated.profile.kind).toBe("shared-v1");
   expect(JSON.parse(await f.command(["migrate", "--generation", g])).profile.generation).toBe(g);
 });

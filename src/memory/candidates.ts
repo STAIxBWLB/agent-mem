@@ -7,7 +7,7 @@ import { oneLine } from "./note-add.ts";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
-import { MemoryStore, type NoteInput, type View } from "./store.ts";
+import { MemoryStore, type GoalView, type NoteInput, type View } from "./store.ts";
 
 export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
 export const CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400_000 } as const;
@@ -19,6 +19,7 @@ export type CandidateInput = { project: string } & (
   | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string }
   | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" }
   | { kind: "decay"; target: CandidateTarget; reason: string }
+  | { kind: "promotion"; target: CandidateTarget; goalId: string }
 );
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
 export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null }
@@ -32,7 +33,7 @@ export interface CandidateAcceptance {
   actor: "person" | "agent";
   verdict: CandidateVerdict;
   store: MemoryStore;
-  policy: (candidate: Candidate, target: View | undefined, note: NoteInput) => boolean;
+  policy: (candidate: Candidate, target: View | undefined, note: NoteInput, goal?: GoalView) => boolean;
 }
 export interface CandidateAcceptanceResult { candidateId: string; noteId: string; alreadyAccepted: boolean }
 
@@ -56,12 +57,28 @@ function validate(input: CandidateInput): void {
     if (input.target !== undefined && !validTarget(input.target) || ![input.approach, input.symptom, input.cause, input.retryWhen].every(x => text(x)) || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
   } else if (input.kind === "memory") {
     if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid memory candidate");
+  } else if (input.kind === "promotion") {
+    if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
   } else if (input.kind === "decay") {
     if (!validTarget(input.target) || !text(input.reason)) throw new Error("invalid decay candidate");
   } else throw new Error("invalid candidate kind");
   if (Buffer.byteLength(canonical(input), "utf8") > 16_384) throw new Error("candidate payload exceeds 16 KiB");
 }
 
+/** The same normalized identity used by put(), without a sidecar write or a capped listing. */
+export function candidateInputId(rawInput: CandidateInput): string {
+  const input = stripPrivateDeep(rawInput); validate(input);
+  return hash({ schema: "agent-mem.candidate/v1", input });
+}
+/** Exact correction body shared by proposal validation and person acceptance. */
+export function acceptedCorrectionText(input: Extract<CandidateInput, { kind: "correction" }>, id = candidateInputId(input)): string {
+  const data = stripPrivateDeep(input);
+  return `Accepted candidate: ${id}\nTarget revision: ${data.target.revision}\nTarget entry: ${data.target.id}\n\n${data.proposedText}\n\nReason: ${data.reason}`;
+}
+export function goalPromotionLinked(view: Pick<View, "task" | "about">, goal: Pick<GoalView, "id" | "links">): boolean {
+  const tasks = new Set(goal.links.map(link => link.task));
+  return !!view.task && tasks.has(view.task) || view.about.some(node => node === `goal:${goal.id}` || node.startsWith("task:") && tasks.has(node.slice(5)));
+}
 /** Includes current lifecycle state, so a changed promotion, supersession or demotion makes a proposal stale. */
 export function candidateTargetRevision(target: View): string {
   return hash({ ...target, about: [...target.about].sort(), supersedes: [...target.supersedes].sort() });
@@ -140,7 +157,7 @@ export class CandidateStore {
     // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
     const input = stripPrivateDeep(rawInput);
     publicOnly(verdict); validate(input);
-    const payload = canonical(input), id = hash({ schema: "agent-mem.candidate/v1", input });
+    const payload = canonical(input), id = candidateInputId(input);
     // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
     return this.db.transaction((): string => {
       this.prune();
@@ -160,7 +177,7 @@ export class CandidateStore {
     return row ? this.decode(row) : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
-    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory"].includes(filter.kind)) throw new Error("invalid candidate filter");
+    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory", "promotion"].includes(filter.kind)) throw new Error("invalid candidate filter");
     const limit = filter.limit ?? CANDIDATE_RETENTION.count;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANDIDATE_RETENTION.count) throw new Error("candidate limit must be 1..500");
     this.prune();
@@ -203,43 +220,82 @@ export class CandidateStore {
     if (!candidate) throw new Error("candidate unavailable");
     if (candidate.status === "accepted") return { candidateId: id, noteId: candidate.acceptedNoteId!, alreadyAccepted: true };
     if (candidate.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
-    if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
-    const resolve = () => {
-      const target = candidate.input.kind === "memory" ? undefined : candidate.input.target;
-      if (!target) return undefined;
-      const current = context.store.get(target.id, context.project);
-      if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
-      return current;
+    const data = candidate.input;
+    if (data.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
+    if (data.kind === "promotion") return this.acceptPromotion(candidate, data, context);
+    const execute = () => {
+      const resolve = () => {
+        const target = data.kind === "memory" ? undefined : data.target;
+        if (!target) return undefined;
+        const current = context.store.get(target.id, context.project);
+        if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
+        return current;
+      };
+      const target = resolve();
+      const body = data.kind === "memory" ? data.text : data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
+        : `Approach: ${oneLine(data.approach)}\nSymptom: ${oneLine(data.symptom)}\nCause: ${oneLine(data.cause)}\nEvidence: ${data.evidenceRefs.map(oneLine).join(", ")}\nRetry when: ${oneLine(data.retryWhen)}`;
+      const note: NoteInput = { op: "note", ...(data.kind === "memory" && data.title ? { title: data.title } : {}), project: data.kind === "correction" ? target!.project : context.project,
+        scope: data.kind === "correction" ? target!.scope : "project",
+        // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
+        tier: data.kind === "correction" && target!.local ? "short" : "long",
+        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: "person", source: "person", about: [...target?.about ?? []],
+        text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
+      if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
+      if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
+      return context.store.withAcceptedNote(note, append => {
+        resolve(); // Recheck under the same mutation lock as the note and supersede appends.
+        const started = this.beginAcceptance(id, context.project);
+        if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
+        // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
+        // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
+        const noteId = append();
+        if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
+        this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, id, this.scope(context.project));
+        return { candidateId: id, noteId, alreadyAccepted: false };
+      });
     };
-    const target = resolve(), data = candidate.input;
-    const body = data.kind === "memory" ? data.text : data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
-      // Each field is one line (every line-break character collapses): a candidate from an agent cannot forge a labelled line in the note the person accepts.
-      : `Approach: ${oneLine(data.approach)}\nSymptom: ${oneLine(data.symptom)}\nCause: ${oneLine(data.cause)}\nEvidence: ${data.evidenceRefs.map(oneLine).join(", ")}\nRetry when: ${oneLine(data.retryWhen)}`;
-    const note: NoteInput = { op: "note", ...(data.kind === "memory" && data.title ? { title: data.title } : {}), project: data.kind === "correction" ? target!.project : context.project,
-      scope: data.kind === "correction" ? target!.scope : "project",
-      // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
-      tier: data.kind === "correction" && target!.local ? "short" : "long",
-      kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: "person", source: "person", about: [...target?.about ?? []],
-      text: `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
-    if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
-    if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
-    return context.store.withAcceptedNote(note, append => {
-      resolve(); // Recheck under the same mutation lock as the note and supersede appends.
-      const started = this.db.transaction(() => {
-        const current = this.get(id, context.project);
-        if (!current) throw new Error("candidate unavailable");
-        if (current.status === "accepted") return current.acceptedNoteId!;
-        if (current.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
-        this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(id, this.scope(context.project));
-        return undefined;
-      }).immediate();
-      if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
-      // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
-      // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
-      const noteId = append();
-      if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
-      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, id, this.scope(context.project));
-      return { candidateId: id, noteId, alreadyAccepted: false };
+    const target = data.kind === "memory" ? undefined : data.target;
+    if (!target) return execute();
+    const current = context.store.get(target.id, context.project);
+    if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
+    return context.store.withCurrentEntries([target.id], context.project, execute);
+  }
+  private acceptPromotion(candidate: Candidate, data: Extract<CandidateInput, { kind: "promotion" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
+    const resolve = () => {
+      const target = context.store.get(data.target.id, context.project);
+      if (!target || target.id !== data.target.id || candidateTargetRevision(target) !== data.target.revision || target.tier !== "short" || target.supersededBy) throw Error("candidate target revision is stale");
+      const goal = context.store.goalOf(data.goalId, context.project);
+      if (!goal || goal.id !== data.goalId || goal.state !== "done" || !goalPromotionLinked(target, goal)) throw Error("promotion requires a current done goal and a linked short note");
+      return { target, goal };
+    };
+    resolve();
+    return context.store.withCurrentEntries([data.target.id], context.project, () => {
+      const { target, goal } = resolve();
+      const note: NoteInput = { op: "note", project: target.project, scope: target.scope, tier: "long", kind: target.kind, peer: target.peer, source: target.source as NoteInput["source"], text: target.text, about: [...target.about],
+        ...(target.title ? { title: target.title } : {}), ...(target.task ? { task: target.task } : {}), promotedFrom: target.id };
+      if (context.policy(structuredClone(candidate), structuredClone(target), structuredClone(note), structuredClone(goal)) !== true) throw Error("candidate refused by current host policy");
+      resolve();
+      const replay = this.beginAcceptance(candidate.id, context.project); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
+      // A thrown append remains accepting: its authored-row outcome needs person-audited recovery.
+      const noteId = context.store.promote(target.id, "person", context.project);
+      if (noteId === undefined) {
+        this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'accepting'").run(candidate.id, this.scope(context.project));
+        throw Error("promotion unavailable or declined; candidate remains pending");
+      }
+      const promoted = context.store.get(noteId, context.project);
+      if (noteId === target.id || !promoted || promoted.id !== noteId || promoted.tier !== "long" || promoted.promotedFrom !== target.id) throw Error("promotion outcome unconfirmed; inspect the accepting candidate");
+      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, candidate.id, this.scope(context.project));
+      return { candidateId: candidate.id, noteId, alreadyAccepted: false };
     });
+  }
+  private beginAcceptance(id: string, project: string): string | undefined {
+    return this.db.transaction(() => {
+      const current = this.get(id, project);
+      if (!current) throw Error("candidate unavailable");
+      if (current.status === "accepted") return current.acceptedNoteId!;
+      if (current.status !== "pending") throw Error("candidate is rejected or acceptance was interrupted; no automatic replay");
+      this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(id, this.scope(project));
+      return undefined;
+    }).immediate();
   }
 }

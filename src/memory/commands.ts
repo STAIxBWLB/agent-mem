@@ -2,6 +2,7 @@ import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type Go
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem } from "./import.ts";
 import { memoryProjectKey, projectChain } from "./project.ts";
+import type { GoalPromotionReport } from "./goal-promotion.ts";
 
 /**
  * What the commands call themselves in their own messages. The default is amem's own surface; a host that exposes the same commands under its own
@@ -29,6 +30,8 @@ export interface GoalCommandOptions {
   project?: string;
   store?: MemoryStore;
   link?: (goal: string, task: string) => Promise<string>;
+  /** Optional host proposal hook; the goal state is saved before it runs. It never grants mutation authority. */
+  onDone?: (goal: GoalView, store: MemoryStore) => Promise<GoalPromotionReport>;
   open: () => MemoryStore;
   clean: (title: string, milestones: string[], project: string) => boolean;
 }
@@ -220,6 +223,13 @@ export async function rawGoalCommand(args: string[], cwd: string, opts: GoalComm
         const state = (sub === "done" ? "done" : rest[1]) as GoalState;
         if (!GOAL_STATES.includes(state)) fail(`the state is one of ${GOAL_STATES.join(", ")}`);
         store.goalState(g.id, state, "user");
+        if (state === "done" && opts.onDone) {
+          const current = store.goalOf(g.id, project);
+          if (!current || current.id !== g.id || current.state !== "done") return fail("goal state changed before promotion offering");
+          const promotion = await opts.onDone(current, store);
+          if (json) return JSON.stringify({ goalId: current.id, state: current.state, promotion }, null, 2);
+          return `long-term task ${current.id.slice(0, 8)} is done\npromotion candidates: ${promotion.offered} offered, ${promotion.alreadyOffered} already offered, ${promotion.withheld} withheld${promotion.truncated ? "; more linked notes remain (truncated)" : ""}`;
+        }
         return `long-term task ${g.id.slice(0, 8)} is ${state}`;
       }
       case "take": {

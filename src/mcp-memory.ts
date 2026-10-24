@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import type { McpHandlers } from "./mcp.ts";
-import { CandidateStore } from "./memory/candidates.ts";
+import { CandidateStore, acceptedCorrectionText, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore } from "./memory/capture.ts";
 import { readSelector } from "./memory/generation.ts";
@@ -104,6 +104,27 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       const rows = await readPermitted(window => store.readPage({ ...window, includeSuperseded: true }), { prefix: id.replace(/^mem:/, "") }, 2);
       return rows.length === 1 ? rows[0]!.at : undefined;
     };
+    const correctionTarget = (id: string): View => {
+      guard();
+      const current = store.get(id, project);
+      // Proposal visibility matches MCP reads; shared rows from another project are not evidence here.
+      if (!current || current.id !== id || current.supersededBy || current.project !== project) return unavailable();
+      return current;
+    };
+    const propose = async (input: CandidateInput, target?: View): Promise<{ id: string }> => {
+      if (input.kind === "correction" && acceptedCorrectionText(input).length > 4000) return unavailable();
+      const revision = target && candidateTargetRevision(target);
+      const currentPolicy = () => createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
+      const check = () => { guard(); if (target && candidateTargetRevision(correctionTarget(target.id)) !== revision) unavailable(); };
+      const complete = target ? { ...input, targetView: target } : input;
+      check();
+      if (!await currentPolicy().screen(complete)) unavailable();
+      check();
+      // Config can tighten while the host screen awaits. Its synchronous check fences the final append.
+      if (!currentPolicy().screenStandalone(complete)) unavailable();
+      check();
+      return { id: candidates.put(input, "public") };
+    };
     const tools: McpHandlers = {
       async amem_search(args) {
         bound(args, ["query", "limit", "since", "includeCapture"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
@@ -181,10 +202,25 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       },
       async amem_work_state_write(args) { bound(args, ["list", "fields"]); guard(); const result = await work.write(textOf(args, "list")!, args.fields as WorkListFields); guard(); return result; },
       async amem_remember(args) {
-        bound(args, ["text", "title", "kind"]); guard();
-        const kind = args.kind ?? "finding"; if (!["decision", "finding", "contract", "fail"].includes(String(kind))) unavailable();
-        const input = { project, kind: "memory" as const, text: textOf(args, "text")!, ...(args.title === undefined ? {} : { title: textOf(args, "title")! }), noteKind: kind as "decision" | "finding" | "contract" | "fail" };
-        if (!await policy.screen(input)) unavailable(); guard(); return { id: candidates.put(input, "public") };
+        const structured = ["approach", "symptom", "cause", "evidenceRefs", "retryWhen"];
+        bound(args, ["text", "title", "kind", ...structured]); guard();
+        const kind = args.kind ?? "finding";
+        if (typeof kind !== "string" || !["decision", "finding", "contract", "fail"].includes(kind)) unavailable();
+        if (structured.some(key => args[key] !== undefined)) {
+          if (kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
+          const evidenceRefs = args.evidenceRefs.map(value => typeof value === "string" && value.trim() && value.length <= 400 && !value.includes("\0") ? value : unavailable());
+          return propose({ project, kind: "fail", approach: textOf(args, "approach")!, symptom: textOf(args, "symptom")!, cause: textOf(args, "cause")!, evidenceRefs, retryWhen: textOf(args, "retryWhen")! });
+        }
+        return propose({ project, kind: "memory", text: textOf(args, "text")!, ...(args.title === undefined ? {} : { title: textOf(args, "title")! }), noteKind: kind as "decision" | "finding" | "contract" | "fail" });
+      },
+      async amem_correct(args) {
+        bound(args, ["id", "proposedText", "reason", "kind"]); guard();
+        const id = textOf(args, "id")!.replace(/^mem:/, "");
+        if (!/^[a-f0-9]{32}$/.test(id) || args.kind !== undefined && (typeof args.kind !== "string" || !["decision", "contract", "fail"].includes(args.kind))) unavailable();
+        const target = correctionTarget(id);
+        const input: CandidateInput = { project, kind: "correction", target: { id, revision: candidateTargetRevision(target) }, proposedText: textOf(args, "proposedText")!, reason: textOf(args, "reason")!,
+          ...(args.kind === undefined ? {} : { noteKind: args.kind as "decision" | "contract" | "fail" }) };
+        return propose(input, target);
       },
       async amem_vault_candidates(args) { bound(args, ["limit"]); guard(); const result = await vaultCandidates(store, { project, policy, limit: limitOf(args) }); guard(); return result; },
       async amem_capacity(args) { bound(args, []); guard(); const report = capacityReport({ memoryDir: base }); if (!await policy.screen(report)) unavailable(); guard(); return report; },
