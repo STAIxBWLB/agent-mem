@@ -17,7 +17,7 @@ export interface ModelConsolidationReport {
   limited: boolean; timedOut: boolean; truncated: boolean;
 }
 const TIMEOUT_MS = 10_000, MAX_INPUT_BYTES = 8192, MAX_OUTPUT_BYTES = 4096, PREFIX = "Model answer:\n";
-async function invoke(model: ModelConsolidationOptions, input: ModelConsolidationInput, before: () => void): Promise<{ state: "value"; value: unknown } | { state: "timeout" | "error" }> {
+async function invoke(model: ModelConsolidationOptions, input: ModelConsolidationInput, before: () => void): Promise<{ state: "value"; value: unknown } | { state: "timeout" } | { state: "error" }> {
   const controller = new AbortController(), deadline = performance.now() + TIMEOUT_MS; let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<{ state: "timeout" }>(resolve => { timer = setTimeout(() => { controller.abort(); resolve({ state: "timeout" }); }, TIMEOUT_MS); });
