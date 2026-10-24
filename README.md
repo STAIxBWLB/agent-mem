@@ -16,6 +16,32 @@ amem --help
 
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
+## Setup / plugin
+
+Preview the exact configuration files, native registration commands and private undo receipts before changing anything:
+
+```sh
+amem setup all
+amem setup claude --apply
+amem setup codex --apply
+amem setup kimi --apply
+amem setup pi --apply
+amem setup all --undo
+```
+
+`--apply` and `--undo` require a person's terminal and an explicit `yes`; agent markers refuse them. The default is a read-only plan. Native Claude, Codex and Pi MCP registration commands run in a private temporary HOME before the listed files are published; current Kimi Code uses its MCP JSON file. No AGENTS.md, CLAUDE.md or rule files are edited. Repeated apply is a no-op. Private receipts preserve the original bytes, modes and absent-file state; undo refuses to overwrite configuration edited afterward.
+
+Claude receives its seven bounded hooks. Codex and Kimi receive SessionEnd incremental ingest; Pi receives a session_shutdown extension. [Codex's native `/hooks` review](https://learn.chatgpt.com/docs/hooks) remains a pending person step: setup never grants or bypasses hook trust. The installed CLIs must already be available; setup does not download tools or start a resident worker.
+
+For a Claude Code plugin installation instead of direct setup registration:
+
+```sh
+claude plugin marketplace add STAIxBWLB/agent-mem
+claude plugin install agent-mem@agent-mem
+```
+
+The plugin packages MCP plus the existing `hooks/hooks.json` once, using Claude's default hook discovery. It needs no `--plugin-dir`. Choose either plugin installation or direct Claude setup to avoid registering the same hooks twice.
+
 ## CLI
 
 The flat `amem` commands are the memory commands of the library (a host such as agent-hub exposes the same ones under its own name); goals use `amem goal`:
