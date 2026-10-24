@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
@@ -13,6 +14,7 @@ export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi"] as const;
 export type SetupTarget = typeof SETUP_TARGETS[number];
 type Env = Readonly<Record<string, string | undefined>>;
 interface Image { bytes: string | null; mode: number }
+interface PlannedHook { event: string; command: string; timeout: number }
 interface Change { key: string; path: string; before: Image; after: Image }
 interface Receipt { version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
@@ -24,7 +26,7 @@ export interface SetupContext {
 }
 export interface SetupPlan {
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo";
-  actions: { target: SetupTarget; files: string[]; receipt: string; registration: string[] | null; lifecycle: string; state: string }[];
+  actions: { target: SetupTarget; files: string[]; receipt: string; registration: string[] | null; lifecycle: string; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
 }
 const MAX = 1024 * 1024, JOURNAL_MAX = 24 * MAX;
@@ -34,7 +36,13 @@ function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("setup configuration must be an object");
   return value as Record<string, unknown>;
 }
-function json(image: Image): Record<string, unknown> { return image.bytes === null ? {} : record(JSON.parse(Buffer.from(image.bytes, "base64").toString("utf8"))); }
+function json(image: Image): Record<string, unknown> {
+  try { return image.bytes === null ? {} : record(JSON.parse(Buffer.from(image.bytes, "base64").toString("utf8"))); }
+  catch { throw Error("setup configuration does not parse as a JSON object"); }
+}
+function toml(text: string): Record<string, unknown> {
+  try { return record(Bun.TOML.parse(text)); } catch { throw Error("setup configuration does not parse as TOML"); }
+}
 function image(text: string, mode = 0o600): Image { return { bytes: Buffer.from(text).toString("base64"), mode }; }
 function objectImage(value: unknown, before: Image): Image { return image(JSON.stringify(value, null, 2) + "\n", before.mode); }
 function names(file: string): void {
@@ -88,7 +96,7 @@ function context(options: SetupContext) {
   };
   const bun = options.bun ?? process.execPath, entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
   if (![bun, entry].every(isAbsolute)) throw Error("setup executable paths must be absolute");
-  return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome(env)), "setup") };
+  return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi") return null;
@@ -96,10 +104,10 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, `${target}.json`); }
-function receipt(c: ReturnType<typeof context>, target: SetupTarget): Receipt | undefined {
+function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = true): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
-  if (value.version !== 1 || value.target !== target || value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length) throw Error("setup receipt does not match this installation");
+  if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
     const change = record(value.changes[i]); if (change.path !== c.paths[target][i] || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
     for (const key of ["before", "after"]) {
@@ -109,25 +117,35 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget): Receipt | 
   }
   return value as unknown as Receipt;
 }
+function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
+  const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
+  return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
+    : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}`, timeout: target === "pi" ? 2.5 : 3 }];
+}
 const lifecycle = (target: SetupTarget) => target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|all [--apply|--undo]");
   const c = context(options), targets = target === "all" ? [...SETUP_TARGETS] : [target as SetupTarget];
   return { targets, mode, actions: targets.map(target => {
-    const prior = receipt(c, target); for (const file of c.paths[target]) read(file);
-    return { target, files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : command(target, c.bun, c.entry), lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), state: prior?.phase ?? "not installed" };
+    const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
+    const original = read(c.paths[target][0]!);
+    const document = target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
+    const hasAmem = Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every(change => digest(read(change.path)) === digest(change.after));
+    const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"];
+    return { target, files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior || !add ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; undo before applying again" : prior?.phase ?? "not installed" };
   }), notes: ["Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original bytes, file modes and absence are backed up privately; undo refuses later configuration edits.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust."] };
 }
 function native(argv: readonly string[], env: Env, cwd: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { cwd, env: { ...env }, encoding: "utf8", timeout: 10_000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
   if (result.status !== 0) throw Error(`${argv[0]} MCP registration failed in staging; no native output disclosed`);
 }
-function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string): Image {
+function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
   for (const event of events) {
     const rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
     const command = commandFor(event);
-    if (!rows.some(row => Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => record(h).command === command))) rows.push({ hooks: [{ type: "command", command, timeout: event === "SessionEnd" ? 3 : 1 }] });
+    if (!rows.some(row => Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => record(h).command === command))) rows.push({ hooks: [{ type: "command", command, timeout }] });
     hooks[event] = rows;
   }
   document.hooks = hooks; return objectImage(document, before);
@@ -140,23 +158,37 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   const changes = c.paths[target].map((path, i) => { const before = read(path); return { key: `${target}:${i}`, path, before, after: before }; });
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
-    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent") };
+    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent") };
+    Object.assign(env, { XDG_CONFIG_HOME: join(staging, ".config"), XDG_DATA_HOME: join(staging, ".local", "share"), XDG_CACHE_HOME: join(staging, ".cache"), XDG_STATE_HOME: join(staging, ".local", "state"), TMPDIR: join(staging, "tmp"), TMP: join(staging, "tmp"), TEMP: join(staging, "tmp") });
+    mkdirSync(env.TMPDIR!, { mode: 0o700 });
     if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
     const staged = context({ ...options, env });
+    // Codex refuses an explicit CODEX_HOME that does not exist, even for mcp add.
+    mkdirSync(dirname(staged.paths[target][0]!), { recursive: true, mode: 0o700 });
     for (let i = 0; i < changes.length; i++) if (changes[i]!.before.bytes !== null) write(staged.paths[target][i]!, changes[i]!.before);
     const argv = command(target, c.bun, c.entry);
     if (argv) {
       const text = changes[0]!.before.bytes === null ? "" : Buffer.from(changes[0]!.before.bytes!, "base64").toString("utf8");
-      const document = target === "codex" ? record(Bun.TOML.parse(text)) : json(changes[0]!.before);
+      const document = target === "codex" ? toml(text) : json(changes[0]!.before);
       const servers = document[target === "codex" ? "mcp_servers" : "mcpServers"];
       if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"], env, staging);
       (options.native ?? native)(argv, env, staging);
-      changes[0]!.after = read(staged.paths[target][0]!);
+      changes[0]!.after = { ...read(staged.paths[target][0]!), mode: changes[0]!.before.mode };
       if (changes[0]!.after.bytes === null) throw Error("native registration produced no configuration");
       const installedText = Buffer.from(changes[0]!.after.bytes!, "base64").toString("utf8");
-      const installed = target === "codex" ? record(Bun.TOML.parse(installedText)) : json(changes[0]!.after);
+      const installed = target === "codex" ? toml(installedText) : json(changes[0]!.after);
       const installedServer = record(record(installed[target === "codex" ? "mcp_servers" : "mcpServers"]).amem);
       if (installedServer.command !== c.bun || JSON.stringify(installedServer.args) !== JSON.stringify(["--smol", c.entry, "mcp"]) || installedServer.enabled === false) throw Error("native registration did not produce the planned amem server");
+      const serverKey = target === "codex" ? "mcp_servers" : "mcpServers";
+      const withoutAmem = (value: Record<string, unknown>) => { const copy = { ...value }, servers = { ...record(value[serverKey] ?? {}) }; delete servers.amem; copy[serverKey] = servers; return copy; };
+      if (!isDeepStrictEqual(withoutAmem(document)[serverKey], withoutAmem(installed)[serverKey])) throw Error("native registration changed unrelated MCP servers; no configuration published");
+      if (target === "codex") {
+        if (!isDeepStrictEqual(withoutAmem(document), withoutAmem(installed))) throw Error("native registration changed unrelated settings; no configuration published");
+      } else {
+        // Keep all unrelated JSON settings from the original; use only the CLI-generated server record.
+        document.mcpServers = { ...record(document.mcpServers ?? {}), amem: installedServer };
+        changes[0]!.after = objectImage(document, changes[0]!.before);
+      }
     } else {
       const document = json(changes[0]!.before), servers = document.mcpServers === undefined ? {} : record(document.mcpServers);
       servers.amem = { command: c.bun, args: ["--smol", c.entry, "mcp"] }; document.mcpServers = servers;
@@ -164,10 +196,10 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     }
     const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind}`;
     if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`);
-    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"));
+    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3);
     if (target === "kimi") {
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
-      const parsed = record(Bun.TOML.parse(old)), hooks = parsed.hooks ?? [];
+      const parsed = toml(old), hooks = parsed.hooks ?? [];
       if (!Array.isArray(hooks)) throw Error("Kimi hooks must be an array");
       changes[1]!.after = hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi")) ? changes[1]!.before : image(`${old}${old.endsWith("\n") || !old ? "" : "\n"}\n[[hooks]]\nevent = "SessionEnd"\ncommand = ${JSON.stringify(capture("kimi"))}\ntimeout = 3\n`, changes[1]!.before.mode);
     }
@@ -201,7 +233,7 @@ function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): { applied: 
 }
 /** Restore only exact known target states; a later person's edit is never overwritten. */
 function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
-  const c = context(options), receipts = plan.targets.map(target => receipt(c, target)).filter((value): value is Receipt => !!value);
+  const c = context(options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
   for (const value of receipts) for (const change of value.changes) current(change);
   for (const value of receipts) { for (const change of value.changes) { current(change); write(change.path, change.before); } rmSync(journal(c, value.target)); }
   return { restored: receipts.map(value => value.target) };
@@ -217,7 +249,10 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const original = read(file), owner = original.bytes && record(JSON.parse(Buffer.from(original.bytes, "base64").toString("utf8")));
-    if (!owner || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0 || typeof owner.signature !== "string" || processLiveness(Number(owner.pid)) !== "gone" || digest(read(file)) !== digest(original)) throw Error("setup is busy; retry after the active setup exits");
+    if (!owner || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0 || typeof owner.signature !== "string") throw Error("setup is busy or its lock is unreadable");
+    const live = processLiveness(Number(owner.pid)), actual = live === "live" ? processSignature(Number(owner.pid)) : undefined;
+    const stale = live === "gone" || live === "live" && actual !== undefined && actual !== owner.signature;
+    if (!stale || digest(read(file)) !== digest(original)) throw Error("setup is busy; retry after the active setup exits");
     rmSync(file); fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   }
   const token = JSON.stringify({ pid: process.pid, signature, nonce: randomUUID() });
