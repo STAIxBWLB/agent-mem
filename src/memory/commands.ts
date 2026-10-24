@@ -122,7 +122,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (hops !== 1 && hops !== 2) fail("--hops takes 1 or 2");
         const asOf = flag("--as-of"), history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
         const start = rest[0] ?? fail(`usage: ${names.memory} graph <id|node>`);
-        const g = recallGraph(store, project, start, hops, { person: opts.person, history, asOf }, opts.readable);
+        const g = recallGraph(store, project, start, hops, { person: opts.person, history, asOf });
         if ((!start.includes(":") || start.startsWith("mem:")) && !g.nodes.length) fail(`no memory entry ${start} (${names.memory} list shows the ids)`);
         const node = !start.includes(":") || start.startsWith("mem:") ? g.nodes[0]!.id : start;
         return json ? JSON.stringify(g, null, 2) : [`${g.nodes.length} nodes, ${g.edges.length} edges around ${node}`, ...g.edges.map((e) => `${e.from} -${e.rel}-> ${e.to}`)].join("\n");
