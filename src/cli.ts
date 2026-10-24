@@ -31,6 +31,8 @@ import { requireShard } from "./memory/curated-read.ts";
 import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
+import { evalText, parseKs } from "./memory/eval.ts";
+import { evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -248,6 +250,19 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const result = await vaultCandidates(store, { project, policy: policyOf(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
       return JSON.stringify(result, null, 2);
     } finally { store.close(); }
+  }
+  if (sub === "eval") {
+    // F13: read-only. A set with entries is scored against a throwaway store seeded with them (touches no memory home); one without scores the bound project's real entries.
+    const ks = parseKs(typeof options["--k"] === "string" ? options["--k"] : undefined);
+    const file = typeof options["--set"] === "string" ? options["--set"] : undefined;
+    const set = readEvalSet(file ?? FIXTURE_PATH);
+    let report;
+    if (set.entries?.length) report = evalSeeded(set, ks);
+    else {
+      const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
+      try { report = evalStore(store, project, set, ks); } finally { store.close(); }
+    }
+    return options["--json"] ? JSON.stringify(report, null, 2) : evalText(report, file ?? "built-in fixture");
   }
   if (sub === "capacity") {
     const share = options["--disk-share"];

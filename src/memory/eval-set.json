@@ -1,0 +1,443 @@
+{
+  "schema": "amem.eval/v1",
+  "entries": [
+    {
+      "key": "shift-handover-old",
+      "kind": "decision",
+      "tier": "long",
+      "title": "Shift handover happens at the gate office",
+      "text": "The harbour shift handover is done at the gate office with a signed paper log.",
+      "about": [
+        "path:src/shift/handover.ts"
+      ]
+    },
+    {
+      "key": "harbor-retry",
+      "kind": "decision",
+      "title": "Harbor client retries idempotent calls three times",
+      "text": "The Harbor ferry client retries an idempotent call three times with exponential backoff, and never retries a booking write.",
+      "about": [
+        "path:src/ferry/client.ts"
+      ]
+    },
+    {
+      "key": "harbor-timeout",
+      "kind": "finding",
+      "title": "Dock sensor requests time out after eight seconds",
+      "text": "A dock sensor request that takes longer than eight seconds is abandoned and reported as stale, not as an error.",
+      "about": [
+        "path:src/dock/sensor.ts"
+      ],
+      "tier": "short"
+    },
+    {
+      "key": "tide-cache",
+      "kind": "decision",
+      "title": "Tide tables are cached for one day",
+      "text": "Tide tables come from the almanac service and are cached on disk for one day, because the almanac rate-limits per hour.",
+      "about": [
+        "path:src/tide/cache.ts"
+      ]
+    },
+    {
+      "key": "tide-rounding",
+      "kind": "finding",
+      "title": "Tide heights round half to even",
+      "text": "Tide heights are rounded half to even before display, so 2.5 metres shows as 2 and 3.5 as 4.",
+      "about": [
+        "path:src/tide/format.ts"
+      ]
+    },
+    {
+      "key": "crane-lock",
+      "kind": "contract",
+      "title": "Only one crane operator lock per berth",
+      "text": "A berth holds at most one crane operator lock. A second request waits, it does not steal the lock, and the lock expires after ninety seconds without a heartbeat.",
+      "about": [
+        "path:src/crane/lock.ts"
+      ]
+    },
+    {
+      "key": "crane-heartbeat",
+      "kind": "finding",
+      "title": "Crane heartbeat drift on the night shift",
+      "text": "The night shift crane heartbeat drifted by up to four seconds because the controller clock was not synced; the lock expiry still held.",
+      "about": [
+        "path:src/crane/heartbeat.ts"
+      ],
+      "tier": "short"
+    },
+    {
+      "key": "manifest-schema",
+      "kind": "contract",
+      "title": "Cargo manifest rows carry a container prefix",
+      "text": "Every cargo manifest row carries a four-letter container prefix and a seven digit serial. A row without both is rejected at import.",
+      "about": [
+        "path:src/cargo/manifest.ts"
+      ]
+    },
+    {
+      "key": "manifest-import",
+      "kind": "fail",
+      "title": "Importing manifests in one transaction blew the memory budget",
+      "text": "Importing a whole cargo manifest in one transaction used more than a gigabyte. Stream it in batches of five hundred rows instead.",
+      "about": [
+        "path:src/cargo/import.ts"
+      ]
+    },
+    {
+      "key": "pilot-roster",
+      "kind": "decision",
+      "title": "Pilot roster is published every Friday",
+      "text": "The pilot roster for the coming week is published on Friday at noon local time and is frozen afterwards except for sick cover.",
+      "about": [
+        "path:src/pilot/roster.ts"
+      ]
+    },
+    {
+      "key": "pilot-fatigue",
+      "kind": "contract",
+      "title": "A pilot may not exceed twelve hours on duty",
+      "text": "The scheduler refuses an assignment that takes a pilot past twelve hours on duty in any rolling twenty-four hours.",
+      "about": [
+        "path:src/pilot/fatigue.ts"
+      ]
+    },
+    {
+      "key": "fuel-ledger",
+      "kind": "decision",
+      "title": "Fuel is recorded in litres, converted once",
+      "text": "Bunker fuel is recorded in litres. Conversion from tonnes happens once at the edge, using the density on the delivery note.",
+      "about": [
+        "path:src/fuel/ledger.ts"
+      ]
+    },
+    {
+      "key": "fuel-density",
+      "kind": "finding",
+      "title": "Delivery note density is sometimes missing",
+      "text": "About one delivery note in forty has no fuel density. The ledger falls back to the supplier default and flags the row for review.",
+      "about": [
+        "path:src/fuel/density.ts"
+      ],
+      "tier": "short"
+    },
+    {
+      "key": "berth-clash",
+      "kind": "fail",
+      "title": "Two vessels were booked into the same berth window",
+      "text": "Two vessels were booked into one berth window because the overlap check compared local times across a daylight saving change. Compare in UTC.",
+      "about": [
+        "path:src/berth/overlap.ts"
+      ]
+    },
+    {
+      "key": "berth-priority",
+      "kind": "decision",
+      "title": "Passenger ferries outrank freight at the quay",
+      "text": "When a quay berth is contested the passenger ferry keeps it and the freight vessel moves to the outer berth.",
+      "about": [
+        "path:src/berth/priority.ts"
+      ]
+    },
+    {
+      "key": "alarm-quiet",
+      "kind": "decision",
+      "title": "Fog alarms are quiet between midnight and five",
+      "text": "The fog horn test alarm is silenced between midnight and five in the morning, the real fog alarm is never silenced.",
+      "about": [
+        "path:src/alarm/fog.ts"
+      ],
+      "tier": "short"
+    },
+    {
+      "key": "alarm-escalate",
+      "kind": "contract",
+      "title": "Unacknowledged alarms escalate after ten minutes",
+      "text": "An alarm nobody acknowledges within ten minutes escalates to the harbour master's phone, then to the duty manager after another ten.",
+      "about": [
+        "path:src/alarm/escalate.ts"
+      ]
+    },
+    {
+      "key": "radio-channel",
+      "kind": "finding",
+      "title": "Channel sixteen is monitored, not used for routine traffic",
+      "text": "Channel sixteen is monitored for distress calls only. Routine traffic moves to the working channel named in the berth assignment.",
+      "about": [
+        "path:src/radio/channels.ts"
+      ]
+    },
+    {
+      "key": "radio-log",
+      "kind": "decision",
+      "title": "Radio calls are logged with a vessel callsign",
+      "text": "Every radio call is logged with the vessel callsign and a UTC timestamp, never with the master's name.",
+      "about": [
+        "path:src/radio/log.ts"
+      ]
+    },
+    {
+      "key": "gate-badge",
+      "kind": "contract",
+      "title": "Gate badges expire at end of shift",
+      "text": "A gate badge is valid until the end of the holder's shift and a contractor badge never outlives the contract end date.",
+      "about": [
+        "path:src/gate/badge.ts"
+      ]
+    },
+    {
+      "key": "gate-camera",
+      "kind": "finding",
+      "title": "Gate camera plate reader fails in heavy rain",
+      "text": "The gate camera plate reader misreads plates in heavy rain; the guard confirms by hand when confidence is below ninety percent.",
+      "about": [
+        "path:src/gate/camera.ts"
+      ],
+      "tier": "short"
+    },
+    {
+      "key": "report-monthly",
+      "kind": "decision",
+      "title": "Throughput report closes on the third working day",
+      "text": "The monthly throughput report closes on the third working day, late manifests are counted in the next month.",
+      "about": [
+        "path:src/report/monthly.ts"
+      ]
+    },
+    {
+      "key": "report-units",
+      "kind": "finding",
+      "title": "Throughput is reported in twenty-foot equivalents",
+      "text": "Throughput is reported in twenty-foot equivalent units, a forty-foot container counts as two.",
+      "about": [
+        "path:src/report/units.ts"
+      ]
+    },
+    {
+      "key": "backup-nightly",
+      "kind": "decision",
+      "title": "Database backup runs at two in the morning",
+      "text": "The operations database is backed up at two in the morning and the copy is verified by a test restore every Sunday.",
+      "about": [
+        "path:ops/backup.sh"
+      ]
+    },
+    {
+      "key": "backup-restore",
+      "kind": "fail",
+      "title": "A backup restored without the audit table",
+      "text": "A restore test passed while the audit table was missing, because the verification only counted the cargo tables. Count every table.",
+      "about": [
+        "path:ops/restore-check.sh"
+      ]
+    },
+    {
+      "key": "shift-handover-new",
+      "kind": "finding",
+      "tier": "short",
+      "title": "Shift handover happens at the gate office",
+      "text": "The harbour shift handover is done at the gate office, and the signed paper log is being replaced by a tablet.",
+      "about": [
+        "path:src/shift/handover.ts"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "q": "how many times does the ferry client retry",
+      "expect": [
+        "harbor-retry"
+      ]
+    },
+    {
+      "q": "retries backoff idempotent",
+      "expect": [
+        "harbor-retry"
+      ]
+    },
+    {
+      "q": "dock sensor timeout",
+      "expect": [
+        "harbor-timeout"
+      ]
+    },
+    {
+      "q": "why are tide tables cached",
+      "expect": [
+        "tide-cache"
+      ]
+    },
+    {
+      "q": "almanac rate limit",
+      "expect": [
+        "tide-cache"
+      ]
+    },
+    {
+      "q": "round half to even tide height",
+      "expect": [
+        "tide-rounding"
+      ]
+    },
+    {
+      "q": "crane lock expiry without heartbeat",
+      "expect": [
+        "crane-lock",
+        "crane-heartbeat"
+      ]
+    },
+    {
+      "q": "night shift clock drift",
+      "expect": [
+        "crane-heartbeat"
+      ]
+    },
+    {
+      "q": "container prefix serial number manifest",
+      "expect": [
+        "manifest-schema"
+      ]
+    },
+    {
+      "q": "manifest import memory too large",
+      "expect": [
+        "manifest-import"
+      ]
+    },
+    {
+      "q": "when is the pilot roster published",
+      "expect": [
+        "pilot-roster"
+      ]
+    },
+    {
+      "q": "pilot twelve hours on duty",
+      "expect": [
+        "pilot-fatigue"
+      ]
+    },
+    {
+      "q": "fuel density litres tonnes",
+      "expect": [
+        "fuel-ledger",
+        "fuel-density"
+      ]
+    },
+    {
+      "q": "missing density on delivery note",
+      "expect": [
+        "fuel-density"
+      ]
+    },
+    {
+      "q": "berth double booking daylight saving",
+      "expect": [
+        "berth-clash"
+      ]
+    },
+    {
+      "q": "who wins a contested quay berth",
+      "expect": [
+        "berth-priority"
+      ]
+    },
+    {
+      "q": "fog horn alarm silenced at night",
+      "expect": [
+        "alarm-quiet"
+      ]
+    },
+    {
+      "q": "unacknowledged alarm escalates",
+      "expect": [
+        "alarm-escalate"
+      ]
+    },
+    {
+      "q": "distress channel sixteen",
+      "expect": [
+        "radio-channel"
+      ]
+    },
+    {
+      "q": "radio call log callsign",
+      "expect": [
+        "radio-log"
+      ]
+    },
+    {
+      "q": "contractor badge expiry",
+      "expect": [
+        "gate-badge"
+      ]
+    },
+    {
+      "q": "plate reader rain",
+      "expect": [
+        "gate-camera"
+      ]
+    },
+    {
+      "q": "monthly throughput report close date",
+      "expect": [
+        "report-monthly"
+      ]
+    },
+    {
+      "q": "forty foot container counts as two",
+      "expect": [
+        "report-units"
+      ]
+    },
+    {
+      "q": "database backup schedule test restore",
+      "expect": [
+        "backup-nightly",
+        "backup-restore"
+      ]
+    },
+    {
+      "q": "restore check missed the audit table",
+      "expect": [
+        "backup-restore"
+      ]
+    },
+    {
+      "q": "what stops two tugs sharing a mooring",
+      "expect": [
+        "berth-clash"
+      ]
+    },
+    {
+      "q": "staff badge validity period",
+      "expect": [
+        "gate-badge"
+      ]
+    },
+    {
+      "q": "vessel arrival prediction model",
+      "expect": [
+        "tide-cache"
+      ]
+    },
+    {
+      "q": "who approves overtime",
+      "expect": [
+        "pilot-fatigue"
+      ]
+    },
+    {
+      "q": "where is the shift handover done",
+      "expect": [
+        "shift-handover-new"
+      ]
+    },
+    {
+      "q": "paper log shift handover gate office",
+      "expect": [
+        "shift-handover-old"
+      ]
+    }
+  ]
+}
