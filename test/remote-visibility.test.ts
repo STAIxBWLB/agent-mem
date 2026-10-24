@@ -73,8 +73,12 @@ test("gh answers map: public is public, private and internal are private, anythi
 test("`amem sync`'s private-remote guard (syncMemory, the 0.6.0 path) asks gh about a real github.com remote and never about a look-alike host", async () => {
   const gh = fakeGh("private");                                           // gh would call any acme/notes private: only the host check decides whether it is asked at all
   const dir = realPath(mkdtempSync(join(tmpdir(), "amem-vis-sync-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const actualGit = Bun.which("git"); if (!actualGit) throw new Error("fixture requires Git");
+  const binaries = join(dir, "bin"); mkdirSync(binaries);
+  writeFileSync(join(binaries, "git"), `#!${process.execPath}\nconst args=process.argv.slice(2);\nif(args.some(arg=>["push","pull","fetch","ls-remote"].includes(arg))) process.exit(1);\nconst child=Bun.spawnSync([${JSON.stringify(actualGit)},...args],{stdin:"inherit",stdout:"inherit",stderr:"inherit"});\nprocess.exit(child.exitCode);\n`, { mode: 0o755 });
+  process.env.PATH = `${binaries}:${process.env.PATH}`;
   const open = (name: string) => { const store = new MemoryStore({ home: join(dir, name), deferPromotions: true }); cleanup.push(() => store.close()); store.note({ op: "note", project: "work/app", scope: "project", tier: "long", kind: "decision", peer: "codex", text: `a decision to sync from ${name}`, about: [], source: "person" }); return store; };
-  // No network here: both pushes fail at the transport, after the visibility guard ran. What the guard decided is what gh was (not) asked, and that no "public" refusal fired.
+  // Native metadata stays real; the owned transport stand-in fails before any network request.
   const lookalike = await syncMemory(open("a"), { remote: "https://notgithub.com/acme/notes.git" });
   expect(lookalike.ok ? "" : lookalike.error).not.toContain("is public");
   expect(gh.log(), "a look-alike host must not be resolved to acme/notes").toEqual([]);

@@ -270,6 +270,11 @@ export class MemoryStore {
     return this.generationIndex.port(this.machine.id);
   }
 
+  /** Borrowed sync targets: the opened canonical shard plus its user overlay, never person-local aliases. Do not close these handles. */
+  openedSyncTargets(): readonly MemoryStore[] {
+    return [this, ...(this.userOverlay ? [this.userOverlay] : [])];
+  }
+
   /** Read-only project views, bounded before bodies or hashes; never promotes or authors a prune. */
   vaultEntries(project: string): VaultEntry[] {
     if (!project.trim() || this.profile.sharded && !this.profile.shardUser && this.profile.shardKey !== project) throw new Error("vault project does not match the bound store");
