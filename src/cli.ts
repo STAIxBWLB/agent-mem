@@ -261,7 +261,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "decay") {
     const applying = options["--apply"] === true;
     if (applying && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("decay apply shows a revision preview before confirmation, so stdout must be a terminal");
-    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS } = await import("./memory/decay-review.ts");
+    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget } = await import("./memory/decay-review.ts");
     const project = boundProject(), base = memoryHome(), aliases = aliasedKeys(base, project);
     const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
     try {
@@ -276,9 +276,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         ...preview.entries.map(entry => `${entry.target.id}  revision ${entry.target.revision}  ${entry.view.at}  ${entry.view.kind}: ${terminalSafe(entry.view.title ?? entry.view.text)}`)].join("\n");
       if (!applying) return options["--json"] ? JSON.stringify(preview, null, 2) : display;
       if (!preview.entries.length) return options["--json"] ? JSON.stringify({ action, ids: [] }) : "no eligible notes to apply";
+      if (options["--forget"] === true) assertExactDecayForget(store, preview.entries.map(entry => entry.target.id), project);
       const write = context.write ?? ((text: string) => { process.stdout.write(`${text}\n`); }); write(display);
       const ask = context.prompt ?? ((question: string) => prompt(question));
-      const answer = await ask(`Type yes to ${action} these ${preview.entries.length} exact entries${options["--forget"] ? " permanently (including matching hidden claude-mem-imported copies)" : ` into the short tier, expires ${preview.demoteExpiresAt}`}: `);
+      const answer = await ask(`Type yes to ${action} these ${preview.entries.length} exact entries${options["--forget"] ? " permanently (hidden claude-mem-imported copies require separate review; expanded groups are refused)" : ` into the short tier, expires ${preview.demoteExpiresAt}`}: `);
       if (answer?.trim() !== "yes") return options["--json"] ? JSON.stringify({ cancelled: true }) : "decay apply cancelled";
       assertCurrent();
       const result = applyDecay(store, preview, { ...current, actor: "person", confirmed: true, forget: options["--forget"] === true });

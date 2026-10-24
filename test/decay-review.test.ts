@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
@@ -92,4 +92,28 @@ test("the failed target is reported as uncertain even when its append preceded t
   expect((failure as DecayApplyError).render()).toContain("failed target may have changed");
   (failure as DecayApplyError).jsonOutput = true; expect(JSON.parse((failure as DecayApplyError).render()).failedMayHaveChanged).toBe(true);
   expect(f.store.get(ids[1]!, f.project)?.tier).toBe("short"); expect(f.store.get(ids[2]!, f.project)?.tier).toBe("long"); expect(calls).toBe(2);
+});
+
+test("forget preflights every expansion and refuses a protected hidden import copy before any prefix effect", () => {
+  const f = fixture(), prefix = f.note({ text: "unrelated prefix stays long" }), at = new Date(f.clock()).toISOString();
+  const first = f.store.importNote({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "original", source: "claude-mem", text: "same imported tuple", task: "import-task-0", about: ["path:copy0.ts"] }, at).id;
+  const other = new MemoryStore({ memoryDir: join(f.store.profile.home, "separate-import-fixture"), now: f.clock, deferPromotions: true });
+  let second: string;
+  try {
+    second = other.importNote({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "original", source: "claude-mem", text: "same imported tuple", task: "import-task-1", about: ["path:copy1.ts"] }, at).id;
+    copyFileSync(join(other.dir, "log", `${other.machine.id}.jsonl`), join(f.store.dir, "log", `${other.machine.id}.jsonl`));
+  } finally { other.close(); }
+  f.store.refresh(); expect(f.store.dedupe(f.project, true).applied).toBe(1);
+  const [visible, hidden] = [first, second!].sort();
+  const goal = f.store.goal({ project: f.project, scope: "project", title: "protected imported copy", milestones: [], dependsOn: [], actor: "person" });
+  f.store.goalLink(goal, hidden === first ? "import-task-0" : "import-task-1", "person"); f.advance(91);
+  const plan = decayPreview(f.store, f.project, { now: f.clock }); expect(plan.entries.map(row => row.target.id).sort()).toEqual([prefix, visible!].sort());
+  const before = f.bytes(); let refusal: unknown;
+  try { applyDecay(f.store, plan, { actor: "person", confirmed: true, forget: true, ids: [prefix, visible!], now: f.clock }); } catch (error) { refusal = error; }
+  expect(f.bytes()).toEqual(before); expect(f.store.get(prefix, f.project)?.tier).toBe("long");
+  expect(refusal).toBeInstanceOf(Error); expect((refusal as Error).message).toContain("expands beyond reviewed exact entries");
+  expect(f.store.list({ project: f.project, includeSuperseded: true }).map(row => row.id)).toEqual(expect.arrayContaining([visible!, hidden!]));
+  expect(() => f.store.forget(visible!, "person", f.project, true)).toThrow("expands beyond"); expect(f.bytes()).toEqual(before);
+  // Existing direct person forget remains a group operation after its separate review.
+  f.store.forget(visible!, "person", f.project); expect(f.store.list({ project: f.project, includeSuperseded: true }).map(row => row.id)).not.toContain(hidden!);
 });

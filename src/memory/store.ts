@@ -467,11 +467,19 @@ export class MemoryStore {
   private op(op: OpEntry["op"], target: View, actor: string, by?: string): string {
     return this.append({ op, target: target.id, actor, ...(by ? { by } : {}) }, target.local);
   }
-  forget(id: string, actor: string, project?: string): View | undefined {
+  /** Complete existing forget expansion, including superseded legacy-import copies. Reads author no ops. */
+  forgetTargets(id: string, project?: string): View[] {
+    const v = this.get(id, project); return v ? this.forgetGroup(v) : [];
+  }
+  private forgetGroup(v: View): View[] {
+    return v.source === "claude-mem" ? this.live().filter(x => x.source === v.source && x.project === v.project && x.at === v.at && x.text === v.text) : [v];
+  }
+  forget(id: string, actor: string, project?: string, exactOnly = false): View | undefined {
     const v = this.get(id, project);
     if (!v) return undefined;
-    // Legacy imports may have different node-derived ids. Forget every known copy, including hidden ones.
-    const group = v.source === "claude-mem" ? this.live().filter(x => x.source === v.source && x.project === v.project && x.at === v.at && x.text === v.text) : [v];
+    const group = this.forgetGroup(v);
+    if (exactOnly && (group.length !== 1 || group[0]?.id !== id)) throw Error("forget expands beyond the reviewed exact entry");
+    // Ordinary person forget retains its legacy-import copy expansion; reviewed decay is exact-only.
     for (const member of group) this.op("forget", member, actor);
     return v;
   }
