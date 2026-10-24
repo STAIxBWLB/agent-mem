@@ -90,5 +90,6 @@ test("the failed target is reported as uncertain even when its append preceded t
   let failure: unknown; try { applyDecay(f.store, plan, { actor: "person", confirmed: true, now: f.clock }); } catch (error) { failure = error; }
   expect(failure).toMatchObject({ applied: [ids[0]!], failed: ids[1]!, remaining: [ids[2]!] });
   expect((failure as DecayApplyError).render()).toContain("failed target may have changed");
+  (failure as DecayApplyError).jsonOutput = true; expect(JSON.parse((failure as DecayApplyError).render()).failedMayHaveChanged).toBe(true);
   expect(f.store.get(ids[1]!, f.project)?.tier).toBe("short"); expect(f.store.get(ids[2]!, f.project)?.tier).toBe("long"); expect(calls).toBe(2);
 });

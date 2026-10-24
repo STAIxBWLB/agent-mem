@@ -35,7 +35,7 @@ for (const action of ["demote", "forget"] as const) for (const json of [false, t
   expect(caught).toBeInstanceOf(DecayApplyError); const error = caught as DecayApplyError;
   expect(calls).toEqual(f.ids.slice(0, 2)); expect(error.report).toMatchObject({ action, applied: [f.ids[0]], failed: f.ids[1], remaining: [f.ids[2]] });
   expect(printed.join("\n")).toContain(f.ids[0]!); const rendered = formatCliError(error); expect(rendered).not.toContain("private raw filesystem failure");
-  if (json) expect(JSON.parse(rendered)).toEqual({ ok: false, ...error.report });
+  if (json) expect(JSON.parse(rendered)).toEqual({ ok: false, ...error.report, failedMayHaveChanged: true });
   else { expect(rendered).toContain(`applied: ${f.ids[0]}`); expect(rendered).toContain(`failed: ${f.ids[1]}`); expect(rendered).toContain(`remaining: ${f.ids[2]}`); expect(rendered).toContain("failed target may have changed"); }
   f.use(store => {
     const prefix = store.get(f.ids[0]!, f.project);
