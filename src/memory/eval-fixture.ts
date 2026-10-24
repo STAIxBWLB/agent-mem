@@ -58,8 +58,11 @@ function ranker(store: MemoryStore, project: string, window: number): { rank: (q
   };
 }
 
-/** Score a self-contained set: seed its synthetic entries into a throwaway store, search it, and delete it. Touches no memory home. */
-export function evalSeeded(set: EvalSet, ks?: readonly number[]): EvalReport {
+/** A ranking under test: the ids it returns for a question, best first, up to `window` of them. `amem eval` scores `store.search`; F14 candidates are scored by passing another one. */
+export type RankFn = (store: MemoryStore, question: string, window: number) => string[];
+
+/** Score a self-contained set: seed its synthetic entries into a throwaway store, search it, and delete it. Touches no memory home. `rank` replaces `store.search` (an experiment, never the command). */
+export function evalSeeded(set: EvalSet, ks?: readonly number[], rank?: RankFn): EvalReport {
   if (!set.entries?.length) throw new Error("this set has no entries; it must be run against a store");
   const dir = realPath(mkdtempSync(join(tmpdir(), "amem-eval-")));
   // The cleanup is armed the moment the directory exists, so a failure while building the store cannot leak it.
@@ -80,7 +83,8 @@ export function evalSeeded(set: EvalSet, ks?: readonly number[]): EvalReport {
         ...(entry.title ? { title: entry.title } : {}), text: entry.text, about: entry.about ?? [] }, entry.tier === "short"));
     }
     current = EPOCH + ordered.length * DAY;
-    const search = ranker(store, PROJECT, Math.max(...(ks ?? [10])));
+    const window = Math.max(...(ks ?? [10]));
+    const search = rank ? { rank: (question: string) => rank(store!, question, window), engine: () => "custom" } : ranker(store, PROJECT, window);
     // Resolved through `store.get`, so a note that has already expired is absent, not silently present: coverage stays separate from ranking.
     const live = (name: string): string | undefined => { const id = ids.get(name); return id !== undefined && store!.get(id, PROJECT) ? id : undefined; };
     const report = runEval(search.rank, question => question.expect.map(live), set, "pending", ks);
