@@ -60,10 +60,15 @@ export const SYNC_IF_DUE_DEADLINE_MS = 30_000;
  * handler in sync.ts, which signals every live git group. The emitter is a seam for tests; the CLI passes `process`.
  */
 export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
-export function stopSignal(ms: number, emitter: { on(name: string, fn: () => void): unknown; off(name: string, fn: () => void): unknown }, names: readonly string[] = STOP_SIGNALS): { signal: AbortSignal; dispose: () => void } {
-  const controller = new AbortController(), stop = () => controller.abort();
+export type StopCause = "person" | "deadline";
+export function stopSignal(ms: number, emitter: { on(name: string, fn: () => void): unknown; off(name: string, fn: () => void): unknown }, names: readonly string[] = STOP_SIGNALS): { signal: AbortSignal; dispose: () => void; cause: () => StopCause | undefined } {
+  const controller = new AbortController(), deadline = AbortSignal.timeout(ms);
+  let cause: StopCause | undefined;
+  // The first thing that ends the run is its cause: a person who closes the terminal after the deadline already fired did not stop it.
+  const stop = () => { cause ??= "person"; controller.abort(); };
+  deadline.addEventListener("abort", () => { cause ??= "deadline"; }, { once: true });
   for (const name of names) emitter.on(name, stop);
-  return { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(ms)]), dispose: () => { for (const name of names) emitter.off(name, stop); } };
+  return { signal: AbortSignal.any([controller.signal, deadline]), dispose: () => { for (const name of names) emitter.off(name, stop); }, cause: () => cause };
 }
 
 /**
@@ -105,15 +110,18 @@ export function usableState(state: SyncState, now: number): SyncState {
 }
 
 /**
- * What a finished sync means for the schedule. `ok` clears the backoff. `local` is a refusal that the schedule cannot fix and that no remote ever saw (another sync or
+ * What a finished sync means for the schedule. `ok` clears the backoff. `local` is a refusal that the schedule cannot fix and that no remote ever saw, or a run its person ended (another sync or
  * mutation holds the lock, no remote is configured, the configured policy declines a note, the remote is public, a usage error): it is not stamped, so it neither
  * backs the schedule off nor makes a contended run look like a failed one. Everything else is a `failed` transport or git step, and an error this module does not
  * recognise counts as failed (the safe side: it waits instead of retrying every minute).
  */
 export type SyncOutcome = "ok" | "failed" | "local";
 const LOCAL = /^(usage:|another (sync|memory mutation|generation|shard sync)|no (generation )?sync remote|the configured privacy policy|the sync remote is public|this (machine's|store's) long-term|a line of this machine's long-term|more than \d+ long-term)/;
-export function syncOutcome(error: string | undefined): SyncOutcome {
+export function syncOutcome(error: string | undefined, cause?: StopCause): SyncOutcome {
   if (error === undefined) return "ok";
+  // A run its person ended (Ctrl-C, a closing terminal) is not a failure of the remote: the same Ctrl-C reads "fetch failed" or "stopped" depending on which step it hit, so the cause,
+  // not the text, decides. Only the deadline (a remote that did not answer in time) stays a failure to back off from.
+  if (cause === "person") return "local";
   return LOCAL.test(error.replace(/^amem sync: /, "")) ? "local" : "failed";
 }
 

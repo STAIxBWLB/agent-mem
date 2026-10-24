@@ -234,7 +234,7 @@ test("the --if-due deadline reaches git's transport children: an ssh stand-in th
     let alive = true; try { process.kill(child, 0); } catch { alive = false; }
     expect(alive).toBe(false);                                                             // the transport child died with git, not 60 seconds later
   } finally { if (saved === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved; }
-});
+}, 90_000);
 
 test("every way a terminal ends an --if-due run (Ctrl-C, SIGTERM, SIGHUP, SIGQUIT) stops it, a second one is still handled, and the handlers are removed afterwards (review: sighup orphans git)", async () => {
   const { EventEmitter } = await import("node:events");
@@ -258,13 +258,14 @@ test("every way a terminal ends an --if-due run (Ctrl-C, SIGTERM, SIGHUP, SIGQUI
  * The real binary under a pty, syncing through a fake ssh that records its own pid and amem's, then sleeps like a stalled network. `end` ends the run the way a person (or a
  * closing terminal) would; the answer is what is still alive afterwards. git runs in its own process group during --if-due, so none of this reaches git by itself.
  */
-async function endedRun(end: (amem: number, group: number) => void | Promise<void>): Promise<{ sshAlive: boolean; gitAlive: boolean; status: string; message: string; stamp: ReturnType<typeof readSyncState>; skipped?: string }> {
+async function endedRun(end: (amem: number, group: number) => void | Promise<void>, options: { before?: { lastAttemptAt: string; lastOkAt: string | null; failures: number } } = {}): Promise<{ sshAlive: boolean; gitAlive: boolean; status: string; message: string; stamp: ReturnType<typeof readSyncState>; skipped?: string }> {
   const root = temp(), memory = join(root, "memory"), cwd = join(root, "repo"), sshFile = join(root, "ssh.pid"), amemFile = join(root, "amem.pid"), gitFile = join(root, "git.pid"), fakeSsh = join(root, "fake-ssh");
   mkdirSync(cwd, { recursive: true }); expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
   // ssh <- git <- amem: record all three, then stall.
   writeFileSync(fakeSsh, `#!/bin/sh\necho $$ > ${JSON.stringify(sshFile)}\nps -o ppid= -p $$ | tr -d ' ' > ${JSON.stringify(gitFile)}\nps -o ppid= -p $(cat ${JSON.stringify(gitFile)}) | tr -d ' ' > ${JSON.stringify(amemFile)}\nexec sleep 120\n`, { mode: 0o755 });
   const s = new MemoryStore({ memoryDir: memory, deferPromotions: true });
   try { s.note({ op: "note", project: memoryProjectKey(cwd), scope: "project", tier: "long", kind: "decision", peer: "me", source: "person", text: "a public decision", about: [] } as never); } finally { s.close(); }
+  if (options.before) writeFileSync(join(memory, SYNC_STATE_FILE), JSON.stringify(options.before));
   const bin = join(import.meta.dir, "../bin/amem.js"), out = join(root, "out.txt");
   const argv = ptyArgv(`cd ${JSON.stringify(cwd)} && ${JSON.stringify(process.execPath)} ${JSON.stringify(bin)} sync --if-due --force --remote ssh://example.invalid/x.git > ${JSON.stringify(out)} 2>&1; echo status:$?`);
   if (argv === undefined) return { sshAlive: false, gitAlive: false, status: "", message: "", stamp: readSyncState(memory), skipped: "the `script` utility is not installed, so no pty could be driven" };
@@ -292,14 +293,64 @@ test("the real binary: Ctrl-C during `sync --if-due --force` stops git and its s
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);                                // the transport child and git are gone, not 120 seconds later
   expect(r.status).toMatch(/status:1/); expect(r.message).toContain("fetch failed");             // amem exits 1 and says why (never a URL)
-  expect(r.stamp.failures).toBe(1);                                                              // an interrupted transport is a failure to back off from
+  expect(r.stamp.failures).toBe(0);                                                              // a person's Ctrl-C is not the remote's fault: no backoff (#435, reverses round 3)
+  expect(r.stamp.lastAttemptAt).toBeNull();                                                      // and nothing is stamped at all
+}, 90_000);
+
+const PRIOR = { lastAttemptAt: new Date(Date.now() - 2 * 3600_000).toISOString(), lastOkAt: new Date(Date.now() - 2 * 3600_000).toISOString(), failures: 0 };
+
+for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) test(`${name} from the person during --if-due is not stamped as a failure and leaves an earlier stamp as it was (#435)`, async () => {
+  const r = await endedRun(signalAmem(name), { before: PRIOR });
+  if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
+  expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);
+  expect(r.stamp).toEqual(PRIOR);                                                                // no new failure, no backoff, the old success kept
+});
+
+test("the deadline running out during --if-due IS stamped as a failure: a remote that did not answer in time is backed off from (#435)", async () => {
+  // The CLI's 30 second deadline is not configurable from outside (a shipped environment variable that shortens a network deadline would be a hole), so this drives the CLI through
+  // its test seam, `context.syncDeadlineMs`, with the same fake ssh: the real stampSync path, a real git, a real process group, only a short clock.
+  // The deadline has to be long enough for git to START ssh (a loaded machine takes a few hundred milliseconds), or it fires before the transport exists and there is nothing to
+  // observe: 400 ms did that once in 20 runs. 2 seconds leaves room and still proves the short deadline, not the 30 s one, ended the run.
+  const root = temp(), memory = join(root, "memory"), cwd = join(root, "repo"), sshFile = join(root, "ssh.pid"), fakeSsh = join(root, "fake-ssh");
+  mkdirSync(cwd, { recursive: true }); expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
+  writeFileSync(fakeSsh, `#!/bin/sh\necho $$ > ${JSON.stringify(sshFile)}\nexec sleep 120\n`, { mode: 0o755 });
+  const s = new MemoryStore({ memoryDir: memory, deferPromotions: true });
+  try { s.note({ op: "note", project: memoryProjectKey(cwd), scope: "project", tier: "long", kind: "decision", peer: "me", source: "person", text: "a public decision", about: [] } as never); } finally { s.close(); }
+  mkdirSync(memory, { recursive: true }); writeFileSync(join(memory, SYNC_STATE_FILE), JSON.stringify(PRIOR));
+  const saved = { home: process.env.AMEM_HOME, ssh: process.env.GIT_SSH_COMMAND }; process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
+  const started = Date.now();
+  try {
+    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 })).rejects.toThrow(/sync/);
+  } finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThanOrEqual(1800); expect(elapsed).toBeLessThan(12_000);             // it ended because the SHORT deadline fired (not the 30 s one, not by itself: the ssh stand-in sleeps 120 s)
+  const ssh = Number(readFileSync(sshFile, "utf8").trim());
+  for (let i = 0; i < 60; i++) { try { process.kill(ssh, 0); } catch { break; } await Bun.sleep(50); }
+  let alive = true; try { process.kill(ssh, 0); } catch { alive = false; }
+  expect(alive).toBe(false);                                                                     // the deadline stops the transport child as well
+  const stamp = readSyncState(memory);
+  expect(stamp.failures).toBe(1);                                                                // and counts: a remote that did not answer in time is backed off from
+  expect(stamp.lastOkAt).toBe(PRIOR.lastOkAt);                                                   // a failure keeps the last success
+}, 90_000);
+
+test("a person who closes the terminal AFTER the deadline already fired did not stop the run: it stays a failure (#435)", async () => {
+  const { EventEmitter } = await import("node:events");
+  const emitter = new EventEmitter(), stop = stopSignal(30, emitter);
+  await Bun.sleep(80); expect(stop.signal.aborted).toBe(true); expect(stop.cause()).toBe("deadline");
+  emitter.emit("SIGHUP"); expect(stop.cause()).toBe("deadline");                                 // the first cause wins
+  stop.dispose();
+  const other = new EventEmitter(), person = stopSignal(60_000, other);
+  expect(person.cause()).toBeUndefined(); other.emit("SIGINT"); expect(person.cause()).toBe("person"); person.dispose();
+  expect(syncOutcome("stopped", "person")).toBe("local"); expect(syncOutcome("fetch failed: x", "person")).toBe("local");
+  expect(syncOutcome("stopped", "deadline")).toBe("failed"); expect(syncOutcome("fetch failed: x")).toBe("failed");
+  expect(syncOutcome(undefined, "person")).toBe("ok");                                           // a sync that finished is a success whatever signal came after
 });
 
 for (const name of ["SIGHUP", "SIGQUIT", "SIGTERM"] as const) test(`the real binary: ${name} during --if-due leaves no git and no ssh behind (review: sighup orphans git)`, async () => {
   const r = await endedRun(signalAmem(name));
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);
-});
+}, 90_000);
 
 test("the real binary: a second Ctrl-C while git is being stopped still leaves nothing behind", async () => {
   // Three Ctrl-Cs in a row, as a person hammering the key sends them. amem may already have exited when a later one arrives (that is the point: it stops quickly), so a gone
@@ -307,14 +358,14 @@ test("the real binary: a second Ctrl-C while git is being stopped still leaves n
   const r = await endedRun(amem => { for (let i = 0; i < 3; i++) { try { process.kill(amem, "SIGINT"); } catch { /* already exited */ } } });
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);
-});
+}, 90_000);
 
 test("the real binary: SIGHUP to the whole foreground group, as a closing terminal sends it, leaves nothing behind (review: sighup orphans git)", async () => {
   // A terminal close signals amem's foreground group; git is in its own group, so only amem (and the shell around it) receive this.
   const r = await endedRun((amem) => { try { process.kill(-amem, "SIGHUP"); } catch { process.kill(amem, "SIGHUP"); } });
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);
-});
+}, 90_000);
 
 test("a process that exits while a deadline git is running takes git and its ssh child with it, whatever ended it (the exit handler; review: sighup orphans git)", async () => {
   const root = temp(), sshFile = join(root, "ssh.pid"), fakeSsh = join(root, "fake-ssh"), script = join(root, "dies.ts");
@@ -341,7 +392,7 @@ throw new Error("amem died for some other reason");
     for (let i = 0; i < 60 && alive(ssh); i++) await Bun.sleep(50);
     expect(alive(ssh)).toBe(false);                                                              // not left at ppid 1 for two minutes
   } finally { if (ssh && alive(ssh)) process.kill(ssh, "SIGKILL"); child.kill(); }
-});
+}, 90_000);
 
 test("amem never registers a sync hook or a resident process: no setup, hook or ingest source mentions sync, and the cadence module starts no process or timer", () => {
   for (const file of ["../src/setup.ts", "../src/setup-owned.ts", "../src/setup-toml.ts", "../src/hooks.ts", "../src/hook-native.ts", "../src/hook-spool.ts", "../src/ingest.ts"]) {
