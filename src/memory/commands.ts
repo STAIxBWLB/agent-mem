@@ -96,7 +96,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: state.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: state.notices };
           return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
-        if (json) return JSON.stringify(rows.map(decorated), null, 2);
+        if (json) return JSON.stringify(rows, null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
         return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}`) : ["(nothing)"]),
@@ -112,7 +112,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           return json ? JSON.stringify(state, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...(stale(view) ? ["(stale?)"] : []), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
         const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        ready([view]); return json ? JSON.stringify(decorated(view), null, 2) : [...(stale(view) ? ["(stale?)"] : []), ...detail(view)].join("\n");
+        ready([view]); return json ? JSON.stringify(view, null, 2) : [...(stale(view) ? ["(stale?)"] : []), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);

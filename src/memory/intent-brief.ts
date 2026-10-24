@@ -53,9 +53,8 @@ export async function buildIntentBrief(source: IntentBriefSource, options: Inten
       check();
       if (!await options.policy().screen(value)) { check(); continue; } check();
       if (!options.policy().screenStandalone(query) || !options.policy().screenStandalone(value)) continue;
-      const view = structuredClone(value);
-      if (!live(view, context.project, current()) || seen.has(view.id)) continue;
-      seen.add(view.id); publicRows.push(view);
+      if (!live(value, context.project, current()) || seen.has(value.id)) continue;
+      const view = structuredClone(value); seen.add(view.id); publicRows.push(view);
     }
     // Re-read after host awaits: forgotten, replaced or changed rows cannot survive an old snapshot.
     check(); const latest = await source.notes(); check();
