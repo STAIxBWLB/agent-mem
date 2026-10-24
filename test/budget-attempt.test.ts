@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { budgetSample, BudgetStall, type BudgetAttempt } from "../scripts/budget-attempt.ts";
+import { budgetSample, BudgetStall, budgetGroupRecorder, type BudgetAttempt } from "../scripts/budget-attempt.ts";
 for (const check of ["hook-SessionStart", "mcp-session"] as const) {
   test(`${check}: one injected stall retries under the same limit and records both attempts`, async () => {
     const attempts: BudgetAttempt<{ wallMs: number }>[] = [], limitMs = check === "mcp-session" ? 30000 : 150; let calls = 0;
@@ -27,4 +27,19 @@ test("retry policy leaves workload p95 and RSS verdicts strict under the unchang
   expect(workloadBudget("injected p95 miss", values, {}).pass).toBe(false);
   expect(workloadBudget("injected RSS miss", { ...values, wallP95Ms: 100, peakRssMB: 100 }, {}).pass).toBe(false);
   expect(workloadBudget("under both limits", { ...values, wallP95Ms: 149, peakRssMB: 99 }, {}).pass).toBe(true);
+});
+
+test("group summaries count stalled physical attempts independently and retain every receipt", async () => {
+  const counts = new Map<string, number>(), receipts: BudgetAttempt<number>[] = []; let calls = 0;
+  const write = (attempt: BudgetAttempt<number>) => receipts.push(attempt);
+  expect(await budgetSample("plain-1", () => { if (++calls === 1) throw new BudgetStall("stall"); return 7; }, budgetGroupRecorder<number>("plain", counts, write))).toBe(7);
+  await budgetSample("plain-2", () => 8, budgetGroupRecorder<number>("plain", counts, write));
+  await budgetSample("session-1", () => 9, budgetGroupRecorder<number>("sessionStart", counts, write));
+  expect(Object.fromEntries(counts)).toEqual({ plain: 1, sessionStart: 0 });
+  expect(receipts.map(row => row.outcome)).toEqual(["stall", "pass", "pass", "pass"]);
+});
+test("a failed second stall is counted in the group without a third attempt", async () => {
+  const counts = new Map<string, number>(), receipts: BudgetAttempt<never>[] = [];
+  await expect(budgetSample("drain-1", () => { throw new BudgetStall("stall"); }, budgetGroupRecorder<never>("drain", counts, row => receipts.push(row)))).rejects.toThrow("stall");
+  expect(counts.get("drain")).toBe(2); expect(receipts).toHaveLength(2);
 });

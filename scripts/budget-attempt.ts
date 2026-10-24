@@ -21,3 +21,9 @@ export async function budgetSample<T>(check: string, run: () => T | Promise<T>, 
   }
   throw new Error("unreachable budget attempt");
 }
+
+/** Keep stalled physical attempts visible beside workload p95, which uses completed samples. */
+export function budgetGroupRecorder<T>(group: string, counts: Map<string, number>, write: (attempt: BudgetAttempt<T>) => void = attempt => console.log(JSON.stringify(attempt))): (attempt: BudgetAttempt<T>) => void {
+  if (!counts.has(group)) counts.set(group, 0);
+  return attempt => { if (attempt.outcome === "stall") counts.set(group, counts.get(group)! + 1); write(attempt); };
+}
