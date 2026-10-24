@@ -34,7 +34,9 @@ import { readCatalogFresh } from "./memory/catalog.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "./memory/lifecycle.ts";
 import { gcText, runGc } from "./memory/gc.ts";
 import { usageReport, usageText } from "./memory/usage.ts";
-import { exportProject } from "./memory/project-export.ts";
+import { exportProject, type ProjectExportFormat } from "./memory/project-export.ts";
+import { importProject } from "./memory/project-import.ts";
+import { importExternalMemory, type ExternalMemorySource } from "./memory/external-import.ts";
 import { searchAllProjects, vaultCandidatesAll } from "./memory/cross-project.ts";
 import { requireShard } from "./memory/curated-read.ts";
 import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
@@ -541,14 +543,33 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const result = runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) });
     return options["--json"] ? JSON.stringify(result, null, 2) : `${result.dryRun ? "preview (nothing evicted; add --confirm):\n" : ""}${gcText(result)}`;
   }
+  if (sub === "import" && ["claude-auto", "codex"].includes(parsed.path[1] ?? "")) {
+    for (const flag of ["--db", "--limit", "--restart"]) if (options[flag] !== undefined) throw new Error(`${flag} only applies to import claude-mem`);
+    const source = parsed.path[1] as ExternalMemorySource, policy = policyOf();
+    const result = await importExternalMemory({ base: memoryHome(), project: boundProject(), source,
+      ...(typeof options["--from"] === "string" ? { from: options["--from"] } : {}), policy: value => policy.screenStandalone(value) });
+    return options["--json"] ? JSON.stringify(result, null, 2)
+      : `imported ${result.added} ${source} candidates from ${result.files} files (${result.read} records, ${result.pending.count} pending); skipped ${result.skipped.rules} rule files, ${result.skipped.policy} policy/secret records, ${result.skipped.invalid} invalid records and ${result.skipped.truncated} oversized inputs`;
+  }
   if (sub === "project") {
     const op = parsed.path[1]!, [requested] = parsed.positionals;
     if (!requested) throw new Error(`usage: amem project ${op} <key>`);
     if (op === "export") {
       if (typeof options["--to"] !== "string") throw new Error("usage: amem project export <key> --to <file>");
+      const format = (options["--format"] ?? "json") as ProjectExportFormat;
       // The bundle leaves the home, so it is screened by the configured policy (secrets, personal data, the configured patterns and deny paths).
-      const result = await exportProject(memoryHome(), requested, { to: options["--to"], policy: policyOf() });
-      return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
+      const result = await exportProject(memoryHome(), requested, { to: options["--to"], policy: policyOf(), format });
+      return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file} as ${result.format}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
+    }
+    if (op === "import") {
+      if (typeof options["--from"] !== "string") throw new Error("usage: amem project import <key> --from <file.jsonl>");
+      const key = resolveAlias(memoryHome(), requested), policy = policyOf();
+      const store = curatedStore(key, { screen: note => policy.screenStandalone(note) ? "promote" : "keep", createAliases: true });
+      try {
+        const result = await importProject(store, { from: options["--from"], project: key, policy: note => policy.screenStandalone(note) });
+        return options["--json"] ? JSON.stringify(result, null, 2)
+          : `imported ${result.added} of ${result.read} curated notes into ${result.project} with their original ids; skipped ${result.skipped.invalid} invalid, ${result.skipped.policy} policy/secret and ${result.skipped.other} non-curated records`;
+      } finally { store.close(); }
     }
     const key = requireShard(memoryHome(), requested);
     if (op === "forget" && options["--confirm"] !== true) {

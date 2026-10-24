@@ -11,8 +11,8 @@ import { aliasedKeys, shardDir } from "./shard.ts";
 import { WorkListStore } from "./work-lists.ts";
 
 /**
- * #15 T5 / D3: `amem project export <key> --to <file>`. One project's capture rows, curated notes, goals and work lists as one portable JSON bundle,
- * written once to a new file with mode 0600. It changes no content file of the home: it opens the capture databases read-only and the curated store only to
+ * #15 T5 / D3 and F17: `amem project export <key> --to <file>`. One project's capture rows, curated notes, goals and work lists as a portable JSON bundle,
+ * JSONL stream or Markdown document, written once to a new file with mode 0600. It changes no content file of the home: it opens the capture databases read-only and the curated store only to
  * read, and only derived files (the curated `index.db`, `search.db`, SQLite sidecars) may refresh, as they do for any read. A destination inside the home is refused.
  *
  * The bundle leaves the home, so it is screened like sync and promotion are: a secret-looking value is withheld, and so is anything the host policy (when
@@ -27,8 +27,10 @@ export const EXPORT_SCHEMA = "agent-mem.project-export/v1";
  * the file in the gap between them, which is the only way to show that O_EXCL, not the check, keeps an export from replacing someone else's file.
  */
 export const exportHooks: { afterCheck?: (file: string) => void } = {};
+export type ProjectExportFormat = "json" | "jsonl" | "markdown";
 export interface ExportCounts { capture: number; curated: number; goals: number; workLists: number }
-export interface ExportResult { file: string; project: string; counts: ExportCounts; withheld: number }
+export interface ExportResult { file: string; project: string; format: ProjectExportFormat; counts: ExportCounts; withheld: number }
+type ExportSection = keyof ExportCounts;
 const PAGE = 500;
 
 interface CaptureRowRaw { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string }
@@ -47,8 +49,21 @@ function destination(base: string, to: string): string {
   return join(parentReal, name);
 }
 
-export async function exportProject(base: string, key: string, opts: { to: string; policy?: MemoryPolicy }): Promise<ExportResult> {
-  const project = requireShard(base, key);
+function markdownRecord(section: ExportSection, value: unknown): string {
+  const row = value as Record<string, unknown>;
+  const body = section === "capture" ? row.excerpt : section === "curated" ? row.text : undefined;
+  const identity = typeof row.id === "string" ? ` ${row.id}` : "";
+  const metadata = { ...row };
+  if (section === "capture") delete metadata.excerpt;
+  if (section === "curated") delete metadata.text;
+  const lines = [`### ${section}${identity}`, "", JSON.stringify(metadata), ""];
+  if (typeof body === "string") lines.push(...body.split("\n").map(line => `    ${line}`), "");
+  return `${lines.join("\n")}\n`;
+}
+
+export async function exportProject(base: string, key: string, opts: { to: string; policy?: MemoryPolicy; format?: ProjectExportFormat }): Promise<ExportResult> {
+  const project = requireShard(base, key), format = opts.format ?? "json";
+  if (!["json", "jsonl", "markdown"].includes(format)) throw new Error("export format must be json, jsonl or markdown");
   if (projectState(base, project) === "forgotten") throw new Error(`project ${project} is forgotten: it cannot be exported`);
   const file = destination(base, opts.to), policy = opts.policy ?? createStandalonePolicy();
   exportHooks.afterCheck?.(file);
@@ -59,10 +74,24 @@ export async function exportProject(base: string, key: string, opts: { to: strin
   try { fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
   catch { throw new Error("the destination exists; export never overwrites"); }
   const out = (text: string) => { writeSync(fd, text); };
+  const exportedAt = new Date().toISOString();
+  let first = true, section: ExportSection = "capture";
+  const begin = (jsonPrefix: string, next: ExportSection, heading: string) => {
+    section = next; first = true;
+    if (format === "json") out(jsonPrefix);
+    else if (format === "markdown") out(`\n## ${heading}\n\n`);
+  };
+  const emit = (value: unknown) => {
+    if (format === "json") out(`${first ? "" : ","}${JSON.stringify(value)}`);
+    else if (format === "jsonl") out(`${JSON.stringify({ schema: EXPORT_SCHEMA, project, type: section, value })}\n`);
+    else out(markdownRecord(section, value));
+    first = false;
+  };
   const stores: { close(): void }[] = [];
   try {
-    out(`{"schema":${JSON.stringify(EXPORT_SCHEMA)},"project":${JSON.stringify(project)},"exportedAt":${JSON.stringify(new Date().toISOString())},"capture":[`);
-    let first = true;
+    if (format === "jsonl") out(`${JSON.stringify({ schema: EXPORT_SCHEMA, project, exportedAt, type: "header", aliases: aliasedKeys(base, project) })}\n`);
+    else if (format === "markdown") out(`# Project export ${JSON.stringify(project)}\n\nExported at ${exportedAt}\n`);
+    begin(`{"schema":${JSON.stringify(EXPORT_SCHEMA)},"project":${JSON.stringify(project)},"exportedAt":${JSON.stringify(exportedAt)},"capture":[`, "capture", "Capture");
     const shard = walkShards(base).find(candidate => candidate.key === project);
     for (const dir of shard?.machineDirs ?? []) {
       const dbFile = join(dir, "capture.db");
@@ -76,40 +105,42 @@ export async function exportProject(base: string, key: string, opts: { to: strin
             after = r.id;
             const row = { at: r.at, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt };
             if (!await allowed(row)) { withheld++; continue; }
-            out(`${first ? "" : ","}${JSON.stringify(row)}`); first = false; counts.capture++;
+            emit(row); counts.capture++;
           }
           if (rows.length < PAGE) break;
         }
       } finally { db.close(); }
     }
-    out(`],"curated":[`);
+    begin(`],"curated":[`, "curated", "Curated notes");
     const store = openCuratedForRead(base, project);
     if (store) stores.push(store);
     // The project's own rows and those of a key aliased to it; another project's shared note is not this project's and stays out of its bundle.
     const keys = new Set([project, ...aliasedKeys(base, project)]);
-    first = true;
+    const authored = format === "jsonl" ? new Map((store?.portableNotes(project) ?? []).map(row => [row.id, row])) : undefined;
     for (const view of store?.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }) ?? []) {
       if (!keys.has(view.project)) continue;
-      if (!await allowed(view)) { withheld++; continue; }
-      out(`${first ? "" : ","}${JSON.stringify(view)}`); first = false; counts.curated++;
+      const value = format === "jsonl" ? authored!.get(view.id) : view;
+      if (!value) throw new Error("exported note's authored row is unavailable");
+      if (!await allowed(value)) { withheld++; continue; }
+      emit(value); counts.curated++;
     }
-    out(`],"goals":[`);
-    first = true;
+    begin(`],"goals":[`, "goals", "Goals");
     for (const goal of store?.goals(project) ?? []) {
       if (!keys.has(goal.project)) continue;
       if (!await allowed(goal)) { withheld++; continue; }
-      out(`${first ? "" : ","}${JSON.stringify(goal)}`); first = false; counts.goals++;
+      emit(goal); counts.goals++;
     }
-    out(`],"workLists":[`);
-    first = true;
+    begin(`],"workLists":[`, "workLists", "Work lists");
     // The bundle holds what the project's own reads show: the canonical work log and that of every key aliased to it (the same reconciliation the CLI, MCP and brief use).
     const workKeys = [project, ...aliasedKeys(base, project)];
     if (workKeys.some(key => existsSync(join(shardDir(base, key), "work")))) {
       const work = new WorkListStore({ base, project, policy: allowed, aliases: workKeys.slice(1) });
       stores.push({ close: () => work.close() });
-      for (const list of await work.read(undefined, true)) { out(`${first ? "" : ","}${JSON.stringify(list)}`); first = false; counts.workLists++; }
+      for (const list of await work.read(undefined, true)) { emit(list); counts.workLists++; }
     }
-    out(`],"counts":${JSON.stringify(counts)},"withheld":${withheld}}\n`);
+    if (format === "json") out(`],"counts":${JSON.stringify(counts)},"withheld":${withheld}}\n`);
+    else if (format === "jsonl") out(`${JSON.stringify({ schema: EXPORT_SCHEMA, project, type: "counts", counts, withheld })}\n`);
+    else out(`\n## Counts\n\n${JSON.stringify({ counts, withheld })}\n`);
   } catch (error) {
     try { closeSync(fd); } catch { /* already closed */ }
     rmSync(file, { force: true });          // the file is ours: O_EXCL created it, so a partial bundle is removed, never left behind
@@ -118,5 +149,5 @@ export async function exportProject(base: string, key: string, opts: { to: strin
     for (const store of stores) { try { store.close(); } catch { /* best effort */ } }
   }
   closeSync(fd);
-  return { file, project, counts, withheld };
+  return { file, project, format, counts, withheld };
 }

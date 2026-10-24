@@ -220,3 +220,32 @@ test("search, list and goals run from inside an archived or forgotten project ar
   await runCli(["project", "forget", here, "--confirm"], person);
   for (const argv of [["search", "decision"], ["list"]]) await expect(runCli(argv, person)).rejects.toThrow(/forgotten/);
 });
+
+test("project export and import run through the person CLI and preserve curated ids", async () => {
+  const { dir, person } = rig();
+  note(dir, A, "portable CLI decision");
+  const original = new MemoryStore({ home: dir, deferPromotions: true });
+  const expected = original.list().map(view => view.id); original.close();
+  const jsonl = join(dir, "portable.jsonl"), markdown = join(dir, "portable.md");
+  expect(await json(["project", "export", A, "--to", jsonl, "--format", "jsonl", "--json"], person)).toMatchObject({ format: "jsonl", counts: { curated: 1 } });
+  expect(await json(["project", "export", A, "--to", markdown, "--format", "markdown", "--json"], person)).toMatchObject({ format: "markdown" });
+  expect(readFileSync(markdown, "utf8")).toContain("portable CLI decision");
+
+  process.env.AMEM_HOME = join(dir, "restored");
+  expect(await json(["project", "import", A, "--from", jsonl, "--json"], person)).toMatchObject({ read: 1, added: 1 });
+  const restored = new MemoryStore({ memoryDir: process.env.AMEM_HOME, deferPromotions: true });
+  expect(restored.list().map(view => view.id)).toEqual(expected); restored.close();
+  await expect(runCli(["project", "import", A, "--from", jsonl], { ...person, stdinTTY: false })).rejects.toThrow(/terminal/);
+});
+
+test("Codex import runs through the person CLI as an idempotent candidate import", async () => {
+  const { dir, person } = rig();
+  const source = join(dir, "codex-memory.md"), bytes = "A durable Codex memory for review.";
+  writeFileSync(source, bytes);
+  const first = await json(["import", "codex", "--from", dir, "--json"], person);
+  expect(first).toMatchObject({ source: "codex", files: 1, read: 1, added: 1, pending: { count: 1 } });
+  expect((await json(["import", "codex", "--from", dir, "--json"], person)).added).toBe(0);
+  expect(readFileSync(source, "utf8")).toBe(bytes);
+  await expect(runCli(["import", "codex", "--from", dir], { ...person, env: { CODEX_THREAD_ID: "agent" } })).rejects.toThrow(PERSON_ONLY);
+  await expect(runCli(["import", "codex", "--from", dir, "--limit", "1"], person)).rejects.toThrow(/--limit only applies to import claude-mem/);
+});

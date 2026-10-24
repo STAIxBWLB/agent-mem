@@ -42,9 +42,10 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--set": { description: "A question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") } },
   gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
     ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },
-  project: { description: "Per-project lifecycle and export (#15 D3): one project only", options: json, commands: {
-    export: { description: "Write one project's capture, curated notes, goals and work lists to a new bundle file (never overwrites)", options: { "--to": { description: "Destination file, outside the memory home", value: "path" }, ...policy },
+  project: { description: "Per-project lifecycle and portable import/export (#15 D3, F17): one project only", options: json, commands: {
+    export: { description: "Write one project's capture, curated notes, goals and work lists to a new JSON, JSONL or Markdown file (never overwrites)", options: { "--to": { description: "Destination file, outside the memory home", value: "path" }, "--format": { description: "Portable format (default json)", value: ["json", "jsonl", "markdown"] }, ...policy },
       args: [{ name: "key" }] },
+    import: { description: "Re-import curated notes from a JSONL project export with their original entry ids", options: { "--from": { description: "JSONL project export", value: "path" }, ...policy }, args: [{ name: "key" }], mutates: true, policyFree: true },
     archive: { description: "Take a cold project out of recall (append-only op; unarchive brings it back)", args: [{ name: "key" }], mutates: true },
     unarchive: { description: "Bring an archived project back into recall (append-only op)", args: [{ name: "key" }], mutates: true },
     forget: { description: "Forget one project for good (append-only op; preview without --confirm)", options: { "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
@@ -76,7 +77,11 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff") }, mutates: true, policyFree: true },
   machine: { description: "Show or label this machine", options: { ...json, "--label": text("Machine label") }, mutates: "label" },
   import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor") }, mutates: true, policyFree: true,
-    commands: { "claude-mem": { description: "Import claude-mem observations" } } },
+    commands: {
+      "claude-mem": { description: "Import claude-mem observations", options: { "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor") } },
+      "claude-auto": { description: "Import Claude Code auto memory as review candidates; CLAUDE.md and AGENTS.md stay excluded", options: { "--from": { description: "Claude projects directory (default ~/.claude/projects)", value: "path" } } },
+      codex: { description: "Import Codex memories as review candidates; originals stay unchanged", options: { "--from": { description: "Codex memories directory (default ~/.codex/memories)", value: "path" } } },
+    } },
   goal: { description: "Long-term goals", options: json, defaultCommand: "list", commands: {
     list: { description: "List goals", options: { "--all": flag("Include completed goals") } },
     show: { description: "Show a goal", args: [{ name: "id" }] },

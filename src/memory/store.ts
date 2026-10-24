@@ -189,6 +189,8 @@ export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: numbe
   lifecycle?: "enforce" | "ignore";
   /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
   reconcile?: { canonical: string; aliases: readonly string[] };
+  /** Person-only project import may initialize configured alias shards; read-only reconciliation still never creates them. */
+  createAliases?: boolean;
 }
 
 const MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
@@ -489,13 +491,17 @@ export class MemoryStore {
    * An entry from another store with its own time (`ahub memory import claude-mem`): the same source row always gives
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
-  importNote(n: NoteInput, at: string): { id: string; added: boolean } {
+  importNote(n: NoteInput, at: string, identity: { machine?: string } = {}): { id: string; added: boolean } {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
-    if (this.userOverlay && n.scope === "shared") return this.userOverlay.importNote(n, at);
+    if (this.userOverlay && n.scope === "shared") return this.userOverlay.importNote(n, at, identity);
+    if (this.profile.sharded && !this.profile.shardUser && n.scope === "project" && n.project !== this.profile.shardKey) {
+      const owner = this.aliasStores.find(store => store.profile.shardKey === n.project);
+      if (owner) return owner.importNote(n, at, identity);
+    }
     if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
     assertSharedV1Op(n.op);
-    // A fixed machine: the same observation imported on two machines is one entry once they sync.
-    const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: stripPrivateSpans(n.text).slice(0, MAX_TEXT), ...(n.title ? { title: stripPrivateSpans(n.title).slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
+    // A fixed machine: the same observation imported on two machines is one entry once they sync. A project import preserves the exported identity instead.
+    const body = { schema: MEMORY_SCHEMA, at, machine: identity.machine ?? "claude-mem", ...n, text: stripPrivateSpans(n.text).slice(0, MAX_TEXT), ...(n.title ? { title: stripPrivateSpans(n.title).slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(n.tier === "short", this.machine.id);
@@ -1001,6 +1007,21 @@ export class MemoryStore {
       && (!f.peer || v.peer === f.peer) && (!f.machine || v.machine === f.machine) && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)
       && q.every((w) => `${v.title ?? ""}\n${v.text}\n${v.about.join(" ")}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
+  }
+
+  /** The verified authored log rows behind the current export selection, including legacy absent/null optional fields. */
+  portableNotes(project: string): NoteEntry[] {
+    const selected = this.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true });
+    const wanted = new Set(selected.map(view => view.id)), authored = new Map<string, NoteEntry>();
+    for (const store of this.readStores()) {
+      const rows = store.generationIndex ? store.generationIndex.snapshot(false).rows.map(item => item.row) : legacyEntries(readLegacySnapshot(store.dir));
+      for (const row of rows) if (row.op === "note" && wanted.has(row.id) && !authored.has(row.id)) authored.set(row.id, row);
+    }
+    return selected.map(view => {
+      const row = authored.get(view.id);
+      if (!row) throw new Error("exported note's authored row is unavailable");
+      return row;
+    });
   }
 
   /** Exact-project body pages for policy-aware callers. Relations still fold over complete metadata. */
@@ -1535,12 +1556,13 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });
   const aliasStores: MemoryStore[] = [];
   try {
-    // #27: an aliased key that has a shard of its own is read beside this one; one that never had a shard has nothing to read and is not created.
+    // #27: read-only reconciliation never creates an alias shard. A person-only project import explicitly can.
     if (opts.user !== true && reconcile && reconcile.canonical === opts.project) {
       for (const alias of reconcile.aliases) {
-        if (alias === opts.project || !existsSync(join(shardDir(home, alias), "generation.json"))) continue;
+        if (alias === opts.project || !opts.createAliases && !existsSync(join(shardDir(home, alias), "generation.json"))) continue;
         assertCuratedShardPaths(home, { project: alias });
-        aliasStores.push(new MemoryStore(plain, { token: MIGRATION_BOOTSTRAP, profile: resolveShardProfile(home, { project: alias }), authoring: true }));
+        aliasStores.push(opts.createAliases ? openShardStore({ ...plain, project: alias })
+          : new MemoryStore(plain, { token: MIGRATION_BOOTSTRAP, profile: resolveShardProfile(home, { project: alias }), authoring: true }));
       }
     }
     return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true, userOverlay, aliasStores });
