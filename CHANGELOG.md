@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On-demand deterministic consolidation proposals and a bounded `amem_evidence` MCP bundle (agent-mem#40 F18/F19). Consolidation writes machine-local candidates, with person-only exact-revision acceptance; curated v1 ops, hashes and paths are unchanged. Candidate readers must understand the new consolidation payload before sharing a home that uses it; older candidate readers refuse the unknown kind. Evidence contains live project-curated citations only, makes no model call, and records only confirmed rendered output.
+
 ## 0.7.0
 
 - `amem setup <claude|codex|kimi|pi|all>` (agent-mem#40 F2, F3, AC2, tasks #417, #432): a dry run by default, and a person-only `--apply`/`--undo` that registers the MCP server, hooks and a SessionEnd ingest through each client's own registration where it exists, idempotent, with semantic undo that keeps the client's own later edits and never touches AGENTS.md, CLAUDE.md or rule files. The registered runtime is the PATH-resolved `bun` (not a version-pinned Cellar path), and a temporary package entry is refused. The Claude Code plugin manifest gains the inline MCP server and a marketplace entry, so `claude plugin install` works without `--plugin-dir`. Advisory plugin-registry checks never block preview, apply or undo.

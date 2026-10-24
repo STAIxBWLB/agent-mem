@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { packEvidence } from "./memory/evidence.ts";
 import { randomUUID } from "node:crypto";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
@@ -152,6 +153,32 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       return { id: candidates.put(input, "public") };
     };
     const tools: McpHandlers = {
+      async amem_evidence(args) {
+        bound(args, ["question", "limit", "maxBytes"]); guard();
+        const question = textOf(args, "question")!, cap = args.limit ?? 10, maxBytes = args.maxBytes ?? 4096;
+        if (question.length > 1000 || !Number.isSafeInteger(cap) || Number(cap) < 1 || Number(cap) > 20 || !Number.isSafeInteger(maxBytes) || Number(maxBytes) < 256 || Number(maxBytes) > 8192) unavailable();
+        if (!await currentPolicy().screen({ question })) unavailable(); guard();
+        const index = new SearchIndex(":memory:");
+        try {
+          const words = question.toLowerCase().split(/\s+/).filter(Boolean);
+          const notes = await readPermitted(window => store.readPage({ ...window, ...(index.available ? { query: question } : {}) }), {}, SEARCH_CANDIDATES,
+            view => view.project === project && recallViewIsLive(view, store.readNow()) && view.peer !== "amem-model" && !view.text.startsWith("Model answer:")
+              && (index.available || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
+          if (index.available) {
+            index.resync(() => notes.map(view => ({ id: view.id, at: view.at, project, tier: view.tier, scope: view.scope, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })));
+            if (index.needsResync(notes.length)) unavailable();
+          }
+          const ranks = new Map((index.available ? index.query(question, SEARCH_CANDIDATES, project) : []).map(row => [row.ref, row.rank]));
+          const ranked = notes.flatMap(view => {
+            const rank = ranks.get(view.id); if (index.available && rank === undefined) return [];
+            const score = -(rank ?? -1) * (view.tier === "long" ? 1 : 0.9) / (1 + Math.max(0, store.readNow() - Date.parse(view.at)) / (30 * 86400_000));
+            return [{ view, score }];
+          }).sort((a, b) => b.score - a.score || a.view.id.localeCompare(b.view.id)).map(row => row.view);
+          const result = packEvidence(ranked, { project, question, limit: Number(cap), maxBytes: Number(maxBytes), now: () => store.readNow() });
+          if (notes.length === SEARCH_CANDIDATES) result.bundle.truncated = true;
+          guard(); return observed(result.bundle, result.ids);
+        } finally { index.close(); }
+      },
       async amem_search(args) {
         bound(args, ["query", "limit", "since", "includeCapture"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
         if (args.includeCapture !== undefined && typeof args.includeCapture !== "boolean") unavailable();
@@ -267,7 +294,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       async amem_capacity(args) { bound(args, []); guard(); const report = capacityReport({ memoryDir: base }); if (!await policy.screen(report)) unavailable(); guard(); return report; },
     };
     const exposed = { ...tools };
-    const readTools = ["amem_search", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
+    const readTools = ["amem_search", "amem_evidence", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
     for (const name of readTools) exposed[name] = async args => {
       fullGuard();
       const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);

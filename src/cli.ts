@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
+import { proposeConsolidation } from "./memory/consolidate.ts";
 import { createIntentBriefSource } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
@@ -227,6 +228,21 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       } catch { return false; } finally { try { candidates?.close(); } catch { /* optional telemetry cannot fail emitted output */ } }
     } });
   };
+  if (sub === "consolidate") {
+    const requested = typeof options["--project"] === "string" ? options["--project"] as string : boundProject();
+    if (!requested.trim() || requested.length > 400 || requested.includes("\0")) throw Error("invalid consolidation project");
+    const base = memoryHome(), project = resolveAlias(base, requested), aliases = aliasedKeys(base, project);
+    assertProjectActive(base, project);
+    const store = curatedStore(project, { deferPromotions: true, screen: () => "keep" });
+    let candidates: CandidateStore | undefined;
+    try {
+      const binding = commandBinding(store.profile.home, boundProject()), policyKey = () => JSON.stringify(configuredPolicyOptions(base, policyCwd));
+      const assertCurrent = () => { binding(); assertProjectActive(base, project); if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")) throw Error("consolidation project binding changed"); };
+      candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
+      const report = await proposeConsolidation(store, candidates, { project, actor: "person", policy: policyOf, policyVersion: policyKey, assertCurrent });
+      return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
+    } finally { candidates?.close(); store.close(); }
+  }
   if (sub === "brief") {
     const intent = options["--for"]; if (typeof intent !== "string" || !intent.trim() || intent.length > 1000 || parsed.positionals.length) throw Error("usage: amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]");
     const rawBytes = options["--bytes"];
@@ -382,6 +398,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
                 : `promotion. Goal goal:${input.goalId}, target mem:${input.target.id} changed or is unavailable; reject or skip`;
             } finally { viewStore.close(); }
           }
+          if (input.kind === "model-answer") return `Model answer (not evidence; cannot accept, author an independent note with amem note add). ${input.text}`;
+          if (input.kind === "consolidation") return `${input.action}. Sources: ${input.targets.map(target => `mem:${target.id}`).join(", ")}. ${input.text}`;
           return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
             : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
         const step = async (args: string[]) => { try { await runCli(args, context); return true; } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; return false; } };
@@ -435,6 +453,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         if (!await policyOf().screen(candidate.input)) throw new Error("candidate refused by the current standalone privacy policy (secrets, personal data, deny paths and the patterns in amem.config.json)");
         assertCurrent();
         const result = candidates.accept(id!, { project, actor: "person", verdict: "public", store,
+          policyVersion: () => JSON.stringify(configuredPolicyOptions(realPath(store.profile.home), policyCwd)),
           policy: (proposal, target, note, goal) => { assertCurrent(); return policyOf().screenStandalone({ ...proposal.input, ...(target ? { targetView: target } : {}), note, ...(goal ? { goalView: goal } : {}) }); },
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ${candidate.input.kind === "promotion" ? "promoted" : "ordinary"} note ${result.noteId}`;
