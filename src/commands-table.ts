@@ -23,6 +23,7 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
+  setup: { description: "Preview reversible MCP and hook setup for native coding CLIs; apply and undo are person-only", options: { "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi"] }] },

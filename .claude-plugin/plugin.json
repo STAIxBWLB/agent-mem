@@ -1,5 +1,15 @@
 {
   "name": "agent-mem",
   "version": "0.6.0",
-  "description": "Bounded project memory context and deterministic capture, without a resident worker."
+  "description": "Bounded project memory tools and seven deterministic capture hooks, without a resident worker.",
+  "mcpServers": {
+    "agent-mem": {
+      "command": "bun",
+      "args": [
+        "--smol",
+        "${CLAUDE_PLUGIN_ROOT}/bin/amem.js",
+        "mcp"
+      ]
+    }
+  }
 }
