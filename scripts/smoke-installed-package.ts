@@ -51,7 +51,7 @@ export function assertMcpResult(output: string, version: string, seedId: string,
   const replies = output.trim().split("\n").filter(Boolean).map(line => object(JSON.parse(line))), initialized = replies.find(row => row.id === 1), search = replies.find(row => row.id === 2), listing = replies.find(row => row.id === 3);
   requireSmoke(replies.length === 3 && initialized?.result?.serverInfo?.name === "amem" && initialized.result.serverInfo.version === version && !search?.error && search?.result?.isError !== true, "installed MCP initialization/search failed");
   requireSmoke(!listing?.error && Array.isArray(listing?.result?.tools) && listing.result.tools.some((tool: any) => tool.name === "amem_search"), "installed MCP tool listing unavailable");
-  for (const tool of listing.result.tools) { requireSmoke(typeof tool.description === "string", "installed MCP tool description missing"); assertNoHubBranding(tool.description); }
+  for (const tool of listing!.result.tools) { requireSmoke(typeof tool.description === "string", "installed MCP tool description missing"); assertNoHubBranding(tool.description); }
   const content = search?.result?.content?.find((item: any) => item.type === "text" && typeof item.text === "string");
   requireSmoke(content, "installed MCP search has no JSON result");
   const result = object(JSON.parse(content.text));
