@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 import { applySetup, planSetup, runSetup, SETUP_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [];
@@ -167,4 +168,90 @@ test("explicit agent config roots stay inside the isolated HOME and undo restore
   expect(f.calls.find(call => call.argv[0] === "claude")?.env.CLAUDE_CONFIG_DIR).toBe(join(f.calls[0]!.cwd, ".claude"));
   for (const action of plan.actions) expect(mcp(action.files[0]!, action.target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"] });
   undoSetup(planSetup("all", "undo", options), options); expect(files.every(file => !existsSync(file))).toBe(true);
+});
+
+test("fresh Codex staging creates its explicit profile before the native registration command", () => {
+  const f = fixture(), invoke = f.options.native!;
+  const options = { ...f.options, native: ((argv, env, cwd) => {
+    expect(argv[0]).toBe("codex"); expect(lstatSync(env.CODEX_HOME!).isDirectory()).toBe(true); invoke(argv, env, cwd);
+  }) as NonNullable<SetupContext["native"]> };
+  const plan = planSetup("codex", "apply", options);
+  expect(applySetup(plan, options).applied).toEqual(["codex"]);
+  expect(undoSetup(planSetup("codex", "undo", options), options).restored).toEqual(["codex"]);
+});
+test("setup receipts follow the standalone configuration's relocated memory home", () => {
+  const f = fixture(); delete f.env.AMEM_HOME; f.env.AGENTHUB_HOME = join(f.home, "legacy");
+  const moved = join(f.home, "moved-memory"); put(join(f.env.AGENTHUB_HOME, "memory", "amem.config.json"), JSON.stringify({ home: moved }));
+  const plan = f.plan("claude", "apply"); expect(plan.actions[0]!.receipt).toBe(join(moved, "setup", "claude.json"));
+  expect(applySetup(plan, f.options).applied).toEqual(["claude"]);
+  expect(existsSync(join(moved, "setup", "claude.json"))).toBe(true);
+  expect(undoSetup(f.plan("claude", "undo"), f.options).restored).toEqual(["claude"]);
+});
+test("valid native amem output that drops another MCP server refuses before any target publication", () => {
+  for (const brokenTarget of ["claude", "codex"] as const) {
+    const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), before = files.map(image), rulesBefore = rules.map(image), invoke = f.options.native!;
+    const options: SetupContext = { ...f.options, native: (argv, env, cwd) => {
+      invoke(argv, env, cwd);
+      if (argv[0] !== brokenTarget) return;
+      const file = brokenTarget === "codex" ? join(env.CODEX_HOME!, "config.toml") : env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, ".claude.json") : join(cwd, ".claude.json");
+      const server = mcp(file, brokenTarget).amem;
+      expect(server).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"] });
+      put(file, brokenTarget === "codex" ? `[mcp_servers.amem]\ncommand = ${JSON.stringify(server.command)}\nargs = ${JSON.stringify(server.args)}\n` : JSON.stringify({ mcpServers: { amem: server } }));
+    } };
+    expect(() => applySetup(plan, options)).toThrow("unrelated MCP servers");
+    expect(files.map(image)).toEqual(before); expect(rules.map(image)).toEqual(rulesBefore);
+    for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false);
+    expect(f.calls.every(call => !existsSync(call.cwd))).toBe(true);
+  }
+});
+test("runtime relocation requires undo before apply but still restores original bytes, modes and absence", () => {
+  const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
+  expect(originals.some(value => value.bytes === null)).toBe(true); applySetup(plan, f.options);
+  const installed = files.map(image), receipts = plan.actions.map(action => image(action.receipt)), calls = f.calls.length;
+  const moved: SetupContext = { ...f.options, bun: join(f.home, "relocated-runtime", "bun"), entry: join(f.home, "relocated-package", "bin", "amem.js") };
+  expect(() => applySetup(planSetup("all", "apply", moved), moved)).toThrow("does not match this installation");
+  expect(files.map(image)).toEqual(installed); expect(plan.actions.map(action => image(action.receipt))).toEqual(receipts); expect(f.calls).toHaveLength(calls);
+  expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_TARGETS] });
+  expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
+  for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false);
+});
+
+test("idempotent dry-run exposes no native commands or new hooks and lists every first-install hook", () => {
+  const f = fixture(), first = f.plan("all", "apply");
+  expect(first.actions.find(action => action.target === "claude")!.hooks).toHaveLength(7);
+  for (const action of first.actions) {
+    expect(action.mcpChange).toBe("add");
+    expect(action.hooks.every(hook => hook.command.includes(f.entry) && hook.timeout > 0)).toBe(true);
+  }
+  applySetup(first, f.options);
+  for (const action of f.plan("all").actions) { expect(action.mcpChange).toBe("unchanged"); expect(action.commands).toEqual([]); expect(action.hooks).toEqual([]); }
+});
+
+test("a HOME-only setup context never falls through to the hosting process's memory home", () => {
+  const f = fixture(), decoy = realPath(mkdtempSync(join(tmpdir(), "amem-setup-decoy-"))); cleanup.push(() => rmSync(decoy, { recursive: true, force: true }));
+  delete f.env.AMEM_HOME; delete f.env.AGENTHUB_HOME; const originalHome = process.env.HOME;
+  try {
+    process.env.HOME = decoy;
+    expect(f.plan("claude").actions[0]!.receipt).toBe(join(f.home, ".agenthub", "memory", "setup", "claude.json"));
+    expect(existsSync(join(f.home, ".agenthub"))).toBe(false); expect(existsSync(join(decoy, ".agenthub"))).toBe(false);
+  } finally { if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; }
+});
+
+test("the installed Pi extension forwards shutdown to bounded capture ingest without a native decision", async () => {
+  const f = fixture(), record = join(f.home, "pi-ingest-call.json"), project = join(f.home, "opened project"); mkdirSync(project);
+  put(f.entry, `import {writeFileSync} from "node:fs";writeFileSync(${JSON.stringify(record)},JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()}));`);
+  applySetup(f.plan("pi", "apply"), f.options);
+  const extension = await import(pathToFileURL(f.file("pi", 1)).href);
+  let event = "", handler: ((event: unknown, context: { cwd: string }) => unknown) | undefined;
+  extension.default({ on(name: string, fn: typeof handler) { event = name; handler = fn; } });
+  expect(event).toBe("session_shutdown"); expect(typeof handler).toBe("function");
+  expect(handler!({}, { cwd: project })).toBeUndefined();
+  expect(JSON.parse(text(record))).toEqual({ argv: ["ingest", "pi"], cwd: project });
+  expect(handler!({}, { cwd: join(f.home, "missing") })).toBeUndefined();
+});
+
+test("native config writers cannot widen an existing configuration file's permissions", () => {
+  const f = fixture(), file = f.file("codex"); put(file, '# private config\n', 0o640);
+  applySetup(f.plan("codex", "apply"), f.options); expect(image(file).mode).toBe(0o640);
+  undoSetup(f.plan("codex", "undo"), f.options); expect(image(file)).toEqual({ bytes: Buffer.from('# private config\n').toString("base64"), mode: 0o640 });
 });
