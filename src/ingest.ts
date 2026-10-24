@@ -7,6 +7,7 @@ import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { configuredPolicyOptions } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { effectiveAliases } from "./memory/shard.ts";
 
@@ -192,7 +193,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
   try {
     const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome()), aliases = effectiveAliases(base);
     const aliasStamp = JSON.stringify([...aliases].sort()), requested = memoryProjectKey(cwd, { repositoryIsolation: true }), project = aliases.get(requested) ?? requested;
-    const policy = createStandalonePolicy(options.policy);
+    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
     const scopes = new Map<string, Scope>();
     const guard = () => { if (JSON.stringify([...effectiveAliases(base)].sort()) !== aliasStamp) throw new Error("scope changed"); };
     const scopeOf = (value: unknown): Scope => {
@@ -203,7 +204,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
       if (scopes.size < 64) scopes.set(value, scope);
       return scope;
     };
-    capture = new CaptureStore({ memoryDir: base, project });
+    capture = new CaptureStore({ memoryDir: base, project, cwd });
     const directory = join(capture.dir, "ingest"); privateDirectory(directory);
     const found = options.files === undefined ? discover(kind) : { files: [...new Set(options.files)], bounded: false, unavailable: false };
     if (found.unavailable) fail("source_unavailable");

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { isDenied } from "./platform.ts";
+import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
@@ -360,8 +361,8 @@ export class MemoryStore {
       // Ordinary writes may defer indexing, but accepting an exact target revision must have a current index.
       this.db.transaction(() => this.refresh()).immediate();
       const at = new Date(this.now()).toISOString();
-      const normalized = structuredClone({ ...note, text: note.text.slice(0, MAX_TEXT),
-        ...(note.title ? { title: note.title.slice(0, MAX_TITLE) } : {}),
+      const normalized = structuredClone({ ...note, text: stripPrivateSpans(note.text).slice(0, MAX_TEXT),
+        ...(note.title ? { title: stripPrivateSpans(note.title).slice(0, MAX_TITLE) } : {}),
         ...(note.tier === "short" && !note.expires ? { expires: new Date(Date.parse(at) + this.ttl).toISOString() } : {}) });
       const body = { schema: MEMORY_SCHEMA, at, machine: this.machine.id, ...normalized } as const;
       const view: View = { ...normalized, id: entryId(body), at, machine: body.machine, title: normalized.title ?? null,
@@ -387,7 +388,9 @@ export class MemoryStore {
 
   /** Append one entry to this machine's long-term (synced) or local segment and index it. Returns its id. */
   private append(entry: NoteInput | OpInput | GoalInput, local: boolean, at = new Date(this.now()).toISOString(), machine = this.machine.id): string {
-    const capped = entry.op === "note" ? { ...entry, text: entry.text.slice(0, MAX_TEXT), ...(entry.title ? { title: entry.title.slice(0, MAX_TITLE) } : {}) } : entry;
+    // `<private>` spans are never stored, whoever writes (note, goal, promotion): dropped before the cap, the hash and the log line.
+    const capped = entry.op === "note" ? { ...entry, text: stripPrivateSpans(entry.text).slice(0, MAX_TEXT), ...(entry.title ? { title: stripPrivateSpans(entry.title).slice(0, MAX_TITLE) } : {}) }
+      : entry.op === "goal" ? stripPrivateDeep(entry) : entry;
     const body = { schema: MEMORY_SCHEMA, at, machine, ...capped } as Omit<Entry, "id">;
     return this.appendBody(body, local);
   }
@@ -427,12 +430,12 @@ export class MemoryStore {
     if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
     assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync.
-    const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
+    const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: stripPrivateSpans(n.text).slice(0, MAX_TEXT), ...(n.title ? { title: stripPrivateSpans(n.title).slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(n.tier === "short", this.machine.id);
       // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
-      const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
+      const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, stripPrivateSpans(n.text).slice(0, MAX_TEXT)) as { id: string } | null;
       if (known) return { id: known.id, added: false };
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };

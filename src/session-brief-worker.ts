@@ -6,6 +6,7 @@ import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
+import { configuredPolicyOptions } from "./memory/config.ts";
 
 async function readOptions(): Promise<string> {
   const reader = Bun.stdin.stream().getReader(), chunks: Uint8Array[] = []; let bytes = 0;
@@ -45,7 +46,7 @@ if (import.meta.main) {
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
     if (remaining() <= 0) stop();
     setTimeout(stop, remaining()).unref();
-    const policy = createStandalonePolicy(options.policy), event = options.event;
+    const policy = createStandalonePolicy(configuredPolicyOptions(options.base!, options.cwd, options.policy)), event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!);
     let project: string;
@@ -62,7 +63,7 @@ if (import.meta.main) {
       let store: CaptureStore | undefined;
       try {
         const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining }, (input, receipt) => {
-          store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0 });
+          store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd });
           return store.append(input, { receipt });
         });
         captured = drained.captured.includes(options.current);

@@ -63,11 +63,11 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
 });
 
-test("promote --to repo needs a terminal on stdin, even for the preview, and --policy-free", async () => {
+test("promote --to repo needs a terminal on stdin, even for the preview; --policy-free is still accepted but no longer required (F4)", async () => {
   const r = rig(); const id = r.note("we chose sqlite");
   await expect(runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, stdinTTY: false })).rejects.toThrow("terminal");
   await expect(runCli(["promote", id, "--to", "repo", "--policy-free", "--confirm"], { ...r.person, stdinTTY: false })).rejects.toThrow("terminal");
-  await expect(runCli(["promote", id, "--to", "repo"], r.person)).rejects.toThrow("--policy-free");
+  expect(await runCli(["promote", id, "--to", "repo"], r.person)).toContain("the exact line that would be appended");   // the configured policy screens it, no flag needed
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
 });
 

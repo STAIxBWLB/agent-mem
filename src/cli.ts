@@ -1,6 +1,7 @@
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { serveMcp } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
+import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
@@ -15,7 +16,7 @@ import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } fro
 
 import { commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
-import { memoryHome } from "./memory/home.ts";
+import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
@@ -31,7 +32,7 @@ import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, 
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 
-export const PERSON_ONLY = "amem is for the person; agents read memory through the hub's hub_memory_* tools";
+export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 export interface CliContext {
   cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
@@ -120,6 +121,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
     }));
   }
+  // F1: `--help` and `--version` only print text, so they work in an agent shell too. Every other command keeps the honest-session refusal below.
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "help")) return commandHelp();
   if (agentMarked(context.env ?? process.env)) throw new Error(PERSON_ONLY);
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
   if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp();
@@ -141,9 +145,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined
     || definition.mutates === "confirm" && options["--confirm"] === true;
   if (mutating && !(context.stdinTTY ?? process.stdin.isTTY)) throw new Error("mutating commands require a terminal on stdin");
-  if (definition.policyFree && !policyFree) {
-    throw new Error(review ? "review accept requires --policy-free; use ahub memory to apply the host's privacy policy" : `${sub} requires --policy-free; use ahub memory ${sub} to apply the host's privacy policy`);
-  }
+  // F4: the configured policy (the machine's `amem.config.json`, narrowed by the repository's `.amem/config`) applies to every command that used to need
+  // `--policy-free`. The flag is still accepted and means nothing more, so existing scripts keep working.
+  const policyCwd = context.cwd ?? process.cwd();
+  const policyOf = () => configuredPolicy(memoryHome(), policyCwd);   // the same home every other command here resolves
   let canonicalProject: string | undefined;
   const boundProject = () => canonicalProject ??= resolveAlias(memoryHome(), memoryProjectKey(context.cwd ?? process.cwd()));
   if (sub === "migrate") {
@@ -158,7 +163,16 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     return JSON.stringify(await migrate({ ...common, mode }), null, 2);
   }
-  if (sub === "status") return JSON.stringify(shardMigrationStatus(memoryHome()), null, 2);
+  if (sub === "status") {
+    // F1: say where the memory lives and which configuration is in effect. The migration fields keep their names and shape; `home` and `config` are added.
+    const where = resolveMemoryHome(), loaded = loadAmemConfig(where.home, repoConfigRoot(policyCwd));
+    const { config, source } = loaded;
+    return JSON.stringify({ home: { path: where.home, source: where.source },
+      config: { machine: source.machine, repo: source.repo, denyPaths: config.denyPaths.length, piiPatterns: config.piiPatterns.length,
+        ...(config.briefBytes !== undefined ? { briefBytes: config.briefBytes } : {}), ...(config.excerptBytes !== undefined ? { excerptBytes: config.excerptBytes } : {}),
+        ...(config.capturePaths !== undefined ? { capturePaths: config.capturePaths } : {}), ...(Object.keys(config.capture).length ? { capture: config.capture } : {}) },
+      ...shardMigrationStatus(where.home) }, null, 2);
+  }
   if (sub === "prune") {
     const applying = options["--apply"] === true;
     if (applying ? options["--dry-run"] || options["--cutoff"] || !options["--plan"] : !options["--dry-run"] || !options["--cutoff"] || options["--plan"]) throw new Error("usage: amem prune [--user] --cutoff <UTC> --dry-run | [--user] --apply --plan <file>");
@@ -199,15 +213,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const candidate = candidates.get(id!, project);
       if (!candidate) throw new Error("candidate unavailable");
       if (options["--kind"] === "memory" && candidate.input.kind !== "memory") throw new Error("--kind memory accepts only a general memory candidate");
-      if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use ahub memory demote or forget after review");
+      if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use `amem demote` or `amem forget` after review");
       if (candidate.input.kind !== "memory" && (shardStatePresent() || resolveProfile(memoryHome()).kind === "generation")) throw new Error("candidate acceptance requires shard-aware and profile-aware host integration for this candidate kind; the candidate remains pending");
-      const standalone = createStandalonePolicy();
-      if (!await standalone.screen(candidate.input)) throw new Error("candidate refused by current host policy; current standalone privacy policy declined it");
+      const standalone = policyOf();
+      if (!await standalone.screen(candidate.input)) throw new Error("candidate refused by the current standalone privacy policy (secrets, personal data, deny paths and the patterns in amem.config.json)");
       // Candidate acceptance uses the actual secret screen; the core defers unrelated automatic promotions.
-      const store = curatedStore(project, { deferPromotions: true, screen: note => looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
+      const store = curatedStore(project, { deferPromotions: true, screen: note => standalone.screenStandalone(note) ? "promote" : "keep" });
       try {
         const result = candidates.accept(id!, { project, actor: "person", verdict: "public", store,
-          policy: (proposal, _target, note) => !looksSecret(JSON.stringify(proposal.input)) && !looksSecret(JSON.stringify(note)),
+          policy: (proposal, _target, note) => standalone.screenStandalone(proposal.input) && standalone.screenStandalone(note),
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ordinary note ${result.noteId}`;
       } finally { store.close(); }
@@ -215,13 +229,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
     if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");
-    const result = await vaultCandidatesAll(memoryHome(), { policy: createStandalonePolicy(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+    const result = await vaultCandidatesAll(memoryHome(), { policy: policyOf(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
     return JSON.stringify(result, null, 2);
   }
   if (sub === "vault-candidates") {
     const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
-      const result = await vaultCandidates(store, { project, policy: createStandalonePolicy(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
+      const result = await vaultCandidates(store, { project, policy: policyOf(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
       return JSON.stringify(result, null, 2);
     } finally { store.close(); }
   }
@@ -286,8 +300,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (!requested) throw new Error(`usage: amem project ${op} <key>`);
     if (op === "export") {
       if (typeof options["--to"] !== "string") throw new Error("usage: amem project export <key> --to <file>");
-      // The screen is the standalone one (secrets, PII patterns, denied paths); `--policy-free` is accepted only because a person may decline the host's narrower policy, which amem alone does not have.
-      const result = await exportProject(memoryHome(), requested, { to: options["--to"] });
+      // The bundle leaves the home, so it is screened by the configured policy (secrets, personal data, the configured patterns and deny paths).
+      const result = await exportProject(memoryHome(), requested, { to: options["--to"], policy: policyOf() });
       return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
     }
     const key = requireShard(memoryHome(), requested);
@@ -325,7 +339,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     return options["--json"] ? JSON.stringify(ops, null, 2) : ops.length ? ops.map((op) => op.op === "alias" ? `${op.at}  ${op.alias} -> ${op.key}  (${op.actor})` : `${op.at}  ${op.alias} removed  (${op.actor})`).join("\n") : "no aliases recorded";
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
-  if (goal && sub === "link") throw new Error("goal link needs host integration; use ahub goal link");
+  if (goal && sub === "link") throw new Error("goal link needs a host with a task board; amem alone has none");
   // #15 T4 / D6: the repo scope. Person-only and a terminal were enforced above (agent markers, `mutates`); amem never runs git.
   const repoCwd = context.cwd ?? process.cwd();
   if (sub === "repo") {
@@ -357,7 +371,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (!view) throw new Error(`no memory entry ${idText} in this project (amem list shows the ids)`);
     // `get` also returns shared-scope notes of other projects: only this project's own private notes go into this repository.
     if (resolveAlias(memoryHome(), view.project) !== project) throw new Error(`${view.id.slice(0, 8)} belongs to another project; only this project's notes can be promoted into its repository`);
-    const plan = await planRepoPromotion(root, view);
+    const plan = await planRepoPromotion(root, view, configuredPolicyOptions(memoryHome(), root));
     if (plan.refusals.length) throw new Error(`not promoted to repo scope:\n- ${plan.refusals.join("\n- ")}`);
     const seen = await repoVisibility(root, context.visibility);
     const preview = [`the exact line that would be appended to ${plan.path}:`, plan.text, ...(plan.droppedNodes.length ? [`(left out, private references: ${plan.droppedNodes.join(", ")})`] : []),
@@ -399,17 +413,19 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const note = read.state === "unsafe" ? [`(repo scope unavailable: ${read.reason})`] : read.skipped.malformed + read.skipped.mismatched + read.skipped.withheld ? [`(${read.skipped.malformed + read.skipped.mismatched} repo lines skipped as invalid, ${read.skipped.withheld} withheld by the screen)`] : [];
     return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...rows.map(line)] : []), ...note].join("\n");
   };
-  const crosses = definition.policyFree === true && policyFree;
+  const crosses = definition.policyFree === true;
   const cwd = context.cwd ?? process.cwd();
-  // Reads can trigger held-note reconciliation. Defer it unless this terminal explicitly authorized crossing policy.
-  const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : looksSecret(`${note.title ?? ""}\n${note.text}`) ? "keep" : "promote" });
-  // A person's reads are unscreened. Writes crossing the boundary remain secret-screened without host policy.
-  if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || !looksSecret(`${title}\n${milestones.join("\n")}`) });
+  const configured = policyOf();
+  // Reads can trigger held-note reconciliation. Defer it unless this command is one that moves notes across the boundary (promote, sync, import, review accept), and then the configured policy decides each note.
+  const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : configured.screenStandalone(note) ? "promote" : "keep" });
+  // A person's reads are unscreened. A write is screened by the configured policy, which includes the built-in secret screen.
+  if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || configured.screenStandalone({ title, milestones }) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};
-  const output = await withRepoRows(await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => () => false,
+  const output = await withRepoRows(await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => text => configured.declinesPersonal(text),
+    sync: { screen: row => configured.screenStandalone(row) },   // the repository-narrowed policy binds what sync publishes too
     onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   if (sub === "import" && parsed.path[1] === "claude-mem") {
-    const policy = createStandalonePolicy();
+    const policy = configured;
     const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });
     return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}`;
   }

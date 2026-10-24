@@ -195,7 +195,9 @@ test("ingest help returns guidance before intake, cwd access or any memory write
       });
       expect(help).toContain("usage: amem");expect(help).toContain("ingest");expect(existsSync(f.base)).toBe(false);
     }
-    await expect(runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow(PERSON_ONLY);
+    // F1: plain `--help` works in an agent shell too, and opens nothing; a command is still refused.
+    expect(await runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("usage: amem");
+    await expect(runCli(["list"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow(PERSON_ONLY);
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 });

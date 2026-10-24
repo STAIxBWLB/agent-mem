@@ -48,11 +48,10 @@ test("review defaults to list, supports filters and JSON, and opens no ordinary 
   for (const path of ["index.db", "log", "local", "machine.json"]) expect(existsSync(join(f.home, path))).toBe(false);
 });
 
-test("review acceptance and rejection require TTY, acceptance also requires policy-free, before store access", async () => {
+test("review acceptance and rejection require a TTY and a full id before store access", async () => {
   const f = fixture(), id = "a".repeat(64);
   await expect(runCli(["review", "accept", id, "--policy-free"], { ...f.context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
   await expect(runCli(["review", "reject", id], { ...f.context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  await expect(runCli(["review", "accept", id], f.context)).rejects.toThrow("use ahub memory");
   await expect(runCli(["review", "reject", "a".repeat(8)], f.context)).rejects.toThrow("full 64-character");
   expect(existsSync(f.home)).toBe(false);
 });
@@ -94,7 +93,7 @@ test("review accepts a correction with its target tier and scope through ordinar
 
 test("review accept refuses secret-looking candidate input and leaves it pending", async () => {
   const f = fixture(), id = put(f.project, "password: synthetic-fixture-only");
-  await expect(runCli(["review", "accept", id, "--policy-free"], f.context)).rejects.toThrow("current host policy");
+  await expect(runCli(["review", "accept", id, "--policy-free"], f.context)).rejects.toThrow("current standalone privacy policy");
   const store = new MemoryStore({ screen: () => "skip" });
   try { expect(store.list({ project: f.project })).toEqual([]); } finally { store.close(); }
   const candidates = new CandidateStore();

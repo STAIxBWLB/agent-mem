@@ -6,6 +6,18 @@ import { nodePath, pathCandidates } from "./project.ts";
 
 /** True means the complete value is public. Hosts may narrow, never replace, standalone policy. */
 export interface MemoryPolicy { screen(value: unknown): Promise<boolean> }
+/**
+ * The standalone policy. `screenStandalone` is its own part only (secrets, default PII, configured PII patterns and deny paths) as a synchronous
+ * answer, for callers that cannot await (the store's promotion screen); it never asks the host, so a caller with a host uses `screen`.
+ */
+export interface StandalonePolicy extends MemoryPolicy {
+  screenStandalone(value: unknown): boolean;
+  /**
+   * Only the personal-data and configured-pattern and deny-path part of `screenStandalone`, without the secret screen, for a caller that counts secrets
+   * separately (the claude-mem import reports `pii` and `secret` skips as two numbers). True means the value names personal data or something configured.
+   */
+  declinesPersonal(text: string): boolean;
+}
 export interface StandalonePolicyOptions {
   denyPaths?: readonly string[];
   /** Case-insensitive literal substrings, not executable regular expressions. */
@@ -14,7 +26,7 @@ export interface StandalonePolicyOptions {
 }
 
 const MAX_DEPTH = 16, MAX_NODES = 4096, MAX_BYTES = 256 * 1024, MAX_STRING_BYTES = 16 * 1024;
-const fold = (text: string) => text.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().replace(/\\/g, "/");
+export const fold = (text: string) => text.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().replace(/\\/g, "/");
 const flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 
 /** Inspect descriptors, not getters/toJSON, and build the only value a host is allowed to see. */
@@ -92,7 +104,7 @@ function defaultPii(text: string): boolean {
 }
 
 /** No filesystem, model, network or storage work occurs while constructing or screening this policy. */
-export function createStandalonePolicy(options: StandalonePolicyOptions = {}): MemoryPolicy {
+export function createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy {
   if (!options || typeof options !== "object" || types.isProxy(options) || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length) throw new Error("invalid standalone policy options");
   const descriptors = Object.getOwnPropertyDescriptors(options);
   for (const [key, descriptor] of Object.entries(descriptors)) if (!["denyPaths", "piiPatterns", "host"].includes(key) || !("value" in descriptor)) throw new Error("invalid standalone policy options");
@@ -100,20 +112,36 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): M
   const pii = literals(descriptors.piiPatterns?.value, "PII patterns");
   const host = descriptors.host?.value as MemoryPolicy | undefined;
   if (host !== undefined && (!host || typeof host.screen !== "function")) throw new Error("invalid host policy");
+  const standalone = (value: unknown): { ok: boolean; value?: unknown } => {
+    try {
+      const complete = snapshot(value);
+      if (!complete) return { ok: false };
+      for (const text of complete.texts) {
+        if (looksSecret(text) || looksSecret(text.replace(/["']/g, ""))) return { ok: false };
+        const normalized = fold(text);
+        if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return { ok: false };
+        const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
+        const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
+        for (const path of paths) if (path && isDenied(posix.normalize(path), deny)) return { ok: false };
+      }
+      return { ok: true, value: complete.value };
+    } catch { return { ok: false }; }
+  };
+  const personal = (text: string): boolean => {
+    const normalized = fold(text);
+    if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return true;
+    const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
+    const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
+    return paths.some(path => path && isDenied(posix.normalize(path), deny));
+  };
   return {
+    screenStandalone: value => standalone(value).ok,
+    declinesPersonal: text => personal(text),
     async screen(value: unknown): Promise<boolean> {
       try {
-        const complete = snapshot(value);
-        if (!complete) return false;
-        for (const text of complete.texts) {
-          if (looksSecret(text) || looksSecret(text.replace(/["']/g, ""))) return false;
-          const normalized = fold(text);
-          if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
-          const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
-          const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
-          for (const path of paths) if (path && isDenied(posix.normalize(path), deny)) return false;
-        }
-        return host === undefined || await host.screen(complete.value) === true;
+        const own = standalone(value);
+        if (!own.ok) return false;
+        return host === undefined || await host.screen(own.value) === true;
       } catch { return false; }
     },
   };

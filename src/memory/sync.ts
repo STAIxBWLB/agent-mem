@@ -4,6 +4,7 @@ import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
+import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 
 /**
  * #258 phase 2: hub memory between a person's machines through a git remote they configure. The memory directory is a
@@ -120,17 +121,25 @@ export interface SyncOptions {
   /** Set (or replace) the remote first: a person's choice. */
   remote?: string;
   visibility?: (url: string) => Promise<Visibility>;
+  /** An extra screen over each outbound row's text, on top of the machine's configured policy (the CLI passes the repository-narrowed policy). */
+  screen?: RowScreen;
   /** A stopping hub aborts: the running git step is killed and the sync ends without touching the store. */
   signal?: AbortSignal;
 }
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  // F4: before anything is staged or pushed, this machine's own long-term notes pass the person's configured policy (every profile: single log, generation, shards).
+  const pass = outboundScreen(store.profile.home, opts.screen);
+  for (const target of store.openedSyncTargets()) {
+    const screened = target.profile.kind === "generation" ? screenOutboundRows(target, pass) : screenOwnSegment(target.dir, target.machine.id, pass);
+    if (!screened.ok) return { ok: false, pushed: false, entries: 0, error: screened.reason };
+  }
   if (store.profile.sharded) return (await import("./shard-sync.ts")).syncShardedMemory(store, opts);
   if (store.profile.kind === "generation") return syncGenerationMemory(store, opts);
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });
   if (opts.signal?.aborted) return fail("stopped");
-  const noRemote = "no sync remote: a person sets one with ahub memory sync --remote <private git url>";
+  const noRemote = "no sync remote: a person sets one with `amem sync --remote <private git url>`";
   if (!opts.remote && !existsSync(join(dir, ".git"))) return fail(noRemote); // never set up: nothing to do, nothing created
   const release = lock(dir);
   if (!release) return fail("another sync is running on this machine");
@@ -157,7 +166,7 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
     if (!url) return fail(noRemote);
     // Long-term entries hold note text: a public remote would publish them.
     const visibility = await (opts.visibility ?? remoteVisibility)(url);
-    if (visibility === "public") return fail("the sync remote is public; hub memory syncs only to a private remote");
+    if (visibility === "public") return fail("the sync remote is public; memory syncs only to a private remote");
     const warning = visibility === "unknown" ? "the sync remote's visibility is unknown; keep it private" : undefined;
 
     const own = `log/${store.machine.id}.jsonl`;

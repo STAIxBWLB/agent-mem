@@ -6,6 +6,9 @@ import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
 import { normalizeCaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { fold } from "./memory/policy.ts";
+import { looksSecret } from "./memory/screen.ts";
 import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
@@ -281,6 +284,7 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer } | undefined 
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
       ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }) });
     const actual = c as unknown as {[key: string]: unknown};
+    // A record staged under a configured cap is already inside the built-in one, so normalizing it again must leave every field unchanged.
     if (Object.entries(normalized).some(([key, item]) => JSON.stringify(actual[key]) !== JSON.stringify(item))) return undefined;
     return { value, bytes };
   } catch { return undefined; }
@@ -446,7 +450,7 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
 /** Only screened normalized capture fields are retained, never the native input envelope. */
 export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {
   if (!(HOOK_EVENTS as readonly string[]).includes(event) || options.policy?.host) return undefined;
-  const policy = createStandalonePolicy(options.policy);
+  const policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
   if (!await policy.screen(input)) return undefined;
   const value = structuredClone(input) as {[key: string]: unknown};
   if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > HOOK_INPUT_BYTES || !await policy.screen(value)) return undefined;
@@ -456,8 +460,14 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   const tool = value.tool_input && typeof value.tool_input === "object" && !Array.isArray(value.tool_input) ? value.tool_input as {[key: string]: unknown} : {};
   const paths = [tool.file_path, tool.path, ...(Array.isArray(tool.paths) ? tool.paths : [])].filter((p): p is string => typeof p === "string");
   const content = event === "PostToolUseFailure" ? value.error ?? value.tool_response ?? "" : value.prompt ?? value.last_assistant_message ?? value.tool_response ?? "";
+  // F4: the person's configured caps apply at staging. Replay (`decoded`) re-normalizes with the built-in caps, which are the ceiling, so a record
+  // staged under a tighter cap still verifies after the cap is raised or removed.
+  const configured = loadAmemConfig(base, repoConfigRoot(cwd)).config;   // the repository's .amem/config narrows here too
   const capture = normalizeCaptureFields({ agent: "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
-    ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt: typeof content === "string" ? content : JSON.stringify(content) });
+    ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt: typeof content === "string" ? content : JSON.stringify(content) },
+    undefined,
+    (text: string) => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),   // the configured patterns redact the excerpt, as the store does
+    { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, ...(configured.denyPaths.length ? { denyPaths: configured.denyPaths } : {}) });
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
   const record: Record = { schema: SCHEMA, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
@@ -508,6 +518,8 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   append: (input: CaptureInput, receipt: string) => CaptureAppend): Promise<{ captured: string[]; blocked: number }> {
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), stamp = hookCaptureScope(cwd, base), captured: string[] = [];
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
+  // F4: the configured policy applies at drain too. `options.policy` carries it, so the anchored line below (a test diagnostic matches its exact text) stays as it was.
+  options = { ...options, policy: configuredPolicyOptions(base, cwd, options.policy) };
   const policy = createStandalonePolicy(options.policy), dir = directory(base);
   const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
     const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;

@@ -5,6 +5,7 @@ import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
+import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
@@ -92,13 +93,16 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
   const closers: (() => void)[] = [];
   try {
     if (options.nativeSession && typeof options.timeRemaining !== "function") return result;
-    const maximum = options.maxTokens ?? DEFAULT_TOKENS;
+    const cwdForConfig = options.cwd, baseForConfig = canonicalPath(options.base ?? memoryHome());
+    const configuredBrief = loadAmemConfig(baseForConfig, repoConfigRoot(cwdForConfig)).config.briefBytes;
+    // A caller's explicit budget wins over the default; the person's configured budget can only lower either.
+    const maximum = Math.min(options.maxTokens ?? DEFAULT_TOKENS, configuredBrief ?? Number.MAX_SAFE_INTEGER);
     if (!Number.isSafeInteger(maximum) || maximum < 1) return result;
     const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome());
     const requested = options.project ?? memoryProjectKey(cwd, { repositoryIsolation: true }), project = resolveAlias(base, requested);
     // #15 T5: a project the person archived or forgot yields no brief at all, before any lease, store or screen is opened.
     if (projectState(base, project) !== "active") return result;
-    const policy = createStandalonePolicy(options.policy), release = registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
+    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)), release = registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
     const selection = readSelector(base).revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
@@ -199,7 +203,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         await recent("curated", window => store.readPage(window), noteDisplay);
       });
       if (coverage.repo) await run("repo", async () => {
-        const scoped = repoReadPolicy(repoRoot!, options.policy);
+        const scoped = repoReadPolicy(repoRoot!, configuredPolicyOptions(base, cwd, options.policy));
         if ("reason" in scoped) { coverage.repo = "unavailable"; reasons.repo = "repo policy unreadable"; return; }
         // The newest few rows only, and never past the caller's deadline: the read stops (partial) when less than the reserve is left, so a 1 MiB log cannot spend the hook's budget.
         const repo = await readRepoScope(repoRoot, scoped.policy, { limit: SECTION_RECORDS + 1, ...(options.timeRemaining ? { remainingMs: options.timeRemaining, reserveMs: 20 } : {}) }); guard();
@@ -213,7 +217,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       });
       await run("capture", async () => {
         const { CaptureStore } = await import("./memory/capture.ts");
-        const capture = new CaptureStore({ memoryDir: base, project, ...(options.nativeSession ? { readOnly: true, busyTimeoutMs: 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
+        const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession ? { readOnly: true, busyTimeoutMs: 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
         if (capture.recentReadTruncated) coverage.capture = "partial";
         await recent("capture", window => capture.readPage(window), captureDisplay);
       });
