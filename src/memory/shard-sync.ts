@@ -14,7 +14,7 @@ import type { Entry, MemoryStore } from "./store.ts";
 const OID = /^[a-f0-9]{40}$/, PACK = /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/;
 const digest = (bytes: string | Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const zero = "0".repeat(40);
-type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; sources: PruneSourceRow[]; generation: string; local?: string; remote?: string; commit?: string };
+type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; generation: string; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
@@ -56,7 +56,8 @@ function* lines(file: string): Generator<string> {
 }
 function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[] } {
   const snapshot = store.prunePort().snapshot();
-  const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced" && source.publicWitness).map(source => source.row);
+  // Placement decides transport; the verified snapshot retains separate prune provenance.
+  const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced").map(source => source.row);
   const folder = join(store.dir, "log"); directory(folder);
   const plans = join(store.dir, "prune-plans");
   if (existsSync(plans)) {
@@ -89,7 +90,8 @@ function provePrunes(targets: readonly Target[]): void {
       if (old && canonicalJSON(old.row) !== canonicalJSON(source.row)) refuse(`${shardSyncLabel(target.realm)}: conflicting witness row`);
       if (!old || source.placement === "synced" && source.publicWitness) sources.set(source.row.id, source);
     }
-    for (const row of target.rows.values()) if (row.op !== "prune") {
+    // Only verified fetched occurrences add public proof. Locally selected exports do not.
+    for (const row of target.rows.values()) if (row.op !== "prune" && target.fetched.has(row.id)) {
       const old = sources.get(row.id);
       if (old && canonicalJSON(old.row) !== canonicalJSON(row)) refuse(`${shardSyncLabel(target.realm)}: conflicting witness row`);
       sources.set(row.id, { row, placement: "synced", publicWitness: true });
@@ -118,7 +120,7 @@ function installPack(store: MemoryStore, bytes: Buffer): void {
 function importRows(target: Target): void {
   const port = target.store.prunePort(), before = port.snapshot();
   const known = new Set(before.rows.filter(source => source.placement === "synced" && source.publicWitness).map(source => source.row.id));
-  const ordinary = [...target.rows.values()].filter((row): row is Entry => row.op !== "prune" && !known.has(row.id));
+  const ordinary = [...target.rows.values()].filter((row): row is Entry => row.op !== "prune" && target.fetched.has(row.id) && !known.has(row.id));
   for (const bytes of encodeShardPacks(ordinary).values()) installPack(target.store, bytes);
   port.refresh();
   for (const row of target.rows.values()) if (row.op === "prune") {
@@ -161,7 +163,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     targets = borrowed.map(opened => {
       const profile = opened.profile;
       if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.shardUser && !profile.shardKey) refuse("shard sync target identity unavailable");
-      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), sources: [], generation: profile.generation };
+      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], generation: profile.generation };
     });
     if (!targets.length || targets.length > 2 || targets.some(target => target.store.profile.home !== store.profile.home)
       || new Set(targets.map(target => shardSyncRef(target.realm))).size !== targets.length
@@ -288,6 +290,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         if (target.local) await required(["merge-base", "--is-ancestor", target.local, tip], `${shardSyncLabel(target.realm)}: remote history is not fast-forward`);
         const remote = await history(tip, target); target.remote = tip;
         mergeRows(target.rows, Array.from(remote.rows.values()), target.realm);
+        for (const row of remote.rows.values()) if (row.op !== "prune") target.fetched.add(row.id);
       }
     };
     const localTargets = () => {

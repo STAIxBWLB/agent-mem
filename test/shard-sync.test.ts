@@ -7,7 +7,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { appendAlias, shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { syncMemory } from "../src/memory/sync.ts";
-import { applyPrune, planPrune, pruneId } from "../src/memory/prune.ts";
+import { applyPrune, planPrune, pruneId, reducePruneRows, pruneRowHash } from "../src/memory/prune.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -32,6 +32,7 @@ async function split(generation: string, seeded = false) {
     ids.alphaLegacy = legacy.note(note(A, "alphalegacy"));
     ids.betaLegacy = legacy.note(note(B, "UNOPENED_B_betalegacy"));
     ids.userLegacy = legacy.note(note(A, "userlegacy", "shared"));
+    legacy.note({ ...note(A, "LOCAL_ONLY_legacy_short"), tier: "short" });
   }
   const memory = legacy.dir; legacy.close();
   expect(await migrateShards({ memoryDir: memory, generation, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
@@ -87,12 +88,17 @@ test("two split homes sync opened project plus user across generations, preserve
   expect(existsSync(shardDir(receiver.memory, B))).toBe(false);
   expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
   const expected = [ids.alphaLegacy!, ids.alphaCurrent, ids.userLegacy!, ids.userCurrent].sort();
+  expect(source.a.prunePort().snapshot().rows.find(source => source.row.id === ids.alphaLegacy)).toMatchObject({ placement: "synced", publicWitness: false, legacy: true });
+  expect(source.a.prunePort().snapshot().rows.find(source => source.row.op === "note" && source.row.text === "LOCAL_ONLY_legacy_short")).toMatchObject({ placement: "local", publicWitness: false, legacy: true });
+  expect(receiver.a.prunePort().snapshot().rows.find(source => source.row.id === ids.alphaLegacy)).toMatchObject({ placement: "synced", publicWitness: true });
   const rows = receiver.a.list({ project: A, limit: 100 });
   expect(rows.map(row => row.id).sort()).toEqual(expected);
   for (const id of expected) {
     const row = receiver.a.get(id, A)!; expect(row.id).toBe(id); expect(row.project).toBe(A);
     const original = source.a.get(id, A)!;
     expect({ at: row.at, machine: row.machine, peer: row.peer, text: row.text }).toEqual({ at: original.at, machine: original.machine, peer: original.peer, text: original.text });
+    const transported = git(url, "ls-tree", "-r", "--name-only", row.scope === "shared" ? refUser : refA).split("\n").flatMap(file => file.startsWith("rows/") ? git(url, "show", `${row.scope === "shared" ? refUser : refA}:${file}`).split("\n") : []).map(line => JSON.parse(line)).find(value => value.id === id);
+    expect(canonicalJSON(transported)).toBe(canonicalJSON(source.a.prunePort().snapshot().rows.find(source => source.row.id === id)?.row ?? source.a.openedSyncTargets()[1]!.prunePort().snapshot().rows.find(source => source.row.id === id)!.row));
     expect(row.scope).toBe([ids.userLegacy, ids.userCurrent].includes(id) ? "shared" : "project");
     expect(receiver.a.search(row.text, { project: A }).hits.some(hit => hit.view?.id === id)).toBe(true);
   }
@@ -107,6 +113,41 @@ test("two split homes sync opened project plus user across generations, preserve
   expect(await syncMemory(receiver.a, privateRemote)).toMatchObject({ ok: true });
   expect(receiver.a.list({ project: A, limit: 100 }).map(row => row.id).sort()).toEqual(expected);
   expect(existsSync(shardDir(receiver.memory, B))).toBe(false); assertPublicHistory(url);
+}, 60_000);
+
+test("transport selection cannot supply prune proof for an unwitnessed legacy target or basis", async () => {
+  for (const legacyBasis of [false, true]) {
+    const url = remote(), home = temp();
+    const v1 = new MemoryStore({ home, profile: "shared-v1", deferPromotions: true });
+    const targetId = v1.note(note(A, "legacy prune target"));
+    expect(v1.demote(targetId, "person", A)).toBeDefined();
+    const memory = v1.dir; v1.close();
+    expect(await migrateShards({ memoryDir: memory, generation: G1, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
+    const a = keep(openShardStore({ home, project: A, deferPromotions: true }));
+    const initial = a.prunePort().snapshot();
+    const target = initial.rows.find(source => source.row.id === targetId)!;
+    const basis = initial.rows.find(source => source.row.op === "demote" && source.row.target === targetId)!;
+    const basisId = basis.row.id;
+    expect(target.publicWitness).toBe(false); expect(basis.publicWitness).toBe(false);
+    const witnessed = legacyBasis ? target : basis;
+    appendFileSync(join(a.dir, "log", `${a.machine.id}.jsonl`), canonicalJSON(witnessed.row) + "\n");
+    a.prunePort().refresh();
+    const at = new Date(Date.parse((basis.row as { by: string }).by) + 2000).toISOString();
+    const body = { schema: "agent-mem.prune/v1" as const, op: "prune" as const, generation: G1,
+      at, cutoff: at, machine: a.machine.id, actor: "person" as const, placement: "synced" as const,
+      targets: [{ id: target.row.id, rowHash: pruneRowHash(target.row), expiredAt: (basis.row as { by: string }).by,
+        basis: { kind: "demote" as const, id: basis.row.id, rowHash: pruneRowHash(basis.row) } }] };
+    const prune = { ...body, id: pruneId(body) };
+    const snapshot = a.prunePort().snapshot();
+    expect(snapshot.rows.find(source => source.row.id === witnessed.row.id)?.publicWitness).toBe(true);
+    expect(reducePruneRows([{ row: prune, placement: "synced" }], snapshot, G1).invalid).toBe(1);
+    const publicSnapshot = { ...snapshot, rows: snapshot.rows.map(source => ({ ...source, publicWitness: true })) };
+    expect(reducePruneRows([{ row: prune, placement: "synced" }], publicSnapshot, G1).targets.has(targetId)).toBe(true);
+    appendFileSync(join(a.dir, "log", `${a.machine.id}.jsonl`), canonicalJSON(prune) + "\n");
+    expect(await syncMemory(a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
+    expect(refs(url)).toBe("");
+    expect(a.prunePort().snapshot().rows.find(source => source.row.id === (legacyBasis ? basisId : targetId))?.publicWitness).toBe(false);
+  }
 }, 60_000);
 
 for (const visibility of ["public", "unknown"] as const) test(`split sync refuses ${visibility} visibility before cache or remote effects`, async () => {
