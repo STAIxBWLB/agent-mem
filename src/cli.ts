@@ -674,7 +674,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd, policy: policyOf }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd, policy: policyOf }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) { if (sub === "sync") stampSync((error as Error).message, stop?.cause()); throw error; }

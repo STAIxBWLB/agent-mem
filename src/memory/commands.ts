@@ -13,6 +13,8 @@ export interface CommandNames { memory: string; goal: string }
 export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 
 export interface MemoryCommandOptions {
+  /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
+  person?: boolean;
   /** Defaults to amem's own names. */
   names?: CommandNames;
   /** Startup-bound canonical project supplied by a host; no model-facing selector. */
@@ -64,6 +66,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const flag = (name: string) => { const i = rest.indexOf(name); if (i < 0) return undefined; const v = rest[i + 1] ?? fail(`${name} needs a value`); rest.splice(i, 2); return v; };
   const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
   const names = opts.names ?? AMEM_NAMES, usage = memoryUsage(names.memory);
+  if (args.some(arg => arg === "--history" || arg === "--as-of" || arg.startsWith("--history=") || arg.startsWith("--as-of=")) && opts.person !== true) fail("historical recall requires authenticated person intent from the host");
   const store = opts.store ?? opts.open();
   const actor = "user";
   const project = opts.project ?? memoryProjectKey(cwd);

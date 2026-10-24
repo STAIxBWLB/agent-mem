@@ -80,7 +80,7 @@ test("public search and show preserve reducer revival after the replacement is f
 
 test("history output limit also bounds forgotten stubs and reports incompleteness", async () => {
   const f = await fixture("legacy"), first = f.note("first forgotten fact"), second = f.note("second forgotten fact"); f.advance(1000); f.store.forget(first, "person", f.project); f.store.forget(second, "person", f.project);
-  const result = JSON.parse(await rawMemoryCommand(["list", "--history", "--limit", "1", "--json"], f.root, { store: f.store, open: () => f.store, project: f.project, readable: rows => rows, importPolicy: () => () => false }));
+  const result = JSON.parse(await rawMemoryCommand(["list", "--history", "--limit", "1", "--json"], f.root, { person: true, store: f.store, open: () => f.store, project: f.project, readable: rows => rows, importPolicy: () => () => false }));
   expect(result.entries).toEqual([]); expect(result.forgotten).toHaveLength(1); expect(result.incomplete).toBe(true); expect(JSON.stringify(result)).not.toContain("forgotten fact");
 });
 
@@ -92,4 +92,14 @@ for (const mode of ["generation", "shards"] as const) test(`${mode}: history bud
   try { expect(() => f.store.recallState(f.project, { history: true, maxBytes: 16 })).toThrow("read byte budget"); expect(bytes).toBeLessThanOrEqual(16); }
   finally { SegmentReader.prototype.read = read; }
   expect(f.bytes()).toEqual(before);
+});
+
+test("retained-history host authorization is explicit and precedes opening a store", async () => {
+  const f = await fixture("legacy"), id = f.note("person-only retained body"); let opens = 0;
+  const opts = { project: f.project, open: () => { opens++; return f.store; }, readable: (rows: import("../src/memory/store.ts").View[]) => rows, importPolicy: () => () => false };
+  for (const person of [undefined, false]) for (const flags of [["--history"], ["--as-of", f.iso()], [`--as-of=${f.iso()}`]]) {
+    await expect(rawMemoryCommand(["show", id, ...flags], f.root, { ...opts, person })).rejects.toThrow("authenticated person");
+  }
+  expect(opens).toBe(0);
+  const history = JSON.parse(await rawMemoryCommand(["show", id, "--history", "--json"], f.root, { ...opts, person: true, store: f.store })); expect(history.views.map((row: { id: string }) => row.id)).toEqual([id]); expect(opens).toBe(0);
 });
