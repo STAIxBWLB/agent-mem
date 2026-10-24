@@ -8,6 +8,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { appendAlias, shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { syncShardedMemory } from "../src/memory/shard-sync.ts";
 import { applyPrune, planPrune, pruneId, reducePruneRows, pruneRowHash, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 import { canonicalJSON, hashJSON, writeProfileJSON } from "../src/memory/generation.ts";
@@ -456,4 +457,44 @@ test("pending transport recovery cannot append when atomic publication fails", a
   try { expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("selected-ref push failed") }); }
   finally { process.env.PATH = originalPath; }
   expect(jsonlBytes(f.receiver.a.dir)).toEqual(bytes); expect(readFileSync(f.pending)).toEqual(pending); expect(refs(f.url)).toBe(before);
+}, 20_000);
+
+
+test("unexpected shard sync errors are observable only through the opt-in internal test port", async () => {
+  const source = await split(G1), unexpected = new Error("PRIVATE_UNEXPECTED_DIAGNOSTIC_CANARY");
+  const options = { remote: "synthetic-private-remote", visibility: async (): Promise<"private"> => { throw unexpected; } };
+  const methods = ["log", "warn", "error"] as const, saved = methods.map(key => console[key]), logs: unknown[][] = [];
+  for (const key of methods) console[key] = (...args: unknown[]) => { logs.push(args); };
+  try {
+    const ordinary = await syncMemory(source.a, options), seen: unknown[] = [];
+    expect(ordinary).toMatchObject({ ok: false, pushed: false, error: "shard sync unavailable" });
+    expect(await syncShardedMemory(source.a, options, error => { seen.push(error); })).toEqual(ordinary);
+    expect(seen).toEqual([unexpected]); expect(JSON.stringify(ordinary)).not.toContain("PRIVATE_UNEXPECTED_DIAGNOSTIC_CANARY");
+    expect(await syncShardedMemory(source.a, options, () => { throw new Error("PRIVATE_OBSERVER_FAILURE"); })).toEqual(ordinary);
+    let expectedRefusals = 0;
+    expect(await syncShardedMemory(source.a, { remote: "synthetic-private-remote", visibility: async () => "public" }, () => { expectedRefusals++; })).toMatchObject({ ok: false, pushed: false });
+    expect(expectedRefusals).toBe(0); expect(logs).toEqual([]);
+  } finally { for (const [index, key] of methods.entries()) console[key] = saved[index]!; }
+});
+
+test("owned shard cache sync never launches automatic Git maintenance beside strict cache validation", async () => {
+  const url = remote(), source = await split(G1), receiver = await split(G1), diagnostics = temp(), trace = join(diagnostics, "git-trace.jsonl"), config = join(diagnostics, "gitconfig");
+  // The remote is a separate repository; only the two owned client caches are under this contract.
+  git(url, "config", "maintenance.auto", "false"); git(url, "config", "gc.auto", "0");
+  writeFileSync(config, "[maintenance]\n\tauto = true\n[gc]\n\tauto = 1\n");
+  const oldTrace = process.env.GIT_TRACE2_EVENT, oldConfig = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_TRACE2_EVENT = trace; process.env.GIT_CONFIG_GLOBAL = config;
+  try {
+    source.a.note(note(A, "ordinary cache maintenance regression"));
+    expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+    expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+    const events = readFileSync(trace, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { event?: string; argv?: string[] });
+    const automatic = events.filter(event => event.event === "child_start" && event.argv?.includes("--auto")
+      && (event.argv.includes("maintenance") || event.argv.includes("gc"))).map(event => event.argv!.includes("maintenance") ? "maintenance run --auto" : "gc --auto");
+    expect(automatic).toEqual([]);
+    expect(receiver.a.search("ordinary cache maintenance regression", { project: A }).hits).toHaveLength(1);
+  } finally {
+    if (oldTrace === undefined) delete process.env.GIT_TRACE2_EVENT; else process.env.GIT_TRACE2_EVENT = oldTrace;
+    if (oldConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldConfig;
+  }
 }, 20_000);

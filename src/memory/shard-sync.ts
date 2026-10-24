@@ -186,8 +186,8 @@ function importRows(target: Target): void {
   port.refresh();
 }
 
-/** Sync only the borrowed canonical project and user targets. It never closes or rebinds those handles. */
-export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+/** Sync only the borrowed canonical project and user targets. The internal third argument is a test-only observer, never a CLI/SyncOptions port. */
+export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void): Promise<SyncResult> {
   let pushed = false, releaseTransport: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
   const fail = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });
@@ -200,7 +200,10 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if (current.dir !== profile.dir || current.generation !== target.generation || current.selectorRevision !== profile.selectorRevision) refuse(`${shardSyncLabel(target.realm)}: selected profile changed`);
     }
   };
-  const git = async (args: string[], signal = opts.signal) => generationSyncGit(root, ["--no-replace-objects", "--git-dir", cache, ...args], signal);
+  // Git's auto-maintenance may outlive fetch and remove maintenance.lock during the strict cache walk.
+  // ponytail: cache objects retain their full history; any future compaction must hold this transport's mutation/sync locks.
+  const gitArgs = (args: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args];
+  const git = async (args: string[], signal = opts.signal) => generationSyncGit(root, gitArgs(args), signal);
   const required = async (args: string[], reason: string): Promise<string> => {
     check(); const result = await git(args); check();
     if (result.code !== 0) refuse(reason);
@@ -405,9 +408,11 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     }
     return fail("shard sync selected-ref push failed");
   } catch (error) {
-    return fail(error instanceof ShardSyncFormatError || error instanceof SyncRefusal ? error.message : "shard sync unavailable");
+    if (error instanceof ShardSyncFormatError || error instanceof SyncRefusal) return fail(error.message);
+    try { testOnlyUnexpectedError?.(error); } catch { /* A test observer cannot change the neutral result. */ }
+    return fail("shard sync unavailable");
   } finally {
-    for (const ref of transient) { try { await generationSyncGit(root, ["--no-replace-objects", "--git-dir", cache, "update-ref", "--no-deref", "-d", ref], undefined); } catch { /* private orphaned refs remain non-public */ } }
+    for (const ref of transient) { try { await generationSyncGit(root, gitArgs(["update-ref", "--no-deref", "-d", ref]), undefined); } catch { /* private orphaned refs remain non-public */ } }
     for (const file of temporary) { try { rmSync(file, { force: true }); } catch { /* private diagnostic bytes never enter a public tree */ } }
     for (const release of releases.reverse()) { try { release(); } catch { /* fail-open cleanup */ } }
     try { releaseSync?.(); } catch { /* private lock cleanup */ }
