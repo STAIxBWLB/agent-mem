@@ -1,0 +1,13 @@
+{
+  "name": "agent-mem",
+  "owner": {
+    "name": "STAIxBWLB"
+  },
+  "plugins": [
+    {
+      "name": "agent-mem",
+      "source": "./",
+      "description": "Bounded project memory tools and seven deterministic capture hooks, without a resident worker."
+    }
+  ]
+}

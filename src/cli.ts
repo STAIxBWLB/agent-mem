@@ -38,6 +38,8 @@ export interface CliContext {
   cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
   /** Narrow seam for deterministic fixtures standing in for `gh` (#15 T4): the CLI always uses the native remote visibility check. */
   visibility?: (url: string) => Promise<Visibility>;
+  /** Trusted isolated-HOME setup fixture; ordinary CLI use asks through its terminal. */
+  setupConfirm?: (plan: import("./setup.ts").SetupPlan) => Promise<boolean>;
 }
 
 /** Narrow descriptor seam for deterministic race fixtures; the CLI always uses the native implementation. */
@@ -77,7 +79,7 @@ export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO
 
 /** Honest native-shell defaults, matching every marker detectCliIdentity treats as non-console (invalid included). */
 export function agentMarked(env: Readonly<Record<string, string | undefined>>): boolean {
-  return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].some(key => env[key] !== undefined);
+  return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"].some(key => env[key] !== undefined);
 }
 
 function shardStatePresent(): boolean {
@@ -140,6 +142,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     throw error;
   }
   const { definition, options, rawArgs: args } = parsed;
+  if (parsed.path[0] === "setup") {
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|all [--apply|--undo]");
+    const { runSetup } = await import("./setup.ts");
+    return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
+      env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY,
+      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}),
+    });
+  }
   const goal = parsed.path[0] === "goal", review = parsed.path[0] === "review", sub = goal || review ? parsed.path[1]! : parsed.path[0]!;
   const policyFree = options["--policy-free"] === true;
   const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined
