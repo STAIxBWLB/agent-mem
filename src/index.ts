@@ -35,3 +35,9 @@ export * from "./session-brief.ts";
 
 export * from "./memory/decay-review.ts";
 export * from "./memory/goal-promotion.ts";
+
+export * from "./memory/recall.ts";
+export * from "./memory/recall-staleness.ts";
+export * from "./memory/intent-brief.ts";
+export * from "./memory/plan-guard.ts";
+export * from "./memory/use-telemetry.ts";

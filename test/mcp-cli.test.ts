@@ -21,8 +21,8 @@ test("agent-marked CLI exposes only the MCP session path and exits on EOF", asyn
     expect(exit).toBe(0); expect(stderr).toBe("");
     const replies = stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(replies.map(row => row.id)).toEqual([1, 2, 3]);
-    expect(replies[1].result.tools).toHaveLength(10);
-    expect(replies[1].result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(["amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"]);
+    expect(replies[1].result.tools).toHaveLength(11);
+    expect(replies[1].result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(["amem_brief", "amem_capacity", "amem_correct", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"]);
     expect(replies[2].result.isError).toBeUndefined();
     const person = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/amem.js"), "review", "list"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     expect(await person.exited).toBe(1);

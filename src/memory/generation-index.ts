@@ -76,7 +76,7 @@ export class GenerationIndex {
     if (!(db.query("PRAGMA table_info(generation_segments)").all() as { name: string }[]).some(row => row.name === "stamp")) db.run("ALTER TABLE generation_segments ADD COLUMN stamp TEXT");
     db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
-  private ownSegments(): LegacySegment[] {
+  private ownSegments(reader: SegmentReader = this.reader): LegacySegment[] {
     const prior = this.options.db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'").all() as (LegacyCheckpoint & { stamp: string | null })[];
     return ["log", "local"].flatMap(folder => {
       const dir = join(this.profile.dir, folder);
@@ -84,7 +84,7 @@ export class GenerationIndex {
       return readdirSync(dir).sort().filter(name => name.endsWith(".jsonl")).map(name => {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) return fail();
         const path = `${folder}/${name}`, checkpoint = prior.find(row => row.path === path);
-        const data = this.reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, this.fullCapture);
+        const data = reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, this.fullCapture);
         return { ...data, source: "generation", path, local: folder === "local" };
       });
     });
@@ -96,7 +96,7 @@ export class GenerationIndex {
     if (!value || value.schema !== SHARDED_SCHEMA || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
     return hashJSON(value);
   }
-  private capture(): { segments: LegacySegment[]; commit?: string } {
+  private capture(reader: SegmentReader = this.reader): { segments: LegacySegment[]; commit?: string } {
     const shardBefore = this.shardFrontier();
     const db = this.options.db;
     const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
@@ -111,9 +111,9 @@ export class GenerationIndex {
     const generation = this.profile.sharded ? undefined : this.profile.generation;
     const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation) : undefined);
     const legacy = this.profile.sharded
-      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier })
-      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader: this.reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
-    const own = this.ownSegments();
+      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier })
+      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
+    const own = this.ownSegments(reader);
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
@@ -175,32 +175,32 @@ export class GenerationIndex {
       state: db.query("SELECT * FROM generation_state ORDER BY key").all(),
     })).deferred();
   }
-  refresh(attempt = 0): void {
-    if (this.replayProvenance) { this.rebuild(); return; }
+  refresh(attempt = 0, reader: SegmentReader = this.reader): void {
+    if (this.replayProvenance) { this.rebuild(0, reader); return; }
     const before = this.frontier(), db = this.options.db;
     let input: ReturnType<GenerationIndex["capture"]>;
-    try { input = this.capture(); }
-    catch (error) { if (attempt < 5 && this.frontier() !== before) return this.refresh(attempt + 1); throw error; }
-    if (this.frontier() !== before) { if (attempt < 5) return this.refresh(attempt + 1); return fail(); }
+    try { input = this.capture(reader); }
+    catch (error) { if (attempt < 5 && this.frontier() !== before) return this.refresh(attempt + 1, reader); throw error; }
+    if (this.frontier() !== before) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
     const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
     const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null) && row.stamp === (segment.stamp ?? null)));
     if (unchanged) { this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
     const committed = db.transaction(() => { if (this.frontier() !== before) return false; this.index(input); return true; }).immediate();
-    if (!committed) { if (attempt < 5) return this.refresh(attempt + 1); return fail(); }
+    if (!committed) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
   }
-  rebuild(attempt = 0): void {
+  rebuild(attempt = 0, reader: SegmentReader = this.reader): void {
     const before = this.frontier();
     let input: ReturnType<GenerationIndex["capture"]>;
-    try { this.fullCapture = true; input = this.capture(); }
-    catch (error) { this.fullCapture = false; if (attempt < 5 && this.frontier() !== before) return this.rebuild(attempt + 1); throw error; }
+    try { this.fullCapture = true; input = this.capture(reader); }
+    catch (error) { this.fullCapture = false; if (attempt < 5 && this.frontier() !== before) return this.rebuild(attempt + 1, reader); throw error; }
     finally { this.fullCapture = false; }
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;
       for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES]) this.options.db.run(`DELETE FROM ${table}`);
       this.index(input); return true;
     }).immediate();
-    if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1); return fail(); }
+    if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1, reader); return fail(); }
     this.replayProvenance = false;
   }
   vaultWitnesses(ids: readonly string[]): Map<string, string> {

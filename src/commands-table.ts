@@ -16,6 +16,7 @@ export interface CommandDefinition {
 const flag = (description: string): OptionDefinition => ({ description });
 const text = (description: string): OptionDefinition => ({ description, value: "text" });
 const json = { "--json": flag("Print JSON where supported") };
+const history = { "--history": flag("Read retained supersession/expiry history; forgotten text stays hidden"), "--as-of": text("Past canonical UTC date or timestamp; current forget/prune masks still apply") };
 const policy = { "--policy-free": flag("Accepted and ignored: the configured privacy policy always applies") };
 const filters = { ...json, "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
   "--kind": { description: "Note kind", value: KINDS }, "--peer": text("Author peer"), "--machine": text("Machine ID"),
@@ -29,9 +30,11 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi"] }] },
   "vault-candidates": { description: "List screened durable curated vault candidates (per project, or across projects)", options: { ...json, "--limit": text("Maximum candidates per project (1..100)"),
     "--all-projects": flag("List every active project's candidates; the reply says it crossed projects"), "--project": text("List one named project's candidates") } },
-  list: { description: "List memory", options: filters },
-  search: { description: "Search memory", options: { ...filters, "--all-projects": flag("Search every active project; the reply says it crossed projects"),
+  list: { description: "List memory", options: { ...filters, ...history } },
+  search: { description: "Search memory", options: { ...filters, ...history, "--all-projects": flag("Search every active project; the reply says it crossed projects"),
     "--include-archived": flag("With --all-projects, also read archived projects") }, args: [{ name: "words", variadic: true }] },
+  brief: { description: "Read intent/path memory: fails first, then decisions and contracts; untrusted data within a UTF-8 byte cap", options: { ...json,
+    "--for": text("Explicit intent"), "--paths": text("Repeatable named path"), "--symbols": text("Repeatable named symbol"), "--bytes": text("Complete brief-body byte cap (1..8192, default 2048)") } },
   projects: { description: "List the project shards of this memory home (#15 D3)", options: { ...json, "--all": flag("Include forgotten projects (archived ones are always listed)") } },
   usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
   eval: { description: "Replay a local question set against the ranked store.search (the ranking MCP and hub recall use, not the `search` command's substring filter) and report recall@k and MRR (no model, no network; the built-in synthetic set without --set)", options: { ...json,
@@ -45,7 +48,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     unarchive: { description: "Bring an archived project back into recall (append-only op)", args: [{ name: "key" }], mutates: true },
     forget: { description: "Forget one project for good (append-only op; preview without --confirm)", options: { "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
   } },
-  show: { description: "Show a note", options: json, args: [{ name: "id" }] },
+  show: { description: "Show a note", options: { ...json, ...history }, args: [{ name: "id" }] },
   graph: { description: "Show a graph", options: { ...json, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
   suggestions: { description: "List pending suggestions", options: json },
   confirm: { description: "Confirm a suggestion", options: json, args: [{ name: "id" }], mutates: true },
