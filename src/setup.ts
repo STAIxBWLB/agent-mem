@@ -136,6 +136,11 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     return { target, files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior || !add ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; undo before applying again" : prior?.phase ?? "not installed" };
   }), notes: ["Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original bytes, file modes and absence are backed up privately; undo refuses later configuration edits.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust."] };
 }
+function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
+  // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
+  const help = spawnSync(target, ["--help"], { cwd, env: { ...env }, encoding: "utf8", timeout: 5000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
+  if (help.status !== 0 || !/^\s+(?:pi\s+)?mcp(?:\s|$)/m.test(help.stdout)) throw Error(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
+}
 function native(argv: readonly string[], env: Env, cwd: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { cwd, env: { ...env }, encoding: "utf8", timeout: 10_000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
   if (result.status !== 0) throw Error(`${argv[0]} MCP registration failed in staging; no native output disclosed`);
@@ -168,6 +173,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     for (let i = 0; i < changes.length; i++) if (changes[i]!.before.bytes !== null) write(staged.paths[target][i]!, changes[i]!.before);
     const argv = command(target, c.bun, c.entry);
     if (argv) {
+      if (!options.native) verifyNativeMcp(target, env, staging);
       const text = changes[0]!.before.bytes === null ? "" : Buffer.from(changes[0]!.before.bytes!, "base64").toString("utf8");
       const document = target === "codex" ? toml(text) : json(changes[0]!.before);
       const servers = document[target === "codex" ? "mcp_servers" : "mcpServers"];
