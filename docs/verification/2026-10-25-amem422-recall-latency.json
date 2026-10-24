@@ -1,0 +1,77 @@
+{
+  "schema": "amem.recall-latency-comparison/v1",
+  "command": "bun scripts/measure-recall-latency.ts <checkout> 3",
+  "fixture": "3000 synthetic public long notes; fail/decision/contract on src/bench.ts; isolated temporary HOME; direct production handlers, no inference or network",
+  "platform": "darwin",
+  "bun": "1.4.2",
+  "samples": 3,
+  "base": {
+    "schema": "amem.recall-latency/v1",
+    "platform": "darwin",
+    "bun": "1.4.2",
+    "count": 3000,
+    "runs": 3,
+    "search": {
+      "ms": [
+        363.24,
+        355.04,
+        351.27
+      ],
+      "medianMs": 355.04
+    },
+    "brief": null,
+    "revision": "f654574c53306841d93ec57053cf9c2849bb8ebb",
+    "dirty": false
+  },
+  "before": {
+    "schema": "amem.recall-latency/v1",
+    "platform": "darwin",
+    "bun": "1.4.2",
+    "revision": "23f2de6ade69a7e0ce5692b74bda97ce0d298a8d",
+    "dirty": false,
+    "count": 3000,
+    "runs": 3,
+    "search": {
+      "ms": [
+        1233.3,
+        1235.19,
+        1237.43
+      ],
+      "medianMs": 1235.19
+    },
+    "brief": {
+      "ms": [
+        2923.43,
+        3092.52,
+        3089.72
+      ],
+      "medianMs": 3089.72
+    }
+  },
+  "after": {
+    "schema": "amem.recall-latency/v1",
+    "platform": "darwin",
+    "bun": "1.4.2",
+    "revision": "15dc04426c8a3754ced7f59b5993736b2795cbb5",
+    "dirty": false,
+    "count": 3000,
+    "runs": 3,
+    "search": {
+      "ms": [
+        347.32,
+        343.4,
+        337.53
+      ],
+      "medianMs": 343.4
+    },
+    "brief": {
+      "ms": [
+        396.19,
+        400.13,
+        400.1
+      ],
+      "medianMs": 400.1
+    }
+  },
+  "limits": "Native diagnostic samples, not a cross-machine guarantee. R2/R3 thresholds and workload checks remain independent and unchanged."
+}
