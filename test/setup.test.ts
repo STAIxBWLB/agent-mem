@@ -255,3 +255,10 @@ test("native config writers cannot widen an existing configuration file's permis
   applySetup(f.plan("codex", "apply"), f.options); expect(image(file).mode).toBe(0o640);
   undoSetup(f.plan("codex", "undo"), f.options); expect(image(file)).toEqual({ bytes: Buffer.from('# private config\n').toString("base64"), mode: 0o640 });
 });
+
+test("a bounded input cannot grow into an oversized configuration that undo could not reopen", () => {
+  const f = fixture(), file = f.file("kimi", 1), size = 1024 * 1024, original = "#" + "x".repeat(size - 2) + "\n"; put(file, original);
+  expect(() => applySetup(f.plan("kimi", "apply"), f.options)).toThrow("exceeds the size bound");
+  expect(readFileSync(file).length).toBe(size); expect(readFileSync(file).equals(Buffer.from(original))).toBe(true);
+  expect(existsSync(f.file("kimi"))).toBe(false); expect(existsSync(f.receiptFile("kimi"))).toBe(false);
+});

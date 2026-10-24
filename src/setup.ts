@@ -214,6 +214,8 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       if (changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes) throw Error("Pi amem-session extension already exists and is not this setup's file");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
+    // Never publish an image that this installer's own read/undo boundary cannot reopen.
+    if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
     return { version: 1, target, intent: intent(c, target), phase: "prepared", changes };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
