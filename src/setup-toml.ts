@@ -185,14 +185,19 @@ function quotedEnd(text: string, start: number): number {
   }
   return error();
 }
-interface ArrayElement { start: number; end: number; comma?: number }
+interface ArrayElement { start: number; end: number; removeFrom: number; comma?: number }
 function arrayElements(text: string, open: number): { close: number; elements: ArrayElement[] } {
   if (text[open] !== "[") return error();
   let offset = open + 1; const elements: ArrayElement[] = [];
   while (offset < text.length) {
+    let removeFrom = offset;
     while (offset < text.length) {
       if (/\s/.test(text[offset]!)) { offset++; continue; }
-      if (text[offset] === "#") { while (offset < text.length && text[offset] !== "\n") offset++; continue; }
+      if (text[offset] === "#") {
+        while (offset < text.length && text[offset] !== "\n") offset++;
+        // Trim indentation after a comment, but preserve its terminating newline.
+        removeFrom = offset < text.length ? offset + 1 : offset; continue;
+      }
       break;
     }
     if (text[offset] === "]") return { close: offset, elements };
@@ -201,8 +206,8 @@ function arrayElements(text: string, open: number): { close: number; elements: A
       const char = text[offset]!;
       if (char === '"' || char === "'") { offset = quotedEnd(text, offset); end = offset; continue; }
       if (char === "#") { while (offset < text.length && text[offset] !== "\n") offset++; continue; }
-      if (char === "," && depth === 0) { elements.push({ start, end, comma: offset }); offset++; break; }
-      if (char === "]" && depth === 0) { elements.push({ start, end }); return { close: offset, elements }; }
+      if (char === "," && depth === 0) { elements.push({ start, end, removeFrom, comma: offset }); offset++; break; }
+      if (char === "]" && depth === 0) { elements.push({ start, end, removeFrom }); return { close: offset, elements }; }
       if (char === "[" || char === "{") depth++;
       else if (char === "]" || char === "}") depth--;
       if (depth < 0 || depth > MAX_DEPTH) return error();
@@ -256,7 +261,7 @@ export function updateTomlArray(text: string, path: readonly string[], expectedA
     const array = arrayElements(text, open);
     if (array.elements.length !== current.length) return error();
     for (let index = 0; index < array.elements.length; index++) if (!keep.has(index)) {
-      const element = array.elements[index]!; changes.push({ start: element.start, end: element.end, text: "" });
+      const element = array.elements[index]!; changes.push({ start: element.removeFrom, end: element.end, text: "" });
       if (element.comma !== undefined) changes.push({ start: element.comma, end: element.comma + 1, text: "" });
     }
     if (append.length) {

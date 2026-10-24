@@ -262,3 +262,32 @@ test("a bounded input cannot grow into an oversized configuration that undo coul
   expect(readFileSync(file).length).toBe(size); expect(readFileSync(file).equals(Buffer.from(original))).toBe(true);
   expect(existsSync(f.file("kimi"))).toBe(false); expect(existsSync(f.receiptFile("kimi"))).toBe(false);
 });
+test("advisory broken plugin registries never block preview, reapply or byte-exact undo", () => {
+  for (const kind of ["invalid JSON", "array", "symlink", "oversized", "bad shape"] as const) {
+    const f = fixture(); seedOtherFiles(f); const files = [f.file("claude"), f.file("claude", 1)], before = files.map(image);
+    applySetup(f.plan("claude", "apply"), f.options);
+    const registry = join(f.home, ".claude", "plugins", "installed_plugins.json"); mkdirSync(dirname(registry), { recursive: true });
+    if (kind === "symlink") { const target = join(f.home, "registry-target"); put(target, '{"plugins":{"agent-mem@market":[]}}'); symlinkSync(target, registry); }
+    else put(registry, kind === "invalid JSON" ? "not json" : kind === "array" ? "[]" : kind === "oversized" ? " ".repeat(SETUP_CONFIG_BYTES + 1) : '{"plugins":[]}');
+    const installed = files.map(image), calls = f.calls.length, registryBefore = kind === "symlink" ? readlinkSync(registry) : readFileSync(registry);
+    const preview = f.plan("claude"); expect(preview.notes.some(note => note.startsWith("Installed Claude plugin"))).toBe(false); expect(files.map(image)).toEqual(installed);
+    expect(applySetup(f.plan("claude", "apply"), f.options).unchanged).toEqual(["claude"]); expect(f.calls).toHaveLength(calls);
+    expect(undoSetup(f.plan("claude", "undo"), f.options).restored).toEqual(["claude"]); expect(files.map(image)).toEqual(before);
+    expect(kind === "symlink" ? readlinkSync(registry) : readFileSync(registry)).toEqual(registryBefore);
+    expect(applySetup(f.plan("claude", "apply"), f.options).applied).toEqual(["claude"]); undoSetup(f.plan("claude", "undo"), f.options); expect(files.map(image)).toEqual(before);
+  }
+});
+test("preview warns about version-specific mise and asdf Bun paths but leaves stable shims alone", () => {
+  const f = fixture();
+  for (const bun of [join(f.home, ".local/share/mise/installs/bun/1.4.2/bin/bun"), join(f.home, ".asdf/installs/bun/1.4.2/bin/bun"), join(f.home, "custom-mise-root/installs/bun/1.4.2/bin/bun")]) {
+    mkdirSync(dirname(bun), { recursive: true }); symlinkSync(process.execPath, bun);
+    const options = { ...f.options, bun: undefined, env: { ...f.env, PATH: dirname(bun) } }, plan = planSetup("claude", "preview", options);
+    expect(plan.notes.join("\n")).toContain("this bun path is version-specific; rerun setup --apply after changing Bun"); expect(plan.actions[0]!.registration).toContain(bun);
+  }
+  for (const bun of [join(f.home, ".local/share/mise/shims/bun"), join(f.home, ".asdf/shims/bun"), "/opt/homebrew/bin/bun"]) expect(planSetup("claude", "preview", { ...f.options, bun }).notes.join("\n")).not.toContain("this bun path is version-specific");
+  expect(f.calls).toHaveLength(0);
+});
+test("advisory registry failure does not hide invalid authoritative settings", () => {
+  const f = fixture(), settings = f.file("claude", 1), registry = join(f.home, ".claude", "plugins", "installed_plugins.json");
+  put(settings, "not json"); put(registry, "not json"); expect(() => f.plan("claude")).toThrow("setup configuration does not parse"); expect(f.calls).toHaveLength(0);
+});
