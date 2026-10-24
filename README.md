@@ -278,6 +278,12 @@ A private admission cursor rotates bounded inspection across pending records (at
 
 Successful native project identities have a private, bounded derived cache (128 cwd entries, 4 KiB each). A hit must match the current project scope, stricter Git-validity metadata and executable revision; a miss still uses the shared hardened Git resolver. It stores no capture or context, and does not guess an identity when Git fails. The hook uses the selected developer Git directly only when PATH selects Apple's root-owned shim; custom PATH binaries remain selected. Cache ceilings and invalidation are in [the P3 contracts](docs/contracts.md#hook-project-identity-cache).
 
+## Doctor and the sync cadence
+
+`amem doctor` prints one read-only report of this project's memory: duplicate and stale notes, pending candidates, capture freshness and hook registration for each CLI (a CLI with no hook is `manual`), the SessionStart brief's token cost, whether the index equals a rebuild of the logs, reader leases and the policy in effect. `amem doctor --json` is a stable machine-readable form (`amem.doctor/v1`). It writes nothing into the memory home (every check runs on a temporary copy of the logs) and creates nothing in a home you never used.
+
+Intake runs at the end of each Codex, Kimi and Pi session once `amem setup <cli> --apply` has registered it. Sync is off unless you ask for it: amem registers no sync hook and runs nothing between sessions. To sync on your own schedule, call `amem sync --if-due` from your shell (for example an EXIT trap in `~/.zshrc`; it needs a terminal). It syncs at most hourly, backs off 15 minutes doubling to a day after failures, stops after 30 seconds, and does nothing without a remote set by `amem sync --remote <private git url>`. `--force` skips the schedule and the backoff.
+
 ## Native transcript intake
 
 `amem ingest` reads existing Codex, Kimi or Pi transcripts and writes screened deterministic capture rows, never curated notes. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:

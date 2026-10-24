@@ -1,0 +1,229 @@
+{
+  "schema": "amem.doctor/v1",
+  "populated": {
+    "home": {
+      "path": "string",
+      "source": "AMEM_HOME"
+    },
+    "project": "string",
+    "schema": "amem.doctor/v1",
+    "sections": {
+      "brief": {
+        "budget": "number",
+        "coverage": {
+          "capture": "string",
+          "curated": "string",
+          "work": "string"
+        },
+        "status": "ok",
+        "tokens": "number"
+      },
+      "cadence": {
+        "hint": "string",
+        "ingest": {
+          "claude": "manual",
+          "codex": "session end",
+          "kimi": "manual",
+          "pi": "manual"
+        },
+        "manual": [
+          "string"
+        ],
+        "status": "attention",
+        "sync": {
+          "due": "boolean",
+          "failures": "number",
+          "lastAttemptAt": "string",
+          "lastOkAt": "string",
+          "nextAttemptAt": "string",
+          "remote": "configured",
+          "schedule": "string"
+        }
+      },
+      "candidates": {
+        "count": "number",
+        "dueWithin7Days": "number",
+        "oldestExpiresInDays": "number",
+        "status": "ok",
+        "unshown": "number"
+      },
+      "capture": {
+        "clis": {
+          "claude": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          },
+          "codex": {
+            "capture": "stale",
+            "hint": "string",
+            "hook": "registered",
+            "hookEvidence": "setup receipt",
+            "lastCaptureAt": "string",
+            "rows": "number"
+          },
+          "kimi": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          },
+          "pi": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          }
+        },
+        "status": "attention"
+      },
+      "duplicates": {
+        "examples": [
+          [
+            "string"
+          ]
+        ],
+        "identicalGroups": "number",
+        "importedGroups": "number",
+        "notes": "number",
+        "status": "attention"
+      },
+      "index": {
+        "liveIndex": "snapshotted",
+        "status": "ok"
+      },
+      "policy": {
+        "denyPaths": "number",
+        "machine": "null",
+        "piiPatterns": "number",
+        "repo": "null",
+        "status": "ok"
+      },
+      "readers": {
+        "live": "number",
+        "stale": "number",
+        "status": "ok",
+        "unreadable": "number"
+      },
+      "stale": {
+        "checked": "number",
+        "examples": [
+          "string"
+        ],
+        "missingReferences": "number",
+        "status": "attention"
+      }
+    },
+    "status": "attention"
+  },
+  "unused": {
+    "home": {
+      "path": "string",
+      "source": "AMEM_HOME"
+    },
+    "project": "string",
+    "schema": "amem.doctor/v1",
+    "sections": {
+      "brief": {
+        "budget": "number",
+        "coverage": {
+          "capture": "string",
+          "curated": "string",
+          "work": "string"
+        },
+        "status": "ok",
+        "tokens": "number"
+      },
+      "cadence": {
+        "ingest": {
+          "claude": "manual",
+          "codex": "manual",
+          "kimi": "manual",
+          "pi": "manual"
+        },
+        "manual": [
+          "string"
+        ],
+        "status": "ok",
+        "sync": {
+          "due": "boolean",
+          "failures": "number",
+          "lastAttemptAt": "null",
+          "lastOkAt": "null",
+          "nextAttemptAt": "null",
+          "remote": "none"
+        }
+      },
+      "candidates": {
+        "count": "number",
+        "dueWithin7Days": "number",
+        "oldestExpiresInDays": "null",
+        "status": "ok",
+        "unshown": "number"
+      },
+      "capture": {
+        "clis": {
+          "claude": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          },
+          "codex": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          },
+          "kimi": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          },
+          "pi": {
+            "capture": "never",
+            "hint": "string",
+            "hook": "manual",
+            "lastCaptureAt": "null",
+            "rows": "number"
+          }
+        },
+        "status": "ok"
+      },
+      "duplicates": {
+        "reason": "string",
+        "status": "skipped"
+      },
+      "index": {
+        "reason": "string",
+        "status": "skipped"
+      },
+      "policy": {
+        "denyPaths": "number",
+        "machine": "null",
+        "piiPatterns": "number",
+        "repo": "null",
+        "status": "ok"
+      },
+      "readers": {
+        "live": "number",
+        "stale": "number",
+        "status": "ok",
+        "unreadable": "number"
+      },
+      "stale": {
+        "reason": "string",
+        "status": "skipped"
+      }
+    },
+    "status": "ok"
+  }
+}

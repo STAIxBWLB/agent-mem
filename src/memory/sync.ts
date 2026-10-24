@@ -17,18 +17,41 @@ export interface SyncResult { ok: boolean; pushed: boolean; entries: number; war
 const GITIGNORE = "/*\n!/.gitignore\n!/log/\n/log/*\n!/log/*.jsonl\n";
 const STEP_MS = 60_000;
 
+/**
+ * Git runs in its own process group when the caller passes a stop signal (see `git` below), so that group no longer receives what the terminal sends to amem's own. Every
+ * such group is registered here while it lives, and a process that exits for any reason (a second Ctrl-C, SIGHUP when the terminal closes, SIGQUIT, a throw) signals each one
+ * before it goes: a git left at ppid 1 with no deadline would hold `sync.lock`'s repository while the next sync removes its `index.lock`. The exit handler is synchronous and
+ * installed once, only when the first group is registered, so a process that never runs a deadline git does not get one. SIGKILL of amem itself cannot be handled by anyone.
+ */
+const liveGroups = new Set<number>();
+let exitHandler = false;
+function signalGroups(name: "SIGTERM" | "SIGKILL"): void { for (const pid of liveGroups) { try { process.kill(-pid, name); } catch { /* the group is already gone */ } } }
+function register(pid: number): () => void {
+  if (!exitHandler) { exitHandler = true; process.on("exit", () => signalGroups("SIGKILL")); }
+  liveGroups.add(pid);
+  return () => { liveGroups.delete(pid); };
+}
+/** Test seam: how many deadline-git groups are alive right now, and a way to stop them as the exit handler would. */
+export const syncGroupsForTest = { live: () => liveGroups.size, stopAll: () => signalGroups("SIGKILL") };
+
 async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
-  const p = Bun.spawn(memoryGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv() });
+  // A caller that passes a stop signal (`amem sync --if-due`, a stopping hub) gets git in its own process group, so a stop reaches the transport children git started (ssh, a
+  // credential helper): killing only git's pid left them running. The price is that a terminal Ctrl-C no longer reaches git by itself, so such a caller must turn its own
+  // interrupt into the signal (`stopSignal` in sync-cadence.ts does). A call with no signal keeps the unchanged spawn.
+  const group = signal !== undefined;
+  const p = Bun.spawn(memoryGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(), ...(group ? { detached: true } : {}) });
+  const send = (name: "SIGTERM" | "SIGKILL") => { if (group) { try { process.kill(-p.pid, name); return; } catch { /* no group left: fall through to the pid */ } } p.kill(name); };
+  const unregister = group ? register(p.pid) : () => {};
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
-  const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };
+  const kill = () => { send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
   const timer = setTimeout(kill, ms);
   signal?.addEventListener("abort", kill, { once: true });
   try {
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code, out: out.trim(), err: err.trim() };
-  } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
+  } finally { unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
 }
 
 export { git as syncGit };
@@ -38,16 +61,19 @@ export async function generationSyncGit(dir: string, args: string[], signal?: Ab
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
   // A fixed child-only umask keeps Git-created metadata private without changing the daemon's process umask.
   // Args are positional shell parameters, never interpolated or evaluated as shell code.
-  const p = Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }) });
+  const group = signal !== undefined;   // see `git` above: own process group when the caller has a deadline
+  const p = Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }), ...(group ? { detached: true } : {}) });
+  const send = (name: "SIGTERM" | "SIGKILL") => { if (group) { try { process.kill(-p.pid, name); return; } catch { /* no group left: fall through to the pid */ } } p.kill(name); };
+  const unregister = group ? register(p.pid) : () => {};
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
-  const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };
+  const kill = () => { send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
   const timer = setTimeout(kill, ms);
   signal?.addEventListener("abort", kill, { once: true });
   try {
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code, out: out.trim(), err: err.trim() };
-  } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
+  } finally { unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
 }
 
 

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { runCli, type CliContext } from "../src/cli.ts";
 import { runHook } from "../src/hooks.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
+import { ptyArgv } from "./fakes/pty.ts";
 import { CandidateStore, CANDIDATE_RETENTION, type CandidateInput } from "../src/memory/candidates.ts";
 import { CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, markShown, pendingLine, pendingSummary } from "../src/memory/candidate-pending.ts";
 import { MemoryStore } from "../src/memory/store.ts";
@@ -412,18 +413,6 @@ test("a read-only open that cannot attach to missing -wal/-shm falls back to an 
 });
 
 // ---- claude's round 2 nits on #418 ----
-
-/**
- * argv that runs `command` (a shell command line) with a pseudo-terminal as its stdin, stdout and stderr, through the `script` utility. The two implementations take different
- * arguments: BSD/macOS `script -q /dev/null sh -c CMD` and util-linux `script -q -e -c CMD /dev/null` (`-e` returns the child's exit status, `-c` names the command; the BSD
- * form on Linux silently runs nothing useful). Undefined when `script` is not installed, so a caller can skip with a stated reason; a platform this does not know fails loudly.
- */
-export function ptyArgv(command: string, platform: string = process.platform, which: (name: string) => string | null = name => Bun.which(name)): string[] | undefined {
-  if (which("script") === null) return undefined;
-  if (platform === "darwin") return ["script", "-q", "/dev/null", "sh", "-c", command];
-  if (platform === "linux") return ["script", "-q", "-e", "-c", command, "/dev/null"];
-  throw new Error(`no known \`script\` argument form for platform ${platform}`);
-}
 
 test("review walk refuses to run with stdout redirected: nothing is printed, nothing is stamped, nothing is asked (review nit)", async () => {
   const r = rig();

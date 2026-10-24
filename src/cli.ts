@@ -4,7 +4,7 @@ import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { importClaudeMemWorkState } from "./memory/import.ts";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
@@ -36,6 +36,8 @@ import { evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-
 import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
+import { doctorReport, doctorText } from "./memory/doctor.ts";
+import { nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS } from "./memory/sync-cadence.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -126,6 +128,13 @@ function curatedStore(project: string, opts: StoreOptions, reconciled = true): M
   return new MemoryStore(withAliases);
 }
 
+/** The same store `curatedStore` opens, on another base: doctor's private scratch copy. No lifecycle gate here, the copy carries the home's lifecycle log and doctor read it already. */
+function curatedStoreAt(base: string, project: string, opts: StoreOptions): MemoryStore {
+  const aliases = aliasedKeys(base, project), withAliases: StoreOptions = aliases.length ? { ...opts, reconcile: { canonical: project, aliases } } : opts;
+  if (existsSync(join(base, "shards.json"))) { readShardedSelection(base); return openShardStore({ ...withAliases, memoryDir: base, project }); }
+  return new MemoryStore({ ...withAliases, memoryDir: base });
+}
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   if (argv.length === 1 && argv[0] === "mcp") {
     const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
@@ -211,6 +220,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home) }, null, 2);
+  }
+  if (sub === "doctor") {
+    // F15: one read-only report; see src/memory/doctor.ts for exactly what "read-only" covers.
+    const where = resolveMemoryHome(), project = boundProject();
+    const report = await doctorReport({ home: where.home, homeSource: where.source, cwd: policyCwd, project, aliases: aliasedKeys(where.home, project), now: Date.now(),
+      openCurated: base => curatedStoreAt(base, project, { deferPromotions: true }) });
+    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report);
   }
   if (sub === "prune") {
     const applying = options["--apply"] === true;
@@ -542,9 +558,36 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   // A person's reads are unscreened. A write is screened by the configured policy, which includes the built-in secret screen.
   if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || configured.screenStandalone({ title, milestones }) });
   const receipt: { bridgeStatus?: { skippedRows: number } } = {};
-  const output = await withRepoRows(await rawMemoryCommand(args, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => text => configured.declinesPersonal(text),
-    sync: { screen: row => configured.screenStandalone(row) },   // the repository-narrowed policy binds what sync publishes too
-    onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
+  // F16: `sync --if-due` is the entry for the person's own shell (an EXIT trap; it needs a terminal like every mutating command). amem registers no sync hook and runs nothing between sessions. It does nothing without a
+  // configured remote, nothing when the schedule or the failure backoff says it is not due (`--force` skips that), and it stops a running git step after 30 seconds.
+  const ifDue = sub === "sync" && options["--if-due"] === true, syncHome = memoryHome();
+  if (options["--force"] === true && !ifDue) throw new Error("--force only applies with sync --if-due");
+  if (ifDue) {
+    if (options["--remote"] === undefined && !remoteConfigured(syncHome)) return options["--json"] ? JSON.stringify({ ok: true, skipped: "no sync remote configured" }) : "no sync remote configured: nothing to do";
+    const state = usableState(readSyncState(syncHome), Date.now());
+    if (!syncDue(state, Date.now(), options["--force"] === true)) {
+      const next = nextSyncAt(state);
+      return options["--json"] ? JSON.stringify({ ok: true, skipped: "not due", nextAttemptAt: next === null ? null : new Date(next).toISOString(), failures: state.failures })
+        : `sync not due until ${next === null ? "now" : new Date(next).toISOString()}${state.failures ? ` (${state.failures} failure${state.failures === 1 ? "" : "s"} in a row: the wait doubles up to a day; --force skips it)` : ""}`;
+    }
+  }
+  // Only a real attempt is stamped: a local refusal (lock held, no remote, policy, usage) is not, and a future stamp is no history (src/memory/sync-cadence.ts).
+  const stampSync = (error: string | undefined) => { if (syncOutcome(error) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now()); };
+  const syncArgs = args.filter(arg => arg !== "--if-due" && arg !== "--force");
+  let output: string;
+  const stop = ifDue ? stopSignal(SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
+  try {
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => text => configured.declinesPersonal(text),
+      sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
+  } catch (error) { if (sub === "sync") stampSync((error as Error).message); throw error; }
+  finally { stop?.dispose(); }
+  if (sub === "sync") {
+    // `--json` returns the failed result instead of throwing: read the real outcome from it, never assume a returned string means the sync worked.
+    let failure: string | undefined;
+    if (options["--json"]) { try { const result = JSON.parse(output) as { ok?: unknown; error?: unknown }; if (result.ok === false) failure = typeof result.error === "string" ? result.error : "sync failed"; } catch { /* not a sync result */ } }
+    stampSync(failure);
+  }
   if (sub === "import" && parsed.path[1] === "claude-mem") {
     const policy = configured;
     const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });

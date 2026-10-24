@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow } from "./memory/capture.ts";
 import { readSelector } from "./memory/generation.ts";
@@ -10,10 +10,10 @@ import { pendingLine, pendingSummary } from "./memory/candidate-pending.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
-import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, captureShardDir, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
-import type { View } from "./memory/store.ts";
+import type { MemoryStore, View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
 export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
@@ -25,6 +25,13 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
   projectFromCwd?: true;
   /** Test seam for the pending-candidate line's clock. */
   now?: () => number;
+  /**
+   * `amem doctor` only (F15): size the brief without writing to the memory home. No reader lease is taken. The caller supplies the two sections that would otherwise
+   * open a store read-write: `curated` is a store opened on a private copy of the logs (absent: the project has no curated notes, an empty complete section) and
+   * `workBase` is a private base holding a copy of the project's and its aliases' work logs (absent: the work section is `unavailable`, never claimed complete).
+   * The capture section opens this machine's capture database read-only, and only when it exists.
+   */
+  measureOnly?: { curated?: MemoryStore; workBase?: string };
 }
 type Coverage = "complete" | "partial" | "unavailable";
 export interface BriefResult {
@@ -105,7 +112,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const requested = options.project ?? memoryProjectKey(cwd, { repositoryIsolation: true }), project = resolveAlias(base, requested);
     // #15 T5: a project the person archived or forgot yields no brief at all, before any lease, store or screen is opened.
     if (projectState(base, project) !== "active") return result;
-    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)), release = registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
+    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
     const selection = readSelector(base).revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
@@ -170,7 +177,10 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       result = { context: "", tokens: 0, partial: true, coverage: { work: "partial", curated: "partial", capture: "partial" } };
     } else {
       await run("work", async () => {
-        const work = new WorkListStore({ base, project, aliases, policy: screen, ...(options.nativeSession ? { busyTimeoutMs: 0, timeRemaining: options.timeRemaining } : {}) }); closers.push(() => work.close());
+        const measured = options.measureOnly;
+        if (measured && !measured.workBase) { coverage.work = "unavailable"; return; }
+        if (measured && !lstatSync(join(shardDir(measured.workBase!, project), "work", "log"), { throwIfNoEntry: false })) return;   // no work log: the real brief shows an empty list
+        const work = new WorkListStore({ base: measured?.workBase ?? base, project, aliases, policy: screen, ...(options.nativeSession ? { busyTimeoutMs: 0, timeRemaining: options.timeRemaining } : {}) }); closers.push(() => work.close());
         // Complete operation rows AND the composed view are screened before closed-item filtering or display caps.
         const views = await work.read(undefined, true); guard();
         let selected = 0;
@@ -204,7 +214,10 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         // Upgrade: asynchronous/deadline-aware generation and curated read transport.
         coverage.curated = "unavailable";
         reasons.curated = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
-      } else await run("curated", async () => {
+      } else if (options.measureOnly) await run("curated", async () => {
+        const store = options.measureOnly!.curated;
+        if (store) await recent("curated", window => store.readPage(window), noteDisplay);   // no store: no curated notes, an empty and complete section
+      }); else await run("curated", async () => {
         const { MemoryStore, openShardStore } = await import("./memory/store.ts");
         const store = sharded ? openShardStore({ memoryDir: base, project, deferPromotions: true, ...(reconcile ? { reconcile } : {}) })
           : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
@@ -226,7 +239,11 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       });
       await run("capture", async () => {
         const { CaptureStore } = await import("./memory/capture.ts");
-        const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession ? { readOnly: true, busyTimeoutMs: 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
+        if (options.measureOnly) {   // this machine's capture database, only when it exists: a project never captured has an empty section and nothing is created
+          const machine = (() => { try { return (JSON.parse(readFileSync(join(base, "machine.json"), "utf8")) as { id?: string }).id ?? ""; } catch { return ""; } })();
+          if (!/^[a-f0-9]{16}$/.test(machine) || !lstatSync(join(captureShardDir(base, project, machine), "capture.db"), { throwIfNoEntry: false })) return;
+        }
+        const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession || options.measureOnly ? { readOnly: true, busyTimeoutMs: options.measureOnly ? 1000 : 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
         if (capture.recentReadTruncated) coverage.capture = "partial";
         await recent("capture", window => capture.readPage(window), captureDisplay);
       });
