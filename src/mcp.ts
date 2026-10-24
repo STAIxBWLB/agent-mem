@@ -7,7 +7,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 const tool = <Name extends string>(name: Name, description: string, inputSchema: ReturnType<typeof object>, readOnlyHint = true) => ({ name, description, inputSchema,
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false } });
 
-/** Frozen #13 P2 surface. Storage scope comes from startup, never tool arguments. */
+/** Storage scope comes from startup, never tool arguments; candidate proposals remain person-reviewed. */
 export const MCP_TOOLS = [
   tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
   tool("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object({ id: string(80) }, ["id"])),
@@ -16,7 +16,9 @@ export const MCP_TOOLS = [
   tool("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object({ list: string(200), includeClosed: { type: "boolean" } })),
   tool("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object({ list: string(200), fields: { type: "object", minProperties: 1, maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 } } }, ["list", "fields"]), false),
-  tool("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
+  tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Person acceptance only; never writes curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
+    approach: string(4000), symptom: string(4000), cause: string(4000), evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) }, retryWhen: string(4000) }), false),
+  tool("amem_correct", "Propose a correction to an exact visible curated entry id. The host binds its current revision; a person must accept before any note or supersession is written.", object({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
   tool("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object({ limit })),
   tool("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object({})),
 ] as const;
@@ -33,7 +35,7 @@ const FRAME_BYTES = 65_536, RESULT_BYTES = 262_144;
 const protocols = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
 
-/** The deliberately small schema vocabulary of the nine tools, shared with runtime validation. */
+/** The deliberately small schema vocabulary of the tools, shared with runtime validation. */
 function valid(value: unknown, raw: unknown): boolean {
   const s = raw as Record<string, any>, type = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
   const types = Array.isArray(s.type) ? s.type : [s.type];
@@ -41,6 +43,10 @@ function valid(value: unknown, raw: unknown): boolean {
   if (s.enum && !s.enum.includes(value)) return false;
   if (typeof value === "string" && (value.length < (s.minLength ?? 0) || value.length > (s.maxLength ?? FRAME_BYTES) || value.includes("\0"))) return false;
   if (typeof value === "number" && (!Number.isFinite(value) || value < (s.minimum ?? -Infinity) || value > (s.maximum ?? Infinity))) return false;
+  if (Array.isArray(value)) {
+    if (value.length < (s.minItems ?? 0) || value.length > (s.maxItems ?? 64) || !plain(s.items)) return false;
+    return value.every(item => valid(item, s.items));
+  }
   if (plain(value)) {
     const keys = Object.keys(value);
     if (keys.length < (s.minProperties ?? 0) || keys.length > (s.maxProperties ?? 64)) return false;
