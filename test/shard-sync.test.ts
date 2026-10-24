@@ -150,6 +150,60 @@ test("transport selection cannot supply prune proof for an unwitnessed legacy ta
   }
 }, 60_000);
 
+function localPrune(store: MemoryStore, target: string, clock: { now: number }) {
+  const auth = { project: A, actor: "person" as const, authorize: () => true };
+  const plan = planPrune(store.prunePort(), { cutoff: new Date(clock.now).toISOString(), targets: [target] }, auth);
+  expect(plan.rows).toHaveLength(1); expect(plan.rows[0]!.placement).toBe("local");
+  expect(applyPrune(store.prunePort(), plan, auth).completed).toContain(plan.rows[0]!.payload.id);
+  expect(store.prunePort().snapshot().pruned).toContain(target);
+}
+
+test("a locally pruned unwitnessed legacy original never receives first publication", async () => {
+  const url = remote(), home = temp(), clock = { now: Date.now() };
+  const legacy = new MemoryStore({ home, profile: "shared-v1", deferPromotions: true, now: () => clock.now, ttlMs: 1000 });
+  const text = "LOCAL_ONLY_never_publish_pruned_legacy", target = legacy.note(note(A, text));
+  expect(legacy.demote(target, "person", A)).toBeDefined();
+  const memory = legacy.dir; legacy.close(); clock.now += 2000;
+  expect(await migrateShards({ memoryDir: memory, generation: G1, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
+  const source = keep(openShardStore({ home, project: A, deferPromotions: true, now: () => clock.now, ttlMs: 1000 }));
+  expect(source.prunePort().snapshot().rows.find(row => row.row.id === target)).toMatchObject({ placement: "synced", publicWitness: false, legacy: true });
+  localPrune(source, target, clock); expect(source.get(target, A)).toBeUndefined();
+  expect(await syncMemory(source, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const receiver = await split(G2);
+  expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(receiver.a.get(target, A)).toBeUndefined();
+  expect(receiver.a.list({ project: A }).some(row => row.id === target || row.text === text)).toBe(false);
+  for (const commit of git(url, "rev-list", "--all").split("\n")) for (const file of git(url, "ls-tree", "-r", "--name-only", commit).split("\n")) {
+    expect(git(url, "show", `${commit}:${file}`)).not.toContain(text);
+  }
+}, 60_000);
+
+test("local pruning does not suppress an already witnessed original from its prior public transport", async () => {
+  const url = remote(), source = await split(G1), text = "witnessed original retains public transport";
+  const target = source.a.note(note(A, text));
+  expect(source.a.prunePort().snapshot().rows.find(row => row.row.id === target)?.publicWitness).toBe(true);
+  expect(source.a.demote(target, "person", A)).toBeDefined(); source.clock.now += 2000;
+  localPrune(source.a, target, source.clock); expect(source.a.get(target, A)).toBeUndefined();
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const published = git(url, "ls-tree", "-r", "--name-only", refA).split("\n").map(file => git(url, "show", `${refA}:${file}`)).join("\n");
+  expect(published).toContain(text);
+}, 60_000);
+
+test("a public blob whose text pipe normalizes different bytes refuses before publication or import", async () => {
+  const url = remote(), source = await split(G1, true);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const attacker = temp(); git(attacker, "init", "-q"); git(attacker, "fetch", "-q", url, refA); git(attacker, "checkout", "-qb", "fixture", "FETCH_HEAD");
+  const file = join(attacker, "shard.json"), descriptor = readFileSync(file);
+  expect(descriptor.at(-1)).toBe(10);
+  const changed = Buffer.from(descriptor); changed[changed.length - 1] = 13;
+  writeFileSync(file, changed); git(attacker, "add", "shard.json");
+  git(attacker, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "same-size descriptor normalization fixture");
+  git(attacker, "push", "-q", url, `HEAD:${refA}`);
+  const receiver = await split(G2), project = jsonlBytes(receiver.a.dir), user = jsonlBytes(join(receiver.memory, "user")), before = refs(url);
+  expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("blob") });
+  expect(jsonlBytes(receiver.a.dir)).toEqual(project); expect(jsonlBytes(join(receiver.memory, "user"))).toEqual(user); expect(refs(url)).toBe(before);
+}, 60_000);
+
 for (const visibility of ["public", "unknown"] as const) test(`split sync refuses ${visibility} visibility before cache or remote effects`, async () => {
   const url = remote(), f = await split(G1), before = refs(url), logs = jsonlBytes(f.a.dir);
   f.a.note(note(A, "public candidate")); const authored = jsonlBytes(f.a.dir);

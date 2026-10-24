@@ -56,8 +56,10 @@ function* lines(file: string): Generator<string> {
 }
 function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[] } {
   const snapshot = store.prunePort().snapshot();
+  const pruned = new Set(snapshot.pruned ?? []);
   // Placement decides transport; the verified snapshot retains separate prune provenance.
-  const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced").map(source => source.row);
+  // A local tombstone must prevent the first publication of an unwitnessed original.
+  const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced" && (source.publicWitness || !pruned.has(source.row.id))).map(source => source.row);
   const folder = join(store.dir, "log"); directory(folder);
   const plans = join(store.dir, "prune-plans");
   if (existsSync(plans)) {
@@ -223,6 +225,8 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if (!Number.isSafeInteger(size) || size < 1 || size > maximum) refuse("shard sync blob exceeds its bound");
       const value = await required(["cat-file", "blob", object], "shard sync blob unavailable"), bytes = Buffer.from(value + "\n");
       if (bytes.length !== size) refuse("shard sync requires complete newline-terminated public blobs");
+      const identity = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      if (identity !== object) refuse("shard sync public blob identity mismatch");
       blobCache.set(object, bytes); return bytes;
     };
     type History = { rows: Map<string, ShardSyncRow>; files: Map<string, Buffer> };
