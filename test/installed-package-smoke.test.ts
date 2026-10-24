@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 import { realPath } from "../src/memory/platform.ts";
-import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
+import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, preservingCleanup, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
 const HOME = "/isolated/home", APP = join(HOME, "app"), ROOT = join(APP, "node_modules", "@staix", "agent-mem"), ENTRY = join(ROOT, "bin", "amem.js"), CHECKOUT = "/workspace/agent-mem", TMP = join(HOME, "tmp");
-const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi"], actions: ["claude", "codex", "kimi", "pi"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: target === "kimi" ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], ...(target === "kimi" ? { hooks: [{ command: `bun ${ENTRY} ingest kimi` }] } : {}) })) });
+const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi"], actions: ["claude", "codex", "kimi", "pi"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: target === "kimi" ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
 
 test("installed smoke guards require the artifact bin outside checkout and child TMPDIR", () => {
   expect(() => assertInstalledEntry(ENTRY, ROOT, CHECKOUT, TMP)).not.toThrow();
@@ -80,11 +80,13 @@ test("branding guard covers underscore and punctuation boundaries and decoded to
   ];
   expect(() => assertMcpResult(frames.map(row => JSON.stringify(row)).join("\n"), "0.6.0", id, "p")).toThrow("legacy host command");
 });
-test("preview must register the physical installed entry and keep Kimi ingest on that entry", () => {
+test("preview must register the physical installed entry in every client hook", () => {
   const stale = plan(); stale.actions[0]!.registration = ["claude", "mcp", "add", "/old/version/bin/amem.js"];
   expect(() => assertSetupPreview(stale, HOME, ENTRY)).toThrow("stale package entry");
-  const kimi = plan(); kimi.actions[2]!.hooks = [{ command: "bun /old/version/bin/amem.js ingest kimi" }];
-  expect(() => assertSetupPreview(kimi, HOME, ENTRY)).toThrow("stale package entry");
+  for (const index of [0, 1, 2, 3]) {
+    const staleHook = plan(); staleHook.actions[index]!.hooks = [{ command: "bun /old/version/bin/amem.js hook PostToolUse" }];
+    expect(() => assertSetupPreview(staleHook, HOME, ENTRY)).toThrow("stale package entry");
+  }
 });
 test("whole HOME snapshot detects undeclared hidden files and unlisted setup locks/receipts", () => {
   const home = realPath(mkdtempSync(join(tmpdir(), "amem-home-snapshot-")));
@@ -106,24 +108,48 @@ function hookPending(capacity = false) {
   return { path: `hook-spool/${capacity ? ".capacity/" : ""}hook-${cwdHash}-${scope}-${nonce}.json`, type: "file", nlink: 1, project: expectedHook.project,
     value: { schema: "agent-mem.hook-capture/v1", cwd: expectedHook.cwd, scope, nonce, capture: { at: "2026-10-24T00:00:00.000Z", agent: expectedHook.agent, event: expectedHook.event, excerpt: expectedHook.marker } } };
 }
+const artifacts = (rows: unknown[] = [], pending: unknown[] = []) => ({ captureKnown: true, pendingKnown: true, rows, pending });
+const capturedHook = (id = 1) => ({ id, at: "2020-01-01T00:00:00.000Z", project: expectedHook.project, agent: expectedHook.agent, event: expectedHook.event, excerpt: expectedHook.marker });
 test("a hook metric alone or an old metric cannot stand in for fresh durable hook evidence", () => {
-  const evidence = { rows: [{ project: expectedHook.project, agent: expectedHook.agent, event: expectedHook.event, excerpt: expectedHook.marker }], pending: [] };
-  expect(() => assertHookEvidence("", hookMetric, evidence, expectedHook)).not.toThrow();
-  expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [] }, expectedHook)).toThrow("durable");
-  expect(() => assertHookEvidence(hookMetric, hookMetric, evidence, expectedHook)).toThrow("exactly one");
-  expect(() => assertHookEvidence("", hookMetric + hookMetric, evidence, expectedHook)).toThrow("exactly one");
-  expect(() => assertHookEvidence(hookMetric, " " + hookMetric, evidence, expectedHook)).toThrow("history changed");
+  const evidence = artifacts([capturedHook()]);
+  expect(() => assertHookEvidence("", hookMetric, artifacts(), evidence, expectedHook)).not.toThrow();
+  expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts(), expectedHook)).toThrow("durable");
+  expect(() => assertHookEvidence(hookMetric, hookMetric, artifacts(), evidence, expectedHook)).toThrow("exactly one");
+  expect(() => assertHookEvidence("", hookMetric + hookMetric, artifacts(), evidence, expectedHook)).toThrow("exactly one");
+  expect(() => assertHookEvidence(hookMetric, " " + hookMetric, artifacts(), evidence, expectedHook)).toThrow("history changed");
 });
-test("hook evidence accepts committed root/capacity pending JSON and refuses wrong event/marker/project or unpublished spool", () => {
-  for (const capacity of [false, true]) expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [hookPending(capacity)] }, expectedHook)).not.toThrow();
+test("hook evidence accepts new committed pending JSON and refuses wrong event/marker/project or unpublished spool", () => {
+  for (const capacity of [false, true]) expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([], [hookPending(capacity)]), expectedHook)).not.toThrow();
   for (const key of ["event", "marker", "project"] as const) {
     const mismatch = { ...expectedHook, [key]: "wrong" };
-    expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [hookPending()] }, mismatch)).toThrow("durable");
-    expect(() => assertHookEvidence("", hookMetric, { rows: [{ project: expectedHook.project, agent: expectedHook.agent, event: expectedHook.event, excerpt: expectedHook.marker }], pending: [] }, mismatch)).toThrow("durable");
+    expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([], [hookPending()]), mismatch)).toThrow("durable");
+    expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([capturedHook()]), mismatch)).toThrow("durable");
   }
-  for (const path of ["hook-spool/.writing/record.json", "hook-spool/.quarantine/record.json", "elsewhere/record.json"]) expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [{ ...hookPending(), path }] }, expectedHook)).toThrow("durable");
-  expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [{ ...hookPending(), type: "symlink" }] }, expectedHook)).toThrow("durable");
-  const badSchema = hookPending(); badSchema.value.schema = "wrong"; expect(() => assertHookEvidence("", hookMetric, { rows: [], pending: [badSchema] }, expectedHook)).toThrow("durable");
+  for (const path of ["hook-spool/.writing/record.json", "hook-spool/.quarantine/record.json", "elsewhere/record.json"]) expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([], [{ ...hookPending(), path }]), expectedHook)).toThrow("durable");
+  expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([], [{ ...hookPending(), type: "symlink" }]), expectedHook)).toThrow("durable");
+  const badSchema = hookPending(); badSchema.value.schema = "wrong"; expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([], [badSchema]), expectedHook)).toThrow("durable");
+});
+test("preplanted matching captures and renamed 2020 spool records are never fresh hook evidence", () => {
+  const prior = capturedHook();
+  expect(() => assertHookEvidence("", hookMetric, artifacts([prior]), artifacts([prior]), expectedHook)).toThrow("durable");
+  expect(() => assertHookEvidence("", hookMetric, artifacts([prior]), artifacts([prior, capturedHook(2)]), expectedHook)).not.toThrow();
+  const { id: _id, ...missingId } = prior;
+  expect(() => assertHookEvidence("", hookMetric, artifacts(), artifacts([missingId]), expectedHook)).toThrow("durable");
+  const planted = hookPending(); planted.value.capture.at = "2020-01-01T00:00:00.000Z";
+  for (const path of [planted.path, hookPending(true).path, hookPending(true).path + ".draining-" + "d".repeat(24)]) {
+    expect(() => assertHookEvidence("", hookMetric, artifacts([], [planted]), artifacts([], [{ ...planted, path }]), expectedHook)).toThrow("durable");
+  }
+  const fresh = hookPending(); fresh.value.nonce = "e".repeat(32); fresh.path = fresh.path.replace("c".repeat(32), fresh.value.nonce);
+  expect(() => assertHookEvidence("", hookMetric, artifacts([], [planted]), artifacts([], [planted, fresh]), expectedHook)).not.toThrow();
+  expect(() => assertHookEvidence("", hookMetric, { ...artifacts(), captureKnown: false }, artifacts([prior]), expectedHook)).toThrow("durable");
+});
+test("cleanup preserves the first command error but reports cleanup failure after successful work", async () => {
+  const primary = Error("primary validation failed"), cleanup = Error("owned command was not reaped"); let calls = 0;
+  try { await preservingCleanup(async () => { throw primary; }, async () => { calls++; throw cleanup; }); throw Error("missing rejection"); }
+  catch (error) { expect(error).toBe(primary); }
+  expect(calls).toBe(1);
+  await expect(preservingCleanup(async () => "success", async () => { throw cleanup; })).rejects.toBe(cleanup);
+  expect(await preservingCleanup(async () => "success", async () => {})).toBe("success");
 });
 test("reap waits are cached and bounded even when the owned close event never resolves", async () => {
   let cleaned = 0; const wait = createReapWaiter(new Promise<void>(() => {}), () => { cleaned++; }, 10), first = wait();

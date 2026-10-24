@@ -42,7 +42,7 @@ export function assertSetupPreview(value: unknown, home: string, entry: string):
   const files: string[] = [];
   for (const raw of plan.actions) { const action = object(raw); requireSmoke(Array.isArray(action.files) && action.files.length > 0 && typeof action.receipt === "string", "installed setup inventory is incomplete");
     if (action.registration !== null) requireSmoke(Array.isArray(action.registration) && action.registration.includes(entry), "installed setup registration uses a stale package entry");
-    if (action.target === "kimi" && action.hooks !== undefined) requireSmoke(Array.isArray(action.hooks) && action.hooks.length > 0 && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed Kimi hooks use a stale package entry");
+    requireSmoke(Array.isArray(action.hooks) && action.hooks.length > 0 && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed client hooks use a stale package entry");
     for (const file of [...action.files, action.receipt]) { requireSmoke(typeof file === "string" && isAbsolute(file) && inside(home, file), "installed setup escaped its isolated HOME"); files.push(file); }
   }
   return files;
@@ -85,12 +85,20 @@ export function assertHookMetric(before: string, after: string): void {
   requireSmoke(rows.length === 1 && rows[0]!.kind === "hook" && typeof rows[0]!.at === "string" && Number.isFinite(Date.parse(rows[0]!.at)) && Number.isFinite(rows[0]!.wallMs) && rows[0]!.wallMs >= 0 && Number.isFinite(rows[0]!.rssMB) && rows[0]!.rssMB >= 0, "installed hook must append exactly one fresh hook metric");
 }
 export interface HookExpectation { project: string; cwd: string; event: string; agent: string; marker: string }
-export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, raw: unknown, expected: HookExpectation): void {
+function pendingIdentity(item: any): string | undefined {
+  if (typeof item?.path !== "string") return undefined;
+  return /^hook-spool\/(?:\.capacity\/)?(hook-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json)(?:\.draining-[a-f0-9]{24})?$/.exec(item.path)?.[1];
+}
+export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, beforeRaw: unknown, raw: unknown, expected: HookExpectation): void {
   assertHookMetric(beforeMetrics, afterMetrics);
-  const evidence = object(raw), capture = (row: any) => row && row.agent === expected.agent && row.event === expected.event && row.excerpt === expected.marker;
-  const retained = Array.isArray(evidence.rows) && evidence.rows.some((row: any) => row.project === expected.project && capture(row));
-  const pending = Array.isArray(evidence.pending) && evidence.pending.some((item: any) => {
-    if (!item || item.type !== "file" || item.nlink !== 1 || item.project !== expected.project || typeof item.path !== "string") return false;
+  const before = object(beforeRaw), evidence = object(raw);
+  requireSmoke(Array.isArray(before.rows) && Array.isArray(before.pending), "before-hook artifact snapshot unavailable");
+  const oldRows = new Set(before.rows.filter((row: any) => Number.isSafeInteger(row.id) && row.id > 0).map((row: any) => row.id));
+  const oldPending = new Set(before.pending.map(pendingIdentity).filter(Boolean));
+  const capture = (row: any) => row && row.agent === expected.agent && row.event === expected.event && row.excerpt === expected.marker;
+  const retained = before.captureKnown === true && evidence.captureKnown === true && Array.isArray(evidence.rows) && evidence.rows.some((row: any) => Number.isSafeInteger(row.id) && row.id > 0 && !oldRows.has(row.id) && row.project === expected.project && capture(row));
+  const pending = before.pendingKnown === true && evidence.pendingKnown === true && Array.isArray(evidence.pending) && evidence.pending.some((item: any) => {
+    if (!item || !pendingIdentity(item) || oldPending.has(pendingIdentity(item)) || item.type !== "file" || item.nlink !== 1 || item.project !== expected.project || typeof item.path !== "string") return false;
     const name = /^hook-spool\/(?:\.capacity\/)?hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
     return !!name && name[1] === createHash("sha256").update(expected.cwd).digest("hex") && row?.schema === "agent-mem.hook-capture/v1" && row.cwd === expected.cwd && row.nonce === name[3]
       && (row.scope === null ? name[2] === "0".repeat(64) : row.scope === name[2]) && capture(row.capture) && typeof row.capture.at === "string" && Number.isFinite(Date.parse(row.capture.at));
@@ -109,6 +117,12 @@ export function createReapWaiter(reaped: Promise<void>, failed: () => void, time
   })();
 }
 
+/** Reap failures still fail a successful command, but cannot hide an earlier command/validation error. */
+export async function preservingCleanup<T>(work: () => Promise<T>, cleanup: () => Promise<void>): Promise<T> {
+  let primary = false;
+  try { return await work(); } catch (error) { primary = true; throw error; }
+  finally { try { await cleanup(); } catch (error) { if (!primary) throw error; } }
+}
 // The leader stays alive after its command exits so cleanup can safely stop its still-owned process group.
 const LAUNCHER = String.raw`
 import {writeSync} from 'node:fs';
@@ -137,13 +151,14 @@ async function ownedCommand(bun: string, argv: readonly string[], cwd: string, e
   process.once("SIGINT", interrupted); process.once("SIGTERM", interrupted);
   const timer = setTimeout(() => { rejectCode(Error("installed smoke command timed out")); stop(); }, timeoutMs);
   child.stdin?.on("error", () => {}); child.stdin?.end(input);
-  try {
-    const code = await completed; stop(); await waitForReap();
+  return preservingCleanup(async () => {
+    const code = await completed;
+    requireSmoke(code === 0, `installed smoke command failed (${basename(argv[0] ?? "command")}, exit ${code})`);
+    stop(); await waitForReap();
     const output = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stdout)), errors = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stderr));
     assertNoHubBranding(output); assertNoHubBranding(errors);
-    requireSmoke(code === 0, `installed smoke command failed (${basename(argv[0] ?? "command")}, exit ${code})`);
     return output;
-  } finally { clearTimeout(timer); process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); stop(); await waitForReap(); }
+  }, async () => { clearTimeout(timer); process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); stop(); await waitForReap(); });
 }
 
 /** A fixed, provider-free mini probe of the same owned launcher used by the artifact smoke. */
@@ -196,15 +211,15 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const frame = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
     const mcpInput = frame(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "installed-smoke", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n" + frame(3, "tools/list", {}) + frame(2, "tools/call", { name: "amem_search", arguments: { query: MARKER, includeCapture: false, limit: 5 } });
     assertMcpResult(await cli(["mcp"], mcpInput), metadata.version, seed.id, seed.project);
-    const metrics = join(env.AMEM_HOME!, "metrics.jsonl"), beforeMetrics = existsSync(metrics) ? readFileSync(metrics, "utf8") : "";
+    const metrics = join(env.AMEM_HOME!, "metrics.jsonl"), reader = join(app, "read-hook-installed.ts");
+    writeFileSync(reader, `import {CaptureStore,captureShardDir,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';import {lstatSync,readdirSync,readFileSync} from 'node:fs';import {join} from 'node:path';const base=process.env.AMEM_HOME;const project=memoryProjectKey(process.cwd());let rows=[],captureKnown=false;try{const store=new CaptureStore({memoryDir:base,project,readOnly:true,maxReadRows:32});try{rows=store.rows({project,limit:32});captureKnown=true;}finally{store.close();}}catch{try{const file=join(base,'machine.json'),stat=lstatSync(file);if(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=4096){const machine=JSON.parse(readFileSync(file,'utf8'));if(/^[a-f0-9]{16}$/.test(machine.id)){try{lstatSync(join(captureShardDir(base,project,machine.id),'capture.db'));}catch(error){if(error.code==='ENOENT')captureKnown=true;}}}}catch{}}const pending=[];let pendingKnown=true;for(const rel of ['hook-spool','hook-spool/.capacity']){const dir=join(base,rel);let stat;try{stat=lstatSync(dir);}catch(error){if(error.code!=='ENOENT')pendingKnown=false;continue;}if(!stat.isDirectory()||stat.isSymbolicLink()){pendingKnown=false;continue;}for(const name of readdirSync(dir)){const file=join(dir,name),s=lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>73728)continue;try{const value=JSON.parse(readFileSync(file,'utf8'));pending.push({path:rel+'/'+name,type:'file',nlink:s.nlink,project:value.cwd===process.cwd()?project:'',value});}catch{}}}console.log(JSON.stringify({resolved:realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem'))),captureKnown,pendingKnown,rows,pending}));\n`);
+    const inspect = async () => { const evidence = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", reader], projectDir, installedEnv))); assertInstalledModule(evidence.resolved, installed, checkout); return evidence; };
     writeFileSync(join(projectDir, "public.txt"), "public installed hook fixture\n");
+    const beforeArtifacts = await inspect(), beforeMetrics = existsSync(metrics) ? readFileSync(metrics, "utf8") : "";
     const hookOutput = await cli(["hook", "PostToolUse"], JSON.stringify({ session_id: "installed-smoke", hook_event_name: "PostToolUse", cwd: projectDir, tool_name: "Read", tool_input: { file_path: "public.txt" }, tool_response: HOOK_MARKER }));
     assertPostToolUseOutput(hookOutput); verifyRules();
     requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
-    const reader = join(app, "read-hook-installed.ts");
-    writeFileSync(reader, `import {CaptureStore,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';import {lstatSync,readdirSync,readFileSync} from 'node:fs';import {join} from 'node:path';const base=process.env.AMEM_HOME;const project=memoryProjectKey(process.cwd());let rows=[];try{const store=new CaptureStore({memoryDir:base,project,readOnly:true,maxReadRows:32});try{rows=store.rows({project,limit:32});}finally{store.close();}}catch{}const pending=[];for(const rel of ['hook-spool','hook-spool/.capacity']){const dir=join(base,rel);let stat;try{stat=lstatSync(dir);}catch{continue;}if(!stat.isDirectory()||stat.isSymbolicLink())continue;for(const name of readdirSync(dir)){const file=join(dir,name),s=lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>73728)continue;try{const value=JSON.parse(readFileSync(file,'utf8'));pending.push({path:rel+'/'+name,type:'file',nlink:s.nlink,project:value.cwd===process.cwd()?project:'',value});}catch{}}}console.log(JSON.stringify({resolved:realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem'))),rows,pending}));\n`);
-    const evidence = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", reader], projectDir, installedEnv))); assertInstalledModule(evidence.resolved, installed, checkout);
-    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), evidence, { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
+    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
     requireSmoke(!existsSync(nativeCalls), "installed smoke unexpectedly invoked a native coding client");
     return { package: PACKAGE, version: metadata.version, setup: "dry-run", mcp: "seeded search", hook: "durable native capture observed", timing: "not measured; existing R2 gates remain separate" };
   } finally { rmSync(root, { recursive: true, force: true }); }
