@@ -79,7 +79,7 @@ test("decay defaults to a read-only revision preview, then named subset demotes 
   const f = await fixture("legacy", true), before = f.bytes(), preview = JSON.parse(await f.cli(["decay", "--json"])); expect(preview.entries.map((row: any) => row.target.id).sort()).toEqual([f.target, f.second].sort()); expect(preview.citationHistory).toBe("unknown"); expect(f.bytes()).toEqual(before);
   const printed: string[] = [], questions: string[] = [];
   const applied = JSON.parse(await f.cli(["decay", `mem:${f.target}`, "--apply", "--json"], { write: text => printed.push(text), prompt: question => { questions.push(question); expect(printed.join("\n")).toContain(preview.entries.find((row: any) => row.target.id === f.target).target.revision); expect(f.bytes()).toEqual(before); return "yes"; } }));
-  expect(applied).toEqual({ action: "demote", ids: [f.target] }); expect(questions).toHaveLength(1); expect(f.use(store => store.get(f.target, f.project)?.tier)).toBe("short"); expect(f.use(store => store.get(f.second!, f.project)?.tier)).toBe("long");
+  expect(applied).toMatchObject({ action: "demote", ids: [f.target] }); expect(applied.expiresAt).toBe(f.use(store => store.get(f.target, f.project)?.expiresAt)); expect(questions).toHaveLength(1); expect(f.use(store => store.get(f.target, f.project)?.tier)).toBe("short"); expect(f.use(store => store.get(f.second!, f.project)?.tier)).toBe("long");
 });
 test("bulk decay requires confirmation and forget explicitly names FORGET before removing exact entries", async () => {
   const f = await fixture(), before = f.bytes(); let question = "";

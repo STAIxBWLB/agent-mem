@@ -518,7 +518,12 @@ export class MemoryStore {
   }
   /** A short-term note kept short-term: it expires like any other and is never promoted (its demote entry stays local). */
   keepShort(id: string, actor: string): void { const v = this.get(id); if (v?.tier === "short" && v.local && v.expiresAt === null) this.op("demote", v, actor, this.until()); } // once: a deadline is never pushed out
-  demote(id: string, actor: string, project?: string): View | undefined { const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, this.until()); return v; }
+  /** The short-tier deadline to display before a person confirms a demotion. */
+  shortExpiry(): string { return this.until(); }
+  demote(id: string, actor: string, project?: string, expiresAt?: string): View | undefined {
+    if (expiresAt !== undefined && (!Number.isFinite(Date.parse(expiresAt)) || new Date(expiresAt).toISOString() !== expiresAt || Date.parse(expiresAt) <= this.now())) throw Error("demotion expiry is no longer in the future");
+    const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, expiresAt ?? this.until()); return v;
+  }
   supersede(oldId: string, newId: string, actor: string, project?: string): boolean {
     const a = this.get(oldId, project), b = this.get(newId, project);
     if (!a || !b || a.id === b.id) return false;

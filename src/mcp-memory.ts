@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import type { McpHandlers } from "./mcp.ts";
-import { CandidateStore, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { CandidateStore, acceptedCorrectionText, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore } from "./memory/capture.ts";
 import { readSelector } from "./memory/generation.ts";
@@ -107,11 +107,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const correctionTarget = (id: string): View => {
       guard();
       const current = store.get(id, project);
-      // Shared entries retain their source project/scope through the existing correction acceptance contract.
-      if (!current || current.id !== id || current.supersededBy || current.project !== project && current.scope !== "shared") return unavailable();
+      // Proposal visibility matches MCP reads; shared rows from another project are not evidence here.
+      if (!current || current.id !== id || current.supersededBy || current.project !== project) return unavailable();
       return current;
     };
     const propose = async (input: CandidateInput, target?: View): Promise<{ id: string }> => {
+      if (input.kind === "correction" && acceptedCorrectionText(input).length > 4000) return unavailable();
       const revision = target && candidateTargetRevision(target);
       const currentPolicy = () => createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
       const check = () => { guard(); if (target && candidateTargetRevision(correctionTarget(target.id)) !== revision) unavailable(); };

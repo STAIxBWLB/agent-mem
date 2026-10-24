@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
-import { applyDecay, decayPreview } from "../src/memory/decay-review.ts";
+import { applyDecay, decayPreview, DecayApplyError } from "../src/memory/decay-review.ts";
 import type { Counter } from "../src/memory/candidates.ts";
 import { realPath } from "../src/memory/platform.ts";
 const closes: Array<() => void> = [];
@@ -42,7 +42,7 @@ test("default apply demotes only named previewed ids; bulk and forget require co
   expect(() => applyDecay(f.store, plan, { actor: "agent", confirmed: true })).toThrow("person");
   expect(() => applyDecay(f.store, plan, { actor: "person" })).toThrow("confirmation");
   expect(() => applyDecay(f.store, plan, { actor: "person", ids: [first], forget: true })).toThrow("confirmation"); expect(f.bytes()).toEqual(before);
-  expect(applyDecay(f.store, plan, { actor: "person", ids: [first], now: f.clock })).toEqual({ action: "demote", ids: [first] });
+  expect(applyDecay(f.store, plan, { actor: "person", ids: [first], now: f.clock })).toEqual({ action: "demote", ids: [first], expiresAt: plan.demoteExpiresAt });
   expect(f.store.get(first, f.project)?.tier).toBe("short"); expect(f.store.get(second, f.project)?.tier).toBe("long");
   const next = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, next, { actor: "person", confirmed: true, forget: true, now: f.clock }).ids).toEqual([second]); expect(f.store.get(second, f.project)).toBeUndefined();
 });
@@ -59,4 +59,36 @@ test("new goal protection, citation or privacy denial after preview refuses with
     const before = f.bytes(), counters: Counter[] = changed === "citation" ? [{ id: "counter", key: { project: f.project, entryId: id, deliveryId: "new" }, createdAt: new Date(f.clock()).toISOString(), cited: 1, delivered: null, rendered: null }] : [];
     expect(() => applyDecay(f.store, plan, { actor: "person", confirmed: true, now: f.clock, counters: () => counters, screen: () => changed !== "policy" })).toThrow(); expect(f.bytes()).toEqual(before);
   }
+});
+
+test("retained positive citations exempt old deliveries even with a shorter decay age", () => {
+  const f = fixture(), id = f.note(); f.advance(60);
+  const counters: Counter[] = [{ id: "old-delivery", key: { project: f.project, entryId: id, deliveryId: "old" }, createdAt: new Date(f.clock() - 59 * 86400_000).toISOString(), rendered: 1, delivered: 1, cited: 1 }];
+  expect(decayPreview(f.store, f.project, { now: f.clock, days: 5, counters: () => counters })).toMatchObject({ entries: [], citedExemptions: 1, citationHistory: "unknown" });
+  counters[0]!.cited = 0; expect(decayPreview(f.store, f.project, { now: f.clock, days: 5, counters: () => counters }).entries.map(row => row.target.id)).toEqual([id]);
+});
+test("an I/O failure reports completed, uncertain failed and untouched remaining ids", () => {
+  const f = fixture(); for (let n = 0; n < 3; n++) f.note({ text: `partial target ${n}` }); f.advance(91);
+  const plan = decayPreview(f.store, f.project, { now: f.clock }), ids = plan.entries.map(row => row.target.id), demote = f.store.demote.bind(f.store); let calls = 0;
+  f.store.demote = (...args) => { if (++calls === 2) throw Error("EIO simulated"); return demote(...args); };
+  let failure: unknown; try { applyDecay(f.store, plan, { actor: "person", confirmed: true, now: f.clock }); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(DecayApplyError);
+  expect(failure).toMatchObject({ applied: [ids[0]!], failed: ids[1]!, remaining: [ids[2]!] });
+  expect((failure as DecayApplyError).report).toEqual({ action: "demote", applied: [ids[0]!], failed: ids[1]!, remaining: [ids[2]!], expiresAt: plan.demoteExpiresAt });
+  expect(f.store.get(ids[0]!, f.project)).toMatchObject({ tier: "short", expiresAt: plan.demoteExpiresAt });
+  expect(f.store.get(ids[1]!, f.project)?.tier).toBe("long"); expect(f.store.get(ids[2]!, f.project)?.tier).toBe("long"); expect(calls).toBe(2);
+});
+test("expired displayed demotion deadline refuses the entire batch before effects", () => {
+  const f = fixture(), id = f.note(); f.advance(91); const plan = decayPreview(f.store, f.project, { now: f.clock }); f.advance(15); const before = f.bytes();
+  expect(() => applyDecay(f.store, plan, { actor: "person", confirmed: true, now: f.clock })).toThrow("expiry is spent"); expect(f.bytes()).toEqual(before); expect(f.store.get(id, f.project)?.tier).toBe("long");
+});
+
+test("the failed target is reported as uncertain even when its append preceded the exception", () => {
+  const f = fixture(); for (let n = 0; n < 3; n++) f.note({ text: `uncertain target ${n}` }); f.advance(91);
+  const plan = decayPreview(f.store, f.project, { now: f.clock }), ids = plan.entries.map(row => row.target.id), demote = f.store.demote.bind(f.store); let calls = 0;
+  f.store.demote = (...args) => { const result = demote(...args); if (++calls === 2) throw Error("EIO after append"); return result; };
+  let failure: unknown; try { applyDecay(f.store, plan, { actor: "person", confirmed: true, now: f.clock }); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ applied: [ids[0]!], failed: ids[1]!, remaining: [ids[2]!] });
+  expect((failure as DecayApplyError).render()).toContain("failed target may have changed");
+  expect(f.store.get(ids[1]!, f.project)?.tier).toBe("short"); expect(f.store.get(ids[2]!, f.project)?.tier).toBe("long"); expect(calls).toBe(2);
 });

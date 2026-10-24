@@ -1,3 +1,4 @@
+import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { serveMcp } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
@@ -266,22 +267,24 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     try {
       const assertCurrent = commandBinding(store.profile.home, project);
       const selected = parsed.positionals.length ? parsed.positionals : undefined;
+      if (options["--days"] !== undefined && !/^[1-9][0-9]*$/.test(String(options["--days"]))) throw new Error("decay days must be a positive decimal integer");
       const days = options["--days"] === undefined ? DECAY_DEFAULT_DAYS : Number(options["--days"]);
       const settings = { days, ...(selected ? { ids: selected } : {}), aliases, counters: () => readDecayCounters(base, [project, ...aliases]) };
       const current = { ...settings, screen: (note: import("./memory/store.ts").View) => policyOf().screenStandalone(note), assertCurrent };
       const preview = decayPreview(store, project, current), action = options["--forget"] === true ? "FORGET" : "demote";
-      const display = [`${action} preview: ${preview.entries.length} notes older than ${days} days; citation history unknown (${preview.citedExemptions ?? "unknown"} observed recent exemptions)${preview.truncated ? "; truncated" : ""}`,
+      const display = [`${action} preview: ${preview.entries.length} notes older than ${days} days; citation history unknown (${preview.citedExemptions ?? "unknown"} observed retained-positive exemptions)${preview.truncated ? "; truncated" : ""}`,
         ...preview.entries.map(entry => `${entry.target.id}  revision ${entry.target.revision}  ${entry.view.at}  ${entry.view.kind}: ${terminalSafe(entry.view.title ?? entry.view.text)}`)].join("\n");
       if (!applying) return options["--json"] ? JSON.stringify(preview, null, 2) : display;
       if (!preview.entries.length) return options["--json"] ? JSON.stringify({ action, ids: [] }) : "no eligible notes to apply";
       const write = context.write ?? ((text: string) => { process.stdout.write(`${text}\n`); }); write(display);
       const ask = context.prompt ?? ((question: string) => prompt(question));
-      const answer = await ask(`Type yes to ${action} these ${preview.entries.length} exact entries${options["--forget"] ? " permanently" : " into the short tier (its expiry applies)"}: `);
+      const answer = await ask(`Type yes to ${action} these ${preview.entries.length} exact entries${options["--forget"] ? " permanently (including matching hidden claude-mem-imported copies)" : ` into the short tier, expires ${preview.demoteExpiresAt}`}: `);
       if (answer?.trim() !== "yes") return options["--json"] ? JSON.stringify({ cancelled: true }) : "decay apply cancelled";
       assertCurrent();
       const result = applyDecay(store, preview, { ...current, actor: "person", confirmed: true, forget: options["--forget"] === true });
-      return options["--json"] ? JSON.stringify(result, null, 2) : `${result.action}: ${result.ids.length} entries`;
-    } finally { store.close(); }
+      return options["--json"] ? JSON.stringify(result, null, 2) : `${result.action}: ${result.ids.length} entries${result.expiresAt ? `; expires ${result.expiresAt}` : ""}`;
+    } catch (error) { if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
+    finally { store.close(); }
   }
   if (sub === "note") {
     // F6: the person writes a curated note. Person-only (the agent-marker refusal and the terminal requirement above already ran, because `note add` mutates).
@@ -650,9 +653,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
 }
 
+export function formatCliError(error: unknown): string { return error instanceof DecayApplyError ? error.render() : `amem: ${(error as Error).message}`; }
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   try { const output = await runCli(argv); if (output) console.log(output); }
-  catch (error) { console.error(`amem: ${(error as Error).message}`); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
+  catch (error) { console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
 }
 
 if (import.meta.main) await main();

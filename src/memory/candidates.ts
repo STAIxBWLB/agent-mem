@@ -70,6 +70,11 @@ export function candidateInputId(rawInput: CandidateInput): string {
   const input = stripPrivateDeep(rawInput); validate(input);
   return hash({ schema: "agent-mem.candidate/v1", input });
 }
+/** Exact correction body shared by proposal validation and person acceptance. */
+export function acceptedCorrectionText(input: Extract<CandidateInput, { kind: "correction" }>, id = candidateInputId(input)): string {
+  const data = stripPrivateDeep(input);
+  return `Accepted candidate: ${id}\nTarget revision: ${data.target.revision}\nTarget entry: ${data.target.id}\n\n${data.proposedText}\n\nReason: ${data.reason}`;
+}
 export function goalPromotionLinked(view: Pick<View, "task" | "about">, goal: Pick<GoalView, "id" | "links">): boolean {
   const tasks = new Set(goal.links.map(link => link.task));
   return !!view.task && tasks.has(view.task) || view.about.some(node => node === `goal:${goal.id}` || node.startsWith("task:") && tasks.has(node.slice(5)));
@@ -234,7 +239,7 @@ export class CandidateStore {
         // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
         tier: data.kind === "correction" && target!.local ? "short" : "long",
         kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: "person", source: "person", about: [...target?.about ?? []],
-        text: `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
+        text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
       if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
       if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
       return context.store.withAcceptedNote(note, append => {

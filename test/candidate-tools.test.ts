@@ -63,14 +63,26 @@ test("correction rejects foreign local, superseded, missing or ambiguous-prefix 
   await expect(mcp.tools.amem_correct({ id: target, proposedText: "public correction", reason: "public evidence", revision: "a".repeat(64) })).rejects.toThrow();
   expect(screens).toBe(0); expect(f.sidecar.list({ project: f.project })).toEqual([]); expect(f.bytes()).toEqual(before);
 });
-test("public shared-source correction retains source project, scope and person-only acceptance", async () => {
-  const f = fixture(), shared = f.note({ project: "source-project", scope: "shared" }), mcp = f.open();
-  const id = idOf(await mcp.tools.amem_correct({ id: shared, proposedText: "a corrected shared boundary", reason: "source-linked public evidence" })), before = f.bytes();
-  expect(f.sidecar.get(id, f.project)?.input).toMatchObject({ kind: "correction", target: { id: shared, revision: candidateTargetRevision(f.store.get(shared, f.project)!) } });
-  expect(() => f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true })).toThrow("person"); expect(f.bytes()).toEqual(before);
-  const result = f.sidecar.accept(id, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true });
-  expect(f.store.get(result.noteId, f.project)).toMatchObject({ project: "source-project", scope: "shared", tier: "long", peer: "person", source: "person" });
-  expect(f.store.get(shared, f.project)?.supersededBy).toBe(result.noteId); expect(f.sidecar.get(id, f.project)?.status).toBe("accepted");
+test("foreign shared-source correction refuses generically like show and search without candidate or curated writes", async () => {
+  const f = fixture(), shared = f.note({ project: "source-project", scope: "shared", text: "foreignsharedpublicneedle" }), mcp = f.open(), before = f.bytes();
+  expect(await mcp.tools.amem_show({ id: shared })).toBeNull();
+  expect(await mcp.tools.amem_search({ query: "foreignsharedpublicneedle", includeCapture: false })).toMatchObject({ hits: [] });
+  for (const id of [shared, "f".repeat(32)]) await expect(mcp.tools.amem_correct({ id, proposedText: "public replacement", reason: "public evidence" })).rejects.toThrow("memory operation unavailable");
+  expect(f.sidecar.list({ project: f.project, status: "all" })).toEqual([]); expect(f.bytes()).toEqual(before);
+});
+test("correction proposal bounds the exact persisted body including headers and reason at 4000 characters", async () => {
+  const f = fixture(), target = f.note(), mcp = f.open(), before = f.bytes(), reason = "documented public evidence", revision = candidateTargetRevision(f.store.get(target, f.project)!);
+  const headers = `Accepted candidate: ${"0".repeat(64)}\nTarget revision: ${"0".repeat(64)}\nTarget entry: ${target}\n\n`;
+  const available = 4000 - headers.length - `\n\nReason: ${reason}`.length;
+  const proposedText = "public boundary ".repeat(300).slice(0, available);
+  const tooLong = { id: target, proposedText: proposedText + "x", reason };
+  expect(tooLong.proposedText.length).toBeLessThan(4000); expect(reason.length).toBeLessThan(4000);
+  await expect(mcp.tools.amem_correct(tooLong)).rejects.toThrow("memory operation unavailable");
+  expect(f.sidecar.list({ project: f.project })).toEqual([]); expect(f.bytes()).toEqual(before);
+  const id = idOf(await mcp.tools.amem_correct({ id: target, proposedText, reason })); expect(f.bytes()).toEqual(before);
+  expect(() => f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true })).toThrow("person");
+  const accepted = f.sidecar.accept(id, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true });
+  const note = f.store.get(accepted.noteId, f.project)!; expect(note.text.length).toBe(4000); expect(note.text).toBe(`Accepted candidate: ${id}\nTarget revision: ${revision}\nTarget entry: ${target}\n\n${proposedText}\n\nReason: ${reason}`);
 });
 test("structured fail acceptance stays person-only in the existing core", async () => {
   const f = fixture(), mcp = f.open(), id = idOf(await mcp.tools.amem_remember(fail)), before = f.bytes();
