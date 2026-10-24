@@ -101,3 +101,40 @@ test("a native metadata write after temporary fsync and before publish is refuse
   const after = json(config); expect(after.numStartups).toBe(99); expect(after.nativeWritten).toBe("between planning and rename"); expect(after.mcpServers.amem).toEqual(oldServer); expect(readFileSync(f.file("claude", 1))).toEqual(settings);
   expect(readdirSync(dirname(config)).some(name => name.startsWith(".amem-setup-"))).toBe(false);
 });
+test("prepared runtime update recovers the old hook generation after MCP publication without leaving duplicate hooks", () => {
+  const f = fixture(), oldServer = seedClaude(f); applySetup(f.plan("claude"), f.options);
+  const hookFile = f.file("claude", 1), moved: SetupContext = { ...f.options, entry: join(f.home, "runtime B package", "bin", "amem.js") };
+  const update = f.plan("claude", "apply", moved); let interrupted = 0;
+  const crashing: SetupContext = { ...moved, beforePublish: file => { if (file === hookFile) { interrupted++; throw Error("fixture interrupted before hook publication"); } } };
+  expect(() => applySetup(update, crashing)).toThrow("fixture interrupted before hook publication"); expect(interrupted).toBe(1);
+  expect(json(f.file("claude")).mcpServers.amem.args).toEqual(["--smol", moved.entry, "mcp"]);
+  const oldHooks = hooks(json(hookFile)).filter(handler => handler.command.includes(" hook ")); expect(oldHooks).toHaveLength(7); expect(oldHooks.every(handler => handler.command.includes(f.entry) && !handler.command.includes(moved.entry!))).toBe(true);
+  const prepared = JSON.parse(text(update.actions[0]!.receipt)); expect(prepared.phase).toBe("prepared"); expect(Buffer.from(prepared.changes[1].start.bytes, "base64").toString("utf8")).toContain(f.entry);
+  expect(applySetup(f.plan("claude", "apply", moved), moved).applied).toContain("claude");
+  const recovered = hooks(json(hookFile)).filter(handler => handler.command.includes(" hook ")); expect(recovered).toHaveLength(7); expect(recovered.every(handler => handler.command.includes(moved.entry!) && !handler.command.includes(f.entry))).toBe(true);
+  undoSetup(f.plan("claude", "undo", moved), moved);
+  expect(hooks(json(hookFile)).map(handler => handler.command)).toEqual(["original-observer"]); expect(json(f.file("claude")).mcpServers.amem).toEqual(oldServer); expect(existsSync(update.actions[0]!.receipt)).toBe(false);
+});
+test("editing an owned hook command in its existing event/group refuses apply and undo without changing files", () => {
+  for (const target of ["claude", "codex", "kimi"] as const) {
+    const f = fixture(), hookFile = f.file(target, 1);
+    if (target === "claude") seedClaude(f);
+    if (target === "codex") put(hookFile, '{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"original-observer"}]}]}}\n');
+    if (target === "kimi") put(hookFile, 'hooks = [{ event = "Stop", command = "original-observer" }]\n');
+    applySetup(f.plan(target), f.options); const undo = f.plan(target, "undo"), receipt = readFileSync(undo.actions[0]!.receipt);
+    const document = target === "kimi" ? toml(hookFile) : json(hookFile), handlers = target === "kimi" ? document.hooks as Array<Record<string, any>> : hooks(document);
+    const owned = handlers.find(handler => typeof handler.command === "string" && handler.command.includes(f.entry))!; expect(owned).toBeDefined(); owned.command = "person-adjusted-command";
+    put(hookFile, target === "kimi" ? Bun.TOML.stringify(document) : JSON.stringify(document, null, 2) + "\n");
+    const files = [f.file(target), hookFile], before = files.map(file => ({ bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 })), calls = f.calls.length;
+    expect(() => applySetup(f.plan(target), f.options)).toThrow(); expect(() => undoSetup(undo, f.options)).toThrow();
+    expect(files.map(file => ({ bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }))).toEqual(before); expect(readFileSync(undo.actions[0]!.receipt)).toEqual(receipt); expect(f.calls).toHaveLength(calls);
+  }
+});
+test("semantic undo retains a pre-existing empty JSON config after a formatting-only native rewrite", () => {
+  for (const target of ["claude", "kimi", "pi"] as const) {
+    const f = fixture(), config = f.file(target); put(config, '{}\n', 0o640); applySetup(f.plan(target), f.options);
+    put(config, ' \n' + JSON.stringify(json(config)) + '\n\n', 0o640); const calls = f.calls.length;
+    undoSetup(f.plan(target, "undo"), f.options);
+    expect(existsSync(config)).toBe(true); expect(json(config)).toEqual({}); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(f.calls).toHaveLength(calls);
+  }
+});

@@ -28,10 +28,11 @@ export function putMcpRecord(target: string, current: ConfigImage, value: unknow
 interface Hook { event: string; matcher: string; core: Record<string, unknown>; id: string; command: string }
 const matcher = (value: unknown) => value === undefined || value === "" || value === "*" ? "*" : String(value);
 function hook(event: string, group: Record<string, unknown>, value: unknown): Hook | undefined {
-  const h = object(value); if (h.type !== "command" || typeof h.command !== "string") return;
-  const core = { type: h.type, command: h.command, ...(h.timeout !== undefined ? { timeout: h.timeout } : {}) };
+  const h = object(value);
+  const core = h.type === "command" ? { type: h.type, command: h.command, ...(h.timeout !== undefined ? { timeout: h.timeout } : {}) }
+    : Object.fromEntries(Object.entries(h).filter(([key]) => !["trusted_hash", "trustedHash"].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
   const match = matcher(group.matcher);
-  return { event, matcher: match, core, command: h.command, id: JSON.stringify([event, match, core]) };
+  return { event, matcher: match, core, command: typeof h.command === "string" ? h.command : "", id: JSON.stringify([event, match, core]) };
 }
 function hooks(doc: Record<string, unknown>): Hook[] {
   const out: Hook[] = [];
@@ -50,7 +51,7 @@ function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: Conf
   const ours = added(original, installed, row => row.id), remaining = new Map<string, number>();
   for (const row of ours) {
     const count = live.filter(value => value.id === row.id).length;
-    if (!count && live.some(value => value.command === row.command && !original.some(old => old.id === value.id))) throw Error("setup-owned hook changed; refusing to overwrite it");
+    if (!count && live.some(value => (value.command === row.command || value.event === row.event && value.matcher === row.matcher) && !original.some(old => old.id === value.id))) throw Error("setup-owned hook changed; refusing to overwrite it");
     if (count) remaining.set(row.id, (remaining.get(row.id) ?? 0) + 1);
   }
   const groups = object(c.hooks ?? {});
@@ -78,7 +79,7 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
   for (const row of ours) {
     const at = c.findIndex(value => kimiKey(value) === kimiKey(row));
     if (at >= 0) c.splice(at, 1);
-    else if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
+    else if (c.some(value => (value.command === row.command || value.event === row.event && matcher(value.matcher) === matcher(row.matcher)) && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
   }
   if (isDeepStrictEqual(c, kimiHooks(current))) return current;
   const original = toml(before);
@@ -97,6 +98,7 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
     if (!isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
     let result = putMcpRecord(target, current, b);
     if (target !== "codex" && json(before).mcpServers !== undefined && json(result).mcpServers === undefined) { const value = json(result); value.mcpServers = {}; result = rendered(JSON.stringify(value, null, 2) + "\n", current); }
+    if (result.bytes === null && before.bytes !== null) return { ...before, mode: current.mode };
     if (before.bytes === null && Object.keys(target === "codex" ? toml(result) : json(result)).length === 0) return { ...before, mode: current.mode };
     return result;
   }

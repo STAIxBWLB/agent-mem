@@ -166,8 +166,14 @@ function piExtension(bun: string, entry: string): string {
 }
 interface Prepared { value: Receipt; expected: Image[]; unchanged: boolean }
 function restoreChange(value: Receipt, change: Change, index: number, live: Image): Image {
-  try { return restoreOwned(value.target, index, change.before, change.after, live); }
-  catch (error) { if (value.phase === "prepared" && change.start) return restoreOwned(value.target, index, change.before, change.start, live); throw error; }
+  const start = value.phase === "prepared" && change.start && !sameImage(change.start, change.before) ? change.start : undefined;
+  if (start) {
+    const newest = managedAfter(value.target, index, change.before, change.after, live), previous = managedAfter(value.target, index, change.before, start, live);
+    if (newest && previous) return restoreOwned(value.target, index, change.before, start, restoreOwned(value.target, index, change.before, change.after, live));
+    if (previous) return restoreOwned(value.target, index, change.before, start, live);
+    if (newest) return restoreOwned(value.target, index, change.before, change.after, live);
+  }
+  return restoreOwned(value.target, index, change.before, change.after, live);
 }
 function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
