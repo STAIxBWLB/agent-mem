@@ -4,15 +4,29 @@ Curated memory with append-only JSONL logs, a derived SQLite index, short- and l
 
 Version: 0.6.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
-## Install
+## Quick start
 
-Install the public package:
+Install the package, preview setup, then apply it for your client in a person's terminal:
 
 ```sh
 bun add -g @staix/agent-mem
 amem --version
-amem --help
+amem setup all
+amem setup claude --apply
 ```
+
+Replace `claude` with `codex`, `kimi` or `pi` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
+
+Agents submit pending memory candidates through MCP. Inspect them after a session and accept or reject each one:
+
+```sh
+amem review list
+amem review accept CANDIDATE_ID  # or: amem review reject CANDIDATE_ID
+```
+
+Replace `CANDIDATE_ID` with an id from the list. Acceptance is person-only and applies the configured privacy policy.
+
+Claude's registered hooks capture events during the session. The configured Codex/Kimi SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi`) after each session, then repeat the review loop. The [setup section](#setup--plugin) describes the registration and native trust steps.
 
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
@@ -111,7 +125,7 @@ All review commands remain person-only; acceptance and rejection require a termi
 
 Candidates live in `candidates.db` beside the memory logs. This sidecar is machine-local: it is never synced, imported, or read by recall, briefs, ask or graph evidence. Hosts must supply an explicit public privacy verdict before putting candidates or counters; private, PII and unknown verdicts are refused. Library APIs are available, but this phase adds no automatic candidate producer or telemetry consumer. Candidate retention is 500 per project and 30 days; counters retain 10,000 per project and 90 days. Candidate payloads are capped at 16 KiB.
 
-Acceptance creates ordinary v1 memory data. A correction retains its target's scope, project and storage reach, writes the corrected note and applies the existing `supersede` operation; its exact current target revision must match. A local target stays short-term; a synced target stays synced, including a demoted target whose effective tier is short. A fail becomes a long-term project note. The accepted text binds the candidate ID, target revision and target ID; a fail proposal without a target records `none` for both target fields. Both paths require the actual MemoryStore promotion screen to return `promote` at acceptance time; `keep`, `skip` or an absent screen refuses acceptance without falling back to short-term storage. Accepted v1 notes and operations follow the existing storage and sync rules; the candidate/counter sidecar remains local and outside evidence. No new v1 operation is introduced. Decay candidates are listing-only and cannot be accepted; a person may separately choose `ahub memory demote` or `forget`. The sidecar receipt, note append and correction's supersede append are separate durable writes. An interrupted acceptance can leave a note without its supersede; it is held for explicit inspection and never replayed automatically.
+Acceptance creates ordinary v1 memory data. A correction retains its target's scope, project and storage reach, writes the corrected note and applies the existing `supersede` operation; its exact current target revision must match. A local target stays short-term; a synced target stays synced, including a demoted target whose effective tier is short. A fail becomes a long-term project note. The accepted text binds the candidate ID, target revision and target ID; a fail proposal without a target records `none` for both target fields. Both paths require the actual MemoryStore promotion screen to return `promote` at acceptance time; `keep`, `skip` or an absent screen refuses acceptance without falling back to short-term storage. Accepted v1 notes and operations follow the existing storage and sync rules; the candidate/counter sidecar remains local and outside evidence. No new v1 operation is introduced. Decay candidates are listing-only and cannot be accepted; a person may separately choose `amem demote` or `amem forget`. The sidecar receipt, note append and correction's supersede append are separate durable writes. An interrupted acceptance can leave a note without its supersede; it is held for explicit inspection and never replayed automatically.
 
 The library entry exports `CandidateStore({ home?, now? })`, `put(input, verdict)`, `recordCounter(key, values, verdict)`, and `accept(id, { project, actor, verdict, store, policy })`. `home` retains the parent-home convention (`<home>/memory`); the default uses `memoryHome()`. The host must authenticate person intent, bind the current project and privacy verdict, and supply a current acceptance policy plus the ordinary store's actual promotion screen. An `actor` string or caller-supplied public verdict alone is not authentication. Counter writes are idempotent snapshots for the same contextual key, not increments: observed `0` stays zero, while `null` means unknown (a later unknown value does not erase an observed value).
 
