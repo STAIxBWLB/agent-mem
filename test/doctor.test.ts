@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
+import { sweepStaleScratch } from "../src/memory/doctor.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -233,4 +234,187 @@ test("doctor is person-only like every other command: an agent marker is refused
   const r = rig();
   await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x" }, stdinTTY: false })).rejects.toThrow(/amem is for the person/);
   expect(existsSync(r.memory)).toBe(false);
+});
+
+// ---- #435: the scratch copy never outlives an interrupted doctor ----
+
+/**
+ * How a doctor ended by `name` must look to its parent: SIGINT, SIGTERM and SIGHUP are re-raised, so the parent sees the signal itself. SIGQUIT's default action is a core dump,
+ * which Bun honours (measured on Linux: a 5.9 GB core file and seconds of delay in a container with `ulimit -c unlimited`), so doctor exits with the status that death would have
+ * had, 128 + 3, instead. Ubuntu CI is where this showed: it has core dumps on and the re-raised SIGQUIT outlasted the test's wait.
+ */
+function ended(child: { signalCode: string | number | null; exitCode: number | null }, name: NodeJS.Signals): void {
+  if (name === "SIGQUIT") { expect(child.exitCode, name).toBe(131); expect(child.signalCode, name).toBeNull(); }
+  else { expect(child.signalCode, name).toBe(name); }
+}
+
+function scratchDirs(tmp: string): string[] { return readdirSync(tmp).filter(name => name.startsWith("amem-doctor-")).sort(); }
+
+/** The real binary, run as `amem doctor` with its own TMPDIR so leftovers are countable, stalled inside doctor by a fake `git` that sleeps: the scratch copy is made before that point. */
+async function interruptedDoctor(name: NodeJS.Signals | "SIGKILL", group = true): Promise<{ left: string[]; tmp: string; exit: number | null; signal: string | number | null }> {
+  const r = rig(); r.note("a note to copy"); r.capture("claude", new Date().toISOString());
+  const tmp = join(r.root, "tmp"); mkdirSync(tmp);
+  const fake = join(r.root, "bin"); mkdirSync(fake);
+  // Real git for everything, except that once doctor's scratch copy exists the next git call (the stale check's repository lookup) stalls like a hung disk: the interrupt then
+  // lands while the scratch is there. Before that point (the CLI's own project lookup) it must behave, or doctor would stall before it has a scratch to remove.
+  const realGit = Bun.which("git")!;
+  const pidFile = join(r.root, "git.pid");
+  writeFileSync(join(fake, "git"), `#!/bin/sh\nfor d in ${JSON.stringify(tmp)}/amem-doctor-*; do [ -d "$d" ] && { echo $$ > ${JSON.stringify(pidFile)}; exec sleep 120; }; done\nexec ${JSON.stringify(realGit)} "$@"\n`, { mode: 0o755 });
+  const bin = join(import.meta.dir, "../bin/amem.js");
+  const env = { ...process.env, AMEM_HOME: r.memory, TMPDIR: tmp, PATH: `${fake}:${process.env.PATH}` } as Record<string, string | undefined>;
+  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "AGENTHUB_PEER_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID"]) delete env[key];
+  // Its own process group, so one signal can reach doctor and everything it started the way a terminal's Ctrl-C reaches the whole foreground group.
+  const child = Bun.spawn([process.execPath, bin, "doctor"], { cwd: r.cwd, env: env as Record<string, string>, stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
+  try {
+    // Signal only once git is actually stalled (its pid file exists): a signal sent the instant the scratch appears can land BEFORE doctor spawns that git, and Bun then defers the
+    // handler until the loop turns, which a hung synchronous call never lets happen (the stated limit below). That is a different case from the one this test is about.
+    for (let i = 0; i < 240 && !existsSync(pidFile); i++) await Bun.sleep(50);
+    expect(existsSync(pidFile)).toBe(true);
+    expect(scratchDirs(tmp).length).toBe(1);                                                    // the scratch copy exists while doctor runs
+    expect(scratchDirs(tmp)[0]).toContain(`amem-doctor-${child.pid}-`);                         // and is named for its owner
+    if (group) process.kill(-child.pid, name); else child.kill(name);
+    await Promise.race([child.exited, Bun.sleep(12_000)]);
+    return { left: scratchDirs(tmp), tmp, exit: child.exitCode, signal: child.signalCode };
+  } finally { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }   // the whole group, so a stalled git is never left behind by a failing test
+}
+
+test("a signal in the instant between the scratch being made and doctor going on is still handled: the guard is installed before the directory exists (#435, measured: 4 of 60 runs lost it)", async () => {
+  // Deterministic, not a race: a child process runs doctorReport with the test seam `afterScratch`, which signals the process itself the moment the directory exists. If the guard
+  // were installed after mkdtemp, that signal would take its default action and strand the directory; installed before, the handler removes it and re-raises the signal.
+  const r = rig(); r.note("n");
+  const tmp = join(r.root, "tmp"); mkdirSync(tmp);
+  const script = join(r.root, "instant.ts");
+  writeFileSync(script, `const { doctorReport } = await import(${JSON.stringify(join(import.meta.dir, "../src/memory/doctor.ts"))});
+const { MemoryStore } = await import(${JSON.stringify(join(import.meta.dir, "../src/memory/store.ts"))});
+const name = process.argv[2] as NodeJS.Signals;
+await doctorReport({ home: ${JSON.stringify(r.memory)}, homeSource: "test", cwd: ${JSON.stringify(r.cwd)}, project: ${JSON.stringify(r.project)}, aliases: [], now: Date.now(),
+  openCurated: (base: string) => new MemoryStore({ memoryDir: base, deferPromotions: true }), afterScratch: () => { process.kill(process.pid, name); } });
+console.log("doctor finished");
+`);
+  for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
+    const child = Bun.spawn([process.execPath, script, name], { env: { ...process.env, TMPDIR: tmp }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    await Promise.race([child.exited, Bun.sleep(12_000)]);
+    ended(child, name);                                                                            // ended by the signal (or its conventional status for SIGQUIT), not by finishing
+    expect(scratchDirs(tmp), name).toEqual([]);                                                   // and the directory it had just made is gone
+    expect(await new Response(child.stdout).text()).not.toContain("doctor finished");
+  }
+}, 90_000);
+
+for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) test(`${name} during doctor removes the scratch copy and still ends doctor with that signal (#435)`, async () => {
+  const run = await interruptedDoctor(name);
+  expect(run.left).toEqual([]);
+  ended({ signalCode: run.signal, exitCode: run.exit }, name);                                  // re-raised after the cleanup, so the shell sees the right status
+}, 90_000);
+
+/**
+ * Doctor, with a stand-in `git` that logs each call made while the scratch copy exists and stalls call number `stallAt` (0: none). Bun runs a signal handler only when the event loop
+ * turns, so a signal that reaches doctor ALONE during a synchronous git call is handled once that call returns: this runs doctor, signals it during the stall, then ends the
+ * stalled git (what a terminal's group signal does at once), and reports what is left.
+ */
+async function stalledAt(stallAt: number, name: NodeJS.Signals | null): Promise<{ calls: number; left: string[]; signal: string | number | null; exit: number | null }> {
+  const r = rig(); r.note("n"); r.capture("claude", new Date().toISOString());
+  const tmp = join(r.root, "tmp"); mkdirSync(tmp);
+  const fake = join(r.root, "bin"); mkdirSync(fake);
+  const realGit = Bun.which("git")!, count = join(r.root, "git.count"), pidFile = join(r.root, "git.pid");
+  writeFileSync(count, "");
+  writeFileSync(join(fake, "git"), `#!/bin/sh
+for d in ${JSON.stringify(tmp)}/amem-doctor-*; do
+  if [ -d "$d" ]; then
+    echo x >> ${JSON.stringify(count)}
+    n=$(wc -l < ${JSON.stringify(count)} | tr -d ' ')
+    [ "$n" = "${stallAt}" ] && { echo $$ > ${JSON.stringify(pidFile)}; exec sleep 120; }
+  fi
+done
+exec ${JSON.stringify(realGit)} "$@"
+`, { mode: 0o755 });
+  const env = { ...process.env, AMEM_HOME: r.memory, TMPDIR: tmp, PATH: `${fake}:${process.env.PATH}` } as Record<string, string | undefined>;
+  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "AGENTHUB_PEER_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID"]) delete env[key];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/amem.js"), "doctor"], { cwd: r.cwd, env: env as Record<string, string>, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const calls = () => readFileSync(count, "utf8").split("\n").filter(Boolean).length;
+  try {
+    if (name !== null) {
+      for (let i = 0; i < 240 && !existsSync(pidFile); i++) await Bun.sleep(50);
+      expect(existsSync(pidFile), `git call ${stallAt} was never reached`).toBe(true);
+      child.kill(name);                                                                           // doctor alone: its stalled git does not get it
+      await Bun.sleep(150); expect(child.exitCode).toBeNull();                                    // still inside the synchronous call
+      process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");                      // the stalled git ends, the call returns
+    }
+    await Promise.race([child.exited, Bun.sleep(12_000)]);
+    return { calls: calls(), left: scratchDirs(tmp), signal: child.signalCode, exit: child.exitCode };
+  } finally { child.kill("SIGKILL"); }
+}
+
+test("a signal that reaches doctor alone during ANY git call it makes after the scratch exists still removes the scratch and ends doctor with that signal (#435)", async () => {
+  const plain = await stalledAt(0, null);
+  expect(plain.exit).toBe(0); expect(plain.left).toEqual([]);
+  expect(plain.calls).toBeGreaterThan(1);                                                         // there is more than one place to stall
+  for (let k = 1; k <= plain.calls; k++) {
+    const run = await stalledAt(k, "SIGTERM");
+    expect(run.left, `stalled at git call ${k} of ${plain.calls}`).toEqual([]);
+    expect(run.signal, `stalled at git call ${k} of ${plain.calls}`).toBe("SIGTERM");
+  }
+}, 90_000);
+
+test("SIGKILL cannot be handled: the scratch stays, and the next doctor sweeps it because its owner is gone (#435)", async () => {
+  const run = await interruptedDoctor("SIGKILL");
+  expect(run.left.length).toBe(1);
+  const dead = run.left[0]!;
+  expect(sweepStaleScratch(run.tmp)).toBe(1);
+  expect(existsSync(join(run.tmp, dead))).toBe(false);
+}, 90_000);
+
+test("the sweep removes only a scratch directory of a dead owner that this user owns, and nothing else (#435)", () => {
+  const tmp = realPath(mkdtempSync(join(tmpdir(), "amem-sweep-"))); cleanup.push(() => rmSync(tmp, { recursive: true, force: true }));
+  const make = (name: string) => { mkdirSync(join(tmp, name)); writeFileSync(join(tmp, name, "log"), "a copy of the notes"); return join(tmp, name); };
+  const dead = make("amem-doctor-999999-abcdef"), live = make("amem-doctor-4242-ghijkl"), unknown = make("amem-doctor-31337-mnopqr");
+  const other = make("amem-doctor-notes"), longer = make("amem-doctor-123-too-long-suffix"), unrelated = make("keep-me");
+  // A link and a plain file, both named like a scratch directory with a DEAD owner: only the name test and the type test stand between them and removal.
+  const link = join(tmp, "amem-doctor-999998-stuvwx"); symlinkSync(unrelated, link);
+  const file = join(tmp, "amem-doctor-999997-yzabcd"); writeFileSync(file, "not a directory");
+  const state: Record<number, boolean> = { 999999: false, 999998: false, 999997: false, 4242: true, 31337: true };
+  expect(sweepStaleScratch(tmp, pid => state[pid] ?? true)).toBe(1);
+  expect(existsSync(dead)).toBe(false);
+  for (const kept of [live, unknown, other, longer, unrelated, file]) expect(existsSync(kept), kept).toBe(true);
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);                                           // the link itself is still there (existsSync would follow it)
+  expect(readFileSync(join(unrelated, "log"), "utf8")).toBe("a copy of the notes");              // and its target is untouched
+});
+
+test("the sweep leaves a dead owner's directory alone when this user does not own it (#435)", () => {
+  const tmp = realPath(mkdtempSync(join(tmpdir(), "amem-sweep-"))); cleanup.push(() => rmSync(tmp, { recursive: true, force: true }));
+  mkdirSync(join(tmp, "amem-doctor-999999-abcdef"));
+  const mine = statSync(join(tmp, "amem-doctor-999999-abcdef")).uid;
+  expect(sweepStaleScratch(tmp, () => false, Date.now(), mine + 1)).toBe(0);                      // another user's directory in a shared temp directory: not ours to remove
+  expect(sweepStaleScratch(tmp, () => false, Date.now(), mine)).toBe(1);
+});
+
+test("doctor itself sweeps a dead run's scratch directory before it makes its own (#435)", async () => {
+  const r = rig(); r.note("n");
+  const tmp = join(r.root, "tmp"); mkdirSync(tmp);
+  mkdirSync(join(tmp, "amem-doctor-999999-abcdef")); writeFileSync(join(tmp, "amem-doctor-999999-abcdef", "log"), "left by a killed doctor");
+  mkdirSync(join(tmp, `amem-doctor-${process.pid}-liveRun`));                                      // a live run's directory (this test process): never touched
+  const env = { ...process.env, AMEM_HOME: r.memory, TMPDIR: tmp } as Record<string, string | undefined>;
+  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "AGENTHUB_PEER_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID"]) delete env[key];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/amem.js"), "doctor"], { cwd: r.cwd, env: env as Record<string, string>, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  await child.exited;
+  expect(scratchDirs(tmp)).toEqual([`amem-doctor-${process.pid}-liveRun`]);
+}, 90_000);
+
+test("a scratch directory from before the owner's pid was in the name goes only after a day, and a live run's never does (#435)", () => {
+  const tmp = realPath(mkdtempSync(join(tmpdir(), "amem-sweep-"))); cleanup.push(() => rmSync(tmp, { recursive: true, force: true }));
+  mkdirSync(join(tmp, "amem-doctor-AbC123"));
+  const now = Date.now();
+  expect(sweepStaleScratch(tmp, () => true, now)).toBe(0);                                      // an hour old at most: could be a run of an older amem in progress
+  expect(sweepStaleScratch(tmp, () => true, now + 25 * 3600_000)).toBe(1);
+  expect(existsSync(join(tmp, "amem-doctor-AbC123"))).toBe(false);
+  expect(sweepStaleScratch(join(tmp, "does-not-exist"))).toBe(0);                               // an unreadable temp directory is not an error
+});
+
+test("an ordinary doctor run leaves no scratch directory and no process handler behind (#435)", async () => {
+  const r = rig(); r.note("n");
+  const before = (["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const).map(name => process.listenerCount(name)), exits = process.listenerCount("exit");
+  const tmp = realPath(tmpdir()), had = scratchDirs(tmp);
+  await doctor(r);
+  expect((["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const).map(name => process.listenerCount(name))).toEqual(before);
+  expect(process.listenerCount("exit")).toBe(exits);
+  expect(scratchDirs(tmp).filter(name => !had.includes(name))).toEqual([]);
 });

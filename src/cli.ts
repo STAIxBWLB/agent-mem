@@ -39,7 +39,7 @@ import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
-import { nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS } from "./memory/sync-cadence.ts";
+import { nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -56,6 +56,8 @@ export interface CliContext {
   /** Whether stdout is a terminal, for the real stdout only (default `process.stdout.isTTY`). */
   stdoutTTY?: boolean;
   edit?: (initial: string) => string | Promise<string>;
+  /** Test seam: the `sync --if-due` deadline in milliseconds (the CLI always uses 30 seconds). */
+  syncDeadlineMs?: number;
   stdin?: () => string;
 }
 
@@ -629,21 +631,21 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
   }
   // Only a real attempt is stamped: a local refusal (lock held, no remote, policy, usage) is not, and a future stamp is no history (src/memory/sync-cadence.ts).
-  const stampSync = (error: string | undefined) => { if (syncOutcome(error) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now()); };
+  const stampSync = (error: string | undefined, cause?: StopCause) => { if (syncOutcome(error, cause) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now()); };
   const syncArgs = args.filter(arg => arg !== "--if-due" && arg !== "--force");
   let output: string;
-  const stop = ifDue ? stopSignal(SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
+  const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
     output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { project: boundProject(), open, readable: notes => notes, importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
-  } catch (error) { if (sub === "sync") stampSync((error as Error).message); throw error; }
+  } catch (error) { if (sub === "sync") stampSync((error as Error).message, stop?.cause()); throw error; }
   finally { stop?.dispose(); }
   if (sub === "sync") {
     // `--json` returns the failed result instead of throwing: read the real outcome from it, never assume a returned string means the sync worked.
     let failure: string | undefined;
     if (options["--json"]) { try { const result = JSON.parse(output) as { ok?: unknown; error?: unknown }; if (result.ok === false) failure = typeof result.error === "string" ? result.error : "sync failed"; } catch { /* not a sync result */ } }
-    stampSync(failure);
+    stampSync(failure, stop?.cause());
   }
   if (sub === "import" && parsed.path[1] === "claude-mem") {
     const policy = configured;

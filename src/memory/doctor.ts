@@ -8,6 +8,7 @@ import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
 import { readSelector } from "./generation.ts";
 import { processLiveness } from "./platform.ts";
+import { STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
 import { shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
@@ -42,6 +43,8 @@ export interface DoctorOptions {
   openCurated: (base: string) => MemoryStore;
   /** The cadence command the person runs from their own shell; shown in the report, never installed. */
   syncCommand?: string;
+  /** Test seam: called with the scratch directory right after it is made, before anything else runs. The CLI never sets it. */
+  afterScratch?: (dir: string) => void;
 }
 export interface DoctorReport {
   schema: typeof DOCTOR_SCHEMA;
@@ -282,14 +285,82 @@ function cadenceSection(options: DoctorOptions): Section {
     ...(stale ? { hint: state.failures >= 3 ? "sync has failed repeatedly; amem sync --force shows why" : "no recent successful sync: run amem sync" } : {}) };
 }
 
+/**
+ * Let the event loop run once. Doctor's stages are mostly synchronous (a git lookup is a `spawnSync`), and Bun runs a signal handler only when the loop turns: a signal that arrives
+ * during a stalled call would otherwise wait for the end of doctor, where the handler is already removed and the signal is lost. Between stages this lets the handler act at once.
+ * (Measured: with every tick removed a stalled git call loses the signal; removing any ONE tick does not, because other `await`s between stages turn the loop too. They are
+ * redundant on purpose, so a later stage that stops awaiting cannot silently reopen the gap: `test/doctor.test.ts` stalls every git call, one at a time.)
+ */
+const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+
+/** `amem-doctor-<pid>-<random>`: the owner's pid is in the name so a later run can tell a leftover from a live run. */
+const SCRATCH = /^amem-doctor-(\d+)-[A-Za-z0-9]{6}$/, OLD_SCRATCH = /^amem-doctor-[A-Za-z0-9]{6}$/;
+const OLD_SCRATCH_AGE_MS = 24 * 3600_000;
+
+/**
+ * Remove scratch directories an earlier doctor left behind (it was killed by something no handler sees, or by a version that had none). A directory goes only when it is a plain
+ * directory this user owns, named exactly as doctor names them, and its owner pid is gone: a live pid, or one that cannot be told, keeps its directory (a reused pid costs
+ * a leftover, never a live run's data). A directory from before the pid was in the name has no owner to ask, so it goes only after a day. Returns how many were removed. Never throws.
+ */
+export function sweepStaleScratch(tmp: string = tmpdir(), alive: (pid: number) => boolean = pid => processLiveness(pid) !== "gone", now: number = Date.now(), uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined): number {
+  let removed = 0;
+  let names: string[] = [];
+  try { names = readdirSync(tmp); } catch { return 0; }
+  for (const name of names) {
+    const owner = SCRATCH.exec(name), old = !owner && OLD_SCRATCH.test(name);
+    if (!owner && !old) continue;
+    try {
+      const path = join(tmp, name), stat = lstatSync(path);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== undefined && stat.uid !== uid)) continue;
+      if (owner ? alive(Number(owner[1])) : now - stat.mtimeMs < OLD_SCRATCH_AGE_MS) continue;
+      rmSync(path, { recursive: true, force: true }); removed++;
+    } catch { /* gone already, or not ours to remove */ }
+  }
+  return removed;
+}
+
+/**
+ * Keep doctor's scratch directory removed however this process ends while doctor runs. Install it first, then `adopt` the directory once `mkdtemp` has made it: a signal that
+ * arrives in between meets a handler, which has nothing to remove yet but still ends the process with the signal. A handler cannot be left out of the picture: with one installed the
+ * default action is suppressed, so after removing the directory it removes itself and re-raises the signal, which ends the process with the status the shell expects (and only when
+ * no other handler of the host remains, so it never double-fires). An `exit` handler covers a throw. Everything is removed again by `release` once doctor finished normally.
+ * SIGKILL cannot be handled by anyone: the next doctor's `sweepStaleScratch` removes that directory.
+ */
+function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
+  let dir: string | undefined;
+  const remove = () => { if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } };
+  const handlers = STOP_SIGNALS.map(name => {
+    const handler = () => {
+      remove();
+      process.off(name, handler);
+      if (process.listenerCount(name) !== 0) return;       // another handler of the host remains: it decides how the process ends
+      // SIGQUIT's default action is a core dump, and Bun honours it: a re-raised SIGQUIT on Linux writes a core file the size of the process image (measured 5.9 GB, taking
+      // seconds, in a container with `ulimit -c unlimited`) while the shell waits for the exit. Exit with the status that death would have had instead (128 + 3), at once. The other
+      // three are re-raised, so a parent sees the signal itself (`signalCode`).
+      if (name === "SIGQUIT") process.exit(128 + 3);
+      process.kill(process.pid, name);
+    };
+    process.on(name, handler);
+    return [name, handler] as const;
+  });
+  process.on("exit", remove);
+  return { adopt: made => { dir = made; }, release: () => { for (const [name, handler] of handlers) process.off(name, handler); process.off("exit", remove); } };
+}
+
 export async function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
-  let scratch: string | undefined;
+  let scratch: string | undefined, unguard: (() => void) | undefined;
   let duplicates: Section, stale: Section, index: Section;
   let curated: MemoryStore | undefined, workBase: string | undefined, copyFailed: string | undefined;
   try {
     let layout: Layout | undefined;
     try { layout = layoutOf(options.home); } catch (error) { throw new Error(`the memory profile cannot be read: ${message(error)}`); }
-    scratch = mkdtempSync(join(tmpdir(), "amem-doctor-"));      // a scratch directory, never inside the home: a home nobody used stays absent
+    sweepStaleScratch();
+    // The guard is installed BEFORE the directory exists and told its name afterwards: a signal in the few microseconds between `mkdtemp` and a guard installed after it would
+    // meet no handler, take the default action and strand the directory (measured: 4 of 60 runs when a signal lands the instant it appears).
+    const guard = guardScratch(); unguard = guard.release;
+    scratch = mkdtempSync(join(tmpdir(), `amem-doctor-${process.pid}-`));      // a scratch directory, never inside the home: a home nobody used stays absent
+    guard.adopt(scratch);
+    options.afterScratch?.(scratch);
     const budget = { bytes: 0 };
     try {
       // The work logs go to a private base of their own, whether or not the project has curated notes: the brief's work section opens a list read-write.
@@ -302,7 +373,9 @@ export async function doctorReport(options: DoctorOptions): Promise<DoctorReport
         const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, "index.db"));
         curated = options.openCurated(home);
         const rows = curated.list({ project: options.project, limit: LIST_ALL });
+        await tick();
         ({ duplicates, stale } = duplicatesAndStale(options, rows, curated));
+        await tick();
         // The brief is measured after this and before the index proof's rebuild only because the brief reads rows, not the index tables.
         index = indexSection(curated, layout, snapshotted);
       }
@@ -311,6 +384,7 @@ export async function doctorReport(options: DoctorOptions): Promise<DoctorReport
       workBase = undefined; duplicates = stale = index = unavailable(copyFailed);
     }
   } catch (error) { copyFailed = message(error); duplicates = stale = index = unavailable(copyFailed); }
+  await tick();
   let candidates: Section;
   try {
     const summary = pendingSummary(options.home, [options.project, ...options.aliases], options.now, true);
@@ -319,8 +393,10 @@ export async function doctorReport(options: DoctorOptions): Promise<DoctorReport
   } catch (error) { candidates = unavailable(message(error)); }
   let sections: DoctorReport["sections"];
   try {
+    await tick();
     sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options) };
-  } finally { try { curated?.close(); } finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); } }
+    await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
+  } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
 }
 
