@@ -4,15 +4,29 @@ Curated memory with append-only JSONL logs, a derived SQLite index, short- and l
 
 Version: 0.6.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
-## Install
+## Quick start
 
-Install the public package:
+Install the package, preview setup, then apply it for your client in a person's terminal:
 
 ```sh
 bun add -g @staix/agent-mem
 amem --version
-amem --help
+amem setup all
+amem setup claude --apply
 ```
+
+Replace `claude` with `codex`, `kimi` or `pi` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
+
+Agents submit pending memory candidates through MCP. Inspect them after a session and accept or reject each one:
+
+```sh
+amem review list
+amem review accept CANDIDATE_ID  # or: amem review reject CANDIDATE_ID
+```
+
+Replace `CANDIDATE_ID` with an id from the list. Acceptance is person-only and applies the configured privacy policy.
+
+Claude's registered hooks capture events during the session. The configured Codex/Kimi SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi`) after each session, then repeat the review loop. The [setup section](#setup--plugin) describes the registration and native trust steps.
 
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
