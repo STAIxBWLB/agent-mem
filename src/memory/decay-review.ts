@@ -112,6 +112,7 @@ export function applyDecay(store: MemoryStore, plan: DecayPlan, options: DecayAp
   const action = options.forget ? "forget" : "demote";
   if (!ids.length) return { action, ids };
   if (!options.forget && (!Number.isFinite(Date.parse(plan.demoteExpiresAt)) || new Date(plan.demoteExpiresAt).toISOString() !== plan.demoteExpiresAt || Date.parse(plan.demoteExpiresAt) <= (options.now ?? Date.now)())) throw Error("decay demotion expiry is spent; preview again");
+  if (!options.forget) store.assertDemotionExpiry(plan.demoteExpiresAt);
   return store.withCurrentEntries(ids, plan.project, current => {
     const fresh = decayPreview(store, plan.project, { ...options, days: plan.days, ids });
     for (const view of current) {

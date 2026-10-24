@@ -528,8 +528,13 @@ export class MemoryStore {
   keepShort(id: string, actor: string): void { const v = this.get(id); if (v?.tier === "short" && v.local && v.expiresAt === null) this.op("demote", v, actor, this.until()); } // once: a deadline is never pushed out
   /** The short-tier deadline to display before a person confirms a demotion. */
   shortExpiry(): string { return this.until(); }
+  /** A confirmed deadline may be older than a fresh one, but cannot extend the configured TTL beyond one hour. */
+  assertDemotionExpiry(expiresAt: string): void {
+    const at = Date.parse(expiresAt), now = this.now();
+    if (!Number.isFinite(at) || new Date(at).toISOString() !== expiresAt || at <= now || at > now + this.ttl + 3600_000) throw Error("demotion expiry must be future UTC within the short-tier deadline plus one hour");
+  }
   demote(id: string, actor: string, project?: string, expiresAt?: string): View | undefined {
-    if (expiresAt !== undefined && (!Number.isFinite(Date.parse(expiresAt)) || new Date(expiresAt).toISOString() !== expiresAt || Date.parse(expiresAt) <= this.now())) throw Error("demotion expiry is no longer in the future");
+    if (expiresAt !== undefined) this.assertDemotionExpiry(expiresAt);
     const v = this.get(id, project); if (v?.tier === "long") this.op("demote", v, actor, expiresAt ?? this.until()); return v;
   }
   supersede(oldId: string, newId: string, actor: string, project?: string): boolean {

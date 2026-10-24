@@ -8,11 +8,11 @@ import type { Counter } from "../src/memory/candidates.ts";
 import { realPath } from "../src/memory/platform.ts";
 const closes: Array<() => void> = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
-function fixture() {
+function fixture(ttlMs?: number) {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-decay-"))), base = join(root, "memory"), project = "decay-project";
   let now = Date.parse("2026-01-01T00:00:00.000Z"); const clock = () => now;
   closes.push(() => rmSync(root, { recursive: true, force: true }));
-  const store = new MemoryStore({ memoryDir: base, now: clock, deferPromotions: true, screen: () => "promote" }); closes.push(() => store.close());
+  const store = new MemoryStore({ memoryDir: base, now: clock, ...(ttlMs === undefined ? {} : { ttlMs }), deferPromotions: true, screen: () => "promote" }); closes.push(() => store.close());
   const note = (extra: Partial<NoteInput> = {}) => store.note({ op: "note", project, scope: "project", tier: "long", kind: "contract", peer: "person", source: "person", text: "old public decision", about: [], ...extra });
   const bytes = () => readdirSync(base, { recursive: true, withFileTypes: true }).filter(row => row.isFile() && row.name.endsWith(".jsonl")).map(row => [join(row.parentPath, row.name), readFileSync(join(row.parentPath, row.name), "utf8")]).sort((a, b) => a[0]!.localeCompare(b[0]!));
   return { store, project, note, clock, bytes, advance: (days: number) => { now += days * 86400_000; } };
@@ -116,4 +116,22 @@ test("forget preflights every expansion and refuses a protected hidden import co
   expect(() => f.store.forget(visible!, "person", f.project, true)).toThrow("expands beyond"); expect(f.bytes()).toEqual(before);
   // Existing direct person forget remains a group operation after its separate review.
   f.store.forget(visible!, "person", f.project); expect(f.store.list({ project: f.project, includeSuperseded: true }).map(row => row.id)).not.toContain(hidden!);
+});
+
+test("explicit demotion expiry is canonical future UTC and never exceeds configured TTL plus one hour", () => {
+  for (const ttlMs of [undefined, 2 * 86400_000]) {
+    const f = fixture(ttlMs), id = f.note(), deadline = f.store.shortExpiry(), upper = Date.parse(deadline) + 3600_000, before = f.bytes();
+    for (const expiry of [new Date(f.clock()).toISOString(), new Date(f.clock() - 1).toISOString(), new Date(upper + 1).toISOString(), "not-a-date", deadline.replace("Z", "+00:00")]) {
+      expect(() => f.store.demote(id, "person", f.project, expiry)).toThrow("expiry"); expect(f.bytes()).toEqual(before);
+    }
+    const allowed = new Date(upper).toISOString(); f.store.demote(id, "person", f.project, allowed); expect(f.store.get(id, f.project)?.expiresAt).toBe(allowed);
+  }
+});
+test("an overlong displayed expiry refuses the entire decay batch before any demote attempt", () => {
+  const f = fixture(); f.note({ text: "expiry prefix one" }); f.note({ text: "expiry prefix two" }); f.advance(91);
+  const plan = decayPreview(f.store, f.project, { now: f.clock }), before = f.bytes(), demote = f.store.demote.bind(f.store); let calls = 0;
+  f.store.demote = (...args) => { calls++; return demote(...args); };
+  const forged = { ...plan, demoteExpiresAt: new Date(Date.parse(plan.demoteExpiresAt) + 3600_001).toISOString() };
+  let refusal: unknown; try { applyDecay(f.store, forged, { actor: "person", confirmed: true, now: f.clock }); } catch (error) { refusal = error; }
+  expect(calls).toBe(0); expect(f.bytes()).toEqual(before); expect(refusal).toBeInstanceOf(Error); expect((refusal as Error).message).toContain("expiry");
 });
