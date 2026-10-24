@@ -68,7 +68,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   supersede: { description: "Replace a note", options: json, args: [{ name: "old-id" }, { name: "new-id" }], mutates: true },
   rebuild: { description: "Rebuild the derived index", options: json, mutates: true },
   dedupe: { description: "Preview duplicate reconciliation", options: { ...json, "--apply": flag("Append reconciliation operations") }, mutates: "apply" },
-  sync: { description: "Sync a private remote", options: { ...json, ...policy, "--remote": text("Private git URL") }, mutates: true, policyFree: true },
+  sync: { description: "Sync a private remote (--if-due: only when the schedule and the failure backoff allow it; --force ignores both)", options: { ...json, ...policy, "--remote": text("Private git URL"),
+    "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff") }, mutates: true, policyFree: true },
   machine: { description: "Show or label this machine", options: { ...json, "--label": text("Machine label") }, mutates: "label" },
   import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor") }, mutates: true, policyFree: true,
     commands: { "claude-mem": { description: "Import claude-mem observations" } } },
@@ -96,6 +97,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--shards": flag("Migrate the curated home into project and user shards"),
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },
+  doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: json },
   prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
     ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
     "--user": flag("Select the user shard explicitly after a curated split (default: current project)"),

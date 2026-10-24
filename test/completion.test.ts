@@ -100,8 +100,9 @@ test("completion metadata and CLI parser cover the retained raw command cases an
         for (const flag of flags) expect(Object.keys(row.options)).toContain(flag);
         // #15 T5: `search --all-projects` and `--include-archived` are the person's cross-project read, handled by src/cli.ts before the raw command (like --policy-free);
         // the raw command, which hosts share, refuses them (test/cli-projects.test.ts). The exemption is these two flags on `search` only.
+        // #40 F16: `sync --if-due --force` are the person's schedule gate, handled by src/cli.ts before the raw command, which never sees them (test/sync-cadence.test.ts); the exemption is these two flags on `sync` only.
         // #15 T4: `promote --to repo --confirm --confirm-public` are the person's repo-scope promotion, handled by src/cli.ts before the raw command; the raw command refuses them (test/repo-scope.test.ts). The exemption is these three flags on `promote` only.
-        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag)).toBe(true);
+        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force"].includes(flag)).toBe(true);
       }
     }
   }
