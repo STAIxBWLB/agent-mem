@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { SETUP_CONFIG_BYTES, setTomlPath } from "./setup-toml.ts";
+import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "./setup-toml.ts";
 export interface ConfigImage { bytes: string | null; mode: number }
 export const sameImage = (a: ConfigImage, b: ConfigImage): boolean => a.bytes === b.bytes && a.mode === b.mode;
 const text = (image: ConfigImage) => image.bytes === null ? "" : new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(image.bytes, "base64"));
@@ -51,7 +51,7 @@ function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: Conf
   const ours = added(original, installed, row => row.id), remaining = new Map<string, number>();
   for (const row of ours) {
     const count = live.filter(value => value.id === row.id).length;
-    if (!count && live.some(value => (value.command === row.command || value.event === row.event && value.matcher === row.matcher) && !original.some(old => old.id === value.id))) throw Error("setup-owned hook changed; refusing to overwrite it");
+    if (!count && live.some(value => value.command === row.command && !original.some(old => old.id === value.id))) throw Error("setup-owned hook changed; refusing to overwrite it");
     if (count) remaining.set(row.id, (remaining.get(row.id) ?? 0) + 1);
   }
   const groups = object(c.hooks ?? {});
@@ -79,12 +79,12 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
   for (const row of ours) {
     const at = c.findIndex(value => kimiKey(value) === kimiKey(row));
     if (at >= 0) c.splice(at, 1);
-    else if (c.some(value => (value.command === row.command || value.event === row.event && matcher(value.matcher) === matcher(row.matcher)) && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
+    else if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
   }
   if (isDeepStrictEqual(c, kimiHooks(current))) return current;
   const original = toml(before);
   const value = !c.length && original.hooks === undefined ? undefined : c;
-  const result = setTomlPath(text(current), ["hooks"], value);
+  const result = value === undefined ? setTomlPath(text(current), ["hooks"], undefined) : updateTomlArray(text(current), ["hooks"], value);
   if (before.bytes === null && Object.keys(object(Bun.TOML.parse(result))).length === 0) return { ...before, mode: current.mode };
   return rendered(result, current);
 }
@@ -94,11 +94,12 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
   if (sameImage(current, before)) return current;
   if (index === 0) {
     const b = mcpRecord(target, before), a = mcpRecord(target, after), c = mcpRecord(target, current);
-    if (isDeepStrictEqual(c, b)) return current;
-    if (!isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
+    if (isDeepStrictEqual(c, b) && !(target === "codex" && b === undefined && toml(before).mcp_servers === undefined && toml(current).mcp_servers !== undefined && Object.keys(object(toml(current).mcp_servers)).length === 0)) return current;
+    if (c !== undefined && !isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
     let result = putMcpRecord(target, current, b);
+    if (target === "codex" && b === undefined && toml(before).mcp_servers === undefined && Object.keys(object(toml(result).mcp_servers ?? {})).length === 0) result = rendered(setTomlPath(text(result), ["mcp_servers"], undefined), current);
     if (target !== "codex" && json(before).mcpServers !== undefined && json(result).mcpServers === undefined) { const value = json(result); value.mcpServers = {}; result = rendered(JSON.stringify(value, null, 2) + "\n", current); }
-    if (result.bytes === null && before.bytes !== null) return finishJson({}, current, before);
+    if (result.bytes === null && before.bytes !== null) return target === "codex" ? rendered("", current) : finishJson({}, current, before);
     if (before.bytes === null && Object.keys(target === "codex" ? toml(result) : json(result)).length === 0) return { ...before, mode: current.mode };
     return result;
   }

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { applySetup, planSetup, undoSetup, type SetupContext, type SetupTarget } from "../src/setup.ts";
@@ -36,7 +37,7 @@ function seedClaude(f: ReturnType<typeof fixture>, previousAmem = true) {
 }
 test("Claude routine metadata/other MCP writes keep reapply unchanged and semantic undo restores only the prior amem entry", () => {
   const f = fixture(), oldServer = seedClaude(f); applySetup(f.plan("claude"), f.options);
-  const live = json(f.file("claude")); expect(live.mcpServers.amem.command).toBe("bun"); live.numStartups = 11; live.projects["/new"] = { enabled: true }; live.mcpServers.other.args = ["routine update"]; live.mcpServers.later = { command: "later" }; put(f.file("claude"), JSON.stringify(live, null, 2) + "\n");
+  const live = json(f.file("claude")); expect(live.mcpServers.amem.command).toBe(Bun.which("bun")); live.numStartups = 11; live.projects["/new"] = { enabled: true }; live.mcpServers.other.args = ["routine update"]; live.mcpServers.later = { command: "later" }; put(f.file("claude"), JSON.stringify(live, null, 2) + "\n");
   const before = readFileSync(f.file("claude")), calls = f.calls.length;
   expect(applySetup(f.plan("claude"), f.options)).toMatchObject({ applied: [], unchanged: ["claude"] }); expect(f.calls).toHaveLength(calls); expect(readFileSync(f.file("claude"))).toEqual(before);
   undoSetup(f.plan("claude", "undo"), f.options);
@@ -115,7 +116,7 @@ test("prepared runtime update recovers the old hook generation after MCP publica
   undoSetup(f.plan("claude", "undo", moved), moved);
   expect(hooks(json(hookFile)).map(handler => handler.command)).toEqual(["original-observer"]); expect(json(f.file("claude")).mcpServers.amem).toEqual(oldServer); expect(existsSync(update.actions[0]!.receipt)).toBe(false);
 });
-test("editing an owned hook command in its existing event/group refuses apply and undo without changing files", () => {
+test("a hook carrying the owned command but a changed core refuses apply and undo without changing files", () => {
   for (const target of ["claude", "codex", "kimi"] as const) {
     const f = fixture(), hookFile = f.file(target, 1);
     if (target === "claude") seedClaude(f);
@@ -123,7 +124,7 @@ test("editing an owned hook command in its existing event/group refuses apply an
     if (target === "kimi") put(hookFile, 'hooks = [{ event = "Stop", command = "original-observer" }]\n');
     applySetup(f.plan(target), f.options); const undo = f.plan(target, "undo"), receipt = readFileSync(undo.actions[0]!.receipt);
     const document = target === "kimi" ? toml(hookFile) : json(hookFile), handlers = target === "kimi" ? document.hooks as Array<Record<string, any>> : hooks(document);
-    const owned = handlers.find(handler => typeof handler.command === "string" && handler.command.includes(f.entry))!; expect(owned).toBeDefined(); owned.command = "person-adjusted-command";
+    const owned = handlers.find(handler => typeof handler.command === "string" && handler.command.includes(f.entry))!; expect(owned).toBeDefined(); owned.timeout = 999;
     put(hookFile, target === "kimi" ? Bun.TOML.stringify(document) : JSON.stringify(document, null, 2) + "\n");
     const files = [f.file(target), hookFile], before = files.map(file => ({ bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 })), calls = f.calls.length;
     expect(() => applySetup(f.plan(target), f.options)).toThrow(); expect(() => undoSetup(undo, f.options)).toThrow();
@@ -143,4 +144,93 @@ test("empty semantic restore does not resurrect unrelated root fields deleted af
   const installed = json(config); put(config, JSON.stringify({ mcpServers: { amem: installed.mcpServers.amem } }) + "\n", 0o600); const calls = f.calls.length;
   undoSetup(f.plan("claude", "undo"), f.options);
   expect(existsSync(config)).toBe(true); expect(json(config)).toEqual({}); expect(json(config).numStartups).toBeUndefined(); expect(lstatSync(config).mode & 0o777).toBe(0o600); expect(f.calls).toHaveLength(calls);
+});
+test("removed managed MCP entries restore earlier person entries and can be reapplied, including all-target undo", () => {
+  for (const target of ["claude", "codex"] as const) {
+    for (const previous of [false, true]) {
+      const f = fixture(), config = f.file(target), old = { command: "person-original", args: ["keep"] };
+      put(config, target === "codex" ? Bun.TOML.stringify({ model: "keep", ...(previous ? { mcp_servers: { amem: old } } : {}) }) : JSON.stringify({ counter: 1, ...(previous ? { mcpServers: { amem: old } } : {}) }));
+      applySetup(f.plan(target), f.options);
+      const remove = () => { const live = target === "codex" ? toml(config) : json(config); delete live[target === "codex" ? "mcp_servers" : "mcpServers"].amem; put(config, target === "codex" ? Bun.TOML.stringify(live) : JSON.stringify(live)); };
+      remove(); expect(applySetup(f.plan(target), f.options).applied).toEqual([target]);
+      expect((target === "codex" ? toml(config).mcp_servers : json(config).mcpServers).amem.command).toBe(Bun.which("bun"));
+      remove(); expect(undoSetup(planSetup("all", "undo", f.options), f.options).restored).toContain(target);
+      const restored = target === "codex" ? toml(config) : json(config);
+      expect(restored[target === "codex" ? "mcp_servers" : "mcpServers"]?.amem).toEqual(previous ? old : undefined);
+      expect(existsSync(f.plan(target).actions[0]!.receipt)).toBe(false);
+    }
+  }
+});
+test("missing managed hooks and new person hooks on the same event/matcher never wedge apply or undo", () => {
+  for (const target of ["claude", "codex", "kimi"] as const) {
+    const f = fixture(), config = f.file(target, 1); applySetup(f.plan(target), f.options);
+    const replace = () => {
+      const doc = target === "kimi" ? toml(config) : json(config), person = { type: "command", command: "person-new-observer", timeout: 12 };
+      if (target === "kimi") { doc.hooks = doc.hooks.filter((row: any) => !row.command.includes(f.entry)); doc.hooks.push({ event: "SessionEnd", command: person.command, timeout: 12 }); }
+      else { const event = target === "claude" ? "SessionStart" : "SessionEnd"; doc.hooks[event] = [{ hooks: [person] }]; }
+      put(config, target === "kimi" ? Bun.TOML.stringify(doc) : JSON.stringify(doc));
+    };
+    replace(); expect(applySetup(f.plan(target), f.options).applied).toEqual([target]);
+    const applied = target === "kimi" ? toml(config).hooks : hooks(json(config)); expect(applied.some((row: any) => row.command === "person-new-observer")).toBe(true);
+    replace(); undoSetup(f.plan(target, "undo"), f.options);
+    const restored = target === "kimi" ? toml(config).hooks : hooks(json(config)); expect(restored.some((row: any) => row.command === "person-new-observer")).toBe(true); expect(restored.some((row: any) => row.command.includes(f.entry))).toBe(false);
+  }
+});
+test("semantic Codex undo drops setup-created empty parent tables and preserves later fields", () => {
+  for (const original of [undefined, 'model = "keep"\n', '[mcp_servers]\n']) {
+    const f = fixture(), config = f.file("codex"); if (original !== undefined) put(config, original);
+    applySetup(f.plan("codex"), f.options); put(config, text(config) + '\n# later native rewrite\n[projects."/keep"]\ntrust_level = "trusted"\n');
+    undoSetup(f.plan("codex", "undo"), f.options); const restored = toml(config);
+    expect(restored.projects["/keep"].trust_level).toBe("trusted"); expect(restored.mcp_servers).toEqual(original === '[mcp_servers]\n' ? {} : undefined);
+  }
+  const f = fixture(), config = f.file("codex"); applySetup(f.plan("codex"), f.options); put(config, '\n' + text(config)); undoSetup(f.plan("codex", "undo"), f.options); expect(existsSync(config)).toBe(false);
+});
+test("PATH-resolved stable symlink runtime launches MCP and hooks even with a GUI minimal PATH", () => {
+  const f = fixture(), bin = join(f.home, "bin"), stable = join(bin, "bun"), record = join(f.home, "launches"); mkdirSync(bin); symlinkSync(process.execPath, stable);
+  put(f.entry, `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(record)}, process.argv.slice(2).join(' ')+'\\n');`);
+  const options = { ...f.options, env: { ...f.env, PATH: bin } }, plan = planSetup("claude", "apply", options);
+  expect(plan.actions[0]!.registration).toContain(stable); applySetup(plan, options);
+  const server = json(f.file("claude")).mcpServers.amem, minimal = { HOME: f.home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+  expect(server.command).toBe(stable); expect(spawnSync(server.command, server.args, { env: minimal }).status).toBe(0);
+  expect(spawnSync("/bin/sh", ["-c", plan.actions[0]!.hooks[0]!.command], { env: minimal }).status).toBe(0);
+  expect(text(record)).toContain("mcp"); expect(text(record)).toContain("hook SessionStart");
+});
+test("ordinary setup refuses temporary installed entry before any mutation", () => {
+  const f = fixture(); put(f.entry, "// temporary bunx fixture\n"); const { native: unused, ...production } = f.options;
+  expect(() => planSetup("claude", "apply", production)).toThrow("temporary package entry"); expect(f.calls).toHaveLength(0); expect(existsSync(join(f.home, "memory"))).toBe(false);
+});
+test("dry run names installed agent-mem plugin before direct Claude setup", () => {
+  const f = fixture(); put(f.file("claude", 1), JSON.stringify({ enabledPlugins: { "agent-mem@agent-mem": true, "other@market": true } }));
+  put(join(f.home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "agent-mem@private-market": [{ installPath: "/unused" }] } }));
+  const plan = planSetup("claude", "preview", f.options); expect(plan.notes.join("\n")).toContain("Installed Claude plugin agent-mem@agent-mem"); expect(plan.notes.join("\n")).toContain("agent-mem@private-market"); expect(plan.notes.join("\n")).toContain("duplicate"); expect(f.calls).toHaveLength(0);
+});
+
+test("Codex undo also removes a setup-created parent after native MCP removal", () => {
+  const f = fixture(), config = f.file("codex"); applySetup(f.plan("codex"), f.options);
+  put(config, '[mcp_servers]\n'); undoSetup(f.plan("codex", "undo"), f.options); expect(existsSync(config)).toBe(false);
+});
+
+test("a pre-existing matcher-restricted hook never suppresses the unrestricted setup hook", () => {
+  const f = fixture(), file = f.file("claude", 1), command = f.plan("claude").actions[0]!.hooks.find(row => row.event === "PreToolUse")!.command;
+  const restricted = { matcher: "Bash", hooks: [{ type: "command", command, timeout: 1 }] };
+  put(file, JSON.stringify({ hooks: { PreToolUse: [restricted] } })); const original = text(file);
+  applySetup(f.plan("claude"), f.options); const groups = json(file).hooks.PreToolUse;
+  expect(groups).toContainEqual(restricted); expect(groups.filter((group: any) => group.matcher === undefined)).toHaveLength(1);
+  expect(groups.find((group: any) => group.matcher === undefined).hooks).toEqual([{ type: "command", command, timeout: 1 }]);
+  expect(applySetup(f.plan("claude"), f.options).unchanged).toEqual(["claude"]);
+  undoSetup(f.plan("claude", "undo"), f.options); expect(text(file)).toBe(original);
+});
+test("Kimi setup and later semantic undo retain person hook source comments, float spelling and CRLF", () => {
+  for (const source of ['# retained banner\r\n[[hooks]]\r\n# retained element comment\r\nevent = "Stop"\r\ncommand = "person-observer"\r\ntimeout = 5.0\r\n', 'hooks = [\r\n  # retained element comment\r\n  { event = "Stop", command = "person-observer", timeout = 5.0 }, # tail comment\r\n]\r\n']) {
+    const f = fixture(), config = f.file("kimi", 1); put(config, source); applySetup(f.plan("kimi"), f.options);
+    for (const fragment of ['# retained element comment\r\n', 'timeout = 5.0']) expect(text(config)).toContain(fragment);
+    expect(text(config).replaceAll("\r\n", "")).not.toContain("\n");
+    put(config, 'owner = "later"\r\n' + text(config)); undoSetup(f.plan("kimi", "undo"), f.options);
+    for (const fragment of ['# retained element comment\r\n', 'timeout = 5.0']) expect(text(config)).toContain(fragment);
+    expect(text(config).replaceAll("\r\n", "")).not.toContain("\n"); expect(toml(config).owner).toBe("later"); expect(toml(config).hooks).toEqual((Bun.TOML.parse(source) as any).hooks);
+  }
+});
+test("a temporary entry symlink to a persistent binary is still refused", () => {
+  const f = fixture(); mkdirSync(dirname(f.entry), { recursive: true }); symlinkSync(process.execPath, f.entry); const { native: unused, ...production } = f.options;
+  expect(() => planSetup("claude", "apply", production)).toThrow("temporary package entry"); expect(f.calls).toHaveLength(0);
 });

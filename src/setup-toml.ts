@@ -131,6 +131,9 @@ function replace(text: string, changes: Replacement[]): string {
  * unsupported layouts/values refuse after Bun parse/semantic verification, never fall back to rewriting the document.
  */
 export function setTomlPath(text: string, path: readonly string[], value: unknown | undefined): string {
+  return editTomlPath(text, path, value);
+}
+function editTomlPath(text: string, path: readonly string[], value: unknown | undefined, eol = text.includes("\r\n") ? "\r\n" : "\n"): string {
   if (!path.length || path.length > 8 || path.some(key => typeof key !== "string" || Buffer.byteLength(key) > 256 || /[\p{Cc}\p{Cf}]/u.test(key))) return error();
   const original = parse(text), current = at(original, path);
   shape(original);
@@ -155,15 +158,128 @@ export function setTomlPath(text: string, path: readonly string[], value: unknow
       const parent = units.filter(unit => unit.header && !unit.array && unit.path.length < path.length && prefix(unit.path, path)).sort((a, b) => b.path.length - a.path.length)[0];
       const position = parent?.end ?? units.find(unit => unit.header)?.start ?? text.length;
       const key = path.slice(parent?.path.length ?? 0).map(part => JSON.stringify(part)).join(".");
-      const newline = position > 0 && text[position - 1] !== "\n" ? "\n" : "";
-      changes.push({ start: position, end: position, text: `${newline}${key} = ${inline(value)}\n` });
+      const newline = position > 0 && text[position - 1] !== "\n" ? eol : "";
+      changes.push({ start: position, end: position, text: `${newline}${key} = ${inline(value)}${eol}` });
     }
     output = replace(text, changes);
     // Removing the only child of an implicit table must retain its parsed empty parent value.
     for (let depth = path.length - 1; depth > 0; depth--) {
       const parent = path.slice(0, depth), wanted = at(expected, parent);
-      if (plain(wanted) && !Object.keys(wanted).length && at(parse(output), parent) === undefined) output += `${output && !output.endsWith("\n") ? "\n" : ""}[${parent.map(part => JSON.stringify(part)).join(".")}]\n`;
+      if (plain(wanted) && !Object.keys(wanted).length && at(parse(output), parent) === undefined) output += `${output && !output.endsWith("\n") ? eol : ""}[${parent.map(part => JSON.stringify(part)).join(".")}]${eol}`;
     }
+  }
+  if (!isDeepStrictEqual(shape(parse(output)), shape(expected))) return error();
+  return output;
+}
+
+function quotedEnd(text: string, start: number): number {
+  const quote = text[start]!, multi = text.slice(start, start + 3) === quote.repeat(3); let offset = start + (multi ? 3 : 1);
+  while (offset < text.length) {
+    if (quote === '"' && text[offset] === "\\") { offset += 2; continue; }
+    if (text[offset] === quote) {
+      let run = 1; while (text[offset + run] === quote) run++;
+      if (!multi || run >= 3) return offset + (multi ? run : 1);
+      offset += run; continue;
+    }
+    offset++;
+  }
+  return error();
+}
+interface ArrayElement { start: number; end: number; comma?: number }
+function arrayElements(text: string, open: number): { close: number; elements: ArrayElement[] } {
+  if (text[open] !== "[") return error();
+  let offset = open + 1; const elements: ArrayElement[] = [];
+  while (offset < text.length) {
+    while (offset < text.length) {
+      if (/\s/.test(text[offset]!)) { offset++; continue; }
+      if (text[offset] === "#") { while (offset < text.length && text[offset] !== "\n") offset++; continue; }
+      break;
+    }
+    if (text[offset] === "]") return { close: offset, elements };
+    const start = offset; let end = offset, depth = 0;
+    while (offset < text.length) {
+      const char = text[offset]!;
+      if (char === '"' || char === "'") { offset = quotedEnd(text, offset); end = offset; continue; }
+      if (char === "#") { while (offset < text.length && text[offset] !== "\n") offset++; continue; }
+      if (char === "," && depth === 0) { elements.push({ start, end, comma: offset }); offset++; break; }
+      if (char === "]" && depth === 0) { elements.push({ start, end }); return { close: offset, elements }; }
+      if (char === "[" || char === "{") depth++;
+      else if (char === "]" || char === "}") depth--;
+      if (depth < 0 || depth > MAX_DEPTH) return error();
+      offset++; if (!/\s/.test(char)) end = offset;
+    }
+    if (elements.length > MAX_NODES) return error();
+  }
+  return error();
+}
+/** Keep an ordered subsequence of existing elements, optionally adding new elements only at the tail. */
+function arrayEdit(before: readonly unknown[], after: readonly unknown[]): { keep: Set<number>; append: readonly unknown[] } {
+  const old = before.map(value => JSON.stringify(shape(value))), next = after.map(value => JSON.stringify(shape(value)));
+  const keep = new Set<number>(); let cursor = 0, tail = next.length;
+  for (let i = 0; i < next.length; i++) {
+    while (cursor < old.length && old[cursor] !== next[i]) cursor++;
+    if (cursor === old.length) { tail = i; break; }
+    keep.add(cursor++);
+  }
+  const removed = new Set(old.filter((_value, index) => !keep.has(index)));
+  // A reorder must not masquerade as deleting an old element and appending its normalized serialization.
+  if (next.slice(tail).some(value => removed.has(value))) return error();
+  if (keep.size < before.length && tail < after.length) return error(); // Refuse replacement disguised as simultaneous remove/append.
+  return { keep, append: after.slice(tail) };
+}
+function appendedTables(path: readonly string[], values: readonly unknown[], eol: string): string {
+  if (!values.every(plain)) return error();
+  const document: Record<string, unknown> = {}; edit(document, path, [...values]);
+  let source: string; try { source = Bun.TOML.stringify(document); } catch { return error(); }
+  const sourceUnits = statements(source), rows = sourceUnits.filter(unit => prefix(path, unit.path));
+  if (rows.filter(unit => unit.header && unit.array && unit.path.length === path.length).length !== values.length) return error();
+  return rows.map(unit => source.slice(unit.start, unit.end)).join("").replace(/\r?\n/g, eol);
+}
+/**
+ * Append/remove an array subsequence without reserializing surviving elements or their comments/numeric spelling.
+ * ponytail: exact array assignments and arrays of tables only; arrays nested inside inline parent tables and
+ * simultaneous remove+append, element replacement and reordering refuse. Use setTomlPath for an explicitly authorized whole-subtree replacement.
+ */
+export function updateTomlArray(text: string, path: readonly string[], expectedArray: readonly unknown[]): string {
+  if (!path.length || path.length > 8 || path.some(key => typeof key !== "string" || Buffer.byteLength(key) > 256 || /[\p{Cc}\p{Cf}]/u.test(key)) || !Array.isArray(expectedArray)) return error();
+  const original = parse(text), current = at(original, path); shape(original); shape(expectedArray);
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  if (current === undefined) return editTomlPath(text, path, [...expectedArray], eol);
+  if (!Array.isArray(current)) return error();
+  if (isDeepStrictEqual(shape(current), shape(expectedArray))) return text;
+  const expected = parse(text); edit(expected, path, [...expectedArray]);
+  const { keep, append } = arrayEdit(current, expectedArray), units = statements(text);
+  const assignment = units.find(unit => !unit.header && unit.path.length === path.length && prefix(path, unit.path));
+  const changes: Replacement[] = []; let output: string;
+  if (assignment) {
+    let open = assignment.equal! + 1; while (/\s/.test(text[open] ?? "")) open++;
+    const array = arrayElements(text, open);
+    if (array.elements.length !== current.length) return error();
+    for (let index = 0; index < array.elements.length; index++) if (!keep.has(index)) {
+      const element = array.elements[index]!; changes.push({ start: element.start, end: element.end, text: "" });
+      if (element.comma !== undefined) changes.push({ start: element.comma, end: element.comma + 1, text: "" });
+    }
+    if (append.length) {
+      const last = [...keep].at(-1), element = last === undefined ? undefined : array.elements[last];
+      const adjacentComma = element && element.comma === undefined && element.end === array.close ? "," : "";
+      if (element && element.comma === undefined && !adjacentComma) changes.push({ start: element.end, end: element.end, text: "," });
+      const multiline = text.slice(open, array.close).includes("\n"), indent = /(?:^|\n)([\t ]*)$/.exec(text.slice(open, array.close))?.[1] ?? "";
+      changes.push({ start: array.close, end: array.close, text: `${adjacentComma} ${append.map(inline).join(multiline ? `,${eol}${indent}` : ", ")}${multiline ? eol + indent : ""}` });
+    }
+    output = replace(text, changes);
+  } else {
+    let index = -1, headers = 0;
+    for (const unit of units) {
+      if (unit.header && unit.array && unit.path.length === path.length && prefix(path, unit.path)) { index++; headers++; }
+      if (prefix(path, unit.path)) {
+        if (index < 0) return error();
+        if (!keep.has(index)) changes.push({ start: unit.start, end: unit.end, text: "" });
+      }
+    }
+    if (headers !== current.length) return error();
+    output = replace(text, changes);
+    if (append.length) output += `${output && !output.endsWith("\n") ? eol : ""}${appendedTables(path, append, eol)}`;
+    if (!keep.size && !append.length) output = editTomlPath(output, path, [], eol);
   }
   if (!isDeepStrictEqual(shape(parse(output)), shape(expected))) return error();
   return output;

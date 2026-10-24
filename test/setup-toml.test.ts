@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SETUP_CONFIG_BYTES, setTomlPath } from "../src/setup-toml.ts";
+import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "../src/setup-toml.ts";
 const hook = { event: "SessionEnd", command: "bun --smol '/package with spaces/bin/amem.js' ingest kimi", timeout: 3 };
 const parse = (text: string) => Bun.TOML.parse(text) as Record<string, any>;
 
@@ -78,4 +78,66 @@ test("setup TOML refuses invalid documents, unsupported values, oversized input 
   for (const value of [null, { absent: undefined }, () => true, new Date()]) expect(() => setTomlPath("", ["hooks"], value)).toThrow("no configuration changed");
   expect(() => setTomlPath("#" + "x".repeat(SETUP_CONFIG_BYTES), ["hooks"], [])).toThrow("no configuration changed");
   expect(() => setTomlPath("", [], [])).toThrow("no configuration changed"); expect(() => setTomlPath("", Array(9).fill("x"), [])).toThrow("no configuration changed");
+});
+
+test("surgical inline array append/removal keeps original element spelling, comments and CRLF", () => {
+  const old = '{ event = "Stop", command = "old", timeout = 5.0, options = { keep = true } }';
+  const source = '# prefix\r\nhooks = [\r\n  ' + old + ', # original row comment\r\n] # array comment\r\n[trust]\r\nallow = true # unchanged\r\n';
+  const before = parse(source).hooks, appended = updateTomlArray(source, ["hooks"], [...before, hook]);
+  expect(appended).toContain(old + ', # original row comment\r\n'); expect(appended).toContain('] # array comment\r\n[trust]\r\nallow = true # unchanged\r\n'); expect(parse(appended).hooks).toEqual([...before, hook]);
+  const removed = updateTomlArray(appended, ["hooks"], before); expect(removed).toContain(old + ', # original row comment\r\n'); expect(parse(removed)).toEqual(parse(source)); expect(removed.replaceAll("\r\n", "")).not.toContain("\n");
+});
+test("surgical compact inline arrays handle empty, missing comma and first/middle/last removal", () => {
+  for (const source of ['hooks=[]\n', 'hooks=[{event="Stop",command="a",timeout=5.0}]\n']) {
+    const old = parse(source).hooks, appended = updateTomlArray(source, ["hooks"], [...old, hook]); expect(parse(appended).hooks).toEqual([...old, hook]);
+    const restored = updateTomlArray(appended, ["hooks"], old); expect(parse(restored)).toEqual(parse(source)); if (old.length) expect(restored).toContain('timeout=5.0');
+  }
+  const a = '{ command="a", timeout=5.0 }', b = '{ command="b", timeout=6e0 }', c = '{ command="c", timeout=7_000 }', source = `hooks=[${a}, ${b}, ${c}]\n`, old = parse(source).hooks;
+  for (const index of [0, 1, 2]) { const remaining = old.filter((_row: unknown, i: number) => i !== index), output = updateTomlArray(source, ["hooks"], remaining); expect(parse(output).hooks).toEqual(remaining); for (const [i, raw] of [a, b, c].entries()) if (i !== index) expect(output).toContain(raw); }
+});
+test("surgical inline array scanner respects commas/brackets/comment markers inside strings and nested values", () => {
+  const raw = '{ command="echo [,] # text", options={ values=["a,b", "c]"], timeout=5.0 } }';
+  const source = `hooks = [${raw}] # keep\n[trust]\nvalue="same"\n`, before = parse(source).hooks;
+  const output = updateTomlArray(source, ["hooks"], [...before, hook]); expect(output).toContain(raw); expect(parse(output).hooks).toEqual([...before, hook]); expect(parse(updateTomlArray(output, ["hooks"], before))).toEqual(parse(source));
+});
+test("surgical AOT append keeps every original statement/comment/number/CRLF and emits new hooks as AOT", () => {
+  const first = '[[hooks]] # first user row\r\nevent = "Stop"\r\ncommand = "old"\r\ntimeout = 5.0 # native spelling\r\n[hooks.options]\r\nkeep = true\r\n';
+  const source = '# prefix\r\n' + first + '[trust]\r\nallow = ["same"] # keep\r\n', before = parse(source).hooks;
+  const output = updateTomlArray(source, ["hooks"], [...before, hook]); expect(output.startsWith(source)).toBe(true); expect(output).toContain(first); expect(output.match(/\[\[hooks\]\]/g)).toHaveLength(2); expect(parse(output).hooks).toEqual([...before, hook]); expect(output.replaceAll("\r\n", "")).not.toContain("\n");
+  const later = 'owner = "later"\r\n' + output, removed = updateTomlArray(later, ["hooks"], before); expect(removed).toContain(first); expect(parse(removed).owner).toBe("later"); expect(parse(removed).hooks).toEqual(before);
+});
+test("surgical AOT removal retains surviving nested table source and unrelated tables between rows", () => {
+  const first = '[[hooks]]\nevent="Stop"\ncommand="first"\ntimeout=5.0\n[hooks.options]\na="keep"\n', trust = '[trust]\nallowed=true # between rows\n', second = '[[hooks]]\nevent="SessionEnd"\ncommand="second"\ntimeout=6e0\n';
+  const source = first + trust + second, old = parse(source).hooks;
+  const onlySecond = updateTomlArray(source, ["hooks"], [old[1]]); expect(onlySecond).toContain(second); expect(onlySecond).toContain(trust); expect(parse(onlySecond).hooks).toEqual([old[1]]);
+  const onlyFirst = updateTomlArray(source, ["hooks"], [old[0]]); expect(onlyFirst).toContain(first); expect(onlyFirst).toContain(trust); expect(parse(onlyFirst).hooks).toEqual([old[0]]);
+  expect(parse(updateTomlArray(source, ["hooks"], [])).hooks).toEqual([]);
+});
+test("surgical array updates support qualified standard-table and quoted key assignments without rewriting values", () => {
+  const source = '[settings]\n"hook.list" = [{ command="old", timeout=5.0 }]\n[trust]\nvalue=true\n', path = ["settings", "hook.list"], before = parse(source).settings["hook.list"];
+  const output = updateTomlArray(source, path, [...before, hook]); expect(output).toContain('{ command="old", timeout=5.0 }'); expect(parse(output).settings["hook.list"]).toEqual([...before, hook]); expect(output).toContain('[trust]\nvalue=true\n');
+});
+test("surgical array no-op is byte exact, while replacements/reorders/inline-parent layouts refuse", () => {
+  const source = 'hooks=[{command="a",timeout=5.0},{command="b",timeout=6e0}] # keep\r\n', before = parse(source).hooks;
+  expect(updateTomlArray(source, ["hooks"], before)).toBe(source);
+  expect(() => updateTomlArray(source, ["hooks"], [before[1], before[0]])).toThrow("no configuration changed");
+  expect(() => updateTomlArray(source, ["hooks"], [before[0], { command: "changed" }])).toThrow("no configuration changed");
+  expect(() => updateTomlArray('settings={hooks=[{command="old"}]}\n', ["settings", "hooks"], [{ command: "old" }, hook])).toThrow("no configuration changed");
+  expect(parse(updateTomlArray('[trust]\na=true\n', ["hooks"], [hook]))).toEqual({ trust: { a: true }, hooks: [hook] });
+});
+
+test("surgical array insertion into a missing CRLF path preserves old bytes and uses CRLF for new syntax", () => {
+  const source = '# original\r\n[trust]\r\nallow = true # same bytes\r\n';
+  const output = updateTomlArray(source, ["hooks"], [hook]);
+  expect(output).toContain(source.slice(source.indexOf("[trust]"))); expect(output.startsWith('# original\r\n')).toBe(true); expect(output.replaceAll("\r\n", "")).not.toContain("\n"); expect(parse(output)).toEqual({ hooks: [hook], trust: { allow: true } });
+  const nested = '[settings]\r\nowner = "untouched" # keep\r\n[trust]\r\nallow = true\r\n';
+  const child = updateTomlArray(nested, ["settings", "hooks"], [hook]);
+  expect(child).toContain('owner = "untouched" # keep\r\n'); expect(child).toContain('[trust]\r\nallow = true\r\n'); expect(child.replaceAll("\r\n", "")).not.toContain("\n"); expect(parse(child).settings.hooks).toEqual([hook]);
+});
+test("removing every CRLF AOT element retains the original EOL even when no source statements remain", () => {
+  const source = '[[hooks]]\r\nevent="Stop"\r\ncommand="old"\r\ntimeout=5.0\r\n';
+  const output = updateTomlArray(source, ["hooks"], []);
+  expect(parse(output)).toEqual({ hooks: [] }); expect(output).toContain("\r\n"); expect(output.replaceAll("\r\n", "")).not.toContain("\n");
+  const comments = '# preserve comment\r\n' + source, kept = updateTomlArray(comments, ["hooks"], []);
+  expect(kept.startsWith('# preserve comment\r\n')).toBe(true); expect(parse(kept)).toEqual({ hooks: [] }); expect(kept.replaceAll("\r\n", "")).not.toContain("\n");
 });

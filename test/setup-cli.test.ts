@@ -1,6 +1,6 @@
 import { SETUP_TARGETS } from "../src/setup.ts";
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ function snapshot(root: string): Array<{ file: string; mode: number; bytes?: str
 }
 function fixture() {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-setup-cli-"))), home = join(root, "home"), cwd = join(root, "project"), bin = join(root, "bin"), record = join(root, "native-calls");
-  cleanup.push(() => rmSync(root, { recursive: true, force: true })); mkdirSync(home); mkdirSync(cwd); mkdirSync(bin);
+  cleanup.push(() => rmSync(root, { recursive: true, force: true })); mkdirSync(home); mkdirSync(cwd); mkdirSync(bin); symlinkSync(process.execPath, join(bin, "bun"));
   const rules = [join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md"), join(home, ".claude", "rules", "user.md"), join(home, ".codex", "rules", "user.rules")];
   for (const rule of rules) put(rule, "original rule bytes\n", 0o640);
   const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_HOME: join(home, "hub"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), XDG_CONFIG_HOME: join(home, ".config"), PATH: `${bin}:/usr/bin:/bin` };
@@ -78,7 +78,7 @@ test("confirmed actual CLI apply uses only fake native registration in staging a
   expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: ["claude"], unchanged: [] });
   const calls = f.calls(); expect(calls).toHaveLength(1); expect(calls[0]?.argv.slice(0, 8)).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem"]); expect(calls[0]?.home).not.toBe(f.home); expect(calls[0]?.cwd).toBe(calls[0]?.home); expect(existsSync(calls[0]!.home)).toBe(false);
   const document = JSON.parse(readFileSync(config, "utf8")); expect(document.mcpServers.other).toEqual({ command: "keep" });
-  expect(document.mcpServers.amem).toEqual({ command: "bun", args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
+  expect(document.mcpServers.amem).toEqual({ command: Bun.which("bun", { PATH: f.env.PATH }), args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
   const receipt = readFileSync(join(f.home, "memory", "setup", "claude.json"));
   expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
   expect(JSON.parse(await runCli(["setup", "claude", "--undo"], context))).toEqual({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);

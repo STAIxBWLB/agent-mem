@@ -1,4 +1,4 @@
-import { SETUP_CONFIG_BYTES, setTomlPath } from "./setup-toml.ts";
+import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -82,6 +82,7 @@ function write(file: string, value: Image, expected?: Image, beforePublish?: (fi
     finally { closeSync(fd); }
     beforePublish?.(file);
     if (expected && !sameImage(read(file), expected)) throw Error("setup configuration changed before publication");
+    // ponytail: an external CLI can still write between this comparison and rename; a shared CLI lock or native transactional API is needed to close that window.
     names(file); renameSync(temporary, file); const parent = openSync(dirname(file), constants.O_RDONLY); try { fsyncSync(parent); } finally { closeSync(parent); }
   } finally { rmSync(temporary, { force: true }); }
 }
@@ -100,8 +101,14 @@ function context(options: SetupContext) {
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
   };
-  const bun = options.bun ?? "bun", entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
-  if (!isAbsolute(entry) || bun !== "bun" && !isAbsolute(bun)) throw Error("setup entry must be absolute and runtime must be bun or an absolute host path");
+  const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
+  const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
+  if (!bun || !isAbsolute(bun) || !isAbsolute(entry)) throw Error("setup needs a PATH-resolved absolute Bun runtime and an absolute installed entry");
+  // The trusted native fixture may use a temporary package; ordinary CLI installation must outlive bunx's cache.
+  if (!options.native) {
+    const roots = [resolve(tmpdir()), realPath(tmpdir())], entries = [resolve(entry), realPath(entry)];
+    if (roots.some(root => entries.some(file => { const part = relative(root, file); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); }))) throw Error("setup refuses a temporary package entry; install amem in a persistent location first");
+  }
   return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
@@ -132,6 +139,12 @@ const lifecycle = (target: SetupTarget) => target === "claude" ? "seven bounded 
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|all [--apply|--undo]");
   const c = context(options), targets = target === "all" ? [...SETUP_TARGETS] : [target as SetupTarget];
+  const pluginNotes: string[] = [];
+  if (targets.includes("claude")) {
+    const settings = json(read(c.paths.claude[1]!)), registry = json(read(join(dirname(c.paths.claude[1]!), "plugins", "installed_plugins.json")));
+    const ids = new Set([...Object.keys(record(settings.enabledPlugins ?? {})), ...Object.keys(record(registry.plugins ?? {}))].filter(key => /^agent-mem(?:@[A-Za-z0-9._-]+)?$/.test(key)));
+    for (const id of ids) pluginNotes.push(`Installed Claude plugin ${id} detected: if enabled, direct setup would duplicate its MCP server and seven hooks. Choose plugin installation or direct setup; disable/uninstall the plugin before applying direct setup.`);
+  }
   return { targets, mode, actions: targets.map(target => {
     const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
     const original = read(c.paths[target][0]!);
@@ -140,7 +153,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"];
     return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
-  }), notes: ["Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use stable bun; setup all reports and skips missing clients."] };
+  }), notes: [...pluginNotes, "Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
   // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
@@ -156,7 +169,7 @@ function hookDocument(before: Image, events: readonly string[], commandFor: (eve
   for (const event of events) {
     const rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
     const command = commandFor(event);
-    if (!rows.some(row => Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => record(h).command === command))) rows.push({ hooks: [{ type: "command", command, timeout }] });
+    if (!rows.some(row => [undefined, "", "*"].includes(row?.matcher) && Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; }))) rows.push({ hooks: [{ type: "command", command, timeout }] });
     hooks[event] = rows;
   }
   document.hooks = hooks; return objectImage(document, before);
@@ -229,7 +242,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const parsed = toml(old), hooks = parsed.hooks ?? [];
       if (!Array.isArray(hooks)) throw Error("Kimi hooks must be an array");
       if (!hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi"))) hooks.push({ event: "SessionEnd", command: capture("kimi"), timeout: 3 });
-      changes[1]!.after = image(setTomlPath(old, ["hooks"], hooks), changes[1]!.before.mode);
+      changes[1]!.after = image(updateTomlArray(old, ["hooks"], hooks), changes[1]!.before.mode);
     }
     if (target === "pi") {
       const content = piExtension(c.bun, c.entry);
