@@ -668,22 +668,38 @@ test("brief: a 1 MiB log is read as the newest handful only and never past the d
   const big = Array.from({ length: 330 }, (_, i) => repoLine(`decision number ${i} ${"y".repeat(3100)}`, { at: `2026-10-20T10:${String(i % 60).padStart(2, "0")}:00.000Z` }));
   writeLog(r, big);
   const size = readFileSync(r.logPath).length; expect(size).toBeGreaterThan(1_000_000);
-  const started = performance.now();
-  const brief = await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, timeRemaining: () => 140 - (performance.now() - started) });
-  expect(performance.now() - started).toBeLessThan(140);
+  // This is a row/deadline contract, not a shared-runner latency measurement. Only screened repo rows spend this budget.
+  r.note("intentional pre-repo wait");
+  let left = 140, delayed = false;
+  const screened = new Set<number>();
+  const brief = await sessionStartBrief({ cwd: r.repo, base: r.base, project: r.project, timeRemaining: () => left,
+    policy: { host: { screen: async (value: unknown) => {
+      const text = (value as { text?: string })?.text;
+      if (text === "intentional pre-repo wait" && !delayed) {
+        const before = left; await Bun.sleep(150); expect(left).toBe(before); delayed = true;
+      }
+      const row = /^decision number (\d+) /.exec(text ?? "");
+      if (row && !screened.has(Number(row[1]))) { screened.add(Number(row[1])); left -= 10; }
+      return true;
+    } } },
+  });
+  expect(delayed, "the deliberate wait precedes the repo section without spending the fake deadline").toBe(true);
+  expect(screened.size, "the repo reader must stop after its newest handful, before the display-only cap").toBe(5);
+  expect(left).toBe(90);
   expect(brief.context).toContain("repo=partial");
   const rows = brief.context.split("\n").slice(1).map(line => JSON.parse(line) as { section: string; data: { text: string } }).filter(row => row.section === "repo");
   expect(rows.length).toBeLessThanOrEqual(4); expect(rows.length).toBeGreaterThan(0);
   expect(rows[0]!.data.text).toContain("decision number 329");                       // the LAST line of the file is the newest
   // the read itself, bounded by its own deadline
   const { readRepoScope } = await import("../src/memory/repo-scope.ts");
-  const spent = await readRepoScope(r.repo, policy, { remainingMs: () => 0 });
-  expect(spent.views).toEqual([]); expect(spent.partial).toBe(true);
+  let spentScreens = 0;
+  const spent = await readRepoScope(r.repo, { screen: value => { spentScreens++; return policy.screen(value); } }, { remainingMs: () => 0 });
+  expect(spent.views).toEqual([]); expect(spent.partial).toBe(true); expect(spentScreens).toBe(0);
   const limited = await readRepoScope(r.repo, policy, { limit: 3 });
   expect(limited.views).toHaveLength(3); expect(limited.partial).toBe(true);
-  const midway = (() => { let calls = 0; return () => (calls++ < 20 ? 50 : 0); })();
-  const cut = await readRepoScope(r.repo, policy, { remainingMs: midway });
-  expect(cut.views).toHaveLength(20); expect(cut.partial).toBe(true);                // the 21st check saw the deadline: 20 rows, not the ~270 the window holds
+  let checks = 0;
+  const cut = await readRepoScope(r.repo, policy, { remainingMs: () => (checks++ < 20 ? 50 : 0) });
+  expect(cut.views).toHaveLength(20); expect(cut.partial).toBe(true); expect(checks).toBe(21);                // the 21st check saw the deadline: 20 rows, not the ~270 the window holds
 });
 
 test("brief: the hook path (projectFromCwd) finds the repository's log with lstat alone and spawns no git; a subdirectory, a worktree `.git` file and a nested repository resolve to the nearest root, and a log above a nested repository is not its own", async () => {

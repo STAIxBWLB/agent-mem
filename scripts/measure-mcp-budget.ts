@@ -2,6 +2,7 @@
  * Instrumentation is confined to the child fixture; production handlers and transport are unchanged.
  */
 import { spawn } from "node:child_process";
+import { budgetSample, BudgetStall } from "./budget-attempt.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { WorkListStore } from "../src/memory/work-lists.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 
+async function measureSession() {
 const home = mkdtempSync(join(tmpdir(), "amem-mcp-budget-"));
 const cwd = join(home, "project"), base = join(home, "memory"), reportPath = join(home, "rss.json");
 const CURATED = 5001, CAPTURE = 5001, SEARCHES = 10, TIMELINES = 4, WORK_ROWS = 10001, WORK_ITEMS = 100;
@@ -20,6 +22,7 @@ const mb = (bytes: number) => Math.round(bytes / 1048576 * 100) / 100;
 let child: ReturnType<typeof spawn> | undefined;
 let deadline: ReturnType<typeof setTimeout> | undefined;
 let reaped: Promise<number | null> | undefined;
+let timedOut = false, sessionStarted = 0;
 try {
   mkdirSync(cwd);
   const project = memoryProjectKey(cwd);
@@ -88,7 +91,8 @@ try {
     proc.once("error", error => { awaiting?.reject(error); reject(error); });
     proc.once("exit", code => { awaiting?.reject(new Error(`MCP exited before response (${code}): ${stderr}`)); resolve(code); });
   });
-  deadline = setTimeout(() => { awaiting?.reject(new Error("MCP budget session timed out")); proc.kill("SIGKILL"); }, 30_000);
+  sessionStarted = performance.now();
+  deadline = setTimeout(() => { timedOut = true; awaiting?.reject(new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000 })); proc.kill("SIGKILL"); }, 30_000);
   const send = (message: unknown) => proc.stdin!.write(JSON.stringify(message) + "\n");
   const request = (method: string, params: unknown = {}) => new Promise<any>((resolve, reject) => {
     const id = ++sequence; awaiting = { id, resolve, reject }; send({ jsonrpc: "2.0", id, method, params });
@@ -170,13 +174,26 @@ try {
   const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number };
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
   const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && !remains;
-  console.log(JSON.stringify({ platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
+  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
-    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, budgetIdleMB: 100, budgetPeakMB: 200 }, pass }, null, 2));
-  if (!pass) process.exitCode = 1;
+    R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
+  console.log(JSON.stringify(report, null, 2));
+  if (!pass) throw new Error("MCP memory or EOF budget failed");
+  return report;
+} catch (error) {
+  if (timedOut) throw new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000 });
+  throw error;
 } finally {
   if (deadline) clearTimeout(deadline);
   if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   await reaped?.catch(() => {});
+  // A timed-out attempt owns its child through the reap barrier before another session can start.
+  if (child?.pid) {
+    let alive = true; try { process.kill(child.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") alive = false; else throw error; }
+    if (alive) throw new Error("MCP owned child survived cleanup; refusing retry");
+  }
   rmSync(home, { recursive: true, force: true });
 }
+
+}
+await budgetSample("mcp-session", measureSession);
