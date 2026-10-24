@@ -305,9 +305,12 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     };
     const buildTargets = async () => {
       for (const target of targets) {
-        const files = target.remote ? new Map((await history(target.remote, target)).files) : new Map<string, Buffer>();
+        const remote = target.remote ? await history(target.remote, target) : undefined;
+        const files = new Map(remote?.files);
         files.set("shard.json", Buffer.from(shardSyncDescriptor(target.realm)));
-        for (const [path, bytes] of encodeShardPacks([...target.rows.values()])) {
+        // Retain immutable packs and append only new ids; repacking every prefix would duplicate the entire history at each sync.
+        const additions = [...target.rows.values()].filter(row => !remote?.rows.has(row.id));
+        for (const [path, bytes] of encodeShardPacks(additions)) {
           const old = files.get(path); if (old && !old.equals(bytes)) refuse(`${shardSyncLabel(target.realm)}: immutable pack conflict`); files.set(path, bytes);
         }
         await required(["read-tree", "--empty"], "shard sync private index unavailable");

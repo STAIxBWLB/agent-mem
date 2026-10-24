@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, openShardStore, type Entry, type NoteInput } from "../src/memory/store.ts";
+import { MemoryStore, openShardStore, type Entry, type NoteEntry, type NoteInput } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { syncMemory } from "../src/memory/sync.ts";
@@ -34,7 +34,7 @@ test("verified legacy-main public originals survive T2 and stable shard sync to 
   cleanup.push(() => { if (!legacyClosed) legacy.close(); });
   const ids = [legacy.note(original("project", "publiclegacyproject")), legacy.note(original("shared", "publiclegacyuser"))];
   const memoryDir = legacy.dir, segment = join(memoryDir, "log", `${legacy.machine.id}.jsonl`);
-  const originalBytes = readFileSync(segment, "utf8"), originals = originalBytes.trimEnd().split("\n").map(line => JSON.parse(line) as Entry).filter(row => ids.includes(row.id));
+  const originalBytes = readFileSync(segment, "utf8"), originals = originalBytes.trimEnd().split("\n").map(line => JSON.parse(line) as Entry).filter((row): row is NoteEntry => row.op === "note" && ids.includes(row.id));
   expect(originals).toHaveLength(2);
   // Establish real publication before either migration; no copied directory or forged public-witness flag.
   expect(await syncMemory(legacy, { remote, ...privateRemote })).toMatchObject({ ok: true, pushed: true });
@@ -76,9 +76,9 @@ test("verified legacy-main public originals survive T2 and stable shard sync to 
     const view = receiver.get(row.id, project)!;
     expect(view).toBeDefined();
     expect({ id: view.id, at: view.at, machine: view.machine, peer: view.peer, project: view.project, scope: view.scope, text: view.text, title: view.title, task: view.task, about: view.about })
-      .toEqual({ id: row.id, at: row.at, machine: row.machine, peer: "peer" in row ? row.peer : undefined, project, scope: "scope" in row ? row.scope : undefined,
-        text: "text" in row ? row.text : undefined, title: "title" in row ? row.title : undefined, task: "task" in row ? row.task : undefined, about: "about" in row ? row.about : undefined });
-    expect(receiver.search("text" in row ? row.text : "", { project }).hits.some(hit => hit.view?.id === row.id)).toBe(true);
+      .toEqual({ id: row.id, at: row.at, machine: row.machine, peer: row.peer, project, scope: row.scope,
+        text: row.text, title: row.title ?? null, task: row.task ?? null, about: row.about });
+    expect(receiver.search(row.text, { project }).hits.some(hit => hit.view?.id === row.id)).toBe(true);
   }
   const brief = await sessionStartBrief({ cwd: receiverHome, base: receiverMemory, project });
   expect(brief.context).toContain("publiclegacyproject"); expect(brief.context).toContain("publiclegacyuser");

@@ -231,3 +231,16 @@ for (const where of ["cache", "remote"] as const) test(`a symbolic selected ${wh
   expect(await syncMemory(source.a, privateRemote)).toMatchObject({ ok: false, pushed: false });
   expect(git(repo, "rev-parse", other)).toBe(tip); expect(refs(url)).toBe(before);
 }, 60_000);
+
+test("successive appends do not republish old rows inside overlapping immutable packs", async () => {
+  const url = remote(), source = await split(G1);
+  const first = source.a.note(note(A, "first append"));
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const initial = git(url, "ls-tree", "-r", "--name-only", refA).split("\n").filter(file => file.startsWith("rows/"));
+  const second = source.a.note(note(A, "second append"));
+  expect(await syncMemory(source.a, privateRemote)).toMatchObject({ ok: true });
+  const current = git(url, "ls-tree", "-r", "--name-only", refA).split("\n").filter(file => file.startsWith("rows/"));
+  expect(current).toEqual(expect.arrayContaining(initial));
+  const wireRows = current.flatMap(file => git(url, "show", `${refA}:${file}`).split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
+  expect(wireRows.map(row => row.id).sort()).toEqual([first, second].sort());
+}, 60_000);
