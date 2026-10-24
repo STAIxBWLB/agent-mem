@@ -138,3 +138,9 @@ test("semantic undo retains a pre-existing empty JSON config after a formatting-
     expect(existsSync(config)).toBe(true); expect(json(config)).toEqual({}); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(f.calls).toHaveLength(calls);
   }
 });
+test("empty semantic restore does not resurrect unrelated root fields deleted after setup", () => {
+  const f = fixture(), config = f.file("claude"); put(config, '{"numStartups":1}\n', 0o640); applySetup(f.plan("claude"), f.options);
+  const installed = json(config); put(config, JSON.stringify({ mcpServers: { amem: installed.mcpServers.amem } }) + "\n", 0o600); const calls = f.calls.length;
+  undoSetup(f.plan("claude", "undo"), f.options);
+  expect(existsSync(config)).toBe(true); expect(json(config)).toEqual({}); expect(json(config).numStartups).toBeUndefined(); expect(lstatSync(config).mode & 0o777).toBe(0o600); expect(f.calls).toHaveLength(calls);
+});

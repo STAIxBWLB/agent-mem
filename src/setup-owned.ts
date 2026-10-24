@@ -98,7 +98,7 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
     if (!isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
     let result = putMcpRecord(target, current, b);
     if (target !== "codex" && json(before).mcpServers !== undefined && json(result).mcpServers === undefined) { const value = json(result); value.mcpServers = {}; result = rendered(JSON.stringify(value, null, 2) + "\n", current); }
-    if (result.bytes === null && before.bytes !== null) return { ...before, mode: current.mode };
+    if (result.bytes === null && before.bytes !== null) return finishJson({}, current, before);
     if (before.bytes === null && Object.keys(target === "codex" ? toml(result) : json(result)).length === 0) return { ...before, mode: current.mode };
     return result;
   }
