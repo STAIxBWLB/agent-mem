@@ -1,22 +1,20 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
+import { closeSync, fsyncSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
-export interface RunnerProbe { cpuMs: number; spawnMs: number; checksum: string }
-export interface RunnerBaseline { cpuMs: number; spawnMs: number; factor: number; source?: string }
+export interface RunnerProbe { cpuMs: number; spawnMs: number; ioMs: number; checksum: string }
+export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; factor: number; source?: string }
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// Hosted run 40201976781, Bun 1.4.2 (2026-10-25): Linux job attempt 2, macOS job attempt 1.
-// Each selected healthy job has five probes before and five after unchanged main workloads,
-// with no sample retries or advisory wall misses. The first, unhealthy Linux job is excluded.
-// Use the maximum of ten CPU/spawn readings per platform, rounded up to 0.01 ms.
-export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
-  linux: { cpuMs: 10.73, spawnMs: 17.17, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40201976781/job/121195407149" },
-  darwin: { cpuMs: 8.87, spawnMs: 23.92, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40201976781/job/121194870826" },
-};
+// A healthy hosted calibration of all three components is required; CPU/spawn-only baselines
+// from run 40201976781 cannot decide durable-write slowness.
+export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {};
 
-/** Fixed 16 MiB SHA-256 CPU work plus one provider-free Bun spawn; no application modules. */
+/** Fixed CPU, provider-free Bun spawn and fresh durable SQLite work; no application modules. */
 export function probeRunnerSpeed(): RunnerProbe {
   const block = Buffer.alloc(64 * 1024, 90), hash = createHash("sha256"), cpuStart = performance.now();
   for (let index = 0; index < 256; index++) hash.update(block);
@@ -27,13 +25,31 @@ export function probeRunnerSpeed(): RunnerProbe {
   });
   const spawnMs = performance.now() - start;
   if (child.error || child.status !== 0 || child.signal || child.stdout !== "runner-probe-ok" || child.stderr || checksum !== RUNNER_CHECKSUM) throw Error("runner-speed probe failed");
-  return { cpuMs, spawnMs, checksum };
+  const dir = mkdtempSync(join(tmpdir(), "amem-runner-io-")), file = join(dir, "probe.db");
+  let db: Database | undefined, ioMs: number;
+  try {
+    const ioStart = performance.now();
+    db = new Database(file, { create: true });
+    const mode = db.query("PRAGMA journal_mode = WAL").get() as { journal_mode: string };
+    db.run("PRAGMA synchronous = FULL");
+    const sync = db.query("PRAGMA synchronous").get() as { synchronous: number };
+    if (mode.journal_mode !== "wal" || sync.synchronous !== 2) throw Error("durable-write probe mode unavailable");
+    db.run("CREATE TABLE probe (id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+    const insert = db.query("INSERT INTO probe VALUES (?, ?)");
+    db.transaction(() => { for (let index = 0; index < 16; index++) insert.run(index, "bounded durable runner probe ".repeat(4)); }).immediate();
+    const wal = openSync(`${file}-wal`, "r+");
+    try { fsyncSync(wal); } finally { closeSync(wal); }
+    if ((db.query("SELECT count(*) AS count FROM probe").get() as { count: number }).count !== 16) throw Error("durable-write probe lost rows");
+    db.close(); db = undefined;
+    ioMs = performance.now() - ioStart;
+  } finally { try { db?.close(); } finally { rmSync(dir, { recursive: true, force: true }); } }
+  return { cpuMs, spawnMs, ioMs, checksum };
 }
 
 export function runnerIsSlow(before: RunnerProbe, after: RunnerProbe, baseline: RunnerBaseline): boolean {
-  if (![baseline.cpuMs, baseline.spawnMs, baseline.factor].every(value => Number.isFinite(value) && value > 0) || baseline.factor <= 1) throw Error("invalid runner baseline");
-  for (const probe of [before, after]) if (![probe.cpuMs, probe.spawnMs].every(value => Number.isFinite(value) && value > 0) || probe.checksum !== RUNNER_CHECKSUM) throw Error("invalid runner probe");
-  return [before, after].some(probe => probe.cpuMs > baseline.cpuMs * baseline.factor || probe.spawnMs > baseline.spawnMs * baseline.factor);
+  if (![baseline.cpuMs, baseline.spawnMs, baseline.ioMs, baseline.factor].every(value => Number.isFinite(value) && value > 0) || baseline.factor <= 1) throw Error("invalid runner baseline");
+  for (const probe of [before, after]) if (![probe.cpuMs, probe.spawnMs, probe.ioMs].every(value => Number.isFinite(value) && value > 0) || probe.checksum !== RUNNER_CHECKSUM) throw Error("invalid runner probe");
+  return [before, after].some(probe => probe.cpuMs > baseline.cpuMs * baseline.factor || probe.spawnMs > baseline.spawnMs * baseline.factor || probe.ioMs > baseline.ioMs * baseline.factor);
 }
 
 if (import.meta.main) console.log(JSON.stringify({ platform: process.platform, bun: Bun.version, samples: Array.from({ length: 5 }, probeRunnerSpeed) }));

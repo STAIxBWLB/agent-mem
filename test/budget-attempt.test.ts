@@ -46,8 +46,8 @@ test("a failed second stall is counted in the group without a third attempt", as
 
 // Injected readings keep runner-speed cases independent of the machine running the tests.
 const checksum = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
-const baseline = { cpuMs: 10, spawnMs: 10, factor: 2 };
-const normal = { cpuMs: 10, spawnMs: 10, checksum }, slow = { ...normal, spawnMs: 21 };
+const baseline = { cpuMs: 10, spawnMs: 10, ioMs: 10, factor: 2 };
+const normal = { cpuMs: 10, spawnMs: 10, ioMs: 10, checksum }, slow = { ...normal, spawnMs: 21 };
 const judgeGroup = (result: { wallMs: number; rssMB: number }) => ({ wallPass: result.wallMs < 150, rssPass: result.rssMB > 0 && result.rssMB < 100 });
 
 test("a slow-probed group remeasures a single wall miss once and retains every result and probe", async () => {
@@ -129,10 +129,32 @@ test("correctness errors never remeasure even on a slow runner", async () => {
   expect(runs).toBe(1);
 });
 
-test("probe thresholds are strict, detect CPU or spawn slowdown and reject malformed evidence", async () => {
+test("probe thresholds are strict, detect CPU, spawn or I/O slowdown and reject malformed evidence", async () => {
   const { runnerIsSlow } = await import("../scripts/runner-probe.ts");
   expect(runnerIsSlow(normal, { ...normal, cpuMs: 20, spawnMs: 20 }, baseline)).toBe(false);
   expect(runnerIsSlow({ ...normal, cpuMs: 21 }, normal, baseline)).toBe(true);
   expect(runnerIsSlow(normal, slow, baseline)).toBe(true);
-  for (const reading of [{ ...normal, cpuMs: NaN }, { ...normal, spawnMs: 0 }, { ...normal, checksum: "bad" }]) expect(() => runnerIsSlow(reading, normal, baseline)).toThrow("invalid runner probe");
+  expect(runnerIsSlow(normal, { ...normal, ioMs: 21 }, baseline)).toBe(true);
+  for (const reading of [{ ...normal, cpuMs: NaN }, { ...normal, spawnMs: 0 }, { ...normal, ioMs: NaN }, { ...normal, ioMs: 0 }, { ...normal, checksum: "bad" }]) expect(() => runnerIsSlow(reading, normal, baseline)).toThrow("invalid runner probe");
+});
+
+test("I/O-only slowdown remeasures the observed 40204205266 wall-miss values with normal CPU and spawn", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  const reference = { cpuMs: 10.73, spawnMs: 17.17, ioMs: 10, factor: 2 };
+  // The historical run did not record I/O. Only its CPU/spawn and wall values are historical;
+  // ioMs=21 is injected evidence to test the new classification, not a claimed old reading.
+  const reading = { cpuMs: 9.63, spawnMs: 16.1, ioMs: 21, checksum };
+  for (const wallMs of [181.54, 206.15, 186.77]) {
+    let runs = 0;
+    const result = await budgetGroup("observed-wall-shape", () => ({ wallMs: ++runs === 1 ? wallMs : 80, rssMB: 75 }), judgeGroup,
+      { baseline: reference, probe: () => reading, record: () => {} });
+    expect(runs).toBe(2); expect(result.attempts[0]!.slow).toBe(true); expect(result.attempts[0]!.outcome).toBe("wall-miss");
+  }
+});
+
+test("fixed real probe completes verified durable WAL writes and reports all three components", async () => {
+  const { probeRunnerSpeed } = await import("../scripts/runner-probe.ts");
+  const result = probeRunnerSpeed();
+  expect(result.checksum).toBe(checksum);
+  for (const ms of [result.cpuMs, result.spawnMs, result.ioMs]) { expect(Number.isFinite(ms)).toBe(true); expect(ms).toBeGreaterThan(0); }
 });
