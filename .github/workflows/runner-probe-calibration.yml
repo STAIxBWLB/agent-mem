@@ -4,6 +4,9 @@ on:
     branches: [test/71-runner-probe]
 permissions:
   contents: read
+concurrency:
+  group: runner-probe-calibration-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   calibrate:
     timeout-minutes: 15
@@ -30,10 +33,12 @@ jobs:
           bun -e '
           const {readFileSync}=await import("node:fs");
           for(const file of ["hook-calibration.jsonl","mcp-calibration.jsonl","capture-calibration.jsonl"]){
-            const text=readFileSync(file,"utf8"),at=text.lastIndexOf("\n{\n"),report=JSON.parse(text.slice(at<0?0:at+1));
+            const text=readFileSync(file,"utf8"),at=text.lastIndexOf("\n{\n");
+            const attempts=text.split("\n").filter(line=>line.startsWith("{\"diagnostic\":\"budget-attempt\"")).map(line=>JSON.parse(line));
+            const report=file==="mcp-calibration.jsonl"?attempts.at(-1)?.result:JSON.parse(text.slice(at<0?0:at+1));
             if(!report.pass)throw Error("unhealthy calibration workload");
             if(report.budgets?.R2?.groups&&Object.values(report.budgets.R2.groups).some(group=>!group.wallTimingPass||!group.peakPass))throw Error("advisory wall miss cannot calibrate");
-            for(const line of text.split("\n")){if(!line.startsWith("{\"diagnostic\":\"budget-attempt\""))continue;const attempt=JSON.parse(line);if(attempt.attempt!==1||attempt.outcome!=="pass")throw Error("retried samples cannot calibrate");}
+            for(const attempt of attempts)if(attempt.attempt!==1||attempt.outcome!=="pass")throw Error("retried samples cannot calibrate");
           }'
       - name: After workload probe
         run: bun scripts/runner-probe.ts
