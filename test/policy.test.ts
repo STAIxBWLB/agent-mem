@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
+import { DENY_NAMES, DENY_SEGMENTS } from "../src/memory/platform.ts";
 
 test("standalone policy allows public JSON scalars, capture and work metadata with explicit false privacy flags", async () => {
   const policy = createStandalonePolicy();
@@ -69,4 +70,52 @@ test("standalone policy refuses oversized or deeply nested complete values rathe
   expect(await policy.screen({ text: "가".repeat(6000) })).toBe(false);
   expect(await policy.screen(Array.from({ length: 5000 }, () => null))).toBe(false);
   expect(await policy.screen({ chunks: Array.from({ length: 20 }, () => "x".repeat(16_000)) })).toBe(false);
+});
+
+test("repeated text checks preserve fresh structure, bounds, split secrets and host decisions", async () => {
+  let allow = true, calls = 0;
+  const policy = createStandalonePolicy({ host: { async screen() { calls++; return allow; } } });
+  const input: Record<string, unknown> = { text: "public detail", private: false };
+  expect(await policy.screen(input)).toBe(true);
+  expect(await policy.screen(input)).toBe(true);
+  allow = false;
+  expect(await policy.screen(input)).toBe(false); expect(calls).toBe(3);
+  allow = true;
+  input.private = true;
+  expect(await policy.screen(input)).toBe(false); expect(calls).toBe(3);
+  input.private = false; input.text = "person@example.invalid";
+  expect(await policy.screen(input)).toBe(false);
+  let invoked = 0;
+  expect(await policy.screen(Object.defineProperty({}, "text", { enumerable: true, get() { invoked++; return "public detail"; } }))).toBe(false);
+  expect(invoked).toBe(0);
+  expect(await policy.screen({ chunks: Array.from({ length: 4096 }, () => "public detail") })).toBe(false);
+  expect(await policy.screen({ api_key: "sensitivevalue123" })).toBe(false);
+  expect(await policy.screen(input)).toBe(false);
+});
+
+test("text-check cache eviction and policy instances preserve exact standalone verdicts", async () => {
+  const plain = createStandalonePolicy(), restricted = createStandalonePolicy({ piiPatterns: ["public detail"], denyPaths: ["src/private"] });
+  const samples = ["public detail", "src/private/row.ts", "person@example.invalid", "repo/public/../.env", "safe note"];
+  for (const policy of [plain, restricted]) {
+    const expected = samples.map(text => policy.screenStandalone({ text }));
+    // Cross entry-count and text-byte ceilings separately.
+    for (const detail of ["", "detail ".repeat(100)]) for (let i = 0; i < 700; i++) expect(policy.screenStandalone({ text: `public observation ${i} ${detail}` })).toBe(true);
+    expect(samples.map(text => policy.screenStandalone({ text }))).toEqual(expected);
+  }
+  expect(plain.screenStandalone({ text: "public detail" })).toBe(true);
+  expect(restricted.screenStandalone({ text: "public detail" })).toBe(false);
+  expect(restricted.screenStandalone({ text: "src/private/row.ts" })).toBe(false);
+});
+
+test("cached text observes host changes to the exported default deny lists", async () => {
+  const policy = createStandalonePolicy(), input = { paths: ["src/private/row.md"] };
+  expect(policy.screenStandalone(input)).toBe(true);
+  DENY_NAMES.push("^row[.]md$");
+  try { expect(policy.screenStandalone(input)).toBe(false); }
+  finally { DENY_NAMES.pop(); }
+  expect(policy.screenStandalone(input)).toBe(true);
+  DENY_SEGMENTS.push("src/private");
+  try { expect(policy.screenStandalone(input)).toBe(false); }
+  finally { DENY_SEGMENTS.pop(); }
+  expect(policy.screenStandalone(input)).toBe(true);
 });

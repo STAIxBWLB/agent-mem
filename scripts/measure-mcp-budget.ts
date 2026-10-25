@@ -23,6 +23,7 @@ let child: ReturnType<typeof spawn> | undefined;
 let deadline: ReturnType<typeof setTimeout> | undefined;
 let reaped: Promise<number | null> | undefined;
 let timedOut = false, sessionStarted = 0;
+let stalled: { pending: string | null; steps: string } | undefined;
 try {
   mkdirSync(cwd);
   const project = memoryProjectKey(cwd);
@@ -79,14 +80,17 @@ try {
   });
   const proc = child;
   let stderr = "", sequence = 0;
-  let awaiting: { id: number; resolve: (value: any) => void; reject: (error: Error) => void } | undefined;
+  let awaiting: { id: number; label: string; started: number; resolve: (value: any) => void; reject: (error: Error) => void } | undefined;
+  // Per-request wall time, so a stall names the step it was waiting on.
+  const steps: string[] = [];
+  const stepValues = () => ({ pending: awaiting?.label ?? null, steps: steps.join(",") });
   proc.stderr!.on("data", data => { stderr = (stderr + String(data)).slice(-4096); });
   const lines = createInterface({ input: proc.stdout! });
   lines.on("line", line => {
     try {
       const value = JSON.parse(line);
       if (!awaiting || value.id !== awaiting.id || value.jsonrpc !== "2.0" || value.error) throw new Error(`unexpected MCP response: ${line.slice(0, 300)}`);
-      const current = awaiting; awaiting = undefined; current.resolve(value.result);
+      const current = awaiting; awaiting = undefined; steps.push(`${current.label}:${Math.round(performance.now() - current.started)}`); current.resolve(value.result);
     } catch (error) { awaiting?.reject(error as Error); awaiting = undefined; proc.kill(); }
   });
   reaped = new Promise((resolve, reject) => {
@@ -94,10 +98,10 @@ try {
     proc.once("exit", code => { awaiting?.reject(new Error(`MCP exited before response (${code}): ${stderr}`)); resolve(code); });
   });
   sessionStarted = performance.now();
-  deadline = setTimeout(() => { timedOut = true; awaiting?.reject(new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000 })); proc.kill("SIGKILL"); }, 30_000);
+  deadline = setTimeout(() => { timedOut = true; stalled = stepValues(); awaiting?.reject(new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000, ...stalled })); proc.kill("SIGKILL"); }, 30_000);
   const send = (message: unknown) => proc.stdin!.write(JSON.stringify(message) + "\n");
-  const request = (method: string, params: unknown = {}) => new Promise<any>((resolve, reject) => {
-    const id = ++sequence; awaiting = { id, resolve, reject }; send({ jsonrpc: "2.0", id, method, params });
+  const request = (method: string, params: unknown = {}, label = method) => new Promise<any>((resolve, reject) => {
+    const id = ++sequence; awaiting = { id, label, started: performance.now(), resolve, reject }; send({ jsonrpc: "2.0", id, method, params });
   });
   const initialized = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "amem-budget", version: "1" } });
   if (initialized.serverInfo?.name !== "amem") throw new Error("expected the amem MCP server");
@@ -106,7 +110,7 @@ try {
   const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_evidence", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
   if (listing.tools?.length !== 12 || JSON.stringify(listing.tools.map((tool: { name: string }) => tool.name).sort()) !== JSON.stringify(expectedTools)) throw new Error("frozen MCP tool surface missing");
   const call = async (name: string, args: Record<string, unknown>) => {
-    const result = await request("tools/call", { name, arguments: args });
+    const result = await request("tools/call", { name, arguments: args }, name);
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
     if (result.isError || typeof text !== "string") throw new Error(`${name} failed: ${JSON.stringify(args)}`);
     return JSON.parse(text);
@@ -164,7 +168,7 @@ try {
   if (evidence.schema !== "amem.evidence/v1" || evidence.state !== "known" || !Array.isArray(evidence.entries) || !evidence.entries.length || Buffer.byteLength(JSON.stringify(evidence)) > 4096
     || evidence.entries.some((row: { citation: string; text: string }) => !/^mem:[a-f0-9]{32}$/.test(row.citation) || !row.text.includes("mcpbudgetneedle"))) throw Error("evidence lost its cited bounded render contract");
   for (const args of [{ includeClosed: true }, { list: "budget-work", includeClosed: true }]) {
-    const result = await request("tools/call", { name: "amem_work_state_read", arguments: args });
+    const result = await request("tools/call", { name: "amem_work_state_read", arguments: args }, "amem_work_state_read");
     const text = result.content?.find((item: { type: string; text?: string }) => item.type === "text")?.text;
     if (result.isError || typeof text !== "string") throw new Error("work-list MCP read failed");
     const lists = JSON.parse(text) as { list: string; items: { task: string; fields: { progress: number } }[] }[];
@@ -186,14 +190,14 @@ try {
   const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number; evidenceReads: number };
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
   const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && measured.evidenceReads === 1 && !remains;
-  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
+  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", sessionMs: Math.round(performance.now() - sessionStarted), steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
     R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, evidenceReads: measured.evidenceReads, evidenceRendered: evidence.entries.length, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
   console.log(JSON.stringify(report, null, 2));
   if (!pass) throw new Error("MCP memory or EOF budget failed");
   return report;
 } catch (error) {
-  if (timedOut) throw new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000 });
+  if (timedOut) throw new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000, ...stalled });
   throw error;
 } finally {
   if (deadline) clearTimeout(deadline);
