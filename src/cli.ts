@@ -46,7 +46,7 @@ import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
-import { nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
+import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -68,6 +68,8 @@ export interface CliContext {
   edit?: (initial: string) => string | Promise<string>;
   /** Test seam: the `sync --if-due` deadline in milliseconds (the CLI always uses 30 seconds). */
   syncDeadlineMs?: number;
+  /** Called with the signal name when a person's signal ended `sync --if-due`, after its handlers are removed. `main` re-raises it once the output is written; absent, nothing happens. */
+  onPersonStop?: (signal: string) => void;
   stdin?: () => string;
 }
 
@@ -703,8 +705,16 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
-  } catch (error) { if (sub === "sync") stampSync((error as Error).message, stop?.cause()); throw error; }
-  finally { stop?.dispose(); }
+  } catch (error) {
+    if (sub === "sync") stampSync((error as Error).message, stop?.cause());
+    throw error;
+  }
+  finally {
+    stop?.dispose();
+    // A run its person ended ends like that signal (130, 143, 129, 131), as `amem doctor` does, also when `--json` reports it as a result instead of an error: the caller decides when.
+    const ended = stop?.cause() === "person" ? stop.signalName() : undefined;
+    if (ended !== undefined) context.onPersonStop?.(ended);
+  }
   if (sub === "sync") {
     // `--json` returns the failed result instead of throwing: read the real outcome from it, never assume a returned string means the sync worked.
     let failure: string | undefined;
@@ -725,10 +735,14 @@ export function formatCliError(error: unknown): string { return error instanceof
 /** A completed write means rendered output, never evidence of host delivery or citation. */
 export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> { await writeConfirmed(output, text); }
 export async function main(argv = process.argv.slice(2)): Promise<void> {
+  let personStop: string | undefined;
   try {
-    const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt) });
+    const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt), onPersonStop: name => { personStop ??= name; } });
     if (output) { await writeCliOutput(output + "\n"); for (const receipt of receipts) { try { receipt.rendered(); } catch { /* telemetry stays optional */ } } }
-  } catch (error) { console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1; }
+  } catch (error) {
+    console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1;
+  }
+  if (personStop !== undefined) endLikeSignal(personStop);   // after the report, with amem's own handlers already removed
 }
 
 if (import.meta.main) await main();

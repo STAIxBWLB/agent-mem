@@ -99,7 +99,18 @@ export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { re
 /** spawnSync form of the same call: the env option is merged with memoryGitEnv, everything else passes through. */
 export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> {
   const argv = memoryGitArgv(args);
-  return childProcess().spawnSync(argv[0]!, argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+  return childProcess().spawnSync(argv[0]!, argv.slice(1), { ...(ambientGitTimeout !== undefined ? { timeout: ambientGitTimeout, killSignal: "SIGKILL" as const } : {}), ...options, env: memoryGitEnv(options.env ?? process.env) });
+}
+let ambientGitTimeout: number | undefined;
+/**
+ * Runs `work` with a timeout on every `memoryGitSync` call that sets none of its own: a synchronous git call blocks the event loop, so a signal sent to this process alone waits for it.
+ * A call that times out reads as a failed git (`error` set, no status), which every caller already treats as "unknown". The setting is process-wide while `work` runs, so use it only in a
+ * command that does nothing else at the same time (`amem doctor`).
+ * ponytail: one global instead of a parameter on every caller between doctor and its git calls (project key, repository root, visibility). Upgrade: thread an options argument through them.
+ */
+export async function withGitTimeout<T>(ms: number, work: () => Promise<T>): Promise<T> {
+  const prior = ambientGitTimeout; ambientGitTimeout = ms;
+  try { return await work(); } finally { ambientGitTimeout = prior; }
 }
 
 /**
