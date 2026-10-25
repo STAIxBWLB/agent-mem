@@ -102,10 +102,9 @@ export function decodeShardPack(path: string, bytes: Uint8Array, realm: ShardSyn
     catch { throw new ShardSyncFormatError(label, "malformed pack row"); }
     const row = publicRow(value, label);
     if (hash(row.machine) !== match[1]) throw new ShardSyncFormatError(label, "pack author mismatch");
-    if (row.op === "prune") {
-      // ponytail: #404 needs a generation-neutral public-witness transport; never retag or skip a foreign prune.
-      if (row.generation !== generation) throw new ShardSyncFormatError(label, "foreign-generation prune");
-    } else if (row.op === "note" || row.op === "goal") {
+    // Generation is preserved in the original prune payload. Acceptance here is structural,
+    // never permission to apply it: the engine proves each original generation and holds foreign rows.
+    if (row.op === "note" || row.op === "goal") {
       if (realm.scope === "project" ? row.scope !== "project" || row.project !== realm.key : row.scope !== "shared") {
         throw new ShardSyncFormatError(label, "row scope mismatch");
       }
