@@ -149,7 +149,7 @@ test("semantic removal drops append-only leading space from an otherwise empty i
 test("semantic tail removal keeps surviving source without leaving separator padding", () => {
   const raw = '{command="legacy",timeout=5.0}', source = `hooks=[${raw}]\n`, original = parse(source).hooks;
   const installed = updateTomlArray(source, ["hooks"], [...original, hook]);
-  expect(updateTomlArray(installed, ["hooks"], original)).toBe(`hooks=[${raw},]\n`);
+  expect(updateTomlArray(installed, ["hooks"], original)).toBe(source);
 });
 test("semantic removal drops the removed row indentation and leading blank line with CRLF intact", () => {
   const source = 'hooks=[\r\n]\r\n', installed = updateTomlArray(source, ["hooks"], [hook]);
@@ -159,4 +159,9 @@ test("removal preserves the newline terminating a preceding comment and every su
   const raw = '{command="legacy",timeout=5.0}', source = `hooks=[${raw}, # keep this comment\r\n  {command="remove"}\r\n]\r\n`;
   const output = updateTomlArray(source, ["hooks"], [parse(source).hooks[0]]);
   expect(output).toContain(`${raw}, # keep this comment\r\n`); expect(parse(output).hooks).toEqual([parse(source).hooks[0]]); expect(output.replaceAll("\r\n", "")).not.toContain("\n");
+});
+test("apply then undo of a one-element inline array is byte-exact", () => {
+  const source = "items = [1]\n", appended = updateTomlArray(source, ["items"], [1, 2]);
+  expect(parse(appended).items).toEqual([1, 2]);
+  expect(updateTomlArray(appended, ["items"], [1])).toBe(source);
 });

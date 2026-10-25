@@ -291,3 +291,14 @@ test("advisory registry failure does not hide invalid authoritative settings", (
   const f = fixture(), settings = f.file("claude", 1), registry = join(f.home, ".claude", "plugins", "installed_plugins.json");
   put(settings, "not json"); put(registry, "not json"); expect(() => f.plan("claude")).toThrow("setup configuration does not parse"); expect(f.calls).toHaveLength(0);
 });
+test("a malformed plugin registry does not hide the plugin note derived from settings", () => {
+  const f = fixture(), settings = f.file("claude", 1), registry = join(f.home, ".claude", "plugins", "installed_plugins.json");
+  put(settings, '{"enabledPlugins":{"agent-mem@market":true}}'); put(registry, "not json");
+  expect(f.plan("claude").notes.some(note => note.startsWith("Installed Claude plugin agent-mem@market detected"))).toBe(true);
+});
+test("Bun path version detection: any version segment warns, a moving symlink does not", () => {
+  const f = fixture(), warn = "this bun path is version-specific; rerun setup --apply after changing Bun";
+  const versioned = ["/home/u/.local/share/mise/installs/bun/1.4.2/bin/bun", "/home/u/.proto/tools/bun/1.4.2/bin/bun", "/nix/store/abc123-bun-1.4.2/bin/bun", "/opt/homebrew/Cellar/bun/1.4.2/bin/bun"];
+  for (const bun of versioned) expect(planSetup("claude", "preview", { ...f.options, bun }).notes.join("\n")).toContain(warn);
+  for (const bun of ["/home/u/.local/share/mise/installs/bun/latest/bin/bun", "/home/u/.local/share/mise/shims/bun"]) expect(planSetup("claude", "preview", { ...f.options, bun }).notes.join("\n")).not.toContain(warn);
+});

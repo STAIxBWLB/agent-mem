@@ -263,6 +263,11 @@ export function updateTomlArray(text: string, path: readonly string[], expectedA
     for (let index = 0; index < array.elements.length; index++) if (!keep.has(index)) {
       const element = array.elements[index]!; changes.push({ start: element.removeFrom, end: element.end, text: "" });
       if (element.comma !== undefined) changes.push({ start: element.comma, end: element.comma + 1, text: "" });
+      else {
+        // The last element has no comma of its own: drop the same-line comma that append inserted after the kept element before it, or `[a,]` remains. A comma followed by a comment or newline was the person's own and stays.
+        const before = [...keep].filter(kept => kept < index).at(-1), previous = before === undefined ? undefined : array.elements[before];
+        if (previous?.comma !== undefined && !append.length && /^[ \t]*$/.test(text.slice(previous.comma + 1, element.start))) changes.push({ start: previous.comma, end: previous.comma + 1, text: "" });
+      }
     }
     if (append.length) {
       const last = [...keep].at(-1), element = last === undefined ? undefined : array.elements[last];
