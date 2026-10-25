@@ -3,8 +3,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { importClaudeMem } from "../src/memory/import.ts";
+import { importClaudeMem, importClaudeMemCapture } from "../src/memory/import.ts";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { appendAlias } from "../src/memory/shard.ts";
 
 // #258 phase 3: claude-mem import, model-suggested edges kept out of evidence, and the measurement inputs.
 
@@ -158,4 +160,72 @@ test("claude-mem import succeeds with a warning when machine-local cursor persis
   expect(logs[0]).toContain("could not be saved");
   expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 0 });
   expect(s.list()).toHaveLength(1);
+});
+
+const CAPTURE_NOW = Date.parse("2026-10-25T00:00:00.000Z"), CAPTURE_DAY = 86_400_000;
+function captureFixture() {
+  const base = temp("capture-home"), cwd = temp("capture-cwd"), sourceDir = temp("capture-source"), file = join(sourceDir, "claude-mem.db"), db = new Database(file);
+  db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, origin_device_id TEXT, origin_local_id TEXT)");
+  db.run("CREATE TABLE session_summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, request TEXT, investigated TEXT, learned TEXT, completed TEXT, next_steps TEXT, notes TEXT, created_at_epoch INTEGER, origin_device_id TEXT, origin_local_id TEXT)");
+  let sequence = 0;
+  const origin = () => ["device", String(++sequence)];
+  const addObservation = (project: string, text: string, at = CAPTURE_NOW - CAPTURE_DAY) => db.query("INSERT INTO observations (project, text, created_at_epoch, origin_device_id, origin_local_id) VALUES (?, ?, ?, ?, ?)").run(project, text, at, ...origin());
+  const addSummary = (project: string, learned: string, at = CAPTURE_NOW - CAPTURE_DAY) => db.query("INSERT INTO session_summaries (project, learned, created_at_epoch, origin_device_id, origin_local_id) VALUES (?, ?, ?, ?, ?)").run(project, learned, at, ...origin());
+  const opts = { base, project: "github.com/o/app", cwd, days: 7, now: CAPTURE_NOW, db: file };
+  const alias = () => appendAlias(base, { alias: "old/app", key: opts.project, actor: "person", machine: "fixture" });
+  const openCapture = () => new CaptureStore({ memoryDir: base, project: opts.project, cwd, now: () => CAPTURE_NOW });
+  return { base, cwd, sourceDir, file, db, addObservation, addSummary, opts, alias, openCapture };
+}
+
+test("claude-mem capture import uses reviewed aliases, bounds days and pages, preserves bytes and rebuilds equal indexes", async () => {
+  const f = captureFixture();
+  f.addObservation("old/app", "recent observation one"); f.addObservation("old/app", "recent observation two");
+  f.addObservation("old/app", "too old", CAPTURE_NOW - 8 * CAPTURE_DAY); f.addObservation("other/app", "unreviewed project");
+  f.addSummary("old/app", "recent summary"); f.addSummary("old/app", "old summary", CAPTURE_NOW - 8 * CAPTURE_DAY);
+  f.db.close(); const before = readFileSync(f.file);
+  expect(await importClaudeMemCapture(f.opts)).toMatchObject({ read: 0, added: 0 });
+  f.alias();
+  expect(await importClaudeMemCapture({ ...f.opts, limit: 1 })).toMatchObject({ read: 2, added: 2, spooled: 0, more: true });
+  expect(await importClaudeMemCapture({ ...f.opts, limit: 1 })).toMatchObject({ read: 1, added: 1, spooled: 0 });
+  expect(await importClaudeMemCapture({ ...f.opts, limit: 1 })).toMatchObject({ read: 0, added: 0, more: false });
+  const copy = join(f.sourceDir, "copy.db"); writeFileSync(copy, before);
+  expect(await importClaudeMemCapture({ ...f.opts, db: copy, restart: true })).toMatchObject({ read: 3, added: 0, skipped: 3 });
+  const store = f.openCapture(), dir = store.dir, rows = store.rows(), search = store.readPage({ project: f.opts.project, query: "recent", limit: 10 }).rows;
+  expect(rows.map(row => row.event).sort()).toEqual(["observation", "observation", "summary"]);
+  expect(rows.some(row => row.excerpt.includes("Learned: recent summary"))).toBe(true);
+  expect(rows.every(row => row.agent === "claude-mem" && row.project === f.opts.project)).toBe(true);
+  store.close();
+  const db = new Database(join(dir, "capture.db"));
+  for (const trigger of ["rows_ai", "rows_ad", "rows_au", "rows_mcp_ai", "rows_mcp_ad", "rows_mcp_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
+  db.run("DROP TABLE IF EXISTS fts"); db.run("DROP TABLE IF EXISTS mcp_fts"); db.close();
+  const rebuilt = f.openCapture();
+  try {
+    expect(rebuilt.rows()).toEqual(rows);
+    expect(rebuilt.readPage({ project: f.opts.project, query: "recent", limit: 10 }).rows).toEqual(search);
+  } finally { rebuilt.close(); }
+  expect(readFileSync(f.file)).toEqual(before);
+});
+
+test("claude-mem capture import skips configured policy and secret rows before writing", async () => {
+  const f = captureFixture(); f.alias();
+  f.addObservation("old/app", "public capture"); f.addObservation("old/app", "withheld capture"); f.addObservation("old/app", "token: abcdefgh12345678"); f.db.close();
+  expect(await importClaudeMemCapture({ ...f.opts, policy: { piiPatterns: ["withheld"] } })).toMatchObject({ read: 3, added: 1, skipped: 2 });
+  const store = f.openCapture();
+  try { expect(store.rows().map(row => row.excerpt)).toEqual(["public capture"]); } finally { store.close(); }
+});
+
+test("claude-mem capture import follows capture cap and retention on every append", async () => {
+  const f = captureFixture(); f.alias();
+  f.addObservation("old/app", "retention-expired", CAPTURE_NOW - 3 * CAPTURE_DAY);
+  for (let index = 0; index < 8; index++) f.addObservation("old/app", `recent-${index}-${"x".repeat(1400)}`);
+  f.db.close(); writeFileSync(join(f.base, "capture-config.json"), JSON.stringify({ cap_mb: 0.004, retention_days: 1 }), { mode: 0o600 });
+  expect(await importClaudeMemCapture(f.opts)).toMatchObject({ read: 9, added: 9 });
+  const store = f.openCapture();
+  try {
+    const rows = store.rows(), stats = store.stats();
+    expect(rows.length).toBeGreaterThan(0); expect(rows.length).toBeLessThan(9);
+    expect(stats.bytes).toBeLessThanOrEqual(0.004 * 1024 * 1024);
+    expect(rows.some(row => row.excerpt.includes("recent-7"))).toBe(true);
+    expect(rows.some(row => row.excerpt.includes("retention-expired"))).toBe(false);
+  } finally { store.close(); }
 });
