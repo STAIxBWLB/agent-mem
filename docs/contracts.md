@@ -327,6 +327,30 @@ Owned shard-cache Git invocations disable automatic maintenance and garbage coll
 - **`all` and `answerable`.** A question whose expected entries the store does not hold can never be recalled. It scores 0 in `all` (what a person would experience: the denominator is every distinct thing it wanted, present or not) and is left out of `answerable` (what the ranking alone achieved: scored over the distinct entries the store does hold, so a name the store lacks never halves a recall), so the match-mode and coverage causes of P0 section 3.2 stay separate. An aggregate with no question in it is `null` (`n/a` in text), never a measured zero. The text report names the count and lists each miss.
 - **Reading the fixture.** The built-in set (`src/memory/eval-set.json`, shipped in `src/` so an installed copy runs it, found with `fileURLToPath` so an install path with a space or non-ASCII characters works) is 26 invented harbour entries, five of them short tier and a twin pair that only recency and tier can order, and 32 questions including paraphrases and no-match ones on purpose so the numbers have headroom. `test/eval.test.ts` pins its scores for the current search. A lexical change from F14 ships only with an eval gain: it raises those numbers in the same PR. The fixture says nothing about a person's own memory; the P0 recall@10 of 0.52 against the 0.80 margin (#13 AC4) is measured on the person's own set through `--set`.
 
+### Korean recall set and baseline (agent-mem#62)
+
+`amem eval --set ko` scores a second built-in synthetic set, `src/memory/eval-set-ko.json` (same `amem.eval/v1` format, shipped in `src/`, read by `KO_FIXTURE_PATH`): 37 invented library and office-process entries (4 of them short tier, written a day after the long ones by the seeder's clock, each beside a long-tier twin on the same topic) and 38 questions. `ko` is a reserved `--set` name; a file with that name is reached as `./ko`. A question may carry an optional `tag` (lowercase, at most 40 characters) that labels what it probes; scoring ignores it, and `test/eval.test.ts` counts the five kinds (`particle`, `spacing`, `mixed`, `abbreviation`, `tier`: at least 4 each, 10, 7, 7, 7 and 7 today). All text is invented and written as literal Hangul. It measures only: no ranking or tokenizer change came with it.
+
+**Baseline** (2026-10-25, main `1b3dc50`, engine fts5, no model, no network, identical on every machine; pinned exactly in `test/eval.test.ts`, so a ranking change that moves it fails until this table and the test are updated together). Every question names a note the seeded store holds, so `all` equals `answerable` (38 of 38):
+
+| | @1 | @5 | @10 |
+|---|---|---|---|
+| recall | 0.8684 | 0.9474 | 0.9474 |
+| hit | 0.8684 | 0.9474 | 0.9474 |
+
+MRR 0.8934. Five questions are not at rank 1, and they are the headroom this set exists to show: a paraphrase that shares no word with its note (rank 4); two compounds a person types without spaces while the note has them (`개인정보처리방침` against `개인 정보 처리 방침`, `도서관리시스템` against `도서 관리 시스템`) that are not found at all within 10, because the particle-stripped alternative and the prefix terms never join or split compounds; one spaced query against an unspaced note (`열람 실 개방`, rank 5); and a spaced fragment of a compound (`회의 록`, rank 2). Particle variants and mixed Korean-English terms are all at rank 1.
+
+**Scoring your own Korean entries without publishing them.** A set file with no `entries` names real entry ids of the bound project, so the Korean text stays in the person's own store and the question file stays local. `amem list --json` (or `amem show`) gives the ids; write the file anywhere outside the repository:
+
+```json
+{ "schema": "amem.eval/v1",
+  "questions": [
+    { "q": "사업계획서는 언제까지", "expect": ["3f9a1c2b7d10"], "tag": "spacing" },
+    { "q": "PR 리뷰 기한", "expect": ["mem:a1b2c3d4e5f6"] } ] }
+```
+
+`amem eval --set ~/eval-ko-mine.json --k 1,5,10` prints recall@k, hit@k and MRR with the same `answerable` split. Compare against the table above: the built-in set shows what the engine does on clean synthetic text, the project's own set shows what it does on real wording.
+
 ## Lexical recall changes are gated by eval (F14, AC7)
 
 agent-mem#40 F14 asks for query expansion from aliases and tags and for BM25 plus 1-hop graph neighbours, each adopted only if `amem eval` shows a gain. The outcome of this change is that **none is adopted**: `store.search` is unchanged, and what ships is the gate that decides, the second fixture set and the record of what was measured.

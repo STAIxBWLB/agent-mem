@@ -43,7 +43,7 @@ import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, 
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 import { evalText, parseKs } from "./memory/eval.ts";
-import { evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
+import { builtinSet, evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
 import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
@@ -482,14 +482,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // F13: read-only. A set with entries is scored against a throwaway store seeded with them (touches no memory home); one without scores the bound project's real entries.
     const ks = parseKs(typeof options["--k"] === "string" ? options["--k"] : undefined);
     const file = typeof options["--set"] === "string" ? options["--set"] : undefined;
-    const set = readEvalSet(file ?? FIXTURE_PATH);
+    const builtin = file === undefined ? undefined : builtinSet(file);
+    const set = readEvalSet(builtin ?? file ?? FIXTURE_PATH);
     let report;
     if (set.entries?.length) report = evalSeeded(set, ks);
     else {
       const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
       try { report = evalStore(store, project, set, ks); } finally { store.close(); }
     }
-    return options["--json"] ? JSON.stringify(report, null, 2) : evalText(report, file ?? "built-in fixture");
+    return options["--json"] ? JSON.stringify(report, null, 2) : evalText(report, builtin ? `built-in fixture ${file}` : file ?? "built-in fixture");
   }
   if (sub === "capacity") {
     const share = options["--disk-share"];
