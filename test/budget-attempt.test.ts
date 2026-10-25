@@ -140,10 +140,12 @@ test("probe thresholds are strict, detect CPU, spawn or I/O slowdown and reject 
 
 test("I/O-only slowdown remeasures the observed 40204205266 wall-miss values with normal CPU and spawn", async () => {
   const { budgetGroup } = await import("../scripts/budget-attempt.ts");
-  const reference = { cpuMs: 10.73, spawnMs: 17.17, ioMs: 10, factor: 2 };
+  const { RUNNER_BASELINES, runnerIsSlow } = await import("../scripts/runner-probe.ts");
+  const reference = RUNNER_BASELINES.linux!;
   // The historical run did not record I/O. Only its CPU/spawn and wall values are historical;
-  // ioMs=21 is injected evidence to test the new classification, not a claimed old reading.
-  const reading = { cpuMs: 9.63, spawnMs: 16.1, ioMs: 21, checksum };
+  // I/O just beyond the calibrated 2x limit is injected, not a claimed old reading.
+  const reading = { cpuMs: 9.63, spawnMs: 16.1, ioMs: reference.ioMs * reference.factor + 0.01, checksum };
+  expect(runnerIsSlow({ ...reading, ioMs: reference.ioMs }, { ...reading, ioMs: reference.ioMs }, reference)).toBe(false);
   for (const wallMs of [181.54, 206.15, 186.77]) {
     let runs = 0;
     const result = await budgetGroup("observed-wall-shape", () => ({ wallMs: ++runs === 1 ? wallMs : 80, rssMB: 75 }), judgeGroup,

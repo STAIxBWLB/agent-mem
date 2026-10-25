@@ -10,9 +10,13 @@ export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; 
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// A healthy hosted calibration of all three components is required; CPU/spawn-only baselines
-// from run 40201976781 cannot decide durable-write slowness.
-export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {};
+// Hosted run 40206907449, Bun 1.4.2 (2026-10-26): both jobs passed on attempt 1,
+// without retried samples or advisory wall misses. Take maxima of five outer probes before
+// and five after unchanged main workloads, rounded up to 0.01 ms; per-workload probes are diagnostics.
+export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
+  linux: { cpuMs: 9.88, spawnMs: 15.19, ioMs: 18.27, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40206907449/job/121209695748" },
+  darwin: { cpuMs: 8.55, spawnMs: 16.20, ioMs: 48.98, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40206907449/job/121209695540" },
+};
 
 /** Fixed CPU, provider-free Bun spawn and fresh durable SQLite work; no application modules. */
 export function probeRunnerSpeed(): RunnerProbe {
