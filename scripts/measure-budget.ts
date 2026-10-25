@@ -95,12 +95,12 @@ try {
   const ps = spawnSync("ps", ["-axo", "args="], { encoding: "utf8" }).stdout;
   const leftover = ps.split("\n").filter((line) => /budget-(hook|search)-child/.test(line)).length;
 
+  const wallTimingPass = plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && evictWall < R2_WALL_P95_MS;
+  const peakPass = plainRss > 0 && spoolRss > 0 && evictRss > 0 && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB && evictRss < RSS_HOOK_MB;
   const budgets = {
     R1: { pass: leftover === 0, leftoverProcesses: leftover },
     R2: {
-      wallTimingPass: plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && evictWall < R2_WALL_P95_MS,
-      peakPass: plainRss > 0 && spoolRss > 0 && evictRss > 0 && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB && evictRss < RSS_HOOK_MB,
-      pass: plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && evictWall < R2_WALL_P95_MS && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB && evictRss < RSS_HOOK_MB,
+      wallTimingPass, peakPass, pass: wallTimingPass && peakPass,
       budgetMs: R2_WALL_P95_MS, budgetRssMB: RSS_HOOK_MB,
       append: { runs: HOOK_RUNS, wallP95Ms: round(plainWall), wallMaxMs: round(Math.max(...plain.map((r) => r.wallMs))), peakRssMB: round(plainRss) },
       spoolAndExit: { runs: CONTENTION_RUNS, wallP95Ms: round(spoolWall), wallMaxMs: round(Math.max(...spooled.map((r) => r.wallMs))), peakRssMB: round(spoolRss), drainedRows: captureRows, drainWallMs: round(drain.wallMs) },
