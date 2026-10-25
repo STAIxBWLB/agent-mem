@@ -10,9 +10,12 @@ export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; 
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// Healthy hosted calibration must use the same three-I/O-sample median shape.
-// CPU/spawn baselines use maxima; I/O baseline is the median of healthy per-call medians.
-export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {};
+// Same-shape hosted calibration: CPU/spawn maxima, I/O median of ten per-call medians,
+// rounded up to 0.01 ms. Mac job attempt 1 passed all workloads without sample retries.
+// Linux stays unavailable until an eligible healthy job exists; failed jobs are not calibration evidence.
+export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
+  darwin: { cpuMs: 7.19, spawnMs: 12.36, ioMs: 2.65, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516/job/121217210762" },
+};
 
 /** Fixed CPU, provider-free Bun spawn and fresh durable SQLite work; no application modules. */
 export function probeRunnerSpeed(): RunnerProbe {
