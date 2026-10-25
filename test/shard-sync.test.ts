@@ -246,7 +246,7 @@ async function foreignPruneFixture(origin = G1, receiving = G2) {
 for (const [origin, receiving] of [[G1, G2], [G2, G1]] as const) test(`foreign prune ${origin[0]} to ${receiving[0]} is held unchanged with visible targets and rebuild parity`, async () => {
   const f = await foreignPruneFixture(origin, receiving);
   const result = await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote });
-  expect(result).toMatchObject({ ok: true, warning: expect.stringContaining("held, not applied") });
+  expect(result).toMatchObject({ ok: true }); expect(result.warning).toContain("held, not applied");
   expect(result.warning).toContain(f.target); expect(result.warning).not.toContain(f.text);
   expect(f.receiver.a.get(f.target, A)?.text).toBe(f.text);
   const receipt = JSON.parse(readFileSync(f.file, "utf8"));
@@ -273,7 +273,7 @@ test("a foreign shared prune does not block syncing an unrelated project and use
   const receiver = await split(G2), b = keep(openShardStore({ home: receiver.home, project: B, deferPromotions: true, now: () => source.clock.now - 4000 }));
   const local = b.note(note(B, "unrelated beta reaches remote"));
   const result = await syncMemory(b, { remote: url, ...privateRemote });
-  expect(result).toMatchObject({ ok: true, warning: expect.stringContaining("user shard") });
+  expect(result).toMatchObject({ ok: true }); expect(result.warning).toContain("user shard");
   expect(result.warning).toContain(target); expect(existsSync(foreignHoldFile(receiver.memory, url, refUser, G2, row))).toBe(true);
   expect(b.get(target, B)?.text).toBe("held shared target");
   const peer = await split(G2), peerB = keep(openShardStore({ home: peer.home, project: B, deferPromotions: true }));
