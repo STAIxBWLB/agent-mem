@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Consolidation follow-ups (task #439): an accepted consolidation note is never a source of the next run (no recurring-fix or chain summaries of summaries; an accepted recurring-fix summary no longer pairs with its own sources), the report counts only newly queued or still-pending candidates and says how many were already reviewed, `amem consolidate --project` refuses a project other than the current one (its repository policy cannot be resolved from here), and acceptance reads one placement proof per locked section instead of four.
 - On-demand deterministic consolidation proposals and a bounded `amem_evidence` MCP bundle (agent-mem#40 F18/F19). Consolidation writes machine-local candidates, with person-only exact-revision acceptance; curated v1 ops, hashes and paths are unchanged. Candidate readers must understand the new consolidation payload before sharing a home that uses it; older candidate readers refuse the unknown kind. Evidence contains live project-curated citations only, makes no model call, and records only confirmed rendered output.
 
 ## 0.7.0

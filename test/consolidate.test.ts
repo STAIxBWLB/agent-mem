@@ -63,3 +63,17 @@ test("a merge proposal retains each source task as an explicit about node", asyn
   expect(input.kind).toBe("consolidation"); if (input.kind !== "consolidation") throw Error("wrong candidate");
   expect(input.about).toContain("task:work#1"); expect(input.about).toContain("task:work#2");
 });
+test("the report counts only new or still-pending candidates as queued; accepted and rejected ones are already reviewed (task #439)", async () => {
+  const f = fixture(); f.note("bounded writer lease avoids transaction contention"); f.note("bounded writer lease avoids transaction contention");
+  const first = await f.run(); expect(first.candidates).toHaveLength(1); expect(first.alreadyReviewed).toBe(0);
+  const again = await f.run(); expect(again.candidates).toHaveLength(1); expect(again.alreadyReviewed).toBe(0);   // pending: still queued, still reported
+  f.candidates.reject(first.candidates[0]!.id, { project: f.project, actor: "person", verdict: "public" });
+  const rejected = await f.run(); expect(rejected.candidates).toEqual([]); expect(rejected.alreadyReviewed).toBe(1);
+  expect(f.candidates.list({ project: f.project, status: "all" })).toHaveLength(1);
+});
+test("an accepted consolidation does not make the next run propose a summary of it (task #439)", async () => {
+  const f = fixture(); f.note("bounded writer lease avoids transaction contention"); f.note("bounded writer lease avoids transaction contention");
+  const first = await f.run();
+  f.candidates.accept(first.candidates[0]!.id, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true, policyVersion: () => "fixed" });
+  const next = await f.run(); expect(next.candidates).toEqual([]); expect(next.alreadyReviewed).toBe(0);
+});

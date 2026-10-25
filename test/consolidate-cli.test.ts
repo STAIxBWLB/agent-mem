@@ -20,6 +20,7 @@ test("consolidate is person-only, queues candidates, and review accepts through 
     await expect(cli(["consolidate"], { stdinTTY: false })).rejects.toThrow("terminal");
     const result = JSON.parse(await cli(["consolidate", "--json"]));
     expect(result.candidates).toHaveLength(1); expect(result.candidates[0].action).toBe("supersession");
+    await expect(cli(["consolidate", "--project", "local:somewhere-else"])).rejects.toThrow("must name the current project");
     const accepted = JSON.parse(await cli(["review", "accept", result.candidates[0].id, "--kind", "consolidation", "--json"]));
     expect(accepted.noteId).toMatch(/^[a-f0-9]{32}$/);
   } finally { if (beforeHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = beforeHome; }

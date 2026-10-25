@@ -24,7 +24,7 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
-  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("Explicit active project key (default current project)") } },
+  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
   setup: { description: "Preview reversible MCP and hook setup for native coding CLIs; apply and undo are person-only", options: { "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
