@@ -25,6 +25,11 @@
 
 - Work assigned on the agent-hub board runs from an agent-hub session (`../agent-hub`), and that repo's `AGENTS.md` §agent-hub binds it, including when a pull-only session reads `hub_inbox`. A session started in this directory has no hub: do not run `ahub up` or `ahub init` here.
 
+## Merging
+
+- The reviewer that approves a PR with `hub_review` at its head merges it with `gh pr merge <pr> --squash --match-head-commit <head>` once `check (ubuntu-latest)` and `check (macos-latest)` pass on that head, no review thread is unresolved, no bot review (codex-connector included) is pending or running and no change request is pending; it then deletes the remote branch (`delete_branch_on_merge` is off here) and removes the worktree. If a gate is open, it names the gate instead of merging. Never `--admin`. Owner decision 2026-10-25, agent-hub#786.
+- Merging is not releasing: tagging and publishing still need the person's explicit authorization (Releasing below).
+
 ## Releasing
 
 - Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow checks it before `npm publish` and its `release-notes` job publishes it as the GitHub Release body. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
