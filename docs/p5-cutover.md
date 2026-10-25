@@ -27,6 +27,10 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `amem search <a term you know>` shows the imported notes; they arrive as curated long-term notes, not as candidates.
   - `amem review list` shows any candidates agents proposed meanwhile; `amem review walk` goes through them one by one. Open work lists appear in the SessionStart brief of a new Claude Code session in that repository.
   - `amem doctor` again: no index drift, no unexpected policy skips.
+- **Back up what the retirement changes.** Current dotfiles can no longer write the claude-mem LaunchAgents or bridge (dotfiles PR #296 removed them), so a rollback only works from copies taken now.
+  - `dot ai memory retire-claude-mem > ~/claude-mem-retire-plan.txt` saves the dry run: every plugin, marketplace, MCP config file, LaunchAgent and directory it would touch.
+  - Copy each file it lists into `~/claude-mem-backup-<date>/`, keeping the paths: the MCP config files, `~/Library/LaunchAgents/com.dotfiles.claude-mem-bridge.plist`, `~/Library/LaunchAgents/com.dotfiles.claude-mem-sync.plist` and `~/.claude/settings.json`.
+  - Record the versions you would reinstall: `claude plugin list` and `codex plugin list` (the claude-mem plugin and its marketplace), and `dot --version`.
 - **Retire claude-mem**
   - `dot ai memory retire-claude-mem` is a dry run: it lists the plugin, marketplaces, MCP entries, LaunchAgents and the home it would touch.
   - `dot ai memory retire-claude-mem --apply --import-complete` disables and uninstalls the plugin for Claude Code and Codex, removes the MCP entries for Kimi, Qwen, Antigravity, Kiro and Copilot, removes the `com.dotfiles.claude-mem-bridge` and `com.dotfiles.claude-mem-sync` LaunchAgents, and moves `~/.claude-mem` to `~/.claude-mem.archive-<date>`. It refuses while a claude-mem process runs.
@@ -38,7 +42,12 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
 
 ## Rollback
 
-- The retirement never deletes data. Move `~/.claude-mem.archive-<date>` back to `~/.claude-mem`, reinstall the claude-mem plugin, and restore the two LaunchAgents from dotfiles.
+The retirement never deletes data, but current dotfiles cannot recreate what it removed. Roll back from the backup taken before retiring:
+
+- Move `~/.claude-mem.archive-<date>` back to `~/.claude-mem`.
+- Reinstall the claude-mem plugin and marketplace at the recorded versions with `claude plugin` and `codex plugin`.
+- Copy the backed-up MCP config files and `~/.claude/settings.json` back to their paths.
+- Copy the two plists back to `~/Library/LaunchAgents/` and load each with `launchctl bootstrap gui/$(id -u) <plist>`. Their programs came from the dotfiles release recorded above; if the current release no longer ships them, reinstall that recorded release first.
 - `amem setup all --undo` removes the amem registrations. The amem home keeps everything it imported; nothing in it needs undoing.
 
 ## P6 live week
@@ -52,5 +61,10 @@ Seven days of ordinary work with claude-mem retired. Record the start date on #1
   - After each day's sessions end, `pgrep -fl amem` shows no amem process (R1).
   - Hook p95 and RSS from `amem capacity --json` stay under 150 ms and 100 MB (R2); MCP RSS under 100 MB idle and 200 MB during search (R3).
   - Disk: the size of the memory home against the capture cap.
-- **Retrieval re-check (#13 AC4 follow-up).** On the last day, copy the memory home and run `bun scripts/ac4-recheck.ts --home <copy>` from this repository: the frozen 25-query set from `docs/p0-baseline.md` §3. Never point it at the live home. Embeddings are revisited only if a match-mode gap remains after coverage improved.
+- **Retrieval re-check (#13 AC4 follow-up).** On the last day, run the frozen 25-query set from `docs/p0-baseline.md` §3 against a copy, never the live home.
+  - Copy the directory that contains the memory home, for example `cp -R ~/.agenthub /tmp/amem-p6` when the home is `~/.agenthub/memory`. The script's `--home` takes that parent, not the `memory` directory itself.
+  - Run `bun scripts/ac4-recheck.ts --home /tmp/amem-p6 --project <repository key>` from this repository (the default key is agent-hub's; `amem projects` lists the keys).
+  - Check the printed `corpus`: it must be the number of curated entries you expect for that project. A `corpus` of 0 means a wrong `--home` or `--project`; fix them rather than record a result.
+  - If the home was split into project shards (`amem migrate --shards`), the script cannot read it: it opens the single-home layout, which stops with "memory home has a curated split". Record the re-check as blocked on #13 and update the script to open the shard store before measuring.
+  - Embeddings are revisited only if a match-mode gap remains after coverage improved.
 - **Close-out.** Attach the daily readings and the re-check to #13, then tick AC2 and AC11. The dotfiles follow-up is dotfiles#255, implemented by dotfiles PR #296.
