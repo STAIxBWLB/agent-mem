@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.8.0. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.9.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Quick start
 
