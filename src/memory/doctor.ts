@@ -7,8 +7,8 @@ import { pendingSummary } from "./candidate-pending.ts";
 import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
 import { readSelector } from "./generation.ts";
-import { processLiveness } from "./platform.ts";
-import { STOP_SIGNALS } from "./sync-cadence.ts";
+import { processLiveness, withGitTimeout } from "./platform.ts";
+import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
 import { shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
@@ -334,11 +334,7 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
       remove();
       process.off(name, handler);
       if (process.listenerCount(name) !== 0) return;       // another handler of the host remains: it decides how the process ends
-      // SIGQUIT's default action is a core dump, and Bun honours it: a re-raised SIGQUIT on Linux writes a core file the size of the process image (measured 5.9 GB, taking
-      // seconds, in a container with `ulimit -c unlimited`) while the shell waits for the exit. Exit with the status that death would have had instead (128 + 3), at once. The other
-      // three are re-raised, so a parent sees the signal itself (`signalCode`).
-      if (name === "SIGQUIT") process.exit(128 + 3);
-      process.kill(process.pid, name);
+      endLikeSignal(name);       // the signal itself again, so a parent sees `signalCode` (SIGQUIT exits 131 instead: see there)
     };
     process.on(name, handler);
     return [name, handler] as const;
@@ -347,7 +343,14 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
   return { adopt: made => { dir = made; }, release: () => { for (const [name, handler] of handlers) process.off(name, handler); process.off("exit", remove); } };
 }
 
-export async function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
+/**
+ * Every git lookup doctor makes is a `spawnSync`, and a signal sent to doctor ALONE (`kill <pid>`; a terminal's Ctrl-C or closing window signals the whole group, and ends the stalled git
+ * with it) is handled when the loop next turns. Without a limit a hung git held it for the call, and doctor makes a chain of them (measured: 20 s with 4 s calls). With this limit
+ * a lone signal waits at most one call for the signal handler, which then removes the scratch copy and ends doctor.
+ */
+export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
+export function doctorReport(options: DoctorOptions): Promise<DoctorReport> { return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options)); }
+async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let scratch: string | undefined, unguard: (() => void) | undefined;
   let duplicates: Section, stale: Section, index: Section;
   let curated: MemoryStore | undefined, workBase: string | undefined, copyFailed: string | undefined;

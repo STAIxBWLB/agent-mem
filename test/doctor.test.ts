@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
-import { sweepStaleScratch } from "../src/memory/doctor.ts";
+import { DOCTOR_GIT_TIMEOUT_MS, sweepStaleScratch } from "../src/memory/doctor.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -311,7 +311,7 @@ for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) test(`${
  * turns, so a signal that reaches doctor ALONE during a synchronous git call is handled once that call returns: this runs doctor, signals it during the stall, then ends the
  * stalled git (what a terminal's group signal does at once), and reports what is left.
  */
-async function stalledAt(stallAt: number, name: NodeJS.Signals | null): Promise<{ calls: number; left: string[]; signal: string | number | null; exit: number | null }> {
+async function stalledAt(stallAt: number, name: NodeJS.Signals | null, endGit = true): Promise<{ calls: number; left: string[]; signal: string | number | null; exit: number | null }> {
   const r = rig(); r.note("n"); r.capture("claude", new Date().toISOString());
   const tmp = join(r.root, "tmp"); mkdirSync(tmp);
   const fake = join(r.root, "bin"); mkdirSync(fake);
@@ -337,9 +337,9 @@ exec ${JSON.stringify(realGit)} "$@"
       expect(existsSync(pidFile), `git call ${stallAt} was never reached`).toBe(true);
       child.kill(name);                                                                           // doctor alone: its stalled git does not get it
       await Bun.sleep(150); expect(child.exitCode).toBeNull();                                    // still inside the synchronous call
-      process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");                      // the stalled git ends, the call returns
+      if (endGit) process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");          // the stalled git ends, the call returns
     }
-    await Promise.race([child.exited, Bun.sleep(12_000)]);
+    await Promise.race([child.exited, Bun.sleep(endGit ? 12_000 : 20_000)]);
     return { calls: calls(), left: scratchDirs(tmp), signal: child.signalCode, exit: child.exitCode };
   } finally { child.kill("SIGKILL"); }
 }
@@ -354,6 +354,13 @@ test("a signal that reaches doctor alone during ANY git call it makes after the 
     expect(run.signal, `stalled at git call ${k} of ${plain.calls}`).toBe("SIGTERM");
   }
 }, 90_000);
+
+test("a lone signal does not wait for a git that never returns: doctor's own git timeout lets the handler run (#437, measured: 20 s with 4 s calls)", async () => {
+  const started = Date.now();
+  const run = await stalledAt(1, "SIGTERM", false);                                                // nobody ends the stalled git: only the timeout can
+  expect(run.signal).toBe("SIGTERM"); expect(run.left).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(DOCTOR_GIT_TIMEOUT_MS + 8_000);
+}, 60_000);
 
 test("SIGKILL cannot be handled: the scratch stays, and the next doctor sweeps it because its owner is gone (#435)", async () => {
   const run = await interruptedDoctor("SIGKILL");

@@ -236,6 +236,40 @@ test("the --if-due deadline reaches git's transport children: an ssh stand-in th
   } finally { if (saved === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved; }
 }, 90_000);
 
+for (const variant of ["syncGit", "generationSyncGit"] as const) test(`${variant}: a transport child that ignores TERM and INT is SIGKILLed with its group after the abort, not left at ppid 1 (#437)`, async () => {
+  const sync = await import("../src/memory/sync.ts");
+  const root = temp(), pidFile = join(root, "child.pid"), fakeSsh = join(root, "fake-ssh");
+  // A credential helper or proxy that shrugs off the polite signals. The shell is the stand-in and sleeps in a loop so that nothing but SIGKILL ends it.
+  writeFileSync(fakeSsh, `#!/bin/sh\ntrap '' TERM INT HUP\necho $$ > ${JSON.stringify(pidFile)}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+  const repo = join(root, "repo"); mkdirSync(repo);
+  expect(memoryGitSync(["init", "-q", repo], { encoding: "utf8" }).status).toBe(0);
+  expect(memoryGitSync(["-C", repo, "remote", "add", "origin", "ssh://example.invalid/x.git"], { encoding: "utf8" }).status).toBe(0);
+  const saved = process.env.GIT_SSH_COMMAND; process.env.GIT_SSH_COMMAND = fakeSsh;
+  const controller = new AbortController(); let child = 0;
+  const alive = () => { try { process.kill(child, 0); return true; } catch { return false; } };
+  try {
+    const running = sync[variant](repo, ["fetch", "-q", "origin"], controller.signal);
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await Bun.sleep(50);
+    expect(existsSync(pidFile)).toBe(true);                                                // git started its transport child
+    child = Number(readFileSync(pidFile, "utf8").trim()); expect(alive()).toBe(true);
+    controller.abort();
+    await running;
+    for (let i = 0; i < 40 && alive(); i++) await Bun.sleep(50);                           // at most 2 s: the grace period the cleared timer would have used
+    expect(alive()).toBe(false);
+    expect(sync.syncGroupsForTest.live()).toBe(0);
+  } finally { if (child && alive()) process.kill(child, "SIGKILL"); if (saved === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved; }
+}, 90_000);
+
+test("stopSignal names the signal that ended the run, and only the first (#437)", async () => {
+  const { EventEmitter } = await import("node:events");
+  const emitter = new EventEmitter(), stop = stopSignal(60_000, emitter);
+  expect(stop.signalName()).toBeUndefined();
+  emitter.emit("SIGHUP"); emitter.emit("SIGINT");
+  expect(stop.signalName()).toBe("SIGHUP"); expect(stop.cause()).toBe("person"); stop.dispose();
+  const late = new EventEmitter(), after = stopSignal(30, late); await Bun.sleep(80); late.emit("SIGTERM");
+  expect(after.cause()).toBe("deadline"); expect(after.signalName()).toBeUndefined(); after.dispose();   // a deadline that fired first is not a person's stop
+});
+
 test("every way a terminal ends an --if-due run (Ctrl-C, SIGTERM, SIGHUP, SIGQUIT) stops it, a second one is still handled, and the handlers are removed afterwards (review: sighup orphans git)", async () => {
   const { EventEmitter } = await import("node:events");
   expect([...STOP_SIGNALS]).toEqual(["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"]);
@@ -292,7 +326,7 @@ test("the real binary: Ctrl-C during `sync --if-due --force` stops git and its s
   const r = await endedRun(signalAmem("SIGINT"));
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);                                // the transport child and git are gone, not 120 seconds later
-  expect(r.status).toMatch(/status:1/); expect(r.message).toContain("fetch failed");             // amem exits 1 and says why (never a URL)
+  expect(r.status).toMatch(/status:130/); expect(r.message).toContain("fetch failed");           // amem says why (never a URL), then ends as SIGINT does: 128 + 2 (#437)
   expect(r.stamp.failures).toBe(0);                                                              // a person's Ctrl-C is not the remote's fault: no backoff (#435, reverses round 3)
   expect(r.stamp.lastAttemptAt).toBeNull();                                                      // and nothing is stamped at all
 }, 90_000);
@@ -304,6 +338,7 @@ for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) test(`${
   if (r.skipped) { console.log(`SKIPPED: ${r.skipped}`); return; }
   expect(r.sshAlive).toBe(false); expect(r.gitAlive).toBe(false);
   expect(r.stamp).toEqual(PRIOR);                                                                // no new failure, no backoff, the old success kept
+  expect(r.status).toMatch(new RegExp(`status:${128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGQUIT: 3 }[name]}\\b`));   // the shell sees the signal, as it does from `amem doctor` (#437)
 });
 
 test("the deadline running out during --if-due IS stamped as a failure: a remote that did not answer in time is backed off from (#435)", async () => {

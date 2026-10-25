@@ -45,13 +45,19 @@ async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_
   const unregister = group ? register(p.pid) : () => {};
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
-  const kill = () => { send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
+  let signalled = false;
+  const kill = () => { signalled = true; send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
   const timer = setTimeout(kill, ms);
   signal?.addEventListener("abort", kill, { once: true });
   try {
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code, out: out.trim(), err: err.trim() };
-  } finally { unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
+  } finally {
+    // git is gone, but a transport child in its group that ignored SIGTERM (a credential helper, a proxy) may not be, and the timer that would have killed it is cleared below. Once the
+    // group was signalled, SIGKILL whatever is left of it (ESRCH when nothing is) before it is forgotten: it would otherwise live on at ppid 1 holding the repository.
+    if (group && signalled) try { process.kill(-p.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill);
+  }
 }
 
 export { git as syncGit };
@@ -67,13 +73,19 @@ export async function generationSyncGit(dir: string, args: string[], signal?: Ab
   const unregister = group ? register(p.pid) : () => {};
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
   let hard: ReturnType<typeof setTimeout> | undefined;
-  const kill = () => { send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
+  let signalled = false;
+  const kill = () => { signalled = true; send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
   const timer = setTimeout(kill, ms);
   signal?.addEventListener("abort", kill, { once: true });
   try {
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code, out: out.trim(), err: err.trim() };
-  } finally { unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
+  } finally {
+    // git is gone, but a transport child in its group that ignored SIGTERM (a credential helper, a proxy) may not be, and the timer that would have killed it is cleared below. Once the
+    // group was signalled, SIGKILL whatever is left of it (ESRCH when nothing is) before it is forgotten: it would otherwise live on at ppid 1 holding the repository.
+    if (group && signalled) try { process.kill(-p.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill);
+  }
 }
 
 

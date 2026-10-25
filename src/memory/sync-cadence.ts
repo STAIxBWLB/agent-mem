@@ -61,14 +61,24 @@ export const SYNC_IF_DUE_DEADLINE_MS = 30_000;
  */
 export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
 export type StopCause = "person" | "deadline";
-export function stopSignal(ms: number, emitter: { on(name: string, fn: () => void): unknown; off(name: string, fn: () => void): unknown }, names: readonly string[] = STOP_SIGNALS): { signal: AbortSignal; dispose: () => void; cause: () => StopCause | undefined } {
+export function stopSignal(ms: number, emitter: { on(name: string, fn: () => void): unknown; off(name: string, fn: () => void): unknown }, names: readonly string[] = STOP_SIGNALS): { signal: AbortSignal; dispose: () => void; cause: () => StopCause | undefined; signalName: () => string | undefined } {
   const controller = new AbortController(), deadline = AbortSignal.timeout(ms);
-  let cause: StopCause | undefined;
+  let cause: StopCause | undefined, named: string | undefined;
   // The first thing that ends the run is its cause: a person who closes the terminal after the deadline already fired did not stop it.
-  const stop = () => { cause ??= "person"; controller.abort(); };
+  const handlers = names.map(name => [name, () => { if (cause === undefined) { cause = "person"; named = name; } controller.abort(); }] as const);
   deadline.addEventListener("abort", () => { cause ??= "deadline"; }, { once: true });
-  for (const name of names) emitter.on(name, stop);
-  return { signal: AbortSignal.any([controller.signal, deadline]), dispose: () => { for (const name of names) emitter.off(name, stop); }, cause: () => cause };
+  for (const [name, handler] of handlers) emitter.on(name, handler);
+  return { signal: AbortSignal.any([controller.signal, deadline]), dispose: () => { for (const [name, handler] of handlers) emitter.off(name, handler); }, cause: () => cause, signalName: () => named };
+}
+
+/**
+ * End this process the way the signal would have, once amem's own handlers are removed (a handler suppresses the default action, so a run a person ended would otherwise exit 1
+ * instead of 130, 143, 129). SIGQUIT's default action is a core dump, and Bun honours it: a re-raised SIGQUIT on Linux writes a core file the size of the process image (measured
+ * 5.9 GB, taking seconds, in a container with `ulimit -c unlimited`) while the shell waits for the exit, so it exits with the status that death would have had (128 + 3) at once.
+ */
+export function endLikeSignal(name: string): void {
+  if (name === "SIGQUIT") process.exit(128 + 3);
+  process.kill(process.pid, name as NodeJS.Signals);
 }
 
 /**
