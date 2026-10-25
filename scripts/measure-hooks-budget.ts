@@ -3,7 +3,7 @@
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { budgetSample, BudgetStall, budgetGroupRecorder } from "./budget-attempt.ts";
+import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -19,6 +19,7 @@ const RUNS = { plain: 40, contention: 15, sessionStart: 20 }, WALL_MS = 150, RSS
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
+async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
@@ -211,8 +212,8 @@ try {
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
   const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
-  console.log(JSON.stringify(report, null, 2));
-  if (!report.pass) process.exitCode = 1;
+  if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
+  return report;
 } finally {
   const deferralReport = { diagnostic: "R1-worker-deferrals", stalledAttemptsByGroup: Object.fromEntries(stalledAttempts), ...deferredWorkers, maxPlain: MAX_PLAIN_DEFERRED };
   console.error(JSON.stringify(deferralReport));
@@ -225,3 +226,13 @@ try {
   }
   f.close();
 }
+
+}
+// ponytail: repeat the complete fresh fixture suite once, not already-drained subgroups.
+// Upgrade to isolated per-workload fixtures before narrowing the retry unit.
+const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
+  wallPass: Object.values(report.budgets.R2.groups).every(group => group.pass),
+  rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
+}));
+
+console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2));
