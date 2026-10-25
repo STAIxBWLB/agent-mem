@@ -232,14 +232,19 @@ export async function importExternalMemory(opts: {
       const input = readBounded(file.path, root!);
       if (!input) { result.skipped.invalid++; continue; }
       if (input.truncated) result.skipped.truncated++;
-      for (const raw of records(file, input.text)) {
+      for (const sourceRecord of records(file, input.text)) {
         result.read++;
-        if (!raw) { result.skipped.invalid++; continue; }
+        if (!sourceRecord) { result.skipped.invalid++; continue; }
+        const raw = stripPrivateDeep(sourceRecord);
+        if (!raw.text.trim() || raw.title !== undefined && !raw.title.trim()) { result.skipped.invalid++; continue; }
+        const sourceFile = { ...file, relative: portable(file.relative) };
+        const whole: CandidateInput = { project, kind: "memory", text: raw.text, title: title(opts.source, sourceFile, raw, 0, 1), noteKind: "finding" };
+        if (looksSecret(`${whole.title ?? ""}\n${whole.text}`) || !await opts.policy(whole)) { result.skipped.policy++; continue; }
         const parts = chunks(raw.text);
         if (!parts.length) { result.skipped.invalid++; continue; }
         for (let index = 0; index < parts.length; index++) {
           if (result.added >= EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun) { result.limitReached = true; break; }
-          const record = stripPrivateDeep<CandidateInput>({ project, kind: "memory", text: parts[index]!, title: title(opts.source, { ...file, relative: portable(file.relative) }, raw, index, parts.length), noteKind: "finding" });
+          const record = stripPrivateDeep<CandidateInput>({ project, kind: "memory", text: parts[index]!, title: title(opts.source, sourceFile, raw, index, parts.length), noteKind: "finding" });
           if (record.kind !== "memory" || !record.text.trim() || record.title !== undefined && !record.title.trim()) { result.skipped.invalid++; continue; }
           if (looksSecret(`${record.title ?? ""}\n${record.text}`) || !await opts.policy(record)) { result.skipped.policy++; continue; }
           const id = candidateInputId(record);

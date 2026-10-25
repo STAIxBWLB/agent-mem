@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CandidateStore, type CandidateInput } from "../src/memory/candidates.ts";
 import { EXTERNAL_IMPORT_LIMITS, importExternalMemory } from "../src/memory/external-import.ts";
+import { createStandalonePolicy } from "../src/memory/policy.ts";
 
 const PROJECT = "fixture/project";
 const cleanup: (() => void)[] = [];
@@ -116,9 +117,31 @@ test("private spans are stripped before secret and policy screening", async () =
     return record.kind === "memory" && !record.text.includes("policy refused");
   } });
   expect(result).toMatchObject({ files: 4, read: 4, added: 2, skipped: { policy: 2, invalid: 0 } });
-  expect(seen).toHaveLength(3);
+  expect(seen).toHaveLength(5);
   expect(JSON.stringify(seen)).not.toContain("abcdefgh");
-  expect(candidates(base).map(row => row.input.kind === "memory" ? row.input.text : "").sort()).toEqual(["public finding", "visible "]);
+  expect(candidates(base).map(row => row.input.kind === "memory" ? row.input.text : "").sort()).toEqual(["public finding", "visible"]);
+});
+
+test("a configured pattern that straddles a candidate boundary is screened as one complete record", async () => {
+  const root = temp("whole-policy"), source = join(root, "source"), base = join(root, "memory");
+  const marker = "PRIVATE-SPANNING-TOKEN";
+  put(join(source, "boundary.md"), `${".".repeat(EXTERNAL_IMPORT_LIMITS.candidateTextChars - 5)}${marker}`);
+  const standalone = createStandalonePolicy({ piiPatterns: [marker] });
+  const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: value => standalone.screenStandalone(value) });
+  expect(result).toMatchObject({ files: 1, read: 1, added: 0, skipped: { policy: 1, invalid: 0 } });
+  expect(candidates(base)).toEqual([]);
+});
+
+test("private spans are stripped across chunk boundaries and an emptied record is invalid", async () => {
+  const root = temp("whole-private"), source = join(root, "source"), base = join(root, "memory");
+  put(join(source, "boundary.md"), `Public intro\n<private>${"x".repeat(EXTERNAL_IMPORT_LIMITS.candidateTextChars + 100)}PRIVATE-MARKER</private>\nPublic ending`);
+  put(join(source, "empty.md"), "<private>entirely private</private>");
+  const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: allow });
+  expect(result).toMatchObject({ files: 2, read: 2, added: 1, skipped: { policy: 0, invalid: 1 } });
+  const stored = candidates(base);
+  expect(stored).toHaveLength(1);
+  expect(JSON.stringify(stored)).not.toContain("PRIVATE-MARKER");
+  expect(stored[0]!.input).toMatchObject({ text: "Public intro\n\nPublic ending" });
 });
 
 test("chunking respects candidate and Unicode bounds, and oversized files are counted and truncated", async () => {

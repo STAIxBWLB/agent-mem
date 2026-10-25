@@ -12,7 +12,7 @@ export const PROJECT_IMPORT_MAX_BYTES = 64 * 1024 * 1024;
 export const PROJECT_IMPORT_MAX_LINE_BYTES = 64 * 1024;
 export const PROJECT_IMPORT_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
-const OPERATIONS_WARNING = "Supersede, demote and forget operations are not exported; re-import restores authored note rows only.";
+const OPERATIONS_WARNING = "Supersede, demote, settle and forget operations are not exported; re-import restores authored note rows only.";
 
 type ImportedNote = { id: string; at: string; machine: string; note: NoteInput };
 type Provenance = { source: Record<string, number>; peer: Record<string, number>; scope: Record<string, number> };

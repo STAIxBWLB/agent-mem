@@ -201,7 +201,7 @@ test("preview reports provenance and validation refuses external relations, futu
   expect(applied).toMatchObject({ applied: true, added: 2, wouldAdd: 2, skipped: { invalid: 6 } });
   expect(restored.list({ includeSuperseded: true })).toHaveLength(3);
   expect(restored.list({ includeSuperseded: true }).some(note => note.text.includes("Private"))).toBe(false);
-  expect(applied.warnings.join(" ")).toMatch(/Supersede, demote and forget operations are not exported/);
+  expect(applied.warnings.join(" ")).toMatch(/Supersede, demote, settle and forget operations are not exported/);
 });
 
 test("relationships may target another row in the same file", async () => {
