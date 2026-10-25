@@ -1,13 +1,15 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, extname, join, sep } from "node:path";
+import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { aliasedKeys, resolveAlias } from "./aliases.ts";
-import { CandidateStore, candidateInputId, type CandidateInput } from "./candidates.ts";
+import { CandidateQueueFull, CandidateStore, candidateInputId, type CandidateInput } from "./candidates.ts";
 import { pendingSummary, type PendingSummary } from "./candidate-pending.ts";
+import { realPath } from "./platform.ts";
+import { stripPrivateDeep } from "./private-spans.ts";
 import { looksSecret } from "./screen.ts";
 
-/** Discovery and read bounds for one import: at most 256 files, 512 directories, 512 entries per directory, 16 directory levels and 1 MiB per file. */
-export const EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, candidateTextChars: 3000, titleChars: 200 } as const;
+/** Discovery and read bounds for one import: at most 256 files, 512 directories, 512 entries per directory, 16 directory levels, 1 MiB per file and 100 new candidates. */
+export const EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 } as const;
 
 export type ExternalMemorySource = "claude-auto" | "codex";
 export interface ExternalImportResult {
@@ -16,6 +18,8 @@ export interface ExternalImportResult {
   files: number;
   read: number;
   added: number;
+  queueFull: boolean;
+  limitReached: boolean;
   skipped: { rules: number; policy: number; invalid: number; truncated: number };
   pending: PendingSummary;
 }
@@ -34,14 +38,36 @@ function entryKind(path: string): "file" | "directory" | "symlink" | "other" | u
   } catch { return undefined; }
 }
 
+function sourceRoot(path: string): string | undefined {
+  if (entryKind(path) !== "directory") return undefined;
+  try {
+    const root = realPath(path);
+    for (let dir = root;; dir = dirname(dir)) {
+      if (entryKind(dir) !== "directory") return undefined;
+      const parent = dirname(dir);
+      if (parent === dir) return root;
+    }
+  } catch { return undefined; }
+}
+
 function names(path: string): string[] {
-  try { return readdirSync(path).sort((a, b) => a < b ? -1 : a > b ? 1 : 0).slice(0, EXTERNAL_IMPORT_LIMITS.maxEntriesPerDirectory); }
-  catch { return []; }
+  let dir;
+  try {
+    dir = opendirSync(path);
+    const output: string[] = [];
+    while (output.length < EXTERNAL_IMPORT_LIMITS.maxEntriesPerDirectory) {
+      const entry = dir.readSync();
+      if (!entry) break;
+      output.push(entry.name);
+    }
+    return output;
+  } catch { return []; }
+  finally { dir?.closeSync(); }
 }
 
 function ruleFile(path: string): boolean {
   const name = basename(path).toLowerCase();
-  return name === "claude.md" || name === "agents.md";
+  return name === "claude.md" || name === "agents.md" || name === "agents.override.md" || name.endsWith(".local.md");
 }
 
 function useful(path: string, source: ExternalMemorySource): boolean {
@@ -49,12 +75,10 @@ function useful(path: string, source: ExternalMemorySource): boolean {
   return source === "claude-auto" ? extension === ".md" : extension === ".md" || extension === ".txt" || extension === ".jsonl";
 }
 
-function discoverClaude(root: string): Discovery {
+function discoverClaude(root: string, projectDirectory?: string): Discovery {
   const files: SourceFile[] = [];
-  let rules = 0, directories = 0;
-  if (entryKind(root) !== "directory") return { files, rules };
-  directories = 1;
-  for (const project of names(root)) {
+  let rules = 0, directories = 1;
+  for (const project of projectDirectory === undefined ? names(root) : [projectDirectory]) {
     if (directories >= EXTERNAL_IMPORT_LIMITS.maxDirectories || files.length >= EXTERNAL_IMPORT_LIMITS.maxFiles) break;
     const projectPath = join(root, project), projectKind = entryKind(projectPath);
     if (projectKind === "symlink") { rules++; continue; }
@@ -80,7 +104,6 @@ function discoverClaude(root: string): Discovery {
 function discoverCodex(root: string): Discovery {
   const files: SourceFile[] = [];
   let rules = 0, directories = 0;
-  if (entryKind(root) !== "directory") return { files, rules };
   const pending: { path: string; relative: string; depth: number }[] = [{ path: root, relative: "", depth: 0 }];
   while (pending.length && directories < EXTERNAL_IMPORT_LIMITS.maxDirectories && files.length < EXTERNAL_IMPORT_LIMITS.maxFiles) {
     const current = pending.shift()!;
@@ -93,6 +116,7 @@ function discoverCodex(root: string): Discovery {
       const kind = entryKind(path);
       if (kind === "symlink") { rules++; continue; }
       if (kind === "directory") {
+        if (basename(path).toLowerCase() === "rules") { rules++; continue; }
         if (current.depth < EXTERNAL_IMPORT_LIMITS.maxDepth) directoriesToAdd.push({ path, relative, depth: current.depth + 1 });
         continue;
       }
@@ -105,8 +129,14 @@ function discoverCodex(root: string): Discovery {
   return { files, rules };
 }
 
-function readBounded(path: string): { text: string; truncated: boolean } | undefined {
-  if (entryKind(path) !== "file") return undefined;
+function readBounded(path: string, root: string): { text: string; truncated: boolean } | undefined {
+  const tail = relative(root, path);
+  if (!tail || tail === ".." || tail.startsWith(`..${sep}`) || entryKind(path) !== "file") return undefined;
+  for (let dir = dirname(path);; dir = dirname(dir)) {
+    if (entryKind(dir) !== "directory") return undefined;
+    if (dir === root) break;
+    if (dir === dirname(dir)) return undefined;
+  }
   let fd: number | undefined;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -125,7 +155,7 @@ function readBounded(path: string): { text: string; truncated: boolean } | undef
 
 function records(file: SourceFile, text: string): (RawRecord | undefined)[] {
   if (extname(file.path).toLowerCase() !== ".jsonl") return [text.trim() && !text.includes("\0") ? { text } : undefined];
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(/\r\n|\r|\n/);
   if (lines.at(-1) === "") lines.pop();
   return lines.map((line, index): RawRecord | undefined => {
     try {
@@ -176,24 +206,30 @@ function title(source: ExternalMemorySource, file: SourceFile, record: RawRecord
 }
 
 function portable(path: string): string { return path.split(sep).join("/"); }
+function claudeProjectDirectory(cwd: string): string { return realPath(cwd).replace(/[/.]/g, "-"); }
 
 export async function importExternalMemory(opts: {
   base: string;
   project: string;
   source: ExternalMemorySource;
   from?: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
   policy: (value: unknown) => boolean | Promise<boolean>;
 }): Promise<ExternalImportResult> {
   if (opts.source !== "claude-auto" && opts.source !== "codex") throw new Error("unknown external memory source");
-  const root = opts.from ?? (opts.source === "claude-auto" ? join(homedir(), ".claude", "projects") : join(homedir(), ".codex", "memories"));
-  const project = resolveAlias(opts.base, opts.project), aliases = aliasedKeys(opts.base, project);
-  const discovery = opts.source === "claude-auto" ? discoverClaude(root) : discoverCodex(root);
-  const result: ExternalImportResult = { source: opts.source, project, files: 0, read: 0, added: 0, skipped: { rules: discovery.rules, policy: 0, invalid: 0, truncated: 0 }, pending: { count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 } };
+  const env = opts.env ?? process.env, home = env.HOME || homedir();
+  const configured = opts.source === "claude-auto" ? env.CLAUDE_CONFIG_DIR : env.CODEX_HOME;
+  const source = opts.from ?? (configured?.trim() ? join(configured, opts.source === "claude-auto" ? "projects" : "memories") : join(home, opts.source === "claude-auto" ? ".claude/projects" : ".codex/memories"));
+  const root = sourceRoot(source), project = resolveAlias(opts.base, opts.project), aliases = aliasedKeys(opts.base, project);
+  const projectDirectory = opts.from === undefined && opts.source === "claude-auto" ? claudeProjectDirectory(opts.cwd ?? process.cwd()) : undefined;
+  const discovery = root ? opts.source === "claude-auto" ? discoverClaude(root, projectDirectory) : discoverCodex(root) : { files: [], rules: 0 };
+  const result: ExternalImportResult = { source: opts.source, project, files: 0, read: 0, added: 0, queueFull: false, limitReached: false, skipped: { rules: discovery.rules, policy: 0, invalid: 0, truncated: 0 }, pending: { count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 } };
   const store = new CandidateStore({ memoryDir: opts.base, reconcile: { canonical: project, aliases } });
   try {
     for (const file of discovery.files) {
       result.files++;
-      const input = readBounded(file.path);
+      const input = readBounded(file.path, root!);
       if (!input) { result.skipped.invalid++; continue; }
       if (input.truncated) result.skipped.truncated++;
       for (const raw of records(file, input.text)) {
@@ -202,14 +238,23 @@ export async function importExternalMemory(opts: {
         const parts = chunks(raw.text);
         if (!parts.length) { result.skipped.invalid++; continue; }
         for (let index = 0; index < parts.length; index++) {
-          const record: CandidateInput = { project, kind: "memory", text: parts[index]!, title: title(opts.source, { ...file, relative: portable(file.relative) }, raw, index, parts.length), noteKind: "finding" };
+          if (result.added >= EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun) { result.limitReached = true; break; }
+          const record = stripPrivateDeep<CandidateInput>({ project, kind: "memory", text: parts[index]!, title: title(opts.source, { ...file, relative: portable(file.relative) }, raw, index, parts.length), noteKind: "finding" });
+          if (record.kind !== "memory" || !record.text.trim() || record.title !== undefined && !record.title.trim()) { result.skipped.invalid++; continue; }
           if (looksSecret(`${record.title ?? ""}\n${record.text}`) || !await opts.policy(record)) { result.skipped.policy++; continue; }
           const id = candidateInputId(record);
           if (store.get(id, project)) continue;
-          store.put(record, "public");
+          try { store.put(record, "public"); }
+          catch (error) {
+            if (!(error instanceof CandidateQueueFull)) throw error;
+            result.queueFull = true;
+            break;
+          }
           result.added++;
         }
+        if (result.queueFull || result.limitReached) break;
       }
+      if (result.queueFull || result.limitReached) break;
     }
   } finally { store.close(); }
   result.pending = pendingSummary(opts.base, [project, ...aliases], Date.now());

@@ -546,10 +546,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "import" && ["claude-auto", "codex"].includes(parsed.path[1] ?? "")) {
     for (const flag of ["--db", "--limit", "--restart"]) if (options[flag] !== undefined) throw new Error(`${flag} only applies to import claude-mem`);
     const source = parsed.path[1] as ExternalMemorySource, policy = policyOf();
-    const result = await importExternalMemory({ base: memoryHome(), project: boundProject(), source,
+    const result = await importExternalMemory({ base: memoryHome(), project: boundProject(), source, cwd: policyCwd, env: context.env ?? process.env,
       ...(typeof options["--from"] === "string" ? { from: options["--from"] } : {}), policy: value => policy.screenStandalone(value) });
     return options["--json"] ? JSON.stringify(result, null, 2)
-      : `imported ${result.added} ${source} candidates from ${result.files} files (${result.read} records, ${result.pending.count} pending); skipped ${result.skipped.rules} rule files, ${result.skipped.policy} policy/secret records, ${result.skipped.invalid} invalid records and ${result.skipped.truncated} oversized inputs`;
+      : `imported ${result.added} ${source} candidates from ${result.files} files (${result.read} records, ${result.pending.count} pending); skipped ${result.skipped.rules} rule files, ${result.skipped.policy} policy/secret records, ${result.skipped.invalid} invalid records and ${result.skipped.truncated} oversized inputs${result.queueFull ? "; candidate queue is full" : result.limitReached ? "; per-run candidate cap reached" : ""}`;
   }
   if (sub === "project") {
     const op = parsed.path[1]!, [requested] = parsed.positionals;
@@ -562,13 +562,17 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file} as ${result.format}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
     }
     if (op === "import") {
-      if (typeof options["--from"] !== "string") throw new Error("usage: amem project import <key> --from <file.jsonl>");
+      if (typeof options["--from"] !== "string") throw new Error("usage: amem project import <key> --from <file.jsonl> [--confirm] [--allow-shared]");
       const key = resolveAlias(memoryHome(), requested), policy = policyOf();
       const store = curatedStore(key, { screen: note => policy.screenStandalone(note) ? "promote" : "keep", createAliases: true });
       try {
-        const result = await importProject(store, { from: options["--from"], project: key, policy: note => policy.screenStandalone(note) });
+        const result = await importProject(store, { from: options["--from"], project: key, confirm: options["--confirm"] === true,
+          allowShared: options["--allow-shared"] === true, policy: note => policy.screenStandalone(note) });
+        const counts = `sources ${JSON.stringify(result.provenance.source)}, peers ${JSON.stringify(result.provenance.peer)}, scopes ${JSON.stringify(result.provenance.scope)}`;
+        const summary = result.applied ? `imported ${result.added} of ${result.read} curated notes into ${result.project} with their original ids`
+          : `preview: ${result.wouldAdd} of ${result.read} curated notes can be imported into ${result.project} with their original ids (re-run with --confirm to write)`;
         return options["--json"] ? JSON.stringify(result, null, 2)
-          : `imported ${result.added} of ${result.read} curated notes into ${result.project} with their original ids; skipped ${result.skipped.invalid} invalid, ${result.skipped.policy} policy/secret and ${result.skipped.other} non-curated records`;
+          : `${summary}; ${counts}; skipped ${result.skipped.invalid} invalid, ${result.skipped.policy} policy/secret and ${result.skipped.other} non-curated records. ${result.warnings.join(" ")}`;
       } finally { store.close(); }
     }
     const key = requireShard(memoryHome(), requested);

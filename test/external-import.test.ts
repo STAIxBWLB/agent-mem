@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CandidateStore, type CandidateInput } from "../src/memory/candidates.ts";
@@ -49,6 +49,22 @@ test("claude-auto imports only direct project memory Markdown, preserves bytes a
   expect(readFileSync(note)).toEqual(before);
 });
 
+test("default source roots honor Claude and Codex environment configuration and Claude stays on the bound project", async () => {
+  const root = temp("configured"), base = join(root, "memory"), repo = join(root, "repo.with.dot");
+  mkdirSync(repo, { recursive: true });
+  const claude = join(root, "claude-profile"), codex = join(root, "codex-home");
+  const encoded = realpathSync(repo).replace(/[/.]/g, "-");
+  put(join(claude, "projects", encoded, "memory", "own.md"), "bound project memory");
+  put(join(claude, "projects", "-Users-other-project", "memory", "other.md"), "OTHER-PROJECT-PRIVATE");
+  put(join(codex, "memories", "codex.md"), "configured Codex memory");
+  const env = { HOME: join(root, "unused-home"), CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex };
+  const first = await importExternalMemory({ base, project: PROJECT, source: "claude-auto", cwd: repo, env, policy: allow });
+  expect(first).toMatchObject({ files: 1, read: 1, added: 1 });
+  expect(JSON.stringify(candidates(base))).toContain("bound project memory");
+  expect(JSON.stringify(candidates(base))).not.toContain("OTHER-PROJECT-PRIVATE");
+  expect(await importExternalMemory({ base, project: PROJECT, source: "codex", cwd: repo, env, policy: allow })).toMatchObject({ files: 1, added: 1 });
+});
+
 test("codex imports recursive Markdown and JSONL strings/objects while skipping malformed records", async () => {
   const root = temp("codex"), source = join(root, "source"), base = join(root, "memory");
   put(join(source, "nested", "note.md"), "Markdown finding");
@@ -61,35 +77,48 @@ test("codex imports recursive Markdown and JSONL strings/objects while skipping 
   expect(stored.some(row => row.input.kind === "memory" && row.input.title?.includes("codex: records.jsonl#2: Named title"))).toBe(true);
 });
 
-test("rule files and symlink files/directories are never imported or followed", async () => {
+test("rule files, rules directories and symlink files/directories are never imported or followed", async () => {
   const root = temp("links"), source = join(root, "source"), outside = join(root, "outside"), base = join(root, "memory");
   put(join(source, "keep.md"), "safe");
   put(join(source, "claude.MD"), "rule");
   put(join(source, "sub", "agents.md"), "rule");
+  put(join(source, "agents.override.md"), "rule");
+  put(join(source, "settings.local.md"), "rule");
+  put(join(source, "rules", "nested.md"), "rule");
   put(join(outside, "secret.md"), "outside file");
   put(join(outside, "directory", "secret.md"), "outside directory");
   symlinkSync(join(outside, "secret.md"), join(source, "linked.md"));
   symlinkSync(join(outside, "directory"), join(source, "linked-directory"), "dir");
   const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: allow });
-  expect(result).toMatchObject({ files: 1, read: 1, added: 1, skipped: { rules: 4, policy: 0, invalid: 0 } });
+  expect(result).toMatchObject({ files: 1, read: 1, added: 1, skipped: { rules: 7, policy: 0, invalid: 0 } });
   expect(JSON.stringify(candidates(base))).not.toContain("outside");
 });
 
-test("secret-looking and policy-refused candidates are not written and secrets do not reach policy", async () => {
+test("a symlinked source ancestor is resolved once and never used as a traversal shortcut", async () => {
+  const root = temp("ancestor"), actual = join(root, "actual"), alias = join(root, "alias"), base = join(root, "memory");
+  put(join(actual, "source", "safe.md"), "canonical source");
+  symlinkSync(actual, alias, "dir");
+  const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: join(alias, "source"), policy: allow });
+  expect(result).toMatchObject({ files: 1, read: 1, added: 1 });
+  expect(candidates(base)[0]!.input).toMatchObject({ text: "canonical source" });
+});
+
+test("private spans are stripped before secret and policy screening", async () => {
   const root = temp("policy"), source = join(root, "source"), base = join(root, "memory");
   put(join(source, "good.md"), "public finding");
   put(join(source, "policy.md"), "policy refused finding");
   put(join(source, "secret.md"), "token: abcdefgh12345678");
+  put(join(source, "private.md"), "visible <private>token: abcdefgh12345678</private>");
   const seen: CandidateInput[] = [];
   const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: (value) => {
     const record = value as CandidateInput;
     seen.push(record);
     return record.kind === "memory" && !record.text.includes("policy refused");
   } });
-  expect(result).toMatchObject({ files: 3, read: 3, added: 1, skipped: { policy: 2, invalid: 0 } });
-  expect(seen).toHaveLength(2);
+  expect(result).toMatchObject({ files: 4, read: 4, added: 2, skipped: { policy: 2, invalid: 0 } });
+  expect(seen).toHaveLength(3);
   expect(JSON.stringify(seen)).not.toContain("abcdefgh");
-  expect(candidates(base).map(row => row.input.kind === "memory" ? row.input.text : "")).toEqual(["public finding"]);
+  expect(candidates(base).map(row => row.input.kind === "memory" ? row.input.text : "").sort()).toEqual(["public finding", "visible "]);
 });
 
 test("chunking respects candidate and Unicode bounds, and oversized files are counted and truncated", async () => {
@@ -109,10 +138,21 @@ test("chunking respects candidate and Unicode bounds, and oversized files are co
   expect(JSON.stringify(stored)).not.toContain("TAIL-MARKER");
 });
 
-test("discovery stops at the documented file cap", async () => {
+test("discovery and candidate writes stop at their documented caps with a complete result", async () => {
   const root = temp("file-cap"), source = join(root, "source"), base = join(root, "memory");
   for (let index = 0; index <= EXTERNAL_IMPORT_LIMITS.maxFiles; index++) put(join(source, `${String(index).padStart(4, "0")}.md`), `finding ${index}`);
   const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: allow });
-  expect(result).toMatchObject({ files: EXTERNAL_IMPORT_LIMITS.maxFiles, read: EXTERNAL_IMPORT_LIMITS.maxFiles, added: EXTERNAL_IMPORT_LIMITS.maxFiles, pending: { count: EXTERNAL_IMPORT_LIMITS.maxFiles } });
-  expect(candidates(base)).toHaveLength(EXTERNAL_IMPORT_LIMITS.maxFiles);
+  expect(result).toMatchObject({ files: EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun + 1, read: EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun + 1,
+    added: EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun, limitReached: true, queueFull: false, pending: { count: EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun } });
+  expect(candidates(base)).toHaveLength(EXTERNAL_IMPORT_LIMITS.maxCandidatesPerRun);
+});
+
+test("a full candidate queue returns counts and queueFull instead of throwing", async () => {
+  const root = temp("queue-full"), source = join(root, "source"), base = join(root, "memory");
+  put(join(source, "new.md"), "one more candidate");
+  const seeded = new CandidateStore({ memoryDir: base });
+  for (let index = 0; index < 500; index++) seeded.put({ project: PROJECT, kind: "memory", text: `existing ${index}` }, "public");
+  seeded.close();
+  const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: allow });
+  expect(result).toMatchObject({ files: 1, read: 1, added: 0, queueFull: true, limitReached: false, pending: { count: 500 } });
 });

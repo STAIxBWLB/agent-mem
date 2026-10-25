@@ -221,7 +221,7 @@ test("search, list and goals run from inside an archived or forgotten project ar
   for (const argv of [["search", "decision"], ["list"]]) await expect(runCli(argv, person)).rejects.toThrow(/forgotten/);
 });
 
-test("project export and import run through the person CLI and preserve curated ids", async () => {
+test("project export and import preview provenance before confirmation and preserve curated ids", async () => {
   const { dir, person } = rig();
   note(dir, A, "portable CLI decision");
   const original = new MemoryStore({ home: dir, deferPromotions: true });
@@ -232,10 +232,12 @@ test("project export and import run through the person CLI and preserve curated 
   expect(readFileSync(markdown, "utf8")).toContain("portable CLI decision");
 
   process.env.AMEM_HOME = join(dir, "restored");
-  expect(await json(["project", "import", A, "--from", jsonl, "--json"], person)).toMatchObject({ read: 1, added: 1 });
+  expect(await json(["project", "import", A, "--from", jsonl, "--json"], { ...person, stdinTTY: false })).toMatchObject({ applied: false, read: 1, added: 0, wouldAdd: 1,
+    provenance: { source: { person: 1 }, peer: { codex: 1 }, scope: { project: 1 } } });
+  expect(await json(["project", "import", A, "--from", jsonl, "--confirm", "--json"], person)).toMatchObject({ applied: true, read: 1, added: 1 });
   const restored = new MemoryStore({ memoryDir: process.env.AMEM_HOME, deferPromotions: true });
   expect(restored.list().map(view => view.id)).toEqual(expected); restored.close();
-  await expect(runCli(["project", "import", A, "--from", jsonl], { ...person, stdinTTY: false })).rejects.toThrow(/terminal/);
+  await expect(runCli(["project", "import", A, "--from", jsonl, "--confirm"], { ...person, stdinTTY: false })).rejects.toThrow(/terminal/);
 });
 
 test("Codex import runs through the person CLI as an idempotent candidate import", async () => {

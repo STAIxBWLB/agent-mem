@@ -491,7 +491,7 @@ export class MemoryStore {
    * An entry from another store with its own time (`ahub memory import claude-mem`): the same source row always gives
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
-  importNote(n: NoteInput, at: string, identity: { machine?: string } = {}): { id: string; added: boolean } {
+  importNote(n: NoteInput, at: string, identity: { machine?: string; expectedId?: string } = {}): { id: string; added: boolean } {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
     if (this.userOverlay && n.scope === "shared") return this.userOverlay.importNote(n, at, identity);
     if (this.profile.sharded && !this.profile.shardUser && n.scope === "project" && n.project !== this.profile.shardKey) {
@@ -503,6 +503,7 @@ export class MemoryStore {
     // A fixed machine: the same observation imported on two machines is one entry once they sync. A project import preserves the exported identity instead.
     const body = { schema: MEMORY_SCHEMA, at, machine: identity.machine ?? "claude-mem", ...n, text: stripPrivateSpans(n.text).slice(0, MAX_TEXT), ...(n.title ? { title: stripPrivateSpans(n.title).slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
+    if (identity.expectedId !== undefined && identity.expectedId !== id) throw new Error("project import entry identity changed");
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(n.tier === "short", this.machine.id);
       // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.

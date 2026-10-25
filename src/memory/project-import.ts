@@ -1,22 +1,35 @@
 import { createHash } from "node:crypto";
 import { constants, createReadStream, fstatSync, openSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { isDeepStrictEqual } from "node:util";
 import { legacyEntries } from "./bridge.ts";
+import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { EXPORT_SCHEMA } from "./project-export.ts";
 import { aliasedKeys } from "./shard.ts";
 import { looksSecret, type MemoryStore, type NoteInput } from "./store.ts";
 
 export const PROJECT_IMPORT_MAX_BYTES = 64 * 1024 * 1024;
 export const PROJECT_IMPORT_MAX_LINE_BYTES = 64 * 1024;
+export const PROJECT_IMPORT_FUTURE_SKEW_MS = 5 * 60 * 1000;
+const NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
+const OPERATIONS_WARNING = "Supersede, demote and forget operations are not exported; re-import restores authored note rows only.";
+
+type ImportedNote = { id: string; at: string; machine: string; note: NoteInput };
+type Provenance = { source: Record<string, number>; peer: Record<string, number>; scope: Record<string, number> };
 export interface ProjectImportResult {
+  applied: boolean;
   project: string;
   read: number;
   added: number;
+  wouldAdd: number;
   skipped: { invalid: number; policy: number; other: number };
+  provenance: Provenance;
+  warnings: string[];
 }
 
-function importedNote(value: unknown, projects: readonly string[]): { id: string; at: string; machine: string; note: NoteInput } | undefined {
+function importedNote(value: unknown, projects: readonly string[]): ImportedNote | undefined {
   try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).every(key => NOTE_KEYS.has(key))) return undefined;
     const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
     const [row] = legacyEntries([{ source: "legacy-local", path: "log/project-import.jsonl", bytes, offset: bytes.length,
       hash: createHash("sha256").update(bytes).digest("hex"), local: false, tailBytes: 0 }], { strict: true });
@@ -27,14 +40,41 @@ function importedNote(value: unknown, projects: readonly string[]): { id: string
   } catch { return undefined; }
 }
 
-/** Re-import only curated notes from the streaming JSONL export. Capture, goals and work lists remain export-only in this format. */
-export async function importProject(store: MemoryStore, opts: { from: string; project: string; policy: (note: NoteInput) => boolean | Promise<boolean> }): Promise<ProjectImportResult> {
+function increment(counts: Map<string, number>, value: string | undefined): void {
+  const key = value ?? "unspecified";
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function provenance(notes: Iterable<ImportedNote>): Provenance {
+  const source = new Map<string, number>(), peer = new Map<string, number>(), scope = new Map<string, number>();
+  for (const { note } of notes) {
+    increment(source, note.source);
+    increment(peer, note.peer);
+    increment(scope, note.scope);
+  }
+  return { source: Object.fromEntries(source), peer: Object.fromEntries(peer), scope: Object.fromEntries(scope) };
+}
+
+function unchangedAfterNormalization(note: NoteInput): boolean {
+  return stripPrivateSpans(note.text).slice(0, 4000) === note.text
+    && (typeof note.title !== "string" || stripPrivateSpans(note.title).slice(0, 200) === note.title);
+}
+
+/** Preview by default; confirm applies only after every row, relationship, identity and policy decision has passed without a curated write. */
+export async function importProject(store: MemoryStore, opts: {
+  from: string;
+  project: string;
+  confirm?: boolean;
+  allowShared?: boolean;
+  policy: (note: NoteInput) => boolean | Promise<boolean>;
+}): Promise<ProjectImportResult> {
   const fd = openSync(opts.from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   const stream = createReadStream(opts.from, { fd, encoding: "utf8" });
-  const result: ProjectImportResult = { project: opts.project, read: 0, added: 0, skipped: { invalid: 0, policy: 0, other: 0 } };
+  const result: ProjectImportResult = { applied: opts.confirm === true, project: opts.project, read: 0, added: 0, wouldAdd: 0,
+    skipped: { invalid: 0, policy: 0, other: 0 }, provenance: { source: {}, peer: {}, scope: {} }, warnings: [OPERATIONS_WARNING] };
   let header = false, bytes = 0;
   let aliases: string[] = [];
-  const seen = new Set<string>();
+  const pending = new Map<string, ImportedNote>(), accepted: ImportedNote[] = [];
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > PROJECT_IMPORT_MAX_BYTES) throw new Error("project import needs a regular JSONL file of at most 64 MiB");
@@ -65,17 +105,43 @@ export async function importProject(store: MemoryStore, opts: { from: string; pr
         if (row.type !== "curated") { result.skipped.other++; continue; }
         result.read++;
         const imported = importedNote(row.value, [opts.project, ...aliases]);
-        if (!imported) { result.skipped.invalid++; continue; }
-        if (seen.has(imported.id)) continue;
-        if (looksSecret(JSON.stringify(imported.note)) || !await opts.policy(imported.note)) { result.skipped.policy++; continue; }
-        const written = store.importNote(imported.note, imported.at, { machine: imported.machine });
-        if (written.id !== imported.id) throw new Error("project import entry identity changed");
-        seen.add(imported.id);
-        if (written.added) result.added++;
+        if (!imported || Date.parse(imported.at) > store.readNow() + PROJECT_IMPORT_FUTURE_SKEW_MS
+          || imported.note.scope === "shared" && opts.allowShared !== true || !unchangedAfterNormalization(imported.note)) {
+          result.skipped.invalid++;
+          continue;
+        }
+        const prior = pending.get(imported.id);
+        if (prior) {
+          if (!isDeepStrictEqual(prior, imported)) throw new Error("project import has conflicting rows for one entry id");
+          continue;
+        }
+        pending.set(imported.id, imported);
       }
     } finally { lines.close(); }
     if (!header) throw new Error("project import has no header");
-    store.refresh();
+
+    for (const imported of pending.values()) {
+      if (["supersedes", "promotedFrom"].some(field => {
+        const target = imported.note[field as "supersedes" | "promotedFrom"] as string | null | undefined;
+        return target !== undefined && target !== null && !pending.has(target);
+      })) {
+        result.skipped.invalid++;
+        continue;
+      }
+      const screened = stripPrivateDeep(imported.note);
+      if (looksSecret(JSON.stringify(screened)) || !await opts.policy(screened)) { result.skipped.policy++; continue; }
+      accepted.push(imported);
+    }
+    result.provenance = provenance(accepted);
+    const existing = new Set(store.portableNotes(opts.project).map(note => note.id));
+    result.wouldAdd = accepted.filter(note => !existing.has(note.id)).length;
+    if (opts.confirm === true) {
+      for (const imported of accepted) {
+        const written = store.importNote(imported.note, imported.at, { machine: imported.machine, expectedId: imported.id });
+        if (written.added) result.added++;
+      }
+      store.refresh();
+    }
     return result;
   } finally { stream.destroy(); }
 }

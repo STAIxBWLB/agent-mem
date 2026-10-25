@@ -17,8 +17,8 @@ import { WorkListStore } from "./work-lists.ts";
  *
  * The bundle leaves the home, so it is screened like sync and promotion are: a secret-looking value is withheld, and so is anything the host policy (when
  * one is passed) declines. `withheld` counts the capture rows, notes and goals left out; a work list the policy declines is left out silently by its own store.
- * A forgotten project cannot be exported (the person's decision stands); an archived one can. The write streams row by row, so a shard at its cap never has to
- * fit in memory, and a failure removes the partial file it created.
+ * A forgotten project cannot be exported (the person's decision stands); an archived one can. A failure removes the partial file it created.
+ * ponytail: JSONL capture, goal and work-list rows stream, but curated authored rows are materialized to preserve ids. Add a bounded authored-row iterator before raising shard limits.
  */
 
 export const EXPORT_SCHEMA = "agent-mem.project-export/v1";
@@ -49,6 +49,10 @@ function destination(base: string, to: string): string {
   return join(parentReal, name);
 }
 
+function markdownInline(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function markdownRecord(section: ExportSection, value: unknown): string {
   const row = value as Record<string, unknown>;
   const body = section === "capture" ? row.excerpt : section === "curated" ? row.text : undefined;
@@ -56,8 +60,8 @@ function markdownRecord(section: ExportSection, value: unknown): string {
   const metadata = { ...row };
   if (section === "capture") delete metadata.excerpt;
   if (section === "curated") delete metadata.text;
-  const lines = [`### ${section}${identity}`, "", JSON.stringify(metadata), ""];
-  if (typeof body === "string") lines.push(...body.split("\n").map(line => `    ${line}`), "");
+  const lines = [`### ${section}${identity}`, "", `    ${JSON.stringify(metadata)}`, ""];
+  if (typeof body === "string") lines.push(...body.split(/\r\n|\r|\n/).map(line => `    ${line}`), "");
   return `${lines.join("\n")}\n`;
 }
 
@@ -90,7 +94,7 @@ export async function exportProject(base: string, key: string, opts: { to: strin
   const stores: { close(): void }[] = [];
   try {
     if (format === "jsonl") out(`${JSON.stringify({ schema: EXPORT_SCHEMA, project, exportedAt, type: "header", aliases: aliasedKeys(base, project) })}\n`);
-    else if (format === "markdown") out(`# Project export ${JSON.stringify(project)}\n\nExported at ${exportedAt}\n`);
+    else if (format === "markdown") out(`# Project export ${markdownInline(JSON.stringify(project))}\n\nExported at ${exportedAt}\n`);
     begin(`{"schema":${JSON.stringify(EXPORT_SCHEMA)},"project":${JSON.stringify(project)},"exportedAt":${JSON.stringify(exportedAt)},"capture":[`, "capture", "Capture");
     const shard = walkShards(base).find(candidate => candidate.key === project);
     for (const dir of shard?.machineDirs ?? []) {
