@@ -5,18 +5,14 @@ import { Database } from "bun:sqlite";
 import { closeSync, fsyncSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-export interface RunnerProbe { cpuMs: number; spawnMs: number; ioMs: number; checksum: string }
+export interface RunnerProbe { cpuMs: number; spawnMs: number; ioMs: number; ioSamplesMs: readonly [number, number, number]; checksum: string }
 export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; factor: number; source?: string }
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// Hosted run 40206907449, Bun 1.4.2 (2026-10-26): both jobs passed on attempt 1,
-// without retried samples or advisory wall misses. Take maxima of five outer probes before
-// and five after unchanged main workloads, rounded up to 0.01 ms; per-workload probes are diagnostics.
-export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
-  linux: { cpuMs: 9.88, spawnMs: 15.19, ioMs: 18.27, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40206907449/job/121209695748" },
-  darwin: { cpuMs: 8.55, spawnMs: 16.20, ioMs: 48.98, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40206907449/job/121209695540" },
-};
+// Healthy hosted calibration must use the same three-I/O-sample median shape.
+// CPU/spawn baselines use maxima; I/O baseline is the median of healthy per-call medians.
+export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {};
 
 /** Fixed CPU, provider-free Bun spawn and fresh durable SQLite work; no application modules. */
 export function probeRunnerSpeed(): RunnerProbe {
@@ -29,8 +25,14 @@ export function probeRunnerSpeed(): RunnerProbe {
   });
   const spawnMs = performance.now() - start;
   if (child.error || child.status !== 0 || child.signal || child.stdout !== "runner-probe-ok" || child.stderr || checksum !== RUNNER_CHECKSUM) throw Error("runner-speed probe failed");
+  const ioSamplesMs: [number, number, number] = [durableWriteMs(), durableWriteMs(), durableWriteMs()];
+  return { cpuMs, spawnMs, ioMs: median(ioSamplesMs), ioSamplesMs, checksum };
+}
+
+/** Every sub-sample is fresh; a failed write fails the probe rather than disappearing from the median. */
+function durableWriteMs(): number {
   const dir = mkdtempSync(join(tmpdir(), "amem-runner-io-")), file = join(dir, "probe.db");
-  let db: Database | undefined, ioMs: number;
+  let db: Database | undefined;
   try {
     const ioStart = performance.now();
     db = new Database(file, { create: true });
@@ -45,14 +47,20 @@ export function probeRunnerSpeed(): RunnerProbe {
     try { fsyncSync(wal); } finally { closeSync(wal); }
     if ((db.query("SELECT count(*) AS count FROM probe").get() as { count: number }).count !== 16) throw Error("durable-write probe lost rows");
     db.close(); db = undefined;
-    ioMs = performance.now() - ioStart;
+    return performance.now() - ioStart;
   } finally { try { db?.close(); } finally { rmSync(dir, { recursive: true, force: true }); } }
-  return { cpuMs, spawnMs, ioMs, checksum };
+}
+
+export function median(values: readonly number[]): number {
+  const sorted = [...values];
+  if (!sorted.length || !sorted.every(value => Number.isFinite(value) && value > 0)) throw Error("invalid median samples");
+  sorted.sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
 export function runnerIsSlow(before: RunnerProbe, after: RunnerProbe, baseline: RunnerBaseline): boolean {
   if (![baseline.cpuMs, baseline.spawnMs, baseline.ioMs, baseline.factor].every(value => Number.isFinite(value) && value > 0) || baseline.factor <= 1) throw Error("invalid runner baseline");
-  for (const probe of [before, after]) if (![probe.cpuMs, probe.spawnMs, probe.ioMs].every(value => Number.isFinite(value) && value > 0) || probe.checksum !== RUNNER_CHECKSUM) throw Error("invalid runner probe");
+  for (const probe of [before, after]) if (![probe.cpuMs, probe.spawnMs, probe.ioMs].every(value => Number.isFinite(value) && value > 0) || probe.checksum !== RUNNER_CHECKSUM || probe.ioSamplesMs?.length !== 3 || median(probe.ioSamplesMs) !== probe.ioMs) throw Error("invalid runner probe");
   return [before, after].some(probe => probe.cpuMs > baseline.cpuMs * baseline.factor || probe.spawnMs > baseline.spawnMs * baseline.factor || probe.ioMs > baseline.ioMs * baseline.factor);
 }
 

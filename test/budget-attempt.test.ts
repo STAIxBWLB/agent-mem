@@ -47,7 +47,9 @@ test("a failed second stall is counted in the group without a third attempt", as
 // Injected readings keep runner-speed cases independent of the machine running the tests.
 const checksum = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 const baseline = { cpuMs: 10, spawnMs: 10, ioMs: 10, factor: 2 };
-const normal = { cpuMs: 10, spawnMs: 10, ioMs: 10, checksum }, slow = { ...normal, spawnMs: 21 };
+type Probe = import("../scripts/runner-probe.ts").RunnerProbe;
+const normal: Probe = { cpuMs: 10, spawnMs: 10, ioMs: 10, ioSamplesMs: [10, 10, 10], checksum }, slow = { ...normal, spawnMs: 21 };
+const withIo = (probe: Probe, ioMs: number): Probe => ({ ...probe, ioMs, ioSamplesMs: [ioMs, ioMs, ioMs] });
 const judgeGroup = (result: { wallMs: number; rssMB: number }) => ({ wallPass: result.wallMs < 150, rssPass: result.rssMB > 0 && result.rssMB < 100 });
 
 test("a slow-probed group remeasures a single wall miss once and retains every result and probe", async () => {
@@ -134,18 +136,18 @@ test("probe thresholds are strict, detect CPU, spawn or I/O slowdown and reject 
   expect(runnerIsSlow(normal, { ...normal, cpuMs: 20, spawnMs: 20 }, baseline)).toBe(false);
   expect(runnerIsSlow({ ...normal, cpuMs: 21 }, normal, baseline)).toBe(true);
   expect(runnerIsSlow(normal, slow, baseline)).toBe(true);
-  expect(runnerIsSlow(normal, { ...normal, ioMs: 21 }, baseline)).toBe(true);
+  expect(runnerIsSlow(normal, withIo(normal, 21), baseline)).toBe(true);
   for (const reading of [{ ...normal, cpuMs: NaN }, { ...normal, spawnMs: 0 }, { ...normal, ioMs: NaN }, { ...normal, ioMs: 0 }, { ...normal, checksum: "bad" }]) expect(() => runnerIsSlow(reading, normal, baseline)).toThrow("invalid runner probe");
 });
 
 test("I/O-only slowdown remeasures the observed 40204205266 wall-miss values with normal CPU and spawn", async () => {
   const { budgetGroup } = await import("../scripts/budget-attempt.ts");
-  const { RUNNER_BASELINES, runnerIsSlow } = await import("../scripts/runner-probe.ts");
-  const reference = RUNNER_BASELINES.linux!;
+  const { runnerIsSlow } = await import("../scripts/runner-probe.ts");
+  const reference = { cpuMs: 10.73, spawnMs: 17.17, ioMs: 10, factor: 2 };
   // The historical run did not record I/O. Only its CPU/spawn and wall values are historical;
-  // I/O just beyond the calibrated 2x limit is injected, not a claimed old reading.
-  const reading = { cpuMs: 9.63, spawnMs: 16.1, ioMs: reference.ioMs * reference.factor + 0.01, checksum };
-  expect(runnerIsSlow({ ...reading, ioMs: reference.ioMs }, { ...reading, ioMs: reference.ioMs }, reference)).toBe(false);
+  // Both the I/O baseline and the three I/O samples are injected, not claimed old readings.
+  const reading = withIo({ ...normal, cpuMs: 9.63, spawnMs: 16.1 }, reference.ioMs * reference.factor + 0.01);
+  expect(runnerIsSlow(withIo(reading, reference.ioMs), withIo(reading, reference.ioMs), reference)).toBe(false);
   for (const wallMs of [181.54, 206.15, 186.77]) {
     let runs = 0;
     const result = await budgetGroup("observed-wall-shape", () => ({ wallMs: ++runs === 1 ? wallMs : 80, rssMB: 75 }), judgeGroup,
@@ -158,5 +160,18 @@ test("fixed real probe completes verified durable WAL writes and reports all thr
   const { probeRunnerSpeed } = await import("../scripts/runner-probe.ts");
   const result = probeRunnerSpeed();
   expect(result.checksum).toBe(checksum);
+  expect(result.ioSamplesMs).toHaveLength(3);
+  expect(result.ioMs).toBe([...result.ioSamplesMs].sort((a, b) => a - b)[1]!);
   for (const ms of [result.cpuMs, result.spawnMs, result.ioMs]) { expect(Number.isFinite(ms)).toBe(true); expect(ms).toBeGreaterThan(0); }
+});
+
+test("three I/O samples use the median so one healthy-run spike does not set the reading", async () => {
+  const { median, runnerIsSlow } = await import("../scripts/runner-probe.ts");
+  expect(median([3.43, 48.97, 4.04])).toBe(4.04);
+  expect(median([48.97, 3.43, 4.04])).toBe(4.04);
+  expect(median([4, 5, 6, 7])).toBe(5.5);
+  const reading = { ...normal, ioMs: 4.04, ioSamplesMs: [3.43, 48.97, 4.04] as const };
+  expect(runnerIsSlow(reading, reading, baseline)).toBe(false);
+  expect(() => runnerIsSlow({ ...reading, ioMs: 48.97 }, reading, baseline)).toThrow("invalid runner probe");
+  for (const values of [[], [1, NaN, 2], [1, 0, 2], Array<number>(3)]) expect(() => median(values)).toThrow("invalid median samples");
 });
