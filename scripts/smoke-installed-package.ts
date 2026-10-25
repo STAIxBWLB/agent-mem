@@ -24,7 +24,7 @@ export function assertInstalledModule(modulePath: string, installedRoot: string,
 }
 export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
-  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse") || args.length === 3 && args.join(" ") === "setup all --apply", "installed smoke refuses unsupported CLI arguments");
+  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi"].includes(args[1]!)) || args.length === 3 && args.join(" ") === "setup all --apply", "installed smoke refuses unsupported CLI arguments");
 }
 export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
   const server = object(value);
@@ -291,6 +291,44 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
     assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
     requireSmoke(readFileSync(nativeCalls, "utf8") === registrations, "installed MCP or hook unexpectedly invoked a native coding client");
+    const networkCalls = join(home, "network-calls"), networkTripwire = join(app, "ingest-network-tripwire.ts");
+    writeFileSync(networkTripwire, `import {appendFileSync} from 'node:fs';import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url),marker=${JSON.stringify(networkCalls)};
+const trip=(name)=>{appendFileSync(marker,JSON.stringify({name})+'\\n');throw Error('installed ingest network tripwire');};
+globalThis.fetch=(...args)=>trip('fetch');globalThis.WebSocket=class {constructor(){trip('WebSocket');}};
+for(const [name,keys] of Object.entries({'node:http':['request','get'],'node:https':['request','get'],'node:net':['connect','createConnection'],'node:tls':['connect'],'node:dns':['lookup','resolve','resolve4','resolve6'],'node:dns/promises':['lookup','resolve','resolve4','resolve6']})){const module=require(name);for(const key of keys)module[key]=()=>trip(name+'.'+key);}
+require('node:net').Socket.prototype.connect=function(){return trip('Socket.connect');};Bun.connect=()=>trip('Bun.connect');\n`);
+    const ingest = (kind: "codex" | "kimi" | "pi") => {
+      const args = ["ingest", kind]; assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
+      return ownedCommand(bun, [bun, "--smol", "--preload", networkTripwire, entry, ...args], projectDir, installedEnv);
+    };
+    const at = "2026-10-23T01:00:00.000Z", nativeLine = (value: unknown) => JSON.stringify(value) + "\n";
+    for (const kind of ["codex", "kimi", "pi"] as const) {
+      const marker = `installed-${kind}-ingest-marker`, sessions = join(kind === "codex" ? env.CODEX_HOME! : kind === "kimi" ? env.KIMI_CODE_HOME! : env.PI_CODING_AGENT_DIR!, "sessions");
+      if (kind === "kimi") {
+        const session = join(sessions, "installed"), wire = join(session, "agents", "main", "wire.jsonl"); mkdirSync(dirname(wire), { recursive: true });
+        writeFileSync(join(session, "state.json"), JSON.stringify({ cwd: projectDir }));
+        writeFileSync(wire, nativeLine({ type: "metadata", protocol_version: "1.5" }) + nativeLine({ type: "context.append_message", time: Date.parse(at), message: { role: "assistant", content: [{ type: "text", text: marker }] } }));
+      } else {
+        mkdirSync(sessions, { recursive: true });
+        const records = kind === "codex" ? [
+          { timestamp: at, type: "session_meta", payload: { id: "installed-smoke", cwd: projectDir } },
+          { timestamp: at, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: marker }] } },
+        ] : [
+          { type: "session", version: 3, id: "installed-smoke", timestamp: at, cwd: projectDir },
+          { type: "message", id: "installed-smoke", timestamp: at, message: { role: "assistant", content: [{ type: "text", text: marker }] } },
+        ];
+        writeFileSync(join(sessions, "installed.jsonl"), records.map(nativeLine).join(""));
+      }
+      const before = await inspect(), first = object(JSON.parse(await ingest(kind)));
+      requireSmoke(first.files === 1 && first.imported === 1 && first.spooled === 0 && first.errors === 0 && first.remaining === false, `installed ${kind} ingest did not capture exactly one fixture`);
+      const after = await inspect(), oldRows = new Set(before.rows.map((row: any) => row.id));
+      requireSmoke(after.rows.filter((row: any) => !oldRows.has(row.id) && row.project === seed.project && row.agent === kind && row.event === "message" && row.excerpt === marker).length === 1, `installed ${kind} ingest lacks its durable project capture`);
+      const second = object(JSON.parse(await ingest(kind))), replayed = await inspect();
+      requireSmoke(second.imported === 0 && second.spooled === 0 && second.errors === 0 && second.remaining === false && JSON.stringify(replayed.rows) === JSON.stringify(after.rows), `installed ${kind} ingest cursor did not make its replay empty`);
+      requireSmoke(!existsSync(networkCalls), `installed ${kind} ingest attempted a network call`); verifyRules();
+    }
+    requireSmoke(readFileSync(nativeCalls, "utf8") === registrations, "installed MCP, hook or ingest unexpectedly invoked a native coding client");
     return { package: PACKAGE, version: metadata.version, setup: "preview and confirmed apply (stub CLIs)", registeredMcp, mcp: "seeded search", hook: "durable native capture observed", timing: "not measured; existing R2 gates remain separate" };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
