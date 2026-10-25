@@ -121,3 +121,9 @@ test("generation placement refuses a fresh oversized segment before any unbounde
     finally { SegmentReader.prototype.read = read; }
   } finally { store.close(); }
 });
+test("acceptance reads the placement proof once per locked section, not once per check (task #439)", () => {
+  const f = fixture(), a = f.note("source A"), b = f.note("source B"), id = f.candidates.put(f.proposal([a, b]), "public");
+  const original = f.store.entryPlacements.bind(f.store); let calls = 0;
+  f.store.entryPlacements = (...args) => { calls++; return original(...args); };
+  f.accept(id); expect(calls).toBe(2);   // the locked read, and the proof inside the append section
+});

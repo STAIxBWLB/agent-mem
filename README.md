@@ -453,7 +453,7 @@ The library exports `buildIntentBrief`, `planGuardNodes`, `matchingPlanFails` an
 
 ## Consolidation and evidence
 
-Run `amem consolidate [--project <active-key>]` to queue deterministic proposals for `amem review`. It compares a bounded project-local window using indexed text overlap, shared paths and current supersession-chain metadata. It does not edit curated notes. The person reviews each merge, replacement or recurring-failure summary, and acceptance rechecks every source revision. A recurring-failure summary preserves its source failures and decisions. Large source quotations are counted as too large instead of silently shortened into a proposed note.
+Run `amem consolidate [--project <current-key>]` (another project is refused) to queue deterministic proposals for `amem review`. It compares a bounded project-local window using indexed text overlap, shared paths and current supersession-chain metadata. It does not edit curated notes. The person reviews each merge, replacement or recurring-failure summary, and acceptance rechecks every source revision. A recurring-failure summary preserves its source failures and decisions. Large source quotations are counted as too large instead of silently shortened into a proposed note.
 
 The CLI runs the deterministic pass only. A library host may explicitly enable an injected model callback for the person; no provider is built in. It has batch, byte, deadline and persistent daily limits. Model answers remain marked machine-local candidates that cannot be accepted; `amem note add` is the separate path for an independently authored note. A non-answer is never saved.
 

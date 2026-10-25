@@ -1,11 +1,16 @@
 import { SearchIndex } from "./search-fts.ts";
 import { recallViewIsLive } from "./recall.ts";
+import { ACCEPTED_CONSOLIDATION_PREFIX } from "./candidates.ts";
 import type { View } from "./store.ts";
 
 export type ConsolidationAction = "merge" | "supersession" | "recurring-fix";
 export interface ConsolidationCluster { action: ConsolidationAction; sources: View[]; reason: string }
 export const CONSOLIDATION_SOURCE_LIMIT = 256, CONSOLIDATION_PROPOSAL_LIMIT = 32;
 const words = (row: View) => new Set((`${row.title ?? ""} ${row.text}`.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? []).filter(word => !["the", "and", "for", "with", "from", "this", "that", "approach", "symptom", "cause", "evidence", "retry", "when"].includes(word)).slice(0, 128));
+/** A note written by accepting a consolidation candidate. Proposing over one would be a summary of summaries. */
+export const isAcceptedConsolidation = (row: Pick<View, "text">): boolean => row.text.startsWith(ACCEPTED_CONSOLIDATION_PREFIX);
+/** An accepted recurring-fix summary keeps its sources live and quotes them whole, so it overlaps each of them. */
+const isAcceptedRecurringFix = (row: Pick<View, "text">): boolean => isAcceptedConsolidation(row) && /^Action: recurring-fix$/m.test(row.text.split("\n\n", 1)[0] ?? "");
 const paths = (row: View) => row.about.filter(node => node.startsWith("path:"));
 const sharedPath = (a: View, b: View) => paths(a).some(node => paths(b).includes(node));
 const overlap = (a: Set<string>, b: Set<string>) => [...a].filter(word => b.has(word)).length / Math.max(1, Math.min(a.size, b.size));
@@ -31,15 +36,15 @@ export function consolidationClusters(input: readonly View[], project: string, n
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i]!, candidates = index.available ? new Set(index.query([...terms.get(row.id)!].slice(0, 32).join(" "), rows.length, project).map(hit => hit.ref)) : undefined;
       for (const peer of rows.slice(i + 1)) {
-        if (row.kind !== peer.kind) continue;
+        if (row.kind !== peer.kind || isAcceptedRecurringFix(row) || isAcceptedRecurringFix(peer)) continue;
         const lexical = overlap(terms.get(row.id)!, terms.get(peer.id)!);
         if (row.text === peer.text) add("supersession", [row, peer], "Identical text; review one replacement for both originals.");
         else if ((!candidates || candidates.has(peer.id)) && lexical >= 0.5 && sharedPath(row, peer)) add("merge", [row, peer], "Shared path and overlapping indexed terms; no equivalence is assumed.");
       }
       // A retained supersession chain is context, never a reason to resurrect an old body.
-      if (row.supersedes.length >= 2) add("merge", [row], "Current head already replaces multiple originals; review a chain summary.");
+      if (row.supersedes.length >= 2 && !isAcceptedConsolidation(row)) add("merge", [row], "Current head already replaces multiple originals; review a chain summary.");
     }
-    const failRows = rows.filter(row => row.kind === "fail"), decisions = rows.filter(row => row.kind === "decision" || row.kind === "contract");
+    const failRows = rows.filter(row => row.kind === "fail" && !isAcceptedConsolidation(row)), decisions = rows.filter(row => row.kind === "decision" || row.kind === "contract");
     for (let i = 0; i < failRows.length; i++) for (const peer of failRows.slice(i + 1)) {
       const fail = failRows[i]!;
       if (!sharedPath(fail, peer) || overlap(terms.get(fail.id)!, terms.get(peer.id)!) < 0.5) continue;

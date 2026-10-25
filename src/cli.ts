@@ -232,6 +232,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const requested = typeof options["--project"] === "string" ? options["--project"] as string : boundProject();
     if (!requested.trim() || requested.length > 400 || requested.includes("\0")) throw Error("invalid consolidation project");
     const base = memoryHome(), project = resolveAlias(base, requested), aliases = aliasedKeys(base, project);
+    // The policy below is narrowed by the repository around the working directory, which is the bound project's. Another project's own repository policy cannot be resolved from here, so screening it with this one would apply the wrong narrowing.
+    if (project !== boundProject()) throw Error("consolidate --project must name the current project; run it from the other project's directory to consolidate that one");
     assertProjectActive(base, project);
     const store = curatedStore(project, { deferPromotions: true, screen: () => "keep" });
     let candidates: CandidateStore | undefined;
@@ -240,7 +242,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const assertCurrent = () => { binding(); assertProjectActive(base, project); if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")) throw Error("consolidation project binding changed"); };
       candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
       const report = await proposeConsolidation(store, candidates, { project, actor: "person", policy: policyOf, policyVersion: policyKey, assertCurrent });
-      return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
+      return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.alreadyReviewed ? `; ${report.alreadyReviewed} already reviewed` : ""}${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
     } finally { candidates?.close(); store.close(); }
   }
   if (sub === "brief") {

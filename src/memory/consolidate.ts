@@ -1,4 +1,4 @@
-import { CandidateStore, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
+import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
 import { consolidationClusters } from "./consolidation-clusters.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { recallViewIsLive } from "./recall.ts";
@@ -15,6 +15,8 @@ export interface ConsolidationOptions {
 export interface ConsolidationReport {
   schema: "amem.consolidation/v1"; project: string; candidates: { id: string; action: string; sources: string[] }[];
   engine: "fts5" | "substring"; truncated: boolean; oversized: number; localExcluded: number;
+  /** Proposals whose candidate already exists as accepted, accepting or rejected: they are not queued again and are not in `candidates`. */
+  alreadyReviewed: number;
   model?: ModelConsolidationReport;
 }
 export class ConsolidationProposalError extends Error {
@@ -58,11 +60,18 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
     check(); if (await policy.screen(input)) prepared.push(input);
   }
   check();
-  const report: ConsolidationReport = { schema: "amem.consolidation/v1", project, candidates: [], engine: clustered.engine, truncated: raw.length === 257 || clustered.truncated, oversized, localExcluded: rows.slice(0, 256).length - synced.length };
+  const report: ConsolidationReport = { schema: "amem.consolidation/v1", project, candidates: [], engine: clustered.engine, truncated: raw.length === 257 || clustered.truncated, oversized, localExcluded: rows.slice(0, 256).length - synced.length, alreadyReviewed: 0 };
   try {
     // All asynchronous host work finishes before the first candidate write. The ordinary candidate
     // queue cap still applies; a full queue reports the ids already enqueued, never a silent batch.
-    for (const input of prepared) { check(); const id = candidates.put(input, "public"); report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) }); }
+    // put() is INSERT OR IGNORE: a candidate the person already accepted or rejected keeps its status, so it is neither written again nor reported as queued.
+    for (const input of prepared) {
+      check();
+      const known = candidates.get(candidateInputId(input), project);
+      if (known && known.status !== "pending") { report.alreadyReviewed++; continue; }
+      const id = candidates.put(input, "public");
+      report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
+    }
     if (options.model !== undefined) report.model = await proposeModelConsolidations(store, candidates, synced, options.model, { project, actor: options.actor, check, policy });
   } catch { throw new ConsolidationProposalError(report.candidates.map(row => row.id)); }
   return report;

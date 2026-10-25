@@ -39,3 +39,19 @@ test("bounded source and proposal windows explicitly report truncation", () => {
   expect(result.truncated).toBe(true); expect(result.clusters).toHaveLength(CONSOLIDATION_PROPOSAL_LIMIT);
   expect(result.clusters.flatMap(row => row.sources).every(row => row.id !== rows[256]!.id)).toBe(true);
 });
+const accepted = (n: number, action: string, extra: Partial<View> = {}) => note(n, { text: `Accepted consolidation candidate: ${"c".repeat(64)}\nAction: ${action}\nSources: mem:x\n\nwriter lease contention blocks transaction`, ...extra });
+test("an accepted recurring-fix summary is not a fail source and does not pair with its own sources (task #439)", () => {
+  const fails = [note(1), note(2, { text: "writer lease contention blocks second transaction" })], decision = note(3, { kind: "decision", text: "bound writer lease duration before transaction" });
+  const first = consolidationClusters([...fails, decision], "project", now).clusters.filter(row => row.action === "recurring-fix");
+  expect(first).toHaveLength(1);
+  const summary = accepted(4, "recurring-fix");   // accepted: a live fail on the same path, quoting its sources
+  const second = consolidationClusters([...fails, decision, summary], "project", now).clusters;
+  expect(second.filter(row => row.action === "recurring-fix")).toHaveLength(1);
+  expect(second.every(row => row.sources.every(source => source.id !== summary.id))).toBe(true);
+});
+test("an accepted merge or supersession head is not proposed again as a single-source chain summary (task #439)", () => {
+  const head = accepted(1, "merge", { kind: "decision", supersedes: [note(8).id, note(9).id] }), other = note(2, { kind: "decision", text: "parser unicode escaping keeps strings intact" });
+  expect(consolidationClusters([head, other], "project", now).clusters).toEqual([]);
+  const plain = note(3, { kind: "decision", supersedes: [note(8).id, note(9).id] });   // a person's own multi-original head still gets the chain summary
+  expect(consolidationClusters([plain, other], "project", now).clusters.map(row => row.action)).toEqual(["merge"]);
+});

@@ -382,7 +382,10 @@ export class MemoryStore {
       return work(entries);
     });
   }
-  /** Exact original transport placement; View.local describes tier, not a verified publication choice. */
+  /**
+   * Exact original transport placement; View.local describes tier, not a verified publication choice.
+   * ponytail: a legacy (shared-v1) home reads its whole snapshot under a 32 MiB byte budget on every call and refuses past it, so consolidation and its acceptance are unavailable for a legacy home that large. Upgrade: migrate the home to a generation (its placements come from the indexed `generation_rows`), or keep a placement index for legacy homes.
+   */
   entryPlacements(ids: readonly string[], project: string): ReadonlyMap<string, "local" | "synced"> {
     if (!ids.length || ids.length > 256 || new Set(ids).size !== ids.length || ids.some(id => !/^[a-f0-9]{32}$/.test(id)) || !project.trim()) throw Error("invalid placement batch");
     return this.withStoreFences(stores => {

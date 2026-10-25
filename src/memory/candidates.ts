@@ -10,6 +10,8 @@ import { stripPrivateDeep } from "./private-spans.ts";
 import { MemoryStore, type GoalView, type NoteInput, type View } from "./store.ts";
 
 export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
+/** First line of every note written by accepting a consolidation candidate; `consolidationClusters` reads it to avoid proposing summaries of its own summaries. */
+export const ACCEPTED_CONSOLIDATION_PREFIX = "Accepted consolidation candidate: ";
 export const CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400_000 } as const;
 export const COUNTER_RETENTION = { count: 10_000, ageMs: 90 * 86400_000 } as const;
 export type CandidateVerdict = "public" | "private" | "pii" | "unknown";
@@ -284,14 +286,16 @@ export class CandidateStore {
         if (context.actor !== "person" || context.store !== boundStore || context.project !== boundProject || context.policy !== boundPolicy) throw Error("consolidation acceptance context changed");
         if (context.policyVersion!() !== policyVersion) throw Error("consolidation policy changed");
       };
-      const check = () => {
+      // One placement proof per locked section: `sourcePlacements` (read once inside withCurrentEntries, whose fences stay held) serves every check before the append section;
+      // the append section reads one fresh proof. Each proof re-reads the legacy snapshot (up to 32 MiB), so four per acceptance was the cost this removes.
+      const check = (fresh = false) => {
         policyCurrent();
         const current = data.targets.map(target => {
           const row = context.store.get(target.id, context.project);
           if (!row || row.id !== target.id || row.project !== context.project || row.supersededBy || candidateTargetRevision(row) !== target.revision) throw Error("consolidation source revision is stale");
           return row;
         });
-        const placements = context.store.entryPlacements(data.targets.map(target => target.id), context.project);
+        const placements = fresh ? context.store.entryPlacements(data.targets.map(target => target.id), context.project) : sourcePlacements;
         if (current.some(row => row.scope !== current[0]!.scope || placements.get(row.id) !== placements.get(current[0]!.id))) throw Error("consolidation sources must have the same placement and scope");
         if (data.targets.some(target => placements.get(target.id) !== sourcePlacements.get(target.id))) throw Error("consolidation source placement changed");
         policyCurrent(); // The proof scan can be long; fence policy changes after it, not only before it.
@@ -299,12 +303,12 @@ export class CandidateStore {
       };
       const sources = check(), first = sources[0]!;
       const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: "person", source: "person", about: [...data.about],
-        text: `Accepted consolidation candidate: ${candidate.id}\nAction: ${data.action}\nSources: ${data.targets.map(target => `mem:${target.id}`).join(", ")}\n\n${data.text}` };
+        text: `${ACCEPTED_CONSOLIDATION_PREFIX}${candidate.id}\nAction: ${data.action}\nSources: ${data.targets.map(target => `mem:${target.id}`).join(", ")}\n\n${data.text}` };
       if (note.text.length > 4000) throw Error("accepted consolidation exceeds the v1 note limit");
       for (const source of sources) if (context.policy(structuredClone(candidate), structuredClone(source), structuredClone(note)) !== true) throw Error("consolidation refused by current host policy");
       check();
       return context.store.withAcceptedNote(note, append => {
-        check();
+        check(true);
         const replay = this.beginAcceptance(candidate.id, context.project, policyCurrent); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
         const noteId = append(), applied: string[] = [];
         try {
