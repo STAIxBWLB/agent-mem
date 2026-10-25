@@ -3,12 +3,17 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
 export interface RunnerProbe { cpuMs: number; spawnMs: number; checksum: string }
-export interface RunnerBaseline { cpuMs: number; spawnMs: number; factor: number }
+export interface RunnerBaseline { cpuMs: number; spawnMs: number; factor: number; source?: string }
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// Calibrated hosted readings are required before enabling script re-measurement.
-export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {};
+// Healthy hosted run 40201976781, Bun 1.4.2 (2026-10-25): five probes before and five after
+// unchanged main workloads, all passing without sample retries or advisory wall misses.
+// Use the maximum of ten CPU/spawn readings per platform, rounded up to 0.01 ms.
+export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
+  linux: { cpuMs: 10.73, spawnMs: 17.17, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40201976781/job/121195407149" },
+  darwin: { cpuMs: 8.87, spawnMs: 23.92, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40201976781/job/121195408698" },
+};
 
 /** Fixed 16 MiB SHA-256 CPU work plus one provider-free Bun spawn; no application modules. */
 export function probeRunnerSpeed(): RunnerProbe {
