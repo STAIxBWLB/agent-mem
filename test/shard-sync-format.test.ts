@@ -93,12 +93,12 @@ test("realm ownership rejects wrong project or placement and never publishes loc
   expect(() => encodeShardPacks([prune(G, "local")])).toThrow("invalid public row");
 });
 
-test("same-generation public prune is structurally accepted, but any foreign-generation prune refuses the whole pack", () => {
+test("public prune transport preserves both generations without supplying application authority", () => {
   const row = prune(); expect(decode([row])).toEqual([row]);
   // This format result alone never proves the target/basis public witness; the engine must validate the complete realm source set.
   const foreign = prune(otherG);
-  expect(() => decode([foreign])).toThrow(`${shardSyncLabel(realm)}: foreign-generation prune`);
-  expect(() => decode([note(0, { machine: foreign.machine }), foreign])).toThrow("foreign-generation prune");
+  expect(decode([foreign])).toEqual([foreign]);
+  expect(decode([note(0, { machine: foreign.machine }), foreign])).toEqual(expect.arrayContaining([foreign]));
 });
 
 test("same id with a different payload is rejected instead of silently winning", () => {

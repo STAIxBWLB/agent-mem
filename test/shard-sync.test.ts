@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
@@ -13,6 +13,7 @@ import { applyPrune, planPrune, pruneId, reducePruneRows, pruneRowHash, type Pru
 import { sessionStartBrief } from "../src/session-brief.ts";
 import { canonicalJSON, hashJSON, writeProfileJSON } from "../src/memory/generation.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
+import { encodeShardPacks, shardSyncDescriptor, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
 
 const A = "example.test/team/alpha", B = "example.test/team/beta", G1 = "1".repeat(32), G2 = "2".repeat(32);
 const refA = `refs/heads/amem/p/${shardKeyHash(A)}`, refB = `refs/heads/amem/p/${shardKeyHash(B)}`, refUser = "refs/heads/amem/u";
@@ -231,14 +232,147 @@ test("same-generation public prune sync preserves strict witnesses and rebuild p
   const before = canonicalJSON(receiver.a.prunePort().snapshot()); receiver.a.rebuild(); expect(canonicalJSON(receiver.a.prunePort().snapshot())).toBe(before);
 }, 60_000);
 
-test("a foreign-generation public prune refuses the whole selected sync before project or user append or push", async () => {
-  const url = remote(), source = await split(G1), target = source.a.note(note(A, "public prune target"));
-  publicPrune(source.a, target, source.clock); source.a.note(note(A, "remote user public row", "shared")); expect((await syncMemory(source.a, { remote: url, ...privateRemote })).ok).toBe(true);
-  const receiver = await split(G2); receiver.a.note(note(A, "pending receiver project")); receiver.a.note(note(A, "pending receiver user", "shared"));
-  const project = jsonlBytes(receiver.a.dir), user = jsonlBytes(join(receiver.memory, "user")), tips = refs(url);
+const transportHash = (value: string) => createHash("sha256").update(value).digest("hex");
+function foreignHoldFile(memory: string, url: string, ref: string, receiving: string, row: PruneRow) {
+  return join(memory, "shard-sync", "prune-holds", transportHash(url), transportHash(ref), receiving, row.generation, `${row.id}-${hashJSON(row)}.json`);
+}
+async function foreignPruneFixture(origin = G1, receiving = G2) {
+  const url = remote(), source = await split(origin), text = "foreign held target text is not warning output", target = source.a.note(note(A, text));
+  const row = publicPrune(source.a, target, source.clock);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const receiver = await split(receiving); receiver.clock.now = source.clock.now - 4000;
+  return { url, source, receiver, row, target, text, file: foreignHoldFile(receiver.memory, url, refA, receiving, row) };
+}
+for (const [origin, receiving] of [[G1, G2], [G2, G1]] as const) test(`foreign prune ${origin[0]} to ${receiving[0]} is held unchanged with visible targets and rebuild parity`, async () => {
+  const f = await foreignPruneFixture(origin, receiving);
+  const result = await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote });
+  expect(result).toMatchObject({ ok: true, warning: expect.stringContaining("held, not applied") });
+  expect(result.warning).toContain(f.target); expect(result.warning).not.toContain(f.text);
+  expect(f.receiver.a.get(f.target, A)?.text).toBe(f.text);
+  const receipt = JSON.parse(readFileSync(f.file, "utf8"));
+  expect(receipt).toMatchObject({ schema: "agent-mem.prune-hold/v1", remote: transportHash(f.url), realm: { scope: "project", key: A }, receivingGeneration: receiving, row: f.row, payloadHash: hashJSON(f.row), source: { ref: refA } });
+  expect(readFileSync(f.file, "utf8")).toBe(canonicalJSON(receipt) + "\n");
+  expect(lstatSync(f.file).mode & 0o777).toBe(0o600); expect(lstatSync(dirname(f.file)).mode & 0o777).toBe(0o700);
+  for (const bytes of Object.values(jsonlBytes(f.receiver.a.dir))) expect(bytes).not.toContain(canonicalJSON(f.row));
+  const snapshot = canonicalJSON(f.receiver.a.prunePort().snapshot()), receiptBytes = readFileSync(f.file);
+  expect(f.receiver.a.prunePort().snapshot().pruned).not.toContain(f.target);
+  f.receiver.a.rebuild(); expect(canonicalJSON(f.receiver.a.prunePort().snapshot())).toBe(snapshot);
+  expect(f.receiver.a.get(f.target, A)?.text).toBe(f.text);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true, warning: result.warning });
+  f.source.a.note(note(A, "later immutable remote commit"));
+  expect(await syncMemory(f.source.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(readFileSync(f.file)).toEqual(receiptBytes);
+  expect(readdirSync(dirname(f.file)).filter(name => name.endsWith(".json"))).toHaveLength(1);
+}, 60_000);
+
+test("a foreign shared prune does not block syncing an unrelated project and user overlay", async () => {
+  const url = remote(), source = await split(G1), user = source.a.openedSyncTargets().find(store => store.profile.shardUser)!;
+  const target = user.note(note(A, "held shared target", "shared")), row = publicPrune(user, target, source.clock);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const receiver = await split(G2), b = keep(openShardStore({ home: receiver.home, project: B, deferPromotions: true, now: () => source.clock.now - 4000 }));
+  const local = b.note(note(B, "unrelated beta reaches remote"));
+  const result = await syncMemory(b, { remote: url, ...privateRemote });
+  expect(result).toMatchObject({ ok: true, warning: expect.stringContaining("user shard") });
+  expect(result.warning).toContain(target); expect(existsSync(foreignHoldFile(receiver.memory, url, refUser, G2, row))).toBe(true);
+  expect(b.get(target, B)?.text).toBe("held shared target");
+  const peer = await split(G2), peerB = keep(openShardStore({ home: peer.home, project: B, deferPromotions: true }));
+  expect(await syncMemory(peerB, { remote: url, ...privateRemote })).toMatchObject({ ok: true }); expect(peerB.get(local, B)?.text).toBe("unrelated beta reaches remote");
+  expect(git(join(receiver.memory, "shard-sync", "objects.git"), "for-each-ref", "--format=%(refname)")).not.toContain(refA);
+}, 60_000);
+
+test("foreign hold warning bounds target IDs and supplies a remedy without note text", async () => {
+  const url = remote(), source = await split(G1), targets = Array.from({ length: 12 }, (_, index) => source.a.note(note(A, `warning-secret-free-target-text-${index}`)));
+  for (const target of targets) expect(source.a.demote(target, "person", A)).toBeDefined(); source.clock.now += 2000;
+  const auth = { project: A, actor: "person" as const, authorize: () => true, policy: { revision: () => "fixture-public-v1", classify: () => "public" as const, attest: () => true } };
+  const plan = planPrune(source.a.prunePort(), { cutoff: new Date(source.clock.now).toISOString(), targets }, auth);
+  applyPrune(source.a.prunePort(), plan, auth); expect(plan.rows).toHaveLength(1);
+  expect(await syncMemory(source.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  const receiver = await split(G2), result = await syncMemory(receiver.a, { remote: url, ...privateRemote });
+  expect(result.ok).toBe(true); const warning = result.warning!;
+  expect(warning).toContain("1 foreign-generation prune(s)"); expect(warning).toContain("(+2 more)");
+  const sorted = [...targets].sort(); for (const id of sorted.slice(0, 10)) expect(warning).toContain(id); for (const id of sorted.slice(10)) expect(warning).not.toContain(id);
+  expect(warning).toContain("receipts shard-sync/prune-holds/"); expect(warning).toContain("origin generation"); expect(warning).toContain("as the person");
+  expect(warning).not.toContain("warning-secret-free-target-text"); expect(warning).not.toContain(url);
+}, 60_000);
+
+test("retained hold receipts are not consumed by an origin-generation native rebuild without a fresh sync", async () => {
+  const f = await foreignPruneFixture(); expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  const bytes = readFileSync(f.file), switched = await split(G1); switched.clock.now = f.receiver.clock.now;
+  // No public shard-generation-switch API exists. Simulate its reducer boundary with a fresh
+  // origin-generation shard, the same ordinary native inputs and the retained historical hold.
+  for (const source of f.receiver.a.prunePort().snapshot().rows) appendFileSync(join(switched.a.dir, "log", `${source.row.machine}.jsonl`), canonicalJSON(source.row) + "\n", { mode: 0o600 });
+  const retained = join(switched.memory, f.file.slice(f.receiver.memory.length + 1)); mkdirSync(dirname(retained), { recursive: true, mode: 0o700 }); writeFileSync(retained, bytes, { mode: 0o600 });
+  switched.a.rebuild(); expect(switched.a.get(f.target, A)?.text).toBe(f.text);
+  expect(switched.a.prunePort().snapshot().pruned).not.toContain(f.target); expect(readFileSync(retained)).toEqual(bytes);
+  expect(readdirSync(dirname(retained))).toHaveLength(1);
+  expect(switched.a.prunePort().snapshot().durablePruneIds).not.toContain(f.row.id);
+}, 60_000);
+
+function publishFixtureRows(url: string, ref: string, realm: ShardSyncRealm, rows: ShardSyncRow[]) {
+  const checkout = temp(); git(checkout, "init", "-q"); writeFileSync(join(checkout, "shard.json"), shardSyncDescriptor(realm));
+  for (const [file, bytes] of encodeShardPacks(rows)) { mkdirSync(dirname(join(checkout, file)), { recursive: true }); writeFileSync(join(checkout, file), bytes); }
+  git(checkout, "add", "."); git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture original transport"); git(checkout, "push", "-q", url, `HEAD:${ref}`);
+}
+for (const invalid of ["missing", "forged", "cross-realm"] as const) test(`foreign prune ${invalid} witness refuses before selected publication or import`, async () => {
+  const source = await split(G1), target = source.a.note(note(A, "foreign invalid proof target")), valid = publicPrune(source.a, target, source.clock);
+  const originals = source.a.prunePort().snapshot().rows.map(source => source.row), basis = originals.find(row => row.id === valid.targets[0]!.basis.id)!;
+  let row = valid;
+  if (invalid === "forged") { const { id: _id, ...body } = valid; const changed = { ...body, targets: valid.targets.map(target => ({ ...target, rowHash: "f".repeat(64) })) }; row = { ...changed, id: pruneId(changed) }; }
+  const url = remote(); publishFixtureRows(url, refA, { scope: "project", key: A }, [...originals.filter(row => invalid === "forged" || row.id !== basis.id), row]);
+  publishFixtureRows(url, refUser, { scope: "user" }, invalid === "cross-realm" ? [basis] : []);
+  const receiver = await split(G2); receiver.a.note(note(A, "pending local publication")); const before = refs(url), logs = jsonlBytes(receiver.memory);
   expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
-  expect(jsonlBytes(receiver.a.dir)).toEqual(project); expect(jsonlBytes(join(receiver.memory, "user"))).toEqual(user); expect(refs(url)).toBe(tips);
-  expect(receiver.a.prunePort().snapshot().rows.some(row => row.row.id === target)).toBe(false);
+  expect(refs(url)).toBe(before); expect(jsonlBytes(receiver.memory)).toEqual(logs); expect(existsSync(join(receiver.memory, "shard-sync", "prune-holds"))).toBe(false);
+}, 60_000);
+
+for (const invalid of ["content", "symlink", "hardlink"] as const) test(`foreign hold receipt ${invalid} corruption refuses before another push`, async () => {
+  const f = await foreignPruneFixture(); expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  if (invalid === "content") { const value = JSON.parse(readFileSync(f.file, "utf8")); value.payloadHash = "f".repeat(64); writeFileSync(f.file, canonicalJSON(value) + "\n"); }
+  if (invalid === "symlink") { const destination = join(temp(), "receipt.json"); writeFileSync(destination, readFileSync(f.file), { mode: 0o600 }); rmSync(f.file); symlinkSync(destination, f.file); }
+  if (invalid === "hardlink") linkSync(f.file, join(temp(), "receipt-link.json"));
+  f.receiver.a.note(note(A, "must not publish past bad receipt")); const before = refs(f.url), logs = jsonlBytes(f.receiver.memory);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
+  expect(refs(f.url)).toBe(before); expect(jsonlBytes(f.receiver.memory)).toEqual(logs);
+}, 60_000);
+
+for (const where of ["receipt", "pending", "ancestor"] as const) test(`dangling foreign hold ${where} symlink refuses before publication or import`, async () => {
+  const f = await foreignPruneFixture(), missing = join(temp(), "missing-link-target");
+  const link = where === "ancestor" ? dirname(f.file) : where === "pending" ? f.file + ".pending" : f.file;
+  mkdirSync(dirname(link), { recursive: true, mode: 0o700 }); symlinkSync(missing, link);
+  f.receiver.a.note(note(A, "publication must wait for dangling hold path inspection"));
+  const before = refs(f.url), logs = jsonlBytes(f.receiver.memory);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: false });
+  expect(refs(f.url)).toBe(before); expect(jsonlBytes(f.receiver.memory)).toEqual(logs);
+  expect(lstatSync(link).isSymbolicLink()).toBe(true); expect(existsSync(missing)).toBe(false);
+}, 60_000);
+
+for (const phase of ["published", "hold-written", "hold-installed", "imported"] as const) test(`foreign hold reopens and resumes ${phase} interruption without duplicate native tombstones`, async () => {
+  const f = await foreignPruneFixture(); let interrupted = false;
+  const local = f.receiver.a.note(note(A, "receiver publication before interrupted hold"));
+  expect(await syncShardedMemory(f.receiver.a, { remote: f.url, ...privateRemote }, undefined, current => { if (current === phase && !interrupted) { interrupted = true; throw Error("fixture hold interruption"); } })).toMatchObject({ ok: false, pushed: true });
+  expect(interrupted).toBe(true);
+  if (phase === "hold-written") {
+    expect(existsSync(f.file)).toBe(false); expect(existsSync(f.file + ".pending")).toBe(true);
+    f.source.a.note(note(A, "remote advances beyond the interrupted receiver publication"));
+    expect(await syncMemory(f.source.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  }
+  const reopened = keep(openShardStore({ home: f.receiver.home, project: A, deferPromotions: true, now: () => f.receiver.clock.now }));
+  expect(await syncMemory(reopened, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true, warning: expect.stringContaining("held, not applied") });
+  const bytes = readFileSync(f.file); expect(existsSync(f.file + ".pending")).toBe(false);
+  expect(reopened.get(f.target, A)?.text).toBe(f.text); expect(reopened.prunePort().snapshot().durablePruneIds).not.toContain(f.row.id);
+  expect(reopened.get(local, A)?.text).toBe("receiver publication before interrupted hold");
+  expect(await syncMemory(reopened, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true }); expect(readFileSync(f.file)).toEqual(bytes);
+  expect(readdirSync(dirname(f.file))).toHaveLength(1);
+}, 60_000);
+
+for (const conflicting of [false, true]) test(`foreign hold ${conflicting ? "conflicting" : "exact partial-prefix"} staging is ${conflicting ? "refused" : "resumed"}`, async () => {
+  const f = await foreignPruneFixture();
+  expect(await syncShardedMemory(f.receiver.a, { remote: f.url, ...privateRemote }, undefined, phase => { if (phase === "hold-written") throw Error("fixture staged hold"); })).toMatchObject({ ok: false, pushed: true });
+  const pending = f.file + ".pending", original = readFileSync(pending), partial = conflicting ? Buffer.from("conflicting prefix") : original.subarray(0, 31); writeFileSync(pending, partial);
+  const before = refs(f.url), logs = jsonlBytes(f.receiver.memory), result = await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote });
+  if (conflicting) { expect(result).toMatchObject({ ok: false, pushed: false }); expect(refs(f.url)).toBe(before); expect(readFileSync(pending)).toEqual(partial); expect(jsonlBytes(f.receiver.memory)).toEqual(logs); }
+  else { expect(result).toMatchObject({ ok: true }); expect(readFileSync(f.file)).toEqual(original); expect(existsSync(pending)).toBe(false); }
 }, 60_000);
 
 

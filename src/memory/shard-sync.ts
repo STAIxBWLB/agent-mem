@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
-import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, writeSync } from "node:fs";
+import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
@@ -14,8 +14,14 @@ import type { Entry, MemoryStore } from "./store.ts";
 const OID = /^[a-f0-9]{40}$/, PACK = /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/;
 const digest = (bytes: string | Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const zero = "0".repeat(40);
+// The descriptor is at most 64 KiB and an original prune at most 16 KiB; keep receipt parsing bounded.
+const HOLD_MAX_BYTES = 128 * 1024;
 type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string };
-type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; generation: string; local?: string; remote?: string; commit?: string };
+type HoldSource = { ref: string; commit: string; pack: string; blob: string };
+type HoldReceipt = { schema: "agent-mem.prune-hold/v1"; remote: string; realm: ShardSyncRealm; receivingGeneration: string; row: PruneRow; payloadHash: string; source: HoldSource };
+type Hold = { file: string; bytes: Buffer };
+type SyncPhase = "published" | "hold-written" | "hold-installed" | "imported";
+type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
@@ -146,8 +152,10 @@ function provePrunes(targets: readonly Target[]): void {
     }
     const snapshot: PruneSnapshot = { rows: [...sources.values()], expiries: [] };
     const prunes = [...target.rows.values()].filter((row): row is PruneRow => row.op === "prune");
-    const proof = reducePruneRows(prunes.map(row => ({ row, placement: "synced" as const })), snapshot, target.generation);
-    if (proof.invalid || proof.pending.length) refuse(`${shardSyncLabel(target.realm)}: prune lacks complete public witnesses`);
+    for (const generation of new Set(prunes.map(row => row.generation))) {
+      const proof = reducePruneRows(prunes.filter(row => row.generation === generation).map(row => ({ row, placement: "synced" as const })), snapshot, generation);
+      if (proof.invalid || proof.pending.length) refuse(`${shardSyncLabel(target.realm)}: prune lacks complete public witnesses`);
+    }
   }
 }
 function installPack(store: MemoryStore, bytes: Buffer): void {
@@ -176,7 +184,7 @@ function importRows(target: Target): void {
   for (const pending of target.pending) {
     port.persistPrunePlan(pending.plan); port.appendPrune(pending.row, pending.line, pending.plan.seal); resumed.add(pending.row.id);
   }
-  for (const row of target.rows.values()) if (row.op === "prune") {
+  for (const row of target.rows.values()) if (row.op === "prune" && row.generation === target.generation) {
     if (resumed.has(row.id)) continue;
     // A transport imports an already-authored person row without changing its author or generation.
     // Native durable-plan append confirms fsync even for an already parsed id after a crash.
@@ -186,8 +194,104 @@ function importRows(target: Target): void {
   port.refresh();
 }
 
-/** Sync only the borrowed canonical project and user targets. The internal third argument is a test-only observer, never a CLI/SyncOptions port. */
-export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void): Promise<SyncResult> {
+/** Receipts are private, immutable transport metadata, outside every native generation reducer.
+ * ponytail: foreign targets remain visible; an explicit cross-generation apply protocol must
+ * re-prove witnesses and establish a compatible reader floor before lifting this hold ceiling. */
+const hasHoldPath = (file: string): boolean => lstatSync(file, { throwIfNoEntry: false }) !== undefined;
+function privateHoldPath(file: string, folder: boolean): void {
+  if (folder) directory(file); else regular(file);
+  if (lstatSync(file).mode & 0o077) refuse("shard sync prune holds require private permissions");
+}
+function checkPendingHold(file: string, bytes: Buffer): void {
+  privateHoldPath(file, false);
+  if (lstatSync(file).size > bytes.length || !readFileSync(file).equals(bytes.subarray(0, lstatSync(file).size))) refuse("shard sync partial prune hold conflicts with verified receipt");
+}
+function installHold(root: string, hold: Hold, phase?: (phase: SyncPhase) => void): void {
+  const parts = hold.file.slice(root.length + 1).split("/"), name = parts.pop()!;
+  let folder = root;
+  for (const part of parts) {
+    const parent = folder; folder = join(folder, part);
+    if (!hasHoldPath(folder)) mkdirSync(folder, { mode: 0o700 });
+    privateHoldPath(folder, true); fsyncDirectory(parent);
+  }
+  const file = join(folder, name), pending = file + ".pending";
+  if (hasHoldPath(file)) {
+    privateHoldPath(file, false);
+    if (!readFileSync(file).equals(hold.bytes)) refuse("shard sync immutable prune hold conflict");
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); }
+    fsyncDirectory(folder); return;
+  }
+  if (hasHoldPath(pending)) checkPendingHold(pending, hold.bytes);
+  const fd = openSync(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+  try {
+    // Interrupted private staging bytes may be completed; committed receipts are never rewritten.
+    let offset = 0; while (offset < hold.bytes.length) { const n = writeSync(fd, hold.bytes, offset, hold.bytes.length - offset, offset); if (n <= 0) refuse("shard sync prune hold write unavailable"); offset += n; }
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  phase?.("hold-written");
+  // The transport mutation lock serializes this create-once rename. Unlike hard-link installation,
+  // a crash cannot leave a committed receipt with a second link that later fails validation.
+  if (hasHoldPath(file)) refuse("shard sync prune hold changed concurrently");
+  renameSync(pending, file); fsyncDirectory(folder); phase?.("hold-installed");
+}
+function holdWarning(targets: readonly Target[], root: string): string | undefined {
+  const warnings: string[] = [];
+  for (const target of targets) if (target.holds.length) {
+    const rows = [...target.rows.values()].filter((row): row is PruneRow => row.op === "prune" && row.generation !== target.generation);
+    const ids = [...new Set(rows.flatMap(row => row.targets.map(item => item.id)))].sort(), shown = ids.slice(0, 10);
+    const location = target.holds[0]!.file.slice(root.length + 1).split("/").slice(0, -2).join("/");
+    warnings.push(`${shardSyncLabel(target.realm)}: ${rows.length} foreign-generation prune(s) held, not applied; targets ${shown.join(",")}${ids.length > shown.length ? ` (+${ids.length - shown.length} more)` : ""} may remain visible; receipts shard-sync/${location}; bring this machine to the origin generation, or prune the entry here as the person`);
+  }
+  return warnings.length ? warnings.join("; ") : undefined;
+}
+
+type ProveHoldSource = (target: Target, receipt: HoldReceipt) => Promise<void>;
+async function prepareHold(root: string, url: string, target: Target, row: PruneRow, proveSource: ProveHoldSource): Promise<Hold> {
+  const source = target.origins.get(row.id);
+  if (!source || !target.remote || !target.fetched.has(row.id)) refuse(`${shardSyncLabel(target.realm)}: foreign prune has no fetched provenance`);
+  const receipt: HoldReceipt = { schema: "agent-mem.prune-hold/v1", remote: digest(url), realm: target.realm,
+    receivingGeneration: target.generation, row, payloadHash: hashJSON(row), source };
+  const folders = ["prune-holds", receipt.remote, digest(shardSyncRef(target.realm)), target.generation, row.generation];
+  let folder = root;
+  for (const name of folders) { folder = join(folder, name); if (hasHoldPath(folder)) privateHoldPath(folder, true); }
+  const file = join(folder, `${row.id}-${receipt.payloadHash}.json`);
+  let selected = receipt;
+  if (hasHoldPath(file)) {
+    privateHoldPath(file, false);
+    const value = readProfileJSON(file, HOLD_MAX_BYTES) as HoldReceipt | undefined;
+    if (!value || !value.source || Object.keys(value.source).length !== 4 || !OID.test(value.source.commit)
+      || !OID.test(value.source.blob) || !PACK.test(value.source.pack)
+      || canonicalJSON({ ...value, source }) !== canonicalJSON(receipt)) refuse(`${shardSyncLabel(target.realm)}: invalid prune hold receipt`);
+    // A receipt is evidence of a hold, never application authority. Recheck its original
+    // immutable source against this invocation's fully audited selected remote history.
+    await proveSource(target, value);
+    selected = value;
+  }
+  const bytes = Buffer.from(canonicalJSON(selected) + "\n");
+  if (bytes.length > HOLD_MAX_BYTES) refuse("shard sync prune hold exceeds metadata bound");
+  if (hasHoldPath(file) && !readFileSync(file).equals(bytes)) refuse("shard sync prune hold is not canonical");
+  if (hasHoldPath(file + ".pending")) checkPendingHold(file + ".pending", bytes);
+  return { file, bytes };
+}
+async function prepareHolds(targets: readonly Target[], root: string, url: string, proveSource: ProveHoldSource): Promise<void> {
+  for (const target of targets) {
+    target.holds = [];
+    for (const row of target.rows.values()) if (row.op === "prune" && row.generation !== target.generation) {
+      target.holds.push(await prepareHold(root, url, target, row, proveSource));
+    }
+  }
+}
+function mergePackOrigins(into: Map<string, HoldSource>, byRealm: Map<string, Map<string, HoldSource>>, rows: readonly ShardSyncRow[], source: HoldSource): void {
+  const first = byRealm.get(source.ref) ?? new Map<string, HoldSource>(); byRealm.set(source.ref, first);
+  // Oldest-first history keeps a receipt's source stable across tip advancement and partial-write retry.
+  for (const row of rows) {
+    if (!first.has(row.id)) first.set(row.id, source);
+    if (!into.has(row.id)) into.set(row.id, first.get(row.id)!);
+  }
+}
+
+/** Sync only borrowed canonical project/user targets. Internal error/phase observers are test-only, never CLI/SyncOptions ports. */
+export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void, testOnlyPhase?: (phase: SyncPhase) => void): Promise<SyncResult> {
   let pushed = false, releaseTransport: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
   const fail = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });
@@ -216,7 +320,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     targets = borrowed.map(opened => {
       const profile = opened.profile;
       if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.shardUser && !profile.shardKey) refuse("shard sync target identity unavailable");
-      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], pending: [], generation: profile.generation };
+      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], pending: [], origins: new Map<string, HoldSource>(), holds: [], generation: profile.generation };
     });
     if (!targets.length || targets.length > 2 || targets.some(target => target.store.profile.home !== store.profile.home)
       || new Set(targets.map(target => shardSyncRef(target.realm))).size !== targets.length
@@ -280,12 +384,13 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if (identity !== object) refuse("shard sync public blob identity mismatch");
       blobCache.set(object, bytes); return bytes;
     };
-    type History = { rows: Map<string, ShardSyncRow>; files: Map<string, Buffer> };
+    type History = { rows: Map<string, ShardSyncRow>; files: Map<string, Buffer>; origins: Map<string, HoldSource> };
     // Keep only requested tips. Per-commit full row maps would make append-only history quadratic in memory.
     const histories = new Map<string, History>(), audited = new Set<string>();
+    const firstOrigins = new Map<string, Map<string, HoldSource>>();
     const treeState = async (commit: string, target: Target): Promise<History> => {
       const entries = (await required(["ls-tree", "-r", "-z", commit], "shard sync tree unavailable")).split("\0").filter(Boolean);
-      const rows = new Map<string, ShardSyncRow>(), files = new Map<string, Buffer>();
+      const rows = new Map<string, ShardSyncRow>(), files = new Map<string, Buffer>(), origins = new Map<string, HoldSource>();
       for (const entry of entries) {
         const match = /^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
         if (!match || match[2] !== "shard.json" && !PACK.test(match[2]!)) refuse(`${shardSyncLabel(target.realm)}: forbidden historical tree entry`);
@@ -298,10 +403,11 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
           if (!pack) { pack = decodeShardPack(path, bytes, target.realm, target.generation); decoded.set(key, pack); }
           else if (!path.endsWith(`/${digest(bytes)}.jsonl`) || pack.some(row => path !== `rows/${digest(row.machine)}/${digest(bytes)}.jsonl`)) refuse(`${shardSyncLabel(target.realm)}: immutable pack path changed`);
           mergeRows(rows, pack, target.realm);
+          mergePackOrigins(origins, firstOrigins, pack, { ref: shardSyncRef(target.realm), commit, pack: path, blob: object });
         }
       }
       if (!files.has("shard.json")) refuse(`${shardSyncLabel(target.realm)}: historical descriptor missing`);
-      return { rows, files };
+      return { rows, files, origins };
     };
     const history = async (tip: string, target: Target): Promise<History> => {
       const key = `${shardSyncRef(target.realm)}:${tip}`, cached = histories.get(key); if (cached) return cached;
@@ -345,7 +451,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         if (target.local) await required(["merge-base", "--is-ancestor", target.local, tip], `${shardSyncLabel(target.realm)}: remote history is not fast-forward`);
         const remote = await history(tip, target); target.remote = tip;
         mergeRows(target.rows, Array.from(remote.rows.values()), target.realm);
-        for (const row of remote.rows.values()) target.fetched.add(row.id);
+        for (const row of remote.rows.values()) { target.fetched.add(row.id); target.origins.set(row.id, remote.origins.get(row.id)!); }
       }
     };
     const localTargets = () => {
@@ -385,10 +491,17 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         await history(target.commit, target);
       }
     };
-    localTargets(); await fetchTargets(); localTargets(); provePrunes(targets); check();
+    const proveHoldSource: ProveHoldSource = async (target, value) => {
+      await required(["merge-base", "--is-ancestor", value.source.commit, target.remote!], "shard sync prune hold source is not remote history");
+      const original = await history(value.source.commit, target), bytes = original.files.get(value.source.pack);
+      if (!bytes || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== value.source.blob
+        || !decodeShardPack(value.source.pack, bytes, target.realm, target.generation).some(item => canonicalJSON(item) === canonicalJSON(value.row))
+        || value.source.ref !== shardSyncRef(target.realm)) refuse(`${shardSyncLabel(target.realm)}: prune hold source mismatch`);
+    };
+    localTargets(); await fetchTargets(); localTargets(); provePrunes(targets); await prepareHolds(targets, root, url, proveHoldSource); check();
     // Every selected realm, including its complete remote history/prunes, is preflighted before the first append or publication.
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); check(); }
+      if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); await prepareHolds(targets, root, url, proveHoldSource); check(); }
       await buildTargets(); check();
       const sent = await git(["push", "--atomic", "--no-follow-tags", "-q", "origin", ...targets.map(target => `${target.commit!}:${shardSyncRef(target.realm)}`)]);
       if (sent.code === 0) pushed = true;
@@ -396,13 +509,18 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if (sent.code === 0) {
         pushed = true;
         // No local append before a successful atomic publication: a raced foreign prune can still refuse the entire retry safely.
-        localTargets(); provePrunes(targets); check();
+        localTargets(); provePrunes(targets); check(); testOnlyPhase?.("published");
+        // No selected ordinary/native imports can precede durable receipts for every foreign prune.
+        for (const target of targets) for (const hold of target.holds) installHold(root, hold, testOnlyPhase);
+        check();
         for (const target of targets) {
           assertCuratedShardPaths(target.store.profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
-          importRows(target);
+          importRows(target); testOnlyPhase?.("imported");
         }
         for (const target of targets) await required(["update-ref", "--no-deref", shardSyncRef(target.realm), target.commit!, target.local ?? zero], "shard sync cached ref changed concurrently");
-        return { ok: true, pushed, entries: targets.reduce((n, target) => n + [...target.rows.values()].filter(row => row.op === "note").length, 0) };
+        const warning = holdWarning(targets, root);
+        return { ok: true, pushed, entries: targets.reduce((n, target) => n + [...target.rows.values()].filter(row => row.op === "note").length, 0),
+          ...(warning ? { warning } : {}) };
       }
       if (opts.signal?.aborted) return fail("stopped");
     }
