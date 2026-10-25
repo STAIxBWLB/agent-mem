@@ -33,19 +33,20 @@ interface ClaudeMemCaptureContext {
   aliases: string[]; project: string; sourceMachine: string; cutoff: number; limit: number;
 }
 
-function claudeMemCaptureExcerpt(row: ClaudeMemCaptureRow, kind: ClaudeMemCaptureKind): string {
-  if (kind.table === "observations") return stripPrivateSpans([row.title, row.text ?? row.narrative].filter(value => typeof value === "string" && value.trim()).join("\n")).trim().slice(0, CAPTURE_MAX_EXCERPT);
+function claudeMemCaptureText(row: ClaudeMemCaptureRow, kind: ClaudeMemCaptureKind): string {
+  if (kind.table === "observations") return stripPrivateSpans([row.title, row.text ?? row.narrative].filter(value => typeof value === "string" && value.trim()).join("\n")).trim();
   const fields = [["Request", row.request], ["Investigated", row.investigated], ["Learned", row.learned], ["Completed", row.completed], ["Next steps", row.next_steps], ["Notes", row.notes]];
-  return stripPrivateSpans(fields.filter(([, value]) => typeof value === "string" && value.trim()).map(([label, value]) => `${label}: ${value}`).join("\n")).trim().slice(0, CAPTURE_MAX_EXCERPT);
+  return stripPrivateSpans(fields.filter(([, value]) => typeof value === "string" && value.trim()).map(([label, value]) => `${label}: ${value}`).join("\n")).trim();
 }
 
 async function appendClaudeMemCapture(row: ClaudeMemCaptureRow, kind: ClaudeMemCaptureKind, context: ClaudeMemCaptureContext): Promise<"added" | "spooled" | "skipped"> {
-  const excerpt = claudeMemCaptureExcerpt(row, kind);
-  if (!excerpt || !Number.isFinite(row.created_at_epoch)) return "skipped";
+  const text = claudeMemCaptureText(row, kind);
+  if (!text || !Number.isFinite(row.created_at_epoch)) return "skipped";
   let at: string;
   try { at = new Date(row.created_at_epoch).toISOString(); } catch { return "skipped"; }
-  const input: CaptureInput = { project: context.project, agent: "claude-mem", event: kind.event, excerpt, at };
+  const input: CaptureInput = { project: context.project, agent: "claude-mem", event: kind.event, excerpt: text, at };
   if (!await context.policy.screen(input)) return "skipped";
+  input.excerpt = text.slice(0, CAPTURE_MAX_EXCERPT);
   const synced = typeof row.origin_device_id === "string" && !!row.origin_device_id && typeof row.origin_local_id === "string" && !!row.origin_local_id;
   const receipt = createHash("sha256").update(JSON.stringify(["claude-mem", kind.table, synced ? row.origin_device_id : context.sourceMachine, synced ? row.origin_local_id : String(row.id)])).digest("hex");
   const appended = context.store.append(input, { receipt });

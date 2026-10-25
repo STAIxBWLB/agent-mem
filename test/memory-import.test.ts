@@ -214,6 +214,15 @@ test("claude-mem capture import skips configured policy and secret rows before w
   try { expect(store.rows().map(row => row.excerpt)).toEqual(["public capture"]); } finally { store.close(); }
 });
 
+test("claude-mem capture import screens observation and summary secrets across the excerpt boundary", async () => {
+  const f = captureFixture(); f.alias();
+  const secret = `${"a".repeat(1979)} sk-${"Q".repeat(30)}`;
+  f.addObservation("old/app", secret); f.addSummary("old/app", secret); f.db.close();
+  expect(await importClaudeMemCapture(f.opts)).toMatchObject({ read: 2, added: 0, skipped: 2 });
+  const store = f.openCapture();
+  try { expect(store.rows()).toEqual([]); } finally { store.close(); }
+});
+
 test("claude-mem capture import follows capture cap and retention on every append", async () => {
   const f = captureFixture(); f.alias();
   f.addObservation("old/app", "retention-expired", CAPTURE_NOW - 3 * CAPTURE_DAY);
