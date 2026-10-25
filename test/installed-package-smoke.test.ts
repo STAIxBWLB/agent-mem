@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 import { realPath } from "../src/memory/platform.ts";
-import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, preservingCleanup, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
+import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupApplied, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, probeSmokeSetupTerminal, preservingCleanup, registeredSmokeCommand, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
 const HOME = "/isolated/home", APP = join(HOME, "app"), ROOT = join(APP, "node_modules", "@staix", "agent-mem"), ENTRY = join(ROOT, "bin", "amem.js"), CHECKOUT = "/workspace/agent-mem", TMP = join(HOME, "tmp");
 const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi"], actions: ["claude", "codex", "kimi", "pi"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: target === "kimi" ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
 
@@ -26,9 +26,19 @@ test("installed smoke child environment is an allowlist with isolated config/cac
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS", "NODE_PATH", "BUN_OPTIONS", "AMEM_HOOK_BOOT_AT", "AGENTHUB_HOME", "AGENTHUB_PEER_ID", "CLAUDECODE", "CODEX_THREAD_ID"]) expect(Object.hasOwn(env, key)).toBe(false);
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);
 });
-test("installed smoke CLI whitelist permits setup preview and forbids every mutation/native-client shortcut", () => {
-  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["hook", "PostToolUse"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
-  for (const args of [["setup", "all", "--apply"], ["setup", "all", "--undo"], ["setup", "claude"], ["note", "add"], ["hook", "SessionStart"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
+test("installed smoke permits only all-target setup apply in addition to its fixed read/hook commands", () => {
+  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
+  for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
+});
+test("installed apply needs a complete confirmed result rather than preview, cancellation or partial targets", () => {
+  const applied = { applied: ["claude", "codex", "kimi", "pi"], unchanged: [] };
+  expect(() => assertSetupApplied('preview\r\nType yes to apply the listed configuration changes: yes\r\n' + JSON.stringify(applied, null, 2) + '\r\n')).not.toThrow();
+  for (const result of [plan(), { cancelled: true }, { ...applied, applied: ["claude"] }, { ...applied, unchanged: ["codex"] }]) expect(() => assertSetupApplied(JSON.stringify(result))).toThrow();
+});
+test("registered smoke launches only the exact installed command, never a checkout or disabled registration", () => {
+  const server = { command: "/runtime/bun", args: ["--smol", ENTRY, "mcp"] };
+  expect(registeredSmokeCommand(server, "/runtime/bun", ENTRY)).toEqual([server.command, ...server.args]);
+  for (const value of [undefined, {}, { ...server, command: "bun" }, { ...server, enabled: false }, { ...server, args: ["--smol", join(CHECKOUT, "bin", "amem.js"), "mcp"] }, { ...server, args: [...server.args, "extra"] }]) expect(() => registeredSmokeCommand(value, "/runtime/bun", ENTRY)).toThrow();
 });
 test("installed smoke rejects legacy output while retaining normal compatible home terminology", () => {
   expect(() => assertNoHubBranding("amem setup; ~/.agenthub/memory")).not.toThrow();
@@ -68,6 +78,17 @@ test("owned Bun eval launcher forwards the fixed argv after -- and reaps without
   try {
     const env = allowlistedSmokeEnv(home, [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter));
     expect(await probeSmokeLauncher(home, env)).toEqual(["value with spaces", "--literal-option", "*"]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 10000);
+test("setup PTY answers the real terminal prompt, drains output and reaps its child on timeout", async () => {
+  const home = realPath(mkdtempSync(join(tmpdir(), "amem-smoke-terminal-")));
+  try {
+    const env = allowlistedSmokeEnv(home, [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter));
+    const output = await probeSmokeSetupTerminal(home, env);
+    expect(output.replaceAll("\r", "")).toEndWith("terminal-drained-" + "x".repeat(20000) + "-complete\n");
+    expect(() => process.kill(Number(readFileSync(join(home, "pty-child.pid"), "utf8")), 0)).toThrow();
+    await expect(probeSmokeSetupTerminal(home, env, true)).rejects.toThrow("timed out");
+    expect(() => process.kill(Number(readFileSync(join(home, "pty-child.pid"), "utf8")), 0)).toThrow();
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 10000);
 test("branding guard covers underscore and punctuation boundaries and decoded tool descriptions", () => {

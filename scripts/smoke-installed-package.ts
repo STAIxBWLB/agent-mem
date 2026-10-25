@@ -24,7 +24,18 @@ export function assertInstalledModule(modulePath: string, installedRoot: string,
 }
 export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
-  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse"), "installed smoke refuses mutating or unsupported CLI arguments");
+  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse") || args.length === 3 && args.join(" ") === "setup all --apply", "installed smoke refuses unsupported CLI arguments");
+}
+export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
+  const server = object(value);
+  requireSmoke(server.command === bun && JSON.stringify(server.args) === JSON.stringify(["--smol", entry, "mcp"]) && server.enabled !== false, "registered MCP command differs from the installed artifact");
+  return [server.command, ...server.args];
+}
+export function assertSetupApplied(output: string): void {
+  const result = /\{\s*"applied"\s*:[\s\S]*\}\s*$/.exec(output);
+  requireSmoke(result, "installed setup confirmation did not return an apply result");
+  const applied = object(JSON.parse(result![0]));
+  requireSmoke(JSON.stringify(applied.applied) === JSON.stringify(["claude", "codex", "kimi", "pi"]) && JSON.stringify(applied.unchanged) === "[]", "installed setup did not apply all four targets");
 }
 export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.ProcessEnv {
   requireSmoke(isAbsolute(home), "installed smoke HOME must be absolute");
@@ -131,14 +142,37 @@ let code=null;
 try { code=await Bun.spawn(process.argv.slice(1),{stdin:'inherit',stdout:'inherit',stderr:'inherit'}).exited; } catch {}
 writeSync(3,JSON.stringify({code})+'\n');
 `;
-async function ownedCommand(bun: string, argv: readonly string[], cwd: string, env: NodeJS.ProcessEnv, input = "", timeoutMs = 60000): Promise<string> {
-  const child = spawn(bun, ["--smol", "-e", LAUNCHER, "--", ...argv], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
+const SETUP_LAUNCHER = String.raw`
+import {writeSync} from 'node:fs';
+setInterval(()=>{},1000);
+let code=null, prompt='', answered=false;
+let child, childExited=false, stopping=false, drain;
+const drained=new Promise(resolve=>{drain=resolve;});
+process.on('SIGTERM',async()=>{
+  if(stopping)return; stopping=true;
+  if(child&&!childExited){try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}}
+  child?.terminal?.close();
+  if(child)await child.exited;
+  process.exit(143);
+});
+try {
+  child=Bun.spawn(process.argv.slice(1),{onExit(){childExited=true;},terminal:{cols:120,rows:40,exit(){drain();},data(terminal,data){
+    writeSync(1,data); prompt=(prompt+Buffer.from(data).toString('utf8')).slice(-256);
+    if(!answered&&prompt.includes('Type yes to apply the listed configuration changes: ')){answered=true;terminal.write('yes\n');}
+  }}});
+  code=await child.exited;
+  await drained;
+} catch {} finally { child?.terminal?.close(); }
+writeSync(3,JSON.stringify({code})+'\n');
+`;
+async function ownedCommand(bun: string, argv: readonly string[], cwd: string, env: NodeJS.ProcessEnv, input = "", timeoutMs = 60000, setupTerminal = false): Promise<string> {
+  const child = spawn(bun, ["--smol", "-e", setupTerminal ? SETUP_LAUNCHER : LAUNCHER, "--", ...argv], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
   let exited = false, control = "", bytes = 0; const stdout: Buffer[] = [], stderr: Buffer[] = [];
   let resolveCode!: (code: number) => void, rejectCode!: (error: Error) => void;
   const completed = new Promise<number>((yes, no) => { resolveCode = yes; rejectCode = no; });
-  const stop = () => { if (!exited && child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} } } };
+  const stop = () => { if (!exited && child.pid) { const signal = setupTerminal ? "SIGTERM" : "SIGKILL"; try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch {} } } };
   const reaped = new Promise<void>(resolveClose => { child.once("exit", () => { exited = true; rejectCode(Error("installed smoke leader exited before command completion")); }); child.once("close", () => { exited = true; resolveClose(); }); });
-  const waitForReap = createReapWaiter(reaped, () => { for (const pipe of child.stdio) try { (pipe as { destroy?(): void } | null)?.destroy?.(); } catch {} child.unref(); });
+  const waitForReap = createReapWaiter(reaped, () => { if (child.pid && !exited) try { process.kill(-child.pid, "SIGKILL"); } catch {} for (const pipe of child.stdio) try { (pipe as { destroy?(): void } | null)?.destroy?.(); } catch {} child.unref(); });
   child.once("error", () => rejectCode(Error("installed smoke could not start its owned command")));
   const collect = (target: Buffer[]) => (data: Buffer) => { if ((bytes += data.length) > OUTPUT_BYTES) { rejectCode(Error("installed smoke command output exceeded its bound")); stop(); } else target.push(data); };
   child.stdout?.on("data", collect(stdout)); child.stderr?.on("data", collect(stderr));
@@ -169,7 +203,18 @@ export async function probeSmokeLauncher(cwd: string, env: NodeJS.ProcessEnv): P
   requireSmoke(JSON.stringify(observed) === JSON.stringify(args), "owned launcher did not forward the fixed argument vector");
   return observed as string[];
 }
-export interface InstalledSmokeReport { package: string; version: string; setup: "dry-run"; mcp: "seeded search"; hook: "durable native capture observed"; timing: "not measured; existing R2 gates remain separate" }
+/** Test the same PTY launcher without installing a package or invoking a vendor CLI. */
+export async function probeSmokeSetupTerminal(cwd: string, env: NodeJS.ProcessEnv, stall = false): Promise<string> {
+  const code = `import {writeFileSync} from 'node:fs';import {createInterface} from 'node:readline/promises';
+writeFileSync('pty-child.pid',String(process.pid));
+if(!process.stdin.isTTY)process.exit(91);
+const terminal=createInterface({input:process.stdin,output:process.stdout});
+const answer=await terminal.question('Type yes to apply the listed configuration changes: ');terminal.close();
+if(answer!=='yes')process.exit(92);
+${stall ? "setInterval(()=>{},1000);" : "console.log('terminal-drained-'+ 'x'.repeat(20000)+'-complete');"}`;
+  return ownedCommand(process.execPath, [process.execPath, "--smol", "-e", code], cwd, env, "", stall ? 500 : 5000, true);
+}
+export interface InstalledSmokeReport { package: string; version: string; setup: "preview and confirmed apply (stub CLIs)"; registeredMcp: string[]; mcp: "seeded search"; hook: "durable native capture observed"; timing: "not measured; existing R2 gates remain separate" }
 export async function runInstalledPackageSmoke(options: { afterInstall?: (installedRoot: string) => void } = {}): Promise<InstalledSmokeReport> {
   const checkout = realPath(fileURLToPath(new URL("../", import.meta.url))), metadata = object(JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")));
   requireSmoke(metadata.name === PACKAGE && typeof metadata.version === "string", "unexpected source package metadata");
@@ -195,7 +240,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const executable = Bun.which("amem", { PATH: installedEnv.PATH }); requireSmoke(executable, "installed package did not register its executable");
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
     options.afterInstall?.(installed);
-    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input); };
+    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, args.length === 3); };
     const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
     for (const file of ruleFiles) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "installed smoke instruction/rule sentinel, keep exact bytes\n", { mode: 0o600 }); }
     const rules = ruleFiles.map(file => ({ file, bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }));
@@ -205,12 +250,37 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const plan = JSON.parse(await cli(["setup", "all"])); const afterSetup = snapshotPrivateHome(home); assertHomeUnchanged(beforeSetup, afterSetup);
     const plannedFiles = assertSetupPreview(plan, home, entry);
     requireSmoke(plannedFiles.every(file => !existsSync(file)) && !existsSync(nativeCalls), "setup dry run wrote configuration or invoked a native client"); verifyRules();
+    // The installed CLI still performs its ordinary person/TTY checks and asks for confirmation.
+    // Only native registration is stubbed, matching the setup unit fixtures; no vendor CLI is exercised.
+    const nativeStub = join(home, "native-registration.ts");
+    writeFileSync(nativeStub, `import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';
+const [target,...args]=process.argv.slice(2);
+if(!['claude','codex','pi'].includes(target))process.exit(97);
+if(args.length===1&&args[0]==='--help'){console.log('  mcp Manage MCP servers');process.exit(0);}
+const marker=args.indexOf('--'),launch=args.slice(marker+1),home=process.env.HOME;
+if(args[0]!=='mcp'||args[1]!=='add'||marker<0||process.cwd()!==home||!home.startsWith(${JSON.stringify(env.TMPDIR! + "/amem-setup-")}))process.exit(97);
+appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({target,args,home})+'\\n');
+const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');
+mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bun.TOML.stringify({mcp_servers:{amem:server}}):JSON.stringify({mcpServers:{amem:server}}));\n`);
+    for (const target of ["claude", "codex", "pi"]) writeFileSync(join(traps, target), `#!/bin/sh\nexec ${quote(bun)} --smol ${quote(nativeStub)} ${quote(target)} "$@"\n`, { mode: 0o700 });
+    assertSetupApplied(await cli(["setup", "all", "--apply"])); verifyRules();
+    const registrations = readFileSync(nativeCalls, "utf8"), calls = registrations.trim().split("\n").map(line => object(JSON.parse(line)));
+    requireSmoke(JSON.stringify(calls.map(call => call.target)) === JSON.stringify(["claude", "codex", "pi"]) && calls.every(call => !existsSync(call.home)), "setup did not use and remove only its private native staging homes");
     const seedFile = join(app, "seed-installed.ts");
     writeFileSync(seedFile, `import {MemoryStore,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';const resolved=realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem')));const project=memoryProjectKey(process.cwd());const store=new MemoryStore({memoryDir:process.env.AMEM_HOME,deferPromotions:true});try{const id=store.note({op:'note',project,scope:'project',tier:'long',kind:'contract',peer:'person',source:'person',text:${JSON.stringify(MARKER)},about:[]});console.log(JSON.stringify({id,project,resolved}));}finally{store.close();}\n`);
     const seed = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", seedFile], projectDir, installedEnv))); assertInstalledModule(seed.resolved, installed, checkout); requireSmoke(/^[a-f0-9]{32}$/.test(seed.id) && typeof seed.project === "string", "installed API seed failed");
     const frame = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
     const mcpInput = frame(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "installed-smoke", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n" + frame(3, "tools/list", {}) + frame(2, "tools/call", { name: "amem_search", arguments: { query: MARKER, includeCapture: false, limit: 5 } });
     assertMcpResult(await cli(["mcp"], mcpInput), metadata.version, seed.id, seed.project);
+    const registeredMcp: string[] = [];
+    for (const action of plan.actions) {
+      const source = readFileSync(action.files[0], "utf8"), document = object(action.target === "codex" ? Bun.TOML.parse(source) : JSON.parse(source));
+      const server = object(document[action.target === "codex" ? "mcp_servers" : "mcpServers"]).amem;
+      const command = registeredSmokeCommand(server, bun, entry);
+      assertInstalledEntry(realPath(command[2]!), installed, checkout, env.TMPDIR!);
+      assertMcpResult(await ownedCommand(bun, command, projectDir, installedEnv, mcpInput), metadata.version, seed.id, seed.project);
+      registeredMcp.push(action.target); verifyRules();
+    }
     const metrics = join(env.AMEM_HOME!, "metrics.jsonl"), reader = join(app, "read-hook-installed.ts");
     writeFileSync(reader, `import {CaptureStore,captureShardDir,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';import {lstatSync,readdirSync,readFileSync} from 'node:fs';import {join} from 'node:path';const base=process.env.AMEM_HOME;const project=memoryProjectKey(process.cwd());let rows=[],captureKnown=false;try{const store=new CaptureStore({memoryDir:base,project,readOnly:true,maxReadRows:32});try{rows=store.rows({project,limit:32});captureKnown=true;}finally{store.close();}}catch{try{const file=join(base,'machine.json'),stat=lstatSync(file);if(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=4096){const machine=JSON.parse(readFileSync(file,'utf8'));if(/^[a-f0-9]{16}$/.test(machine.id)){try{lstatSync(join(captureShardDir(base,project,machine.id),'capture.db'));}catch(error){if(error.code==='ENOENT')captureKnown=true;}}}}catch{}}const pending=[];let pendingKnown=true;for(const rel of ['hook-spool','hook-spool/.capacity']){const dir=join(base,rel);let stat;try{stat=lstatSync(dir);}catch(error){if(error.code!=='ENOENT')pendingKnown=false;continue;}if(!stat.isDirectory()||stat.isSymbolicLink()){pendingKnown=false;continue;}for(const name of readdirSync(dir)){const file=join(dir,name),s=lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>73728)continue;try{const value=JSON.parse(readFileSync(file,'utf8'));pending.push({path:rel+'/'+name,type:'file',nlink:s.nlink,project:value.cwd===process.cwd()?project:'',value});}catch{}}}console.log(JSON.stringify({resolved:realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem'))),captureKnown,pendingKnown,rows,pending}));\n`);
     const inspect = async () => { const evidence = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", reader], projectDir, installedEnv))); assertInstalledModule(evidence.resolved, installed, checkout); return evidence; };
@@ -220,8 +290,8 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     assertPostToolUseOutput(hookOutput); verifyRules();
     requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
     assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
-    requireSmoke(!existsSync(nativeCalls), "installed smoke unexpectedly invoked a native coding client");
-    return { package: PACKAGE, version: metadata.version, setup: "dry-run", mcp: "seeded search", hook: "durable native capture observed", timing: "not measured; existing R2 gates remain separate" };
+    requireSmoke(readFileSync(nativeCalls, "utf8") === registrations, "installed MCP or hook unexpectedly invoked a native coding client");
+    return { package: PACKAGE, version: metadata.version, setup: "preview and confirmed apply (stub CLIs)", registeredMcp, mcp: "seeded search", hook: "durable native capture observed", timing: "not measured; existing R2 gates remain separate" };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 if (import.meta.main) {
