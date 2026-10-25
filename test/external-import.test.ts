@@ -68,14 +68,17 @@ test("default source roots honor Claude and Codex environment configuration and 
 
 test("codex imports recursive Markdown and JSONL strings/objects while skipping malformed records", async () => {
   const root = temp("codex"), source = join(root, "source"), base = join(root, "memory");
-  put(join(source, "nested", "note.md"), "Markdown finding");
-  put(join(source, "records.jsonl"), '"string record"\n{"title":"Named title","text":"object record"}\nnot json\n{"title":"missing text"}\n""\n');
+  const note = join(source, "nested", "note.md"), records = join(source, "records.jsonl");
+  put(note, "Markdown finding");
+  put(records, '"string record"\n{"title":"Named title","text":"object record"}\nnot json\n{"title":"missing text"}\n""\n');
   put(join(source, "ignored.yaml"), "not useful");
+  const before = [note, records].map(path => [path, readFileSync(path)] as const);
   const result = await importExternalMemory({ base, project: PROJECT, source: "codex", from: source, policy: allow });
   expect(result).toMatchObject({ files: 2, read: 6, added: 3, skipped: { invalid: 3, policy: 0, truncated: 0 } });
   const stored = candidates(base);
   expect(stored.map(row => row.input.kind === "memory" ? row.input.text : "").sort()).toEqual(["Markdown finding", "object record", "string record"]);
   expect(stored.some(row => row.input.kind === "memory" && row.input.title?.includes("codex: records.jsonl#2: Named title"))).toBe(true);
+  for (const [path, bytes] of before) expect(readFileSync(path)).toEqual(bytes);
 });
 
 test("rule files, rules directories and symlink files/directories are never imported or followed", async () => {
