@@ -11,7 +11,7 @@ import { serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { vaultCandidates } from "./memory/vault.ts";
-import { importClaudeMemWorkState } from "./memory/import.ts";
+import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
@@ -549,7 +549,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     return options["--json"] ? JSON.stringify(result, null, 2) : `${result.dryRun ? "preview (nothing evicted; add --confirm):\n" : ""}${gcText(result)}`;
   }
   if (sub === "import" && ["claude-auto", "codex"].includes(parsed.path[1] ?? "")) {
-    for (const flag of ["--db", "--limit", "--restart"]) if (options[flag] !== undefined) throw new Error(`${flag} only applies to import claude-mem`);
+    for (const flag of ["--db", "--limit", "--restart", "--capture-days"]) if (options[flag] !== undefined) throw new Error(`${flag} only applies to import claude-mem`);
     const source = parsed.path[1] as ExternalMemorySource, policy = policyOf();
     const result = await importExternalMemory({ base: memoryHome(), project: boundProject(), source, cwd: policyCwd, env: context.env ?? process.env,
       ...(typeof options["--from"] === "string" ? { from: options["--from"] } : {}), policy: value => policy.screenStandalone(value) });
@@ -724,7 +724,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   // Only a real attempt is stamped: a local refusal (lock held, no remote, policy, usage) is not, and a future stamp is no history (src/memory/sync-cadence.ts).
   const stampSync = (error: string | undefined, cause?: StopCause) => { if (syncOutcome(error, cause) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now()); };
-  const syncArgs = args.filter(arg => arg !== "--if-due" && arg !== "--force");
+  const captureImport = sub === "import" && parsed.path[1] === "claude-mem", captureDays = options["--capture-days"] === undefined ? undefined : Number(options["--capture-days"]);
+  if (captureImport && captureDays !== undefined && (!Number.isSafeInteger(captureDays) || captureDays <= 0)) throw new Error("--capture-days takes a positive integer");
+  const captureArgs = new Set<number>();
+  if (captureImport) for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--capture-days") { captureArgs.add(index); captureArgs.add(index + 1); }
+    else if (args[index]?.startsWith("--capture-days=")) captureArgs.add(index);
+  }
+  const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index));
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
@@ -747,10 +754,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (options["--json"]) { try { const result = JSON.parse(output) as { ok?: unknown; error?: unknown }; if (result.ok === false) failure = typeof result.error === "string" ? result.error : "sync failed"; } catch { /* not a sync result */ } }
     stampSync(failure, stop?.cause());
   }
-  if (sub === "import" && parsed.path[1] === "claude-mem") {
-    const policy = configured;
-    const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...(options["--db"] ? { db: String(options["--db"]) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}), restart: options["--restart"] === true });
-    return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}`;
+  if (captureImport) {
+    const policy = configured, db = options["--db"] ? { db: String(options["--db"]) } : {}, limit = options["--limit"] ? { limit: Number(options["--limit"]) } : {}, restart = options["--restart"] === true;
+    const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...db, ...limit, restart });
+    const capture = captureDays === undefined ? undefined : await importClaudeMemCapture({ base: memoryHome(), project: boundProject(), cwd, days: captureDays, ...db, ...limit, restart, policy: { host: policy } });
+    return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work, ...(capture ? { capture } : {}) }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}${capture ? `\ncapture: ${JSON.stringify(capture)}` : ""}`;
   }
   return !options["--json"] && receipt.bridgeStatus
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;

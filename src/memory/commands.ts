@@ -47,7 +47,7 @@ export interface GoalCommandOptions {
  * supersede and rebuild are a person's (the identity gate refuses agent shells).
  */
 /** The usage line of the memory commands under `name` (`amem` by default; agent-hub passes `ahub memory`). */
-export const memoryUsage = (name: string = AMEM_NAMES.memory): string => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
+export const memoryUsage = (name: string = AMEM_NAMES.memory): string => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
 export const MEMORY_USAGE = memoryUsage();
 /** The usage line of the goal commands under `name` (`amem goal` by default; agent-hub passes `ahub goal`). */
 export const goalUsage = (name: string = AMEM_NAMES.goal): string => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`;
@@ -154,7 +154,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         const db = flag("--db"), limit = flag("--limit");
         const restart = rest.includes("--restart");
         if (restart) rest.splice(rest.indexOf("--restart"), 1);
-        if (rest[0] !== "claude-mem" || rest.length !== 1) fail(`usage: ${names.memory} import claude-mem [--db <path>] [--limit N] [--restart]`);
+        if (rest[0] !== "claude-mem" || rest.length !== 1) fail(`usage: ${names.memory} import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N]`);
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const isPii = opts.importPolicy();
         const key = opts.project ?? memoryProjectKey(cwd);

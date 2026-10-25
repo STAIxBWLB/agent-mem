@@ -7,6 +7,11 @@ import { join } from "node:path";
 import { KINDS, looksSecret, type Kind, type MemoryStore } from "./store.ts";
 import { aliasedKeys, resolveAlias } from "./shard.ts";
 import { WorkListStore, type WorkListFields, type WorkListPolicy } from "./work-lists.ts";
+import { CaptureStore, type CaptureInput } from "./capture.ts";
+import { CAPTURE_MAX_EXCERPT } from "./capture-input.ts";
+import { configuredPolicyOptions } from "./config.ts";
+import { createStandalonePolicy, type StandalonePolicyOptions } from "./policy.ts";
+import { stripPrivateSpans } from "./private-spans.ts";
 
 /** The claude-mem store is another program's: opened read-only, never written, its locks waited on briefly. */
 export const CLAUDE_MEM_BUSY_TIMEOUT_MS = 3000;
@@ -15,6 +20,92 @@ const MODEL_ANSWER = "ahub ask (model answer)";
 
 export interface ImportResult { read: number; added: number; skipped: { model: number; pii: number; secret: number }; more: boolean; cursor: number }
 export interface WorkStateImportResult { read: number; added: number; skipped: { invalid: number; policy: number }; more: boolean; cursor: number }
+export interface CaptureImportResult { read: number; added: number; spooled: number; skipped: number; more: boolean }
+
+type ClaudeMemCaptureRow = { id: number; created_at_epoch: number; origin_device_id: string | null; origin_local_id: string | null } & Record<string, any>;
+const CLAUDE_MEM_CAPTURE_KINDS = [
+  { table: "observations", event: "observation", columns: "id, title, text, narrative, created_at_epoch" },
+  { table: "session_summaries", event: "summary", columns: "id, request, investigated, learned, completed, next_steps, notes, created_at_epoch" },
+] as const;
+type ClaudeMemCaptureKind = typeof CLAUDE_MEM_CAPTURE_KINDS[number];
+interface ClaudeMemCaptureContext {
+  db: Database; store: CaptureStore; policy: ReturnType<typeof createStandalonePolicy>;
+  aliases: string[]; project: string; sourceMachine: string; cutoff: number; limit: number;
+}
+
+function claudeMemCaptureText(row: ClaudeMemCaptureRow, kind: ClaudeMemCaptureKind): string {
+  if (kind.table === "observations") return stripPrivateSpans([row.title, row.text ?? row.narrative].filter(value => typeof value === "string" && value.trim()).join("\n")).trim();
+  const fields = [["Request", row.request], ["Investigated", row.investigated], ["Learned", row.learned], ["Completed", row.completed], ["Next steps", row.next_steps], ["Notes", row.notes]];
+  return stripPrivateSpans(fields.filter(([, value]) => typeof value === "string" && value.trim()).map(([label, value]) => `${label}: ${value}`).join("\n")).trim();
+}
+
+async function appendClaudeMemCapture(row: ClaudeMemCaptureRow, kind: ClaudeMemCaptureKind, context: ClaudeMemCaptureContext): Promise<"added" | "spooled" | "skipped"> {
+  const text = claudeMemCaptureText(row, kind);
+  if (!text || !Number.isFinite(row.created_at_epoch)) return "skipped";
+  let at: string;
+  try { at = new Date(row.created_at_epoch).toISOString(); } catch { return "skipped"; }
+  const input: CaptureInput = { project: context.project, agent: "claude-mem", event: kind.event, excerpt: text, at };
+  if (!await context.policy.screen(input)) return "skipped";
+  input.excerpt = text.slice(0, CAPTURE_MAX_EXCERPT);
+  const synced = typeof row.origin_device_id === "string" && !!row.origin_device_id && typeof row.origin_local_id === "string" && !!row.origin_local_id;
+  const receipt = createHash("sha256").update(JSON.stringify(["claude-mem", kind.table, synced ? row.origin_device_id : context.sourceMachine, synced ? row.origin_local_id : String(row.id)])).digest("hex");
+  const appended = context.store.append(input, { receipt });
+  return "spooled" in appended ? "spooled" : appended.already ? "skipped" : "added";
+}
+
+async function importClaudeMemCaptureTable(kind: ClaudeMemCaptureKind, context: ClaudeMemCaptureContext, initial: number, onCursor: (cursor: number) => void): Promise<CaptureImportResult> {
+  const result: CaptureImportResult = { read: 0, added: 0, spooled: 0, skipped: 0, more: false };
+  const columns = new Set((context.db.query(`PRAGMA table_info(${kind.table})`).all() as { name: string }[]).map(row => row.name));
+  const origin = columns.has("origin_device_id") && columns.has("origin_local_id"), where = `project IN (${context.aliases.map(() => "?").join(",")})`;
+  const max = context.db.query(`SELECT MAX(id) AS id FROM ${kind.table} WHERE ${where}`).get(...context.aliases) as { id: number | null };
+  let cursor = (max.id ?? 0) < initial ? 0 : initial; onCursor(cursor);
+  const rows = context.db.query(`SELECT ${kind.columns}${origin ? ", origin_device_id, origin_local_id" : ", NULL AS origin_device_id, NULL AS origin_local_id"} FROM ${kind.table} WHERE ${where} AND created_at_epoch >= ? AND id > ? ORDER BY id LIMIT ?`)
+    .all(...context.aliases, context.cutoff, cursor, context.limit) as ClaudeMemCaptureRow[];
+  result.read = rows.length; result.more = rows.length === context.limit;
+  for (const row of rows) {
+    result[await appendClaudeMemCapture(row, kind, context)]++;
+    cursor = row.id; onCursor(cursor);
+  }
+  return result;
+}
+
+/** Import only reviewed aliases into machine-local capture. ponytail: --limit is per source table; a merged cursor could add one combined ceiling. */
+export async function importClaudeMemCapture(opts: { base: string; project: string; cwd: string; days: number; db?: string; limit?: number; restart?: boolean; now?: number; policy?: StandalonePolicyOptions; log?: (line: string) => void }): Promise<CaptureImportResult> {
+  const file = opts.db ?? join(homedir(), ".claude-mem", "claude-mem.db"), limit = opts.limit ?? 10_000;
+  if (!existsSync(file)) throw new Error(`no claude-mem store at ${file}`);
+  if (!Number.isSafeInteger(opts.days) || opts.days <= 0) throw new Error("--capture-days takes a positive integer");
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("--limit takes a positive integer");
+  const now = opts.now ?? Date.now(); if (!Number.isFinite(now)) throw new Error("capture import clock unavailable");
+  const project = resolveAlias(opts.base, opts.project), aliases = aliasedKeys(opts.base, project);
+  const result: CaptureImportResult = { read: 0, added: 0, spooled: 0, skipped: 0, more: false };
+  if (!aliases.length) return result;
+  const db = new Database(file, { readonly: true });
+  let store: CaptureStore | undefined, state: string | undefined;
+  const progress = new Map<string, number>();
+  try {
+    db.run(`PRAGMA busy_timeout = ${CLAUDE_MEM_BUSY_TIMEOUT_MS}`);
+    const available = CLAUDE_MEM_CAPTURE_KINDS.filter(kind => db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(kind.table));
+    if (!available.length) return result;
+    store = new CaptureStore({ memoryDir: opts.base, project, cwd: opts.cwd, now: () => now });
+    state = join(store.dir, "import-state.json");
+    const context: ClaudeMemCaptureContext = { db, store, aliases, project, limit,
+      sourceMachine: createHash("sha256").update(realPath(file)).digest("hex"), cutoff: Math.max(0, now - opts.days * 86_400_000),
+      policy: createStandalonePolicy(configuredPolicyOptions(opts.base, opts.cwd, opts.policy)) };
+    const cursors = readCursors(state);
+    for (const kind of available) {
+      const key = createHash("sha256").update(JSON.stringify([context.sourceMachine, aliases, project, kind.table])).digest("hex");
+      progress.set(key, opts.restart ? 0 : cursors[key] ?? 0);
+      const imported = await importClaudeMemCaptureTable(kind, context, progress.get(key)!, cursor => progress.set(key, cursor));
+      for (const field of ["read", "added", "spooled", "skipped"] as const) result[field] += imported[field];
+      result.more ||= imported.more;
+    }
+  } finally {
+    db.close();
+    if (state) for (const [key, cursor] of progress) writeCursor(state, key, cursor, opts.log ?? console.error);
+    store?.close();
+  }
+  return result;
+}
 
 /**
  * Import only the source project names explicitly mapped by the person's D2 alias table. A basename or even

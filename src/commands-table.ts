@@ -76,9 +76,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   sync: { description: "Sync a private remote (--if-due: only when the schedule and the failure backoff allow it; --force ignores both)", options: { ...json, ...policy, "--remote": text("Private git URL"),
     "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff") }, mutates: true, policyFree: true },
   machine: { description: "Show or label this machine", options: { ...json, "--label": text("Machine label") }, mutates: "label" },
-  import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor") }, mutates: true, policyFree: true,
+  import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor"), "--capture-days": text("Import recent claude-mem observations and summaries into capture") }, mutates: true, policyFree: true,
     commands: {
-      "claude-mem": { description: "Import claude-mem observations", options: { "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor") } },
+      "claude-mem": { description: "Import claude-mem observations", options: { "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor"), "--capture-days": text("Import recent observations and summaries into capture") } },
       "claude-auto": { description: "Import Claude Code auto memory as review candidates; CLAUDE.md and AGENTS.md stay excluded", options: { "--from": { description: "Claude projects directory (default ~/.claude/projects)", value: "path" } } },
       codex: { description: "Import Codex memories as review candidates; originals stay unchanged", options: { "--from": { description: "Codex memories directory (default ~/.codex/memories)", value: "path" } } },
     } },

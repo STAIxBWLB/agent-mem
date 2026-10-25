@@ -359,7 +359,7 @@ export class CaptureStore {
     this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ad AFTER DELETE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); END");
     this.db.run("CREATE TRIGGER IF NOT EXISTS rows_au AFTER UPDATE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
     // Rows written before FTS existed (or before a platform gained it) are indexed once; triggers keep it level.
-    if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (fts) VALUES ('rebuild')");
+    if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (rowid, body) SELECT id, excerpt FROM rows");
   }
 
   private mcpReady = false;

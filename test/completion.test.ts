@@ -102,7 +102,8 @@ test("completion metadata and CLI parser cover the retained raw command cases an
         // the raw command, which hosts share, refuses them (test/cli-projects.test.ts). The exemption is these two flags on `search` only.
         // #40 F16: `sync --if-due --force` are the person's schedule gate, handled by src/cli.ts before the raw command, which never sees them (test/sync-cadence.test.ts); the exemption is these two flags on `sync` only.
         // #15 T4: `promote --to repo --confirm --confirm-public` are the person's repo-scope promotion, handled by src/cli.ts before the raw command; the raw command refuses them (test/repo-scope.test.ts). The exemption is these three flags on `promote` only.
-        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force"].includes(flag)).toBe(true);
+        // #13 G: `import claude-mem --capture-days` is handled by src/cli.ts after the curated import and is stripped before the raw command.
+        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force"].includes(flag) || name === "import" && flag === "--capture-days").toBe(true);
       }
     }
   }

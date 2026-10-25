@@ -250,4 +250,5 @@ test("Codex import runs through the person CLI as an idempotent candidate import
   expect(readFileSync(source, "utf8")).toBe(bytes);
   await expect(runCli(["import", "codex", "--from", dir], { ...person, env: { CODEX_THREAD_ID: "agent" } })).rejects.toThrow(PERSON_ONLY);
   await expect(runCli(["import", "codex", "--from", dir, "--limit", "1"], person)).rejects.toThrow(/--limit only applies to import claude-mem/);
+  await expect(runCli(["import", "codex", "--from", dir, "--capture-days", "7"], person)).rejects.toThrow(/--capture-days only applies to import claude-mem/);
 });

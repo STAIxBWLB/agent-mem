@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PERSON_ONLY, agentMarked, runCli } from "../src/cli.ts";
-import { MemoryStore, memoryProjectKey, projectChain } from "../src/index.ts";
+import { appendAlias, CaptureStore, MemoryStore, memoryProjectKey, projectChain } from "../src/index.ts";
 
 const dirs: string[] = [];
 const oldHome = process.env.AGENTHUB_HOME, oldAmem = process.env.AMEM_HOME;
@@ -64,7 +64,8 @@ test("help and version work without opening a store", async () => {
   const home = join(temp(), "must-not-open"); process.env.AMEM_HOME = home;
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   expect(await runCli(["--version"], { env: {} })).toBe(`amem ${version}`);
-  expect(await runCli(["--help"], { env: {} })).toContain("usage: amem"); expect(existsSync(home)).toBe(false);
+  expect(await runCli(["--help"], { env: {} })).toContain("usage: amem");
+  expect(await runCli(["import", "claude-mem", "--help"], { env: {} })).toContain("--capture-days"); expect(existsSync(home)).toBe(false);
 });
 
 test("a person read never promotes a settled held note without TTY and policy-free acknowledgement", async () => {
@@ -91,10 +92,31 @@ test("standalone import counts secret skips and goal links fail explicitly befor
   expect(result.skipped).toEqual({ model: 0, pii: 0, secret: 1 }); expect(result.added).toBe(0);
 });
 
+test("claude-mem capture days runs through the person CLI with alias-scoped capture results", async () => {
+  const root = temp(), base = join(root, "memory"); process.env.AMEM_HOME = base;
+  const project = memoryProjectKey(root), source = projectChain(root).at(-1)!, file = join(root, "fixture.db"), db = new Database(file), at = Date.now();
+  db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
+  db.run("CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, project TEXT, request TEXT, investigated TEXT, learned TEXT, completed TEXT, next_steps TEXT, notes TEXT, created_at_epoch INTEGER)");
+  db.query("INSERT INTO observations VALUES (1, ?, 'fixture', 'cli capture observation', NULL, ?, ?)").run(source, at, JSON.stringify({ peer: "codex" }));
+  db.query("INSERT INTO session_summaries (id, project, learned, created_at_epoch) VALUES (1, ?, 'cli capture summary', ?)").run(source, at); db.close();
+  appendAlias(base, { alias: source, key: project, actor: "person", machine: "fixture" });
+  const before = readFileSync(file), args = ["import", "claude-mem", "--db", file, "--capture-days", "7", "--json"];
+  const result = JSON.parse(await runCli(args, context(root, true)));
+  expect(result.capture).toMatchObject({ read: 2, added: 2, spooled: 0, skipped: 0 }); expect(result.work).toMatchObject({ read: 0 });
+  const capture = new CaptureStore({ memoryDir: base, project, cwd: root });
+  try { expect(capture.rows().map(row => row.excerpt).sort()).toEqual(["Learned: cli capture summary", "fixture\ncli capture observation"]); } finally { capture.close(); }
+  expect(readFileSync(file)).toEqual(before);
+  await expect(runCli(["import", "claude-mem", "--db", file, "--capture-days", "0"], context(root, true))).rejects.toThrow("--capture-days takes a positive integer");
+  await expect(runCli(args, { cwd: root, env: { CODEX_THREAD_ID: "agent" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
+});
+
 
 test("completion generation is read-only and unsupported shells exit 2", async () => {
   const root = temp(), home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
-  for (const shell of ["zsh", "bash", "fish"]) expect(await runCli(["completion", shell], context(root))).toContain("_amem_candidates");
+  for (const shell of ["zsh", "bash", "fish"]) {
+    const script = await runCli(["completion", shell], context(root));
+    expect(script).toContain("_amem_candidates"); expect(script).toContain("--capture-days");
+  }
   const env: NodeJS.ProcessEnv = { ...process.env, AMEM_HOME: home };
   for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
   for (const shell of ["nushell", ""]) {
