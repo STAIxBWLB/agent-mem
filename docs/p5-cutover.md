@@ -29,8 +29,10 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `amem doctor` again: no index drift, no unexpected policy skips.
 - **Back up what the retirement changes.** Current dotfiles can no longer write the claude-mem LaunchAgents or bridge (dotfiles PR #296 removed them), so a rollback only works from copies taken now.
   - `dot ai memory retire-claude-mem > ~/claude-mem-retire-plan.txt` saves the dry run: every plugin, marketplace, MCP config file, LaunchAgent and directory it would touch.
-  - Copy each file it lists into `~/claude-mem-backup-<date>/`, keeping the paths: the MCP config files, `~/Library/LaunchAgents/com.dotfiles.claude-mem-bridge.plist`, `~/Library/LaunchAgents/com.dotfiles.claude-mem-sync.plist` and `~/.claude/settings.json`.
-  - Record the versions you would reinstall: `claude plugin list` and `codex plugin list` (the claude-mem plugin and its marketplace), and `dot --version`.
+  - Copy each file it lists into `~/claude-mem-backup-<date>/`, keeping the paths: the MCP config files, `~/Library/LaunchAgents/com.dotfiles.claude-mem-bridge.plist`, `~/Library/LaunchAgents/com.dotfiles.claude-mem-sync.plist`, `~/.claude/settings.json` and `~/.config/dotfiles/agents/AGENTS.md`.
+  - Record the claude-mem plugin and marketplace versions with `claude plugin list` and `codex plugin list`.
+  - Check whether the LaunchAgents can still run. Their programs are `dot ai memory bridge` and `dot ai memory sync` (`plutil -extract ProgramArguments json -o - <plist>` shows them). Run `dot ai memory bridge --help`. Since dotfiles PR #296 the installed `dot` no longer has those subcommands, so the two agents already fail on every run, and restoring their plists alone restores nothing.
+  - **Gate:** if a rollback must bring the bridge back, install the last dotfiles release before PR #296 at a separate path and confirm `<that path>/dot ai memory bridge --help` runs before you retire anything. Otherwise accept that a rollback restores the plugin, MCP entries and home only, and write that down with the backup.
 - **Retire claude-mem**
   - `dot ai memory retire-claude-mem` is a dry run: it lists the plugin, marketplaces, MCP entries, LaunchAgents and the home it would touch.
   - `dot ai memory retire-claude-mem --apply --import-complete` disables and uninstalls the plugin for Claude Code and Codex, removes the MCP entries for Kimi, Qwen, Antigravity, Kiro and Copilot, removes the `com.dotfiles.claude-mem-bridge` and `com.dotfiles.claude-mem-sync` LaunchAgents, and moves `~/.claude-mem` to `~/.claude-mem.archive-<date>`. It refuses while a claude-mem process runs.
@@ -47,7 +49,8 @@ The retirement never deletes data, but current dotfiles cannot recreate what it 
 - Move `~/.claude-mem.archive-<date>` back to `~/.claude-mem`.
 - Reinstall the claude-mem plugin and marketplace at the recorded versions with `claude plugin` and `codex plugin`.
 - Copy the backed-up MCP config files and `~/.claude/settings.json` back to their paths.
-- Copy the two plists back to `~/Library/LaunchAgents/` and load each with `launchctl bootstrap gui/$(id -u) <plist>`. Their programs came from the dotfiles release recorded above; if the current release no longer ships them, reinstall that recorded release first.
+- Restore `~/.config/dotfiles/agents/AGENTS.md` from the backup and run `dot ai agents apply`, so the global instructions name claude-mem again.
+- The bridge and sync agents come back only if you passed the gate above: point each backed-up plist's ProgramArguments at the pre-#296 `dot`, copy it to `~/Library/LaunchAgents/`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`. Without that release, leave them out; they were not running before the cutover either.
 - `amem setup all --undo` removes the amem registrations. The amem home keeps everything it imported; nothing in it needs undoing.
 
 ## P6 live week
@@ -62,7 +65,7 @@ Seven days of ordinary work with claude-mem retired. Record the start date on #1
   - Hook p95 and RSS from `amem capacity --json` stay under 150 ms and 100 MB (R2); MCP RSS under 100 MB idle and 200 MB during search (R3).
   - Disk: the size of the memory home against the capture cap.
 - **Retrieval re-check (#13 AC4 follow-up).** On the last day, run the frozen 25-query set from `docs/p0-baseline.md` §3 against a copy, never the live home.
-  - Copy the directory that contains the memory home, for example `cp -R ~/.agenthub /tmp/amem-p6` when the home is `~/.agenthub/memory`. The script's `--home` takes that parent, not the `memory` directory itself.
+  - Copy only the memory home into a new parent, for example `mkdir /tmp/amem-p6 && cp -R ~/.agenthub/memory /tmp/amem-p6/memory` when the home is `~/.agenthub/memory`. The script's `--home` takes that parent (`/tmp/amem-p6`), not the `memory` directory itself.
   - Run `bun scripts/ac4-recheck.ts --home /tmp/amem-p6 --project <repository key>` from this repository (the default key is agent-hub's; `amem projects` lists the keys).
   - Check the printed `corpus`: it must be the number of curated entries you expect for that project. A `corpus` of 0 means a wrong `--home` or `--project`; fix them rather than record a result.
   - If the home was split into project shards (`amem migrate --shards`), the script cannot read it: it opens the single-home layout, which stops with "memory home has a curated split". Record the re-check as blocked on #13 and update the script to open the shard store before measuring.
