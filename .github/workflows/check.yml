@@ -31,11 +31,15 @@ jobs:
       - run: bun scripts/measure-hook-stages.ts
         if: always() && !cancelled()
       - run: bun scripts/measure-budget.ts
+        if: always() && !cancelled()
       - run: bun scripts/measure-mcp-budget.ts
+        if: always() && !cancelled()
       - run: bun scripts/measure-shard-ac8.ts
+        if: always() && !cancelled()
       - name: Installed tarball smoke in a clean HOME
         if: always() && !cancelled()
         run: bun scripts/smoke-installed-package.ts
       # npm 11 normalizes the manifest at publish and warns (0.3.1: "./bin/amem.js"); keep package.json already normalized.
       - name: package.json needs no npm auto-correction
+        if: always() && !cancelled()
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
