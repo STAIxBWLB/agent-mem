@@ -17,13 +17,15 @@
 
 ## Scope and sessions
 
-- amem is developed together with agent-hub from agent-hub sessions (`../agent-hub`). Standalone-only features may be developed in a session started here. Publish a change the hub consumes first; the hub then raises its exact pin in its own PR.
+- Develop amem from this repository's own hub; coordinate a change agent-hub consumes from an agent-hub session (`../agent-hub`). Publish that change first; the hub then raises its exact pin in its own PR.
 - Keep amem usable without agent-hub and without claude-mem: never import agent-hub code or call the claude-mem worker. Host behavior (privacy policy, inference) enters only through the library API. Plan and budgets: #13.
 - Never add a resident process (daemon, watcher, launchd agent) or a model or network call on the capture path. Add no embeddings or vector index until #13 AC4 evidence and an owner decision allow them, and then only opt-in and computed on demand (none in #13 P1-P5). The #13 resource budgets are acceptance criteria. Observed 2026-10-17: claude-mem's Chroma held 4.0 GB RSS for 11 h and blocked heavy-job admission.
 
 ## agent-hub coordination
 
-- Work assigned on the agent-hub board runs from an agent-hub session (`../agent-hub`), and that repo's `AGENTS.md` §agent-hub binds it, including when a pull-only session reads `hub_inbox`. A session started in this directory has no hub: do not run `ahub up` or `ahub init` here.
+- This repository runs its own hub from its real path `dev/agent-mem/`. Work on its board runs from a session started here, and the `AGENT_HUB` marker block that `ahub init` adds to this file binds it. Owner decision 2026-10-25.
+- The person runs `ahub init` and `ahub up` in a terminal outside any agent session; the CLI refuses agent shells.
+- Work assigned on the agent-hub board runs from an agent-hub session (`../agent-hub`) under that repo's `AGENTS.md` §agent-hub, including when a pull-only session reads `hub_inbox`.
 
 ## Merging
 
