@@ -194,7 +194,10 @@ try {
   const report = { platform: process.platform, bun: Bun.version, transport: "stdio", sessionMs: Math.round(sessionMs), wallTimingPass: sessionMs < 30_000, steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
     R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, evidenceReads: measured.evidenceReads, evidenceRendered: evidence.entries.length, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
-  if (!pass) throw new Error("MCP memory or EOF budget failed");
+  if (!pass) {
+    console.error(JSON.stringify({ diagnostic: "mcp-budget-failure", ...report }));
+    throw new Error("MCP memory or EOF budget failed");
+  }
   return report;
 } catch (error) {
   if (timedOut) throw new BudgetStall("MCP budget session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: 30_000, ...stalled });
