@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { types } from "node:util";
 import { looksSecret } from "./screen.ts";
-import { isDenied } from "./platform.ts";
+import { DENY_NAMES, DENY_SEGMENTS, isDenied } from "./platform.ts";
 import { nodePath, pathCandidates } from "./project.ts";
 
 /** True means the complete value is public. Hosts may narrow, never replace, standalone policy. */
@@ -115,18 +115,38 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
   const pii = literals(descriptors.piiPatterns?.value, "PII patterns");
   const host = descriptors.host?.value as MemoryPolicy | undefined;
   if (host !== undefined && (!host || typeof host.screen !== "function")) throw new Error("invalid host policy");
+  // ponytail: retain at most 512 exact strings / 64 KiB per immutable policy configuration.
+  // Evict the batch when full; a measured need for better hit rates can upgrade this to an LRU.
+  const textChecks = new Map<string, boolean>(); let textBytes = 0;
+  let defaultDenyRevision = "";
+  const publicText = (text: string): boolean => {
+    const cached = textChecks.get(text);
+    if (cached !== undefined) return cached;
+    const check = () => {
+      if (looksSecret(text) || looksSecret(text.replace(/["']/g, ""))) return false;
+      const normalized = fold(text);
+      if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
+      const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
+      const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
+      return !paths.some(path => path && isDenied(posix.normalize(path), deny));
+    };
+    const allowed = check(), bytes = Buffer.byteLength(text);
+    if (bytes <= 1024) {
+      if (textChecks.size >= 512 || textBytes + bytes > 64 * 1024) { textChecks.clear(); textBytes = 0; }
+      textChecks.set(text, allowed); textBytes += bytes;
+    }
+    return allowed;
+  };
   const standalone = (value: unknown): { ok: boolean; value?: unknown } => {
     try {
+      // The exported default lists can be tightened by a host between calls.
+      const revision = JSON.stringify([DENY_NAMES, DENY_SEGMENTS]);
+      if (revision !== defaultDenyRevision) { textChecks.clear(); textBytes = 0; defaultDenyRevision = revision; }
       const complete = snapshot(value);
       if (!complete) return { ok: false };
-      for (const text of complete.texts) {
-        if (looksSecret(text) || looksSecret(text.replace(/["']/g, ""))) return { ok: false };
-        const normalized = fold(text);
-        if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return { ok: false };
-        const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
-        const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
-        for (const path of paths) if (path && isDenied(posix.normalize(path), deny)) return { ok: false };
-      }
+      // Only pure text checks are reused. Shape/bounds/private flags and the host's detached
+      // snapshot are fresh on every call; no row or host verdict is cached.
+      for (const text of complete.texts) if (!publicText(text)) return { ok: false };
       return { ok: true, value: complete.value };
     } catch { return { ok: false }; }
   };

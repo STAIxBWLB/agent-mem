@@ -49,13 +49,17 @@ export function realPath(path: string): string {
 export const DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
 /** Regex sources, matched against a file's basename. */
 export const DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
+const denyNamePatterns = new Map(DENY_NAMES.map(source => [source, new RegExp(source)]));
 
 const hasSegment = (rel: string, seg: string) => `/${rel}/`.includes(`/${seg}/`);
 
 /** True when a path names something the worker must never read, write or report. `extra`: substrings from `local.deny`. */
 export function isDenied(path: string, extra: string[] = []): boolean {
   const norm = path.split(sep).join("/");
-  return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
+  if (DENY_SEGMENTS.some((s) => hasSegment(norm, s))) return true;
+  const name = basename(norm);
+  // Reuse the fixed patterns without caching arbitrary additions to the exported list.
+  return DENY_NAMES.some((re) => (denyNamePatterns.get(re) ?? new RegExp(re)).test(name)) || extra.some((e) => e && norm.includes(e));
 }
 
 /**
