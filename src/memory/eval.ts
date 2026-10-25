@@ -13,7 +13,8 @@ export const DEFAULT_KS: readonly number[] = [1, 5, 10];
 
 export const EVAL_KINDS = ["decision", "finding", "contract", "fail"] as const;
 export interface EvalEntry { key: string; title?: string; text: string; kind?: (typeof EVAL_KINDS)[number]; tier?: "short" | "long"; about?: string[] }
-export interface EvalQuestion { q: string; expect: string[] }
+/** `tag` is an optional label for what a question probes (a test counts them); it never changes the scoring. */
+export interface EvalQuestion { q: string; expect: string[]; tag?: string }
 export interface EvalSet { schema: typeof EVAL_SCHEMA; entries?: EvalEntry[]; questions: EvalQuestion[] }
 
 const fail = (message: string): never => { throw new Error(`invalid eval set: ${message}`); };
@@ -47,14 +48,15 @@ export function parseEvalSet(raw: unknown): EvalSet {
   if (!Array.isArray(root.questions) || !root.questions.length || root.questions.length > MAX_QUESTIONS) fail(`questions must hold 1 to ${MAX_QUESTIONS} items`);
   const questions = (root.questions as unknown[]).map((item, index): EvalQuestion => {
     const row = object(item, `questions[${index}]`);
-    exact(row, ["q", "expect"], `questions[${index}]`);
+    exact(row, ["q", "expect", "tag"], `questions[${index}]`);
+    const tag = row.tag === undefined ? undefined : typeof row.tag === "string" && /^[a-z][a-z0-9-]{0,39}$/.test(row.tag) ? row.tag : fail(`questions[${index}].tag must be 1 to 40 characters of a-z, 0-9 and "-", starting with a letter`);
     if (!Array.isArray(row.expect) || !row.expect.length || row.expect.length > MAX_EXPECT) fail(`questions[${index}].expect must hold 1 to ${MAX_EXPECT} entries`);
     const expect = [...new Set((row.expect as unknown[]).map((value, at) => text(value, `questions[${index}].expect[${at}]`, 80)))];
     for (const name of expect) {
       if (keys.size && !keys.has(name)) fail(`questions[${index}].expect names "${name.slice(0, 40)}", which is not an entry key`);
       if (!keys.size && !/^(?:mem:)?[0-9a-f]{8,32}$/.test(name)) fail(`questions[${index}].expect must be an entry id, optionally written mem:<id> as a brief prints it, or a prefix of 8 or more hex characters when the set has no entries`);
     }
-    return { q: text(row.q, `questions[${index}].q`, MAX_QUESTION_CHARS), expect };
+    return { q: text(row.q, `questions[${index}].q`, MAX_QUESTION_CHARS), expect, ...(tag ? { tag } : {}) };
   });
   return { schema: EVAL_SCHEMA, ...(entries.length ? { entries } : {}), questions };
 }

@@ -12,6 +12,14 @@ import { realPath } from "./platform.ts";
  * `.pathname` stays percent-encoded and breaks under an install path with a space or non-ASCII characters.
  */
 export const FIXTURE_PATH = new URL("./eval-set.json", import.meta.url);
+/** The second committed set (agent-mem#62): invented Korean entries, shipped like the first. Selected with `amem eval --set ko`. */
+export const KO_FIXTURE_PATH = new URL("./eval-set-ko.json", import.meta.url);
+/** Built-in set names `--set` accepts instead of a path; a file literally named `ko` is reached as `./ko`. */
+export const BUILTIN_SETS: Readonly<Record<string, URL>> = { ko: KO_FIXTURE_PATH };
+/** The built-in set a `--set` argument names, or undefined when it is a path. Own keys only, so `--set constructor` is a path. */
+export function builtinSet(name: string): URL | undefined {
+  return Object.hasOwn(BUILTIN_SETS, name) ? BUILTIN_SETS[name] : undefined;
+}
 const PROJECT = "example.test/eval/fixture";
 const DAY = 86400_000;
 /** A fixed clock: entry ids hash their `at`, and recency weights the ranking, so a clock that only moves when the seeder moves it makes every run identical. */
