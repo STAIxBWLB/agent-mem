@@ -30,6 +30,7 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
 - **Back up what the retirement changes.** Current dotfiles can no longer write the claude-mem LaunchAgents or bridge (dotfiles PR #296 removed them), so a rollback only works from copies taken now.
   - `dot ai memory retire-claude-mem > ~/claude-mem-retire-plan.txt` saves the dry run: every plugin, marketplace, MCP config file, LaunchAgent and directory it would touch.
   - Copy each file it lists into `~/claude-mem-backup-<date>/`, keeping the paths: the MCP config files, `~/Library/LaunchAgents/com.dotfiles.claude-mem-bridge.plist`, `~/Library/LaunchAgents/com.dotfiles.claude-mem-sync.plist`, `~/.claude/settings.json` and `~/.config/dotfiles/agents/AGENTS.md`.
+  - Save `dot ai agents apply --dry-run > ~/claude-mem-agents-plan.txt` and copy every rendered instruction file it lists (for example `~/.claude/CLAUDE.md`, the Codex, Kiro, Kimi, Pi, Qwen, Antigravity and Copilot targets) into the same backup.
   - Record the claude-mem plugin and marketplace versions with `claude plugin list` and `codex plugin list`.
   - Check whether the LaunchAgents can still run. Their programs are `dot ai memory bridge` and `dot ai memory sync` (`plutil -extract ProgramArguments json -o - <plist>` shows them). Run `dot ai memory bridge --help`. Since dotfiles PR #296 the installed `dot` no longer has those subcommands, so the two agents already fail on every run, and restoring their plists alone restores nothing.
   - **Gate:** if a rollback must bring the bridge back, install the last dotfiles release before PR #296 at a separate path and confirm `<that path>/dot ai memory bridge --help` runs before you retire anything. Otherwise accept that a rollback restores the plugin, MCP entries and home only, and write that down with the backup.
@@ -37,7 +38,9 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `dot ai memory retire-claude-mem` is a dry run: it lists the plugin, marketplaces, MCP entries, LaunchAgents and the home it would touch.
   - `dot ai memory retire-claude-mem --apply --import-complete` disables and uninstalls the plugin for Claude Code and Codex, removes the MCP entries for Kimi, Qwen, Antigravity, Kiro and Copilot, removes the `com.dotfiles.claude-mem-bridge` and `com.dotfiles.claude-mem-sync` LaunchAgents, and moves `~/.claude-mem` to `~/.claude-mem.archive-<date>`. It refuses while a claude-mem process runs.
   - Remove the lines it prints from `~/.claude/settings.json` yourself; dotfiles never edits that file.
-- **Update the global agent instructions.** The "Persistent Memory" block of `~/.config/dotfiles/agents/AGENTS.md` still tells agents to query claude-mem. Rewrite it for amem (`amem mcp` tools for agents, `amem review` for the person), then run `dot ai agents apply`.
+- **Update the global agent instructions.** While amem is on PATH, every `dot ai agents apply` writes the amem memory block into `~/.config/dotfiles/agents/AGENTS.md`, drops the claude-mem block and renders all targets; do not run it before this step, or the cutover of the instructions happens early.
+  - `dot ai agents apply --dry-run` must say it would write the amem memory block and drop the claude-mem block.
+  - `dot ai agents apply`, then read back: the SSOT and each rendered target name amem and no longer tell agents to query claude-mem (`grep -c claude-mem <file>`).
 - **Read back**
   - `dot ai memory status` and the retirement's own read-back report no claude-mem process, port, hook or LaunchAgent.
   - `amem doctor` reports capture freshness for every CLI you use; a CLI without hooks shows as manual, so add `amem ingest <codex|kimi|pi>` to your session-end routine.
@@ -49,7 +52,7 @@ The retirement never deletes data, but current dotfiles cannot recreate what it 
 - Move `~/.claude-mem.archive-<date>` back to `~/.claude-mem`.
 - Reinstall the claude-mem plugin and marketplace at the recorded versions with `claude plugin` and `codex plugin`.
 - Copy the backed-up MCP config files and `~/.claude/settings.json` back to their paths.
-- Restore `~/.config/dotfiles/agents/AGENTS.md` from the backup and run `dot ai agents apply`, so the global instructions name claude-mem again.
+- Copy `~/.config/dotfiles/agents/AGENTS.md` and every rendered instruction file back from the backup. Do not run `dot ai agents apply` while amem is on PATH: it would write the amem block again and render it everywhere. Read back that the SSOT and each target contain the claude-mem block again. Run `dot ai agents apply` only after amem is uninstalled, or after a dotfiles change that lets you keep the claude-mem block.
 - The bridge and sync agents come back only if you passed the gate above: point each backed-up plist's ProgramArguments at the pre-#296 `dot`, copy it to `~/Library/LaunchAgents/`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`. Without that release, leave them out; they were not running before the cutover either.
 - `amem setup all --undo` removes the amem registrations. The amem home keeps everything it imported; nothing in it needs undoing.
 
