@@ -75,7 +75,8 @@ try {
     work.rebuild();
   } finally { work.close(); }
   // Allowlist environment: no real-home state, inherited agent settings, credentials or network provider configuration.
-  child = spawn(process.execPath, [join(import.meta.dir, "budget-mcp-child.ts"), cwd, base, reportPath], {
+  // Match bin/amem.js's shebang and setup registrations, including the installed runtime's GC mode.
+  child = spawn(process.execPath, ["--smol", join(import.meta.dir, "budget-mcp-child.ts"), cwd, base, reportPath], {
     cwd, env: { PATH: process.env.PATH ?? "", HOME: home, AMEM_HOME: base, TMPDIR: home }, stdio: ["pipe", "pipe", "pipe"],
   });
   const proc = child;
@@ -187,11 +188,12 @@ try {
   if (exitCode !== 0) throw new Error(`MCP EOF exit ${exitCode}: ${stderr}`);
   let remains = true;
   try { process.kill(proc.pid!, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") remains = false; else throw error; }
-  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number; evidenceReads: number };
+  const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { runtimeMode: string; idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number; evidenceReads: number };
+  if (measured.runtimeMode !== "--smol") throw Error("MCP budget fixture did not use the installed runtime mode");
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
   const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && measured.evidenceReads === 1 && !remains;
   const sessionMs = performance.now() - sessionStarted;
-  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", sessionMs: Math.round(sessionMs), wallTimingPass: sessionMs < 30_000, steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
+  const report = { platform: process.platform, bun: Bun.version, runtimeMode: measured.runtimeMode, transport: "stdio", sessionMs: Math.round(sessionMs), wallTimingPass: sessionMs < 30_000, steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
     R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, evidenceReads: measured.evidenceReads, evidenceRendered: evidence.entries.length, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
   if (!pass) {

@@ -6,6 +6,7 @@ import { peakRssKB } from "./budget-rss.ts";
 
 const [cwd, base, report] = process.argv.slice(2);
 if (!cwd || !base || !report) throw new Error("expected isolated cwd, memory base and report path");
+if (!process.execArgv.includes("--smol")) throw Error("MCP budget child must match the installed --smol runtime");
 const memory = await createMemoryMcp({ cwd, base });
 let idleBytes = 0, maxRSS = 0, searches = 0, timelines = 0, workReads = 0, briefReads = 0, evidenceReads = 0;
 const search = memory.tools.amem_search, timeline = memory.tools.amem_timeline, readWork = memory.tools.amem_work_state_read, brief = memory.tools.amem_brief;
@@ -40,6 +41,6 @@ await serveMcp({
   onEmitted: async (...args) => { await memory.onEmitted(...args); maxRSS = Math.max(maxRSS, peakRssKB()); },
   close: async () => {
     await memory.close();
-    writeFileSync(report, JSON.stringify({ idleBytes, maxRSS, searches, timelines, workReads, briefReads, evidenceReads }), { mode: 0o600 });
+    writeFileSync(report, JSON.stringify({ runtimeMode: "--smol", idleBytes, maxRSS, searches, timelines, workReads, briefReads, evidenceReads }), { mode: 0o600 });
   },
 });
