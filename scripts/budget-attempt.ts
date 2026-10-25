@@ -1,4 +1,5 @@
 /** Measurement-only policy; never imported by the shipped hook or MCP path. */
+import { probeRunnerSpeed, runnerIsSlow, RUNNER_BASELINES, type RunnerBaseline, type RunnerProbe } from "./runner-probe.ts";
 export class BudgetStall extends Error {
   constructor(message: string, readonly values: Record<string, number | string | boolean | null> = {}) { super(message); this.name = "BudgetStall"; }
 }
@@ -26,4 +27,32 @@ export async function budgetSample<T>(check: string, run: () => T | Promise<T>, 
 export function budgetGroupRecorder<T>(group: string, counts: Map<string, number>, write: (attempt: BudgetAttempt<T>) => void = attempt => console.log(JSON.stringify(attempt))): (attempt: BudgetAttempt<T>) => void {
   if (!counts.has(group)) counts.set(group, 0);
   return attempt => { if (attempt.outcome === "stall") counts.set(group, counts.get(group)! + 1); write(attempt); };
+}
+
+export interface BudgetGroupAttempt<T> {
+  diagnostic: "budget-group"; check: string; attempt: 1 | 2; outcome: "pass" | "wall-miss" | "rss-miss" | "fail";
+  before: RunnerProbe; after: RunnerProbe; baseline: RunnerBaseline; slow: boolean; retryPolicy: "slow-wall" | "stall"; result?: T; error?: string; values?: BudgetStall["values"];
+}
+/** One re-measure: slow-runner wall misses by default, or the existing MCP single-stall rule. */
+export async function budgetGroup<T>(check: string, run: () => T | Promise<T>, judge: (result: T) => { wallPass: boolean; rssPass: boolean },
+  options: { probe?: () => RunnerProbe | Promise<RunnerProbe>; baseline?: RunnerBaseline; record?: (attempt: BudgetGroupAttempt<T>) => void; retryPolicy?: "slow-wall" | "stall" } = {}): Promise<{ result: T; attempts: BudgetGroupAttempt<T>[] }> {
+  const probe = options.probe ?? probeRunnerSpeed, baseline = options.baseline ?? RUNNER_BASELINES[process.platform];
+  if (!baseline) throw Error("runner baseline unavailable for this platform");
+  const record = options.record ?? (attempt => console.log(JSON.stringify(attempt))), attempts: BudgetGroupAttempt<T>[] = [], retryPolicy = options.retryPolicy ?? "slow-wall";
+  for (const attempt of [1, 2] as const) {
+    const before = await probe(); let result: T | undefined, failure: unknown, failed = false;
+    let verdict: { wallPass: boolean; rssPass: boolean } | undefined;
+    try { result = await run(); verdict = judge(result); }
+    catch (error) { failure = error; failed = true; }
+    const after = await probe(), slow = runnerIsSlow(before, after, baseline);
+    const outcome = failed ? failure instanceof BudgetStall ? "wall-miss" : "fail" : verdict?.rssPass !== true ? "rss-miss" : verdict.wallPass === true ? "pass" : "wall-miss";
+    const receipt: BudgetGroupAttempt<T> = { diagnostic: "budget-group", check, attempt, outcome, before, after, baseline, slow, retryPolicy,
+      ...(!failed ? { result } : { error: failure instanceof Error ? failure.message : String(failure), ...(failure instanceof BudgetStall ? { values: failure.values } : {}) }) };
+    attempts.push(receipt); record(receipt);
+    if (outcome === "pass") return { result: result!, attempts };
+    if (outcome === "wall-miss" && attempt === 1 && (retryPolicy === "stall" ? failure instanceof BudgetStall : slow)) continue;
+    if (failed) throw failure;
+    throw Error(`${check}: ${outcome}`);
+  }
+  throw Error("unreachable budget group attempt");
 }

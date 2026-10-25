@@ -2,7 +2,7 @@
  * Instrumentation is confined to the child fixture; production handlers and transport are unchanged.
  */
 import { spawn } from "node:child_process";
-import { budgetSample, BudgetStall } from "./budget-attempt.ts";
+import { budgetGroup, BudgetStall } from "./budget-attempt.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -190,10 +190,10 @@ try {
   const measured = JSON.parse(readFileSync(reportPath, "utf8")) as { idleBytes: number; maxRSS: number; searches: number; timelines: number; workReads: number; briefReads: number; evidenceReads: number };
   const idleRssMB = mb(measured.idleBytes), peakRssMB = mb(measured.maxRSS * 1024);
   const pass = measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024 && measured.searches === SEARCHES && measured.timelines === TIMELINES && measured.workReads === 2 && measured.briefReads === 1 && measured.evidenceReads === 1 && !remains;
-  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", sessionMs: Math.round(performance.now() - sessionStarted), steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
+  const sessionMs = performance.now() - sessionStarted;
+  const report = { platform: process.platform, bun: Bun.version, transport: "stdio", sessionMs: Math.round(sessionMs), wallTimingPass: sessionMs < 30_000, steps, corpus: { curated: CURATED, capture: CAPTURE, workRows: WORK_ROWS, workItems: WORK_ITEMS },
     R1: { pass: !remains, eofExitCode: exitCode, childReaped: !remains },
     R3: { pass: measured.idleBytes > 0 && measured.maxRSS > 0 && measured.idleBytes < 100 * 1048576 && measured.maxRSS < 200 * 1024, idleRssMB, peakRssMB, searches: measured.searches, timelines: measured.timelines, workReads: measured.workReads, briefReads: measured.briefReads, evidenceReads: measured.evidenceReads, evidenceRendered: evidence.entries.length, briefRendered: briefRows.length, briefBytes: brief.bytes, budgetIdleMB: 100, budgetPeakMB: 200 }, pass };
-  console.log(JSON.stringify(report, null, 2));
   if (!pass) throw new Error("MCP memory or EOF budget failed");
   return report;
 } catch (error) {
@@ -212,4 +212,7 @@ try {
 }
 
 }
-await budgetSample("mcp-session", measureSession);
+// #48: a single watchdog stall retries even at normal speed; this is the only MCP retry layer.
+const measured = await budgetGroup("mcp-session", measureSession, report => ({ wallPass: report.wallTimingPass, rssPass: report.R3.pass }), { retryPolicy: "stall" });
+
+console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2));
