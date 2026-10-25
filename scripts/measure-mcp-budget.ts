@@ -1,5 +1,7 @@
 /** #13 frozen P2 R1/R3: a real stdio MCP session over a bounded synthetic project on macOS and Linux.
  * Instrumentation is confined to the child fixture; production handlers and transport are unchanged.
+ * A .bun-version bump to 1.4.3+ requires re-baselining macOS R3: Bun changed rss/maxRSS to
+ * physical footprint/its peak in 1.4.3. Cross-version memory counters are not directly comparable.
  */
 import { spawn } from "node:child_process";
 import { budgetGroup, BudgetStall } from "./budget-attempt.ts";

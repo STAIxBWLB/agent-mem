@@ -175,3 +175,17 @@ test("three I/O samples use the median so one healthy-run spike does not set the
   expect(() => runnerIsSlow({ ...reading, ioMs: 48.97 }, reading, baseline)).toThrow("invalid runner probe");
   for (const values of [[], [1, NaN, 2], [1, 0, 2], Array<number>(3)]) expect(() => median(values)).toThrow("invalid median samples");
 });
+
+test("recorded Ubuntu stalled-suite neighbors trigger the calibrated I/O median gate", async () => {
+  const { runnerIsSlow, RUNNER_BASELINES } = await import("../scripts/runner-probe.ts");
+  const reference = RUNNER_BASELINES.linux!;
+  const pairs: [Probe, Probe][] = [
+    [{ ...normal, "cpuMs": 9.707808000000002, "spawnMs": 12.979821000000001, "ioMs": 2.612885999999996, "ioSamplesMs": [4.5665540000000036, 2.612885999999996, 2.6064149999999984] }, { ...normal, "cpuMs": 9.775879, "spawnMs": 12.826019000000002, "ioMs": 29.95894099999998, "ioSamplesMs": [266.715968, 29.95894099999998, 25.053099999999972] }],
+    [{ ...normal, "cpuMs": 9.847408000000001, "spawnMs": 14.387108000000001, "ioMs": 7.8769080000000145, "ioSamplesMs": [109.92653500000002, 3.625001999999995, 7.8769080000000145] }, { ...normal, "cpuMs": 10.491727999999998, "spawnMs": 13.130999000000003, "ioMs": 3.145179000000006, "ioSamplesMs": [4.117124000000004, 3.145179000000006, 2.8734290000000016] }],
+  ];
+  for (const [before, after] of pairs) {
+    expect(runnerIsSlow(before, after, reference)).toBe(true);
+    expect(runnerIsSlow(withIo(before, reference.ioMs), withIo(after, reference.ioMs), reference)).toBe(false);
+    expect(runnerIsSlow(before, after, { ...reference, ioMs: 18.27 })).toBe(false);
+  }
+});

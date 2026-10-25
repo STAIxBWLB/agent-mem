@@ -10,11 +10,13 @@ export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; 
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
 // ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
 // Upgrade to versioned hardware-specific baselines when enough probe history exists.
-// Same-shape hosted calibration: CPU/spawn maxima, I/O median of ten per-call medians,
-// rounded up to 0.01 ms. Mac job attempt 1 passed all workloads without sample retries.
-// Linux stays unavailable until an eligible healthy job exists; failed jobs are not calibration evidence.
+// #71 per-reading eligibility, run 40209400516: outer-before plus neighbors of successful
+// first-attempt suites without stalls. Linux attempts 1+2 supply 18 eligible readings;
+// Mac attempt 1 supplies 11. Outer-after and failed-suite neighbors remain excluded evidence.
+// CPU/spawn maxima and the median of eligible three-write medians are rounded up to 0.01 ms.
 export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
-  darwin: { cpuMs: 7.19, spawnMs: 12.36, ioMs: 2.65, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516/job/121217210762" },
+  linux: { cpuMs: 10.73, spawnMs: 15.44, ioMs: 2.78, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516" },
+  darwin: { cpuMs: 7.28, spawnMs: 12.36, ioMs: 2.79, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516/job/121217210762" },
 };
 
 /** Fixed CPU, provider-free Bun spawn and fresh durable SQLite work; no application modules. */
