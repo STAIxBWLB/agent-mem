@@ -5,7 +5,7 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
 ## Before you start
 
 - **amem installed at the released version**, the same one agent-hub pins (`bun add -g @staix/agent-mem@<version>`). Check it with `amem --version`.
-- **Optional, recent claude-mem activity:** the bounded capture import (#13 design G) lands with hub task #11. Without it, only curated notes and `work_state` lists move; recent observations stay in the archived claude-mem home.
+- **A release that has `--capture-days`.** The bounded capture import (#13 design G, PR #76) shipped after 0.8.0; `amem import claude-mem --help` must list `--capture-days`. With an older release only curated notes and `work_state` lists move, and recent observations stay in the archived claude-mem home.
 - **No agent session is writing memory** while you import, so the cursors read a stable source.
 
 ## P5 steps
@@ -22,7 +22,8 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `amem alias add <claude-mem-key> <repository-key>` for each key you want carried over. `amem projects` lists the repository keys.
 - **Import, once per repository.** The import is bound to the project of the directory it runs in, so run it from each repository checkout you want to carry over.
   - `amem import claude-mem` imports the hub-filed notes stored under that repository's name and the `work_state` lists of every claude-mem key aliased to it (a repository with no alias imports no work lists). It opens the claude-mem database read-only and reports read, added and skipped counts.
-  - Run it again until it reports nothing new; `--limit` bounds one run and `--restart` resets the cursor and re-reads from the start (already-imported entries are not added twice).
+  - Add `--capture-days N` to also bring the last N days of claude-mem observations and session summaries into the machine-local capture tier, for example `amem import claude-mem --capture-days 30`. It uses the same aliases, screens each full row before storing a bounded excerpt, follows the capture cap and retention, never reads Chroma vectors, and reports read, added, spooled and skipped. Capture rows are recall context only, never curated notes or evidence, and are not synced.
+  - Run it again until it reports nothing new; `--limit` bounds one run and `--restart` resets the cursor and re-reads from the start (already-imported entries are not added twice). Choose N before the first run: widening it later reaches older rows only with `--restart`.
 - **Verify before retiring anything**
   - `amem search <a term you know>` shows the imported notes; they arrive as curated long-term notes, not as candidates.
   - `amem review list` shows any candidates agents proposed meanwhile; `amem review walk` goes through them one by one. Open work lists appear in the SessionStart brief of a new Claude Code session in that repository.
