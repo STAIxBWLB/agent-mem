@@ -26,9 +26,9 @@ test("installed smoke child environment is an allowlist with isolated config/cac
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS", "NODE_PATH", "BUN_OPTIONS", "AMEM_HOOK_BOOT_AT", "AGENTHUB_HOME", "AGENTHUB_PEER_ID", "CLAUDECODE", "CODEX_THREAD_ID"]) expect(Object.hasOwn(env, key)).toBe(false);
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);
 });
-test("installed smoke permits only all-target setup apply in addition to its fixed read/hook commands", () => {
-  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
-  for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
+test("installed smoke permits only all-target setup apply and native ingest in addition to its fixed read/hook commands", () => {
+  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
+  for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["ingest"], ["ingest", "claude"], ["ingest", "codex", "extra"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
 });
 test("installed apply needs a complete confirmed result rather than preview, cancellation or partial targets", () => {
   const applied = { applied: ["claude", "codex", "kimi", "pi"], unchanged: [] };
