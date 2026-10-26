@@ -25,7 +25,7 @@ const code = (error: unknown): string => error instanceof Error ? error.message.
 const digest = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 
 export interface BenchmarkOptions {
-  input: string; output: string; sourceRoot?: string; questionTimeoutMs?: number; maxQuestions?: number; variant?: string;
+  input: string; output: string; sourceRoot?: string; questionTimeoutMs?: number; maxQuestions?: number; variant?: string; questionTypes?: readonly string[];
 }
 interface Runtime { root: string; commit: string; version: string }
 interface QuestionRun extends QuestionRetrieval {
@@ -327,6 +327,10 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
   const timeoutMs = options.questionTimeoutMs ?? DEFAULT_TIMEOUT;
   requireBench(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 300_000, "invalid per-question time limit");
   requireBench(options.maxQuestions === undefined || Number.isSafeInteger(options.maxQuestions) && options.maxQuestions > 0, "invalid question limit");
+  const questionTypes = options.questionTypes === undefined ? null : [...options.questionTypes];
+  requireBench(questionTypes === null || questionTypes.length > 0 && questionTypes.length <= 32
+    && questionTypes.every(type => typeof type === "string" && /^[a-z][a-z-]{0,63}$/.test(type))
+    && new Set(questionTypes).size === questionTypes.length, "invalid question type selection");
   requireBench(harnessDigest() === HARNESS_AT_LOAD, "harness changed since load");
   const initial = statSync(input); requireBench(initial.isFile(), "dataset must be a regular file");
   const started = performance.now(), dataset = await hashLongMemEvalFile(input);
@@ -335,15 +339,20 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const root = mkdtempSync(join(tmpdir(), "amem-longmemeval-run-")), results: QuestionRun[] = [], seen = new Set<string>();
   mkdirSync(dirname(output), { recursive: true, mode: 0o700 }); writeFileSync(output + ".jsonl", "", { mode: 0o600 });
-  let complete = false, fatal: string | undefined, cancelled = false;
+  let complete = false, fatal: string | undefined, cancelled = false, examined = 0, skippedByType = 0;
+  const selectedTypes = new Set<string>();
   const stopRun = () => { cancelled = true; };
   process.once("SIGINT", stopRun); process.once("SIGTERM", stopRun);
   try {
     for await (const q of readLongMemEvalQuestions(input)) {
       if (cancelled) { fatal = "benchmark interrupted"; break; }
       if (options.maxQuestions !== undefined && results.length >= options.maxQuestions) break;
+      examined++;
+      const id = Buffer.from(q.question_id, "utf8").toString("utf8");
+      requireBench(!seen.has(id), "duplicate question ID"); seen.add(id);
+      if (questionTypes && !questionTypes.includes(q.question_type)) { skippedByType++; continue; }
+      selectedTypes.add(q.question_type);
       let result = baseResult(q);
-      requireBench(!seen.has(result.id), "duplicate question ID"); seen.add(result.id);
       requireBench(runtimeAt(source.root).commit === source.commit, "runtime changed during benchmark");
       requireBench(harnessDigest() === HARNESS_AT_LOAD, "harness changed during benchmark");
       if (result.abstention) result.status = "abstention-excluded";
@@ -356,13 +365,14 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
       if (options.maxQuestions !== undefined && results.length >= options.maxQuestions) break;
     }
     complete = options.maxQuestions === undefined;
+    if (complete && questionTypes) requireBench(questionTypes.every(type => selectedTypes.has(type)), "requested question type absent from dataset");
     const after = statSync(input);
     requireBench(initial.dev === after.dev && initial.ino === after.ino && initial.size === after.size && initial.mtimeMs === after.mtimeMs && initial.ctimeMs === after.ctimeMs, "dataset changed during benchmark");
   } catch (error) { fatal = code(error); }
   finally { process.removeListener("SIGINT", stopRun); process.removeListener("SIGTERM", stopRun); rmSync(root, { recursive: true, force: true }); }
   const report = { schema: "agent-mem.longmemeval/v2", variant: options.variant ?? "custom", dataset: { ...dataset, file: input }, runtime: source,
     harnessCommit: git(HERE, ["rev-parse", "HEAD"]).stdout.trim(), harnessSha256: HARNESS_AT_LOAD, definitions: { upstream: "xiaowu0162/LongMemEval@9e0b455f4ef0e2ab8f2e582289761153549043fc/src/retrieval/eval_utils.py", sessionRanking: "upstream turn2session effective_k widening; duplicate turns remain in DCG", ndcgAnyAt10: "upstream dcg: ranks 1 and 2 weight 1, full-corpus ideal at effective_k", MRR: "extra: first gold SID reciprocal raw turn rank among 50 returned turns", turnRecallAt10: "extra: fraction of has_answer turns in the first ten raw hits; turnIndex is cumulative per SID across repeated entries", failures: "failed paths contribute zero; no-turn-label averages are null", clock: "raw session timestamps, question-date UTC clock, retention covers haystack", workerPeakKB: "whole question worker (seed, library, BM25 and MCP controller); MCP child separate; null when incomplete/unavailable", wallMs: "input/seed/query/worker execution; cleanupMs is a separate reap barrier" }, platform: process.platform, bun: Bun.version, limit: LIMIT, questionTimeoutMs: timeoutMs,
-    complete: complete && !fatal, ...(fatal ? { fatal } : {}), questions: results.length, upstreamNoUserTarget: results.filter(q => !q.abstention && q.upstreamNoUserTarget).length, duplicateSessionIds: results.reduce((sum, q) => sum + q.rows.duplicateSessionIds, 0), abstentions: results.filter(q => q.abstention).length,
+    selection: { questionTypes, examined, skippedByType }, complete: complete && !fatal, ...(fatal ? { fatal } : {}), questions: results.length, upstreamNoUserTarget: results.filter(q => !q.abstention && q.upstreamNoUserTarget).length, duplicateSessionIds: results.reduce((sum, q) => sum + q.rows.duplicateSessionIds, 0), abstentions: results.filter(q => q.abstention).length,
     failed: results.filter(q => q.status === "failed" || q.status === "timeout" || q.status === "partial").map(q => ({ id: q.id, type: q.type, status: q.status, errors: q.errors })),
     wallMs: performance.now() - started, metrics: aggregateMetrics(results), results };
   writeFileSync(output, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
@@ -374,7 +384,7 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
 }
 function args(values: readonly string[]): BenchmarkOptions {
   const parsed: Record<string, string> = {};
-  const names = ["--input", "--output", "--source-root", "--question-timeout-ms", "--max-questions", "--variant"];
+  const names = ["--input", "--output", "--source-root", "--question-timeout-ms", "--max-questions", "--variant", "--question-types"];
   for (let i = 0; i < values.length; i += 2) {
     const key = values[i]!, value = values[i + 1];
     requireBench(names.includes(key) && value !== undefined && !Object.hasOwn(parsed, key), "invalid arguments");
@@ -383,7 +393,8 @@ function args(values: readonly string[]): BenchmarkOptions {
   requireBench(!!parsed["--input"] && !!parsed["--output"], "--input and --output are required");
   return { input: parsed["--input"]!, output: parsed["--output"]!, ...(parsed["--source-root"] ? { sourceRoot: parsed["--source-root"] } : {}),
     ...(parsed["--question-timeout-ms"] ? { questionTimeoutMs: Number(parsed["--question-timeout-ms"]) } : {}),
-    ...(parsed["--max-questions"] ? { maxQuestions: Number(parsed["--max-questions"]) } : {}), ...(parsed["--variant"] ? { variant: parsed["--variant"] } : {}) };
+    ...(parsed["--max-questions"] ? { maxQuestions: Number(parsed["--max-questions"]) } : {}), ...(parsed["--variant"] ? { variant: parsed["--variant"] } : {}),
+    ...(parsed["--question-types"] !== undefined ? { questionTypes: parsed["--question-types"]!.split(",") } : {}) };
 }
 if (import.meta.main) {
   const values = process.argv.slice(2);
@@ -395,6 +406,6 @@ if (import.meta.main) {
     process.once("exit", () => { if (result) writeCheckpoint(output!, result, true); });
     result = await runQuestion(validateQuestion(JSON.parse(readFileSync(input!, "utf8"))), runtime, home!, value => writeCheckpoint(output!, value, false));
   } else if (values.length === 1 && values[0] === "--help") {
-    console.log("bun scripts/longmemeval.ts --input FILE --output REPORT.json [--source-root MAIN_CHECKOUT] [--question-timeout-ms 30000] [--max-questions N] [--variant S|M]");
+    console.log("bun scripts/longmemeval.ts --input FILE --output REPORT.json [--source-root MAIN_CHECKOUT] [--question-timeout-ms 30000] [--max-questions N] [--variant S|M] [--question-types knowledge-update,multi-session]");
   } else await runLongMemEval(args(values));
 }
