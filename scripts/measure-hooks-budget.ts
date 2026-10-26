@@ -154,7 +154,25 @@ try {
     }); } finally { check.close(); }
     if (new Set(rows).size !== rows.length) throw new Error("capture replay duplicated a workload event");
     if (rows.length === acceptedWorkload) break;
-    if (pass === 3) throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
+    if (pass === 3) {
+      // Failure-only fixture evidence: collection does not enter an R1/R2 sample or retry correctness.
+      const inventory = (folder: string) => (existsSync(folder) ? readdirSync(folder) : []).map(name => {
+        const file = join(folder, name), stat = lstatSync(file);
+        return { name, bytes: stat.size, regular: stat.isFile() && !stat.isSymbolicLink() };
+      });
+      const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(folder => inventory(folder).filter(row => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(row.name)).map(row => {
+        let invocation: number | null = null, scopeKnown = false;
+        if (row.regular && row.bytes <= 72 * 1024) try {
+          const value = JSON.parse(readFileSync(join(folder, row.name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
+          invocation = match ? Number(match[1]) : null; scopeKnown = typeof value.scope === "string";
+        } catch (error) { console.error(JSON.stringify({ diagnostic: "hook-drain-unreadable", name: row.name, code: (error as NodeJS.ErrnoException).code ?? "invalid_record" })); }
+        return { ...row, invocation, scopeKnown };
+      }));
+      console.error(JSON.stringify({ diagnostic: "hook-drain-state", observed: rows.length, expected: acceptedWorkload,
+        pending, captureSpool: inventory(join(dir, "spool")), identityCache: inventory(join(f.base, "hook-project")),
+        workers: observer.read().map(({ pid, kind, detached }) => ({ pid, kind, detached })), evidence: observer.evidence().slice(-16) }));
+      throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
+    }
   }
   const sessionStart = await samples("sessionStart", RUNS.sessionStart, () => invoke("SessionStart", "sessionStart"));
   const finalStore = new CaptureStore({ memoryDir: f.base, project: f.project });
