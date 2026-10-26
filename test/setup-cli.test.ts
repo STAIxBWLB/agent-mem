@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PERSON_ONLY, runCli, type CliContext } from "../src/cli.ts";
 import { COMMANDS, parseCommand } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
-const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "all"] as const;
+const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "all"] as const;
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function put(file: string, value: string, mode = 0o600) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, value); chmodSync(file, mode); }
 function snapshot(root: string): Array<{ file: string; mode: number; bytes?: string }> {
@@ -36,12 +36,18 @@ test("setup command table, parser and actual help expose the same targets and ap
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
 });
+
+test("Jcode setup-only support does not expose ingest or create capture state", async () => {
+  const f = fixture(), before = snapshot(f.root);
+  await expect(runCli(["ingest", "jcode"], { ...f.context, env: { ...f.env, AGENTHUB_PEER_ID: "jcode" } })).rejects.toThrow("kind takes codex or kimi or pi or qwen");
+  expect(snapshot(f.root)).toEqual(before); expect(f.calls()).toEqual([]);
+});
 test("default setup CLI previews every target with no commands, home writes or changed rules", async () => {
   const f = fixture(), before = snapshot(f.root);
   for (const target of targets) {
     const plan = JSON.parse(await runCli(["setup", target], f.context));
     expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.slice(0, -1) : [target]);
-    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (action.target === "qwen" ? 1 : 2))).toBe(true);
+    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });
@@ -67,7 +73,7 @@ test("setup CLI refuses invalid targets, unknown flags and conflicting modes bef
 test("cancelled setup CLI confirmations keep both apply and undo dry", async () => {
   const f = fixture(), before = snapshot(f.root); let confirmations = 0;
   for (const [flag, mode] of [["--apply", "apply"], ["--undo", "undo"]] as const) {
-    const output = await runCli(["setup", "all", flag], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual([...SETUP_TARGETS]); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(5); return false; } });
+    const output = await runCli(["setup", "all", flag], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual([...SETUP_TARGETS]); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
     expect(JSON.parse(output)).toEqual({ cancelled: true });
   }
   expect(confirmations).toBe(2); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
@@ -93,7 +99,7 @@ test("a native CLI without MCP administration is refused before free-form prompt
 test("all setup skips and reports absent CLIs while configuring the available client", async () => {
   const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
   const result = JSON.parse(await runCli(["setup", "all", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true }));
-  expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen"]);
+  expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen", "jcode"]);
   expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
   expect(f.calls()).toHaveLength(1);
 });

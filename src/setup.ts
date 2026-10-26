@@ -12,7 +12,7 @@ import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
-export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen"] as const;
+export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode"] as const;
 export type SetupTarget = typeof SETUP_TARGETS[number];
 type Env = Readonly<Record<string, string | undefined>>;
 type Image = ConfigImage;
@@ -90,7 +90,8 @@ function context(options: SetupContext) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const root = (key: string, fallback: string) => {
     const setting = env[key];
-    if (!(key === "QWEN_HOME" ? setting : setting?.trim())) return join(home, fallback);
+    const present = key === "JCODE_HOME" ? setting !== undefined : key === "QWEN_HOME" ? !!setting : !!setting?.trim();
+    if (!present) return join(home, fallback);
     const expanded = key === "QWEN_HOME" && /^~(?:[/\\]|$)/.test(setting!) ? join(home, ...setting!.slice(2).split(/[/\\]/)) : setting!;
     const given = resolve(expanded), withinHome = relative(resolve(env.HOME?.trim() || homedir()), given);
     // Canonicalize the HOME alias only; named configuration-directory symlinks must still be refused.
@@ -103,6 +104,8 @@ function context(options: SetupContext) {
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
     qwen: [join(qwen, "settings.json")],
+    // Jcode takes JCODE_HOME literally, including an empty, relative or tilde spelling.
+    jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
   const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
@@ -115,8 +118,11 @@ function context(options: SetupContext) {
   return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
-  if (target === "kimi") return null;
+  if (target === "kimi" || target === "jcode") return null;
   return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
+}
+function assertJcodeRuntime(c: ReturnType<typeof context>): void {
+  if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, `${target}.json`); }
@@ -134,14 +140,16 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
+  if (target === "jcode") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
-const lifecycle = (target: SetupTarget) => target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+const lifecycle = (target: SetupTarget) => target === "jcode" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
-  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|all [--apply|--undo]");
+  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|all [--apply|--undo]");
   const c = context(options), targets = target === "all" ? [...SETUP_TARGETS] : [target as SetupTarget];
+  if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
     const settings = json(read(c.paths.claude[1]!));
@@ -152,11 +160,13 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     for (const id of [...ids].filter(key => /^agent-mem(?:@[A-Za-z0-9._-]+)?$/.test(key))) pluginNotes.push(`Installed Claude plugin ${id} detected: if enabled, direct setup would duplicate its MCP server and seven hooks. Choose plugin installation or direct setup; disable/uninstall the plugin before applying direct setup.`);
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
+  if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP only. Native saved sessions do not prove per-message project scope, so capture and ingest hooks are unavailable; no hook or config.toml is installed.");
+  if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
   return { targets, mode, actions: targets.map(target => {
     const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
     const original = read(c.paths[target][0]!);
     const document = target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
-    const hasAmem = Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    const hasAmem = target === "jcode" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
@@ -196,13 +206,14 @@ function restoreChange(value: Receipt, change: Change, index: number, live: Imag
   return restoreOwned(value.target, index, change.before, change.after, live);
 }
 function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
+  if (target === "jcode") assertJcodeRuntime(c);
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
   const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
-    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent"), QWEN_HOME: join(staging, ".qwen") };
+    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent"), QWEN_HOME: join(staging, ".qwen"), JCODE_HOME: join(staging, ".jcode") };
     Object.assign(env, { XDG_CONFIG_HOME: join(staging, ".config"), XDG_DATA_HOME: join(staging, ".local", "share"), XDG_CACHE_HOME: join(staging, ".cache"), XDG_STATE_HOME: join(staging, ".local", "state"), TMPDIR: join(staging, "tmp"), TMP: join(staging, "tmp"), TEMP: join(staging, "tmp") });
     env.QWEN_RUNTIME_DIR = join(staging, "qwen-runtime");
     env.QWEN_CODE_SYSTEM_SETTINGS_PATH = join(staging, "qwen-system-settings.json");
@@ -241,6 +252,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
         kept.mcpServers = { ...record(kept.mcpServers ?? {}), amem: installedServer };
         changes[0]!.after = objectImage(kept, changes[0]!.before);
       }
+    } else if (target === "jcode") {
+      // Shared native pools use the daemon cwd; amem must bind the calling session's project.
+      changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], shared: false });
     } else {
       const document = json(changes[0]!.before), servers = document.mcpServers === undefined ? {} : record(document.mcpServers);
       servers.amem = { command: c.bun, args: ["--smol", c.entry, "mcp"] }; document.mcpServers = servers;

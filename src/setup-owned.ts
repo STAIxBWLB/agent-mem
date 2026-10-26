@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "./setup-toml.ts";
+import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp } from "./setup-jcode.ts";
 export interface ConfigImage { bytes: string | null; mode: number }
 export const sameImage = (a: ConfigImage, b: ConfigImage): boolean => a.bytes === b.bytes && a.mode === b.mode;
 const text = (image: ConfigImage) => image.bytes === null ? "" : new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(image.bytes, "base64"));
@@ -15,10 +16,12 @@ function finishJson(value: Record<string, unknown>, current: ConfigImage, origin
   return rendered(output, current);
 }
 export function mcpRecord(target: string, image: ConfigImage): unknown {
+  if (target === "jcode") return readJcodeMcp(image);
   const doc = target === "codex" ? toml(image) : json(image), servers = doc[target === "codex" ? "mcp_servers" : "mcpServers"];
   return servers === undefined ? undefined : object(servers).amem;
 }
 export function putMcpRecord(target: string, current: ConfigImage, value: unknown): ConfigImage {
+  if (target === "jcode") return putJcodeMcp(current, value);
   if (target === "codex") return rendered(setTomlPath(text(current), ["mcp_servers", "amem"], value), current);
   const doc = json(current), servers = { ...object(doc.mcpServers ?? {}) };
   if (value === undefined) delete servers.amem; else servers.amem = value;
@@ -107,6 +110,7 @@ function restoreMcpOwned(target: string, before: ConfigImage, after: ConfigImage
 }
 /** Exact restore when untouched; otherwise reverse only this receipt's managed entry/rows. */
 export function restoreOwned(target: string, index: number, before: ConfigImage, after: ConfigImage, current: ConfigImage): ConfigImage {
+  if (target === "jcode" && index === 0) return restoreJcodeMcp(before, after, current);
   if (sameImage(current, after)) return before;
   if (sameImage(current, before)) return current;
   // Qwen keeps both managed surfaces in one settings file and one receipt image.

@@ -35,6 +35,8 @@ for (const shell of shells) {
     for (const command of ["list", "goal", "completion", "--help", "--json", "--version"]) expect(top).toContain(command);
     expect(candidateRun(shell, script, ["search", "--f"], dir)).toContain("--filter");
     expect(candidateRun(shell, script, ["setup", "q"], dir)).toContain("qwen");
+    expect(candidateRun(shell, script, ["setup", "j"], dir)).toContain("jcode");
+    expect(candidateRun(shell, script, ["ingest", "j"], dir)).not.toContain("jcode");
     expect(candidateRun(shell, script, ["ingest", "q"], dir)).toContain("qwen");
     const goals = candidateRun(shell, script, ["goal", ""], dir);
     for (const command of ["list", "show", "new", "state", "take", "--all", "--json"]) expect(goals).toContain(command);

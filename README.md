@@ -15,7 +15,7 @@ amem setup all
 amem setup claude --apply
 ```
 
-Replace `claude` with `codex`, `kimi`, `pi` or `qwen` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
+Replace `claude` with `codex`, `kimi`, `pi`, `qwen` or `jcode` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
 
 Agents submit pending memory candidates through MCP. Inspect them after a session and accept or reject each one:
 
@@ -31,6 +31,8 @@ Claude's registered hooks capture events during the session. The configured Code
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
 ## Setup / plugin
+
+`amem setup jcode` registers MCP only, using Jcode v0.99.1's global `JCODE_HOME/mcp.json` (default `~/.jcode/mcp.json`). It owns only `servers.amem`, sets `shared: false` for a workspace-bound session, and preserves unrelated configuration bytes. Jcode has no native MCP add/remove command in this release, so setup edits the owned entry directly. No Jcode ingest command or capture hook is installed: saved messages lack per-message origin while the session cwd can change. Launch Jcode with `JCODE_DISABLE_CLAUDE_MCP=1` and without a same-name project override, which could otherwise replace the private binding. Use a new workspace-bound session when changing projects. See the [Jcode contract and capture limitation](docs/jcode.md).
 
 `amem setup qwen` previews a user-scope MCP registration and a bounded SessionEnd ingest hook in the same `QWEN_HOME/settings.json` (default `~/.qwen/settings.json`). `--apply` and `--undo` follow the same confirmed, private-receipt contract as the other targets. Unrelated settings, servers and hooks are preserved. Qwen runs this hook on normal interactive exit; use `amem ingest qwen` when the session ends without that hook. Native-client operation is source-verified; the installed-package tests use stub registration CLIs.
 
