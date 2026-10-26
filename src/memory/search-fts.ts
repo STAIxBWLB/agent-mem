@@ -204,6 +204,9 @@ export class ScreenedSearchIndex<T> {
         ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)"
         : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
       db.run("PRAGMA temp.cache_size = -2048");
+      // A platform spill minimum can exceed cache_size (macOS: 20,000 pages).
+      // Spill at the cache target so dirty TEMP pages cannot accumulate behind that minimum.
+      db.run("PRAGMA temp.cache_spill = 1");
       this.db = db;
     } catch (error) { db?.close(); throw error; }
   }
