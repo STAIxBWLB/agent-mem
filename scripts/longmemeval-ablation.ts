@@ -65,7 +65,7 @@ export async function runAblations(options: AblationOptions): Promise<any> {
           git(runtime, ["add", "--", ...FILES]);
           git(runtime, ["-c", "user.name=LongMemEval measurement", "-c", "user.email=benchmark@example.invalid", "commit", "--no-gpg-sign", "-m", "test: isolate " + mode + " for LongMemEval measurement"]);
         }
-        const commit = git(runtime, ["rev-parse", "HEAD"]), patch = git(runtime, ["diff", options.baseCommit, "HEAD", "--", ...FILES]);
+        const commit = git(runtime, ["rev-parse", "HEAD"]), patch = git(runtime, ["diff", "--no-ext-diff", "--no-textconv", options.baseCommit, "HEAD", "--", ...FILES]);
         const provenance = { mode, baseCommit: options.baseCommit, runtimeCommit: commit, patchSha256: sha(patch), changes, driverSha256: DRIVER_AT_LOAD };
         writeFileSync(join(output, mode + "-provenance.json"), JSON.stringify(provenance, null, 2) + "\n", { mode: 0o600 });
         const report = await runLongMemEval({ input, output: join(output, mode + ".json"), sourceRoot: runtime,

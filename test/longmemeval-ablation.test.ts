@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realPath } from "../src/memory/platform.ts";
-import { ABLATIONS, ablateSource } from "../scripts/longmemeval-ablation.ts";
+import { ABLATIONS, ablateSource, runAblations } from "../scripts/longmemeval-ablation.ts";
 const source = (file: string) => readFileSync(new URL("../" + file, import.meta.url), "utf8");
 
 test("factor patches are exact and fail closed when any source anchor drifts", () => {
@@ -55,3 +55,18 @@ test("tier removal changes only relative tier factors at the same age", async ()
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("four-runtime matrix keeps fixture corpus/BM25 fixed and removes every temporary checkout", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-ablation-matrix-"));
+  try {
+    const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
+    expect(head.exitCode).toBe(0);
+    const report = await runAblations({ input: join(import.meta.dir, "fakes/longmemeval-three.json"), outputDir: join(root, "reports"),
+      baseCommit: head.stdout.toString().trim(), questionTypes: ["multi-session"] });
+    expect(report.runs.map((run: any) => run.mode)).toEqual([...ABLATIONS]);
+    expect(report.runs.every((run: any) => run.complete && run.questions === 1 && run.rankingChanges.bm25 === 0)).toBe(true);
+    expect(report.runs[0].changes.every((file: any) => !file.changed)).toBe(true);
+    expect(report.runs.slice(1).every((run: any) => run.changes.every((file: any) => file.changed))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 20000);
