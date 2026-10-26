@@ -118,3 +118,13 @@ Plain BM25 has higher all@10, ndcg_any@10 and fractional turn recall on both set
 Rows and resource summaries cover the 470 evaluated questions. Total time also includes file hashing, streaming input and metric aggregation; question time includes seeding and all three backends. These per-question corpora do not replace the separate 85K-row R3 budget. Per-question wall/RSS and returned evidence IDs remain in the temporary JSON/Markdown reports.
 
 Metric verification: hand-computed fixture tests cover all four upstream functions, widen-k, repeated SIDs, truncated rankings and inclusive cutoffs. An independent seeded comparison against the pinned Python/NumPy source matched 500 cases and 4,000 values within 1e-12. NumPy was used only for this external verification, not added as a dependency.
+
+## Recency and tier attribution (#102)
+
+The gap was rechecked using the upstream-ported metrics. A fresh M baseline subset run on `8a0f73f` selected 211 knowledge-update/multi-session questions (193 eligible, 18 abstentions). Its ranked turn lists match the corresponding 211 questions of the full #28 M run exactly. Knowledge-update all@10 remains MCP 0.5833, library 0.5972 and plain BM25 0.9583; multi-session remains 0.5620, 0.5620 and 0.5868.
+
+The measurement-only `scripts/longmemeval-ablation.ts` runs baseline, recency-off, tier-off and both-off serially. Each condition uses a fresh temporary Git worktree at the same runtime base and a fresh memory home per question. Version-checked source transformations affect only the two score implementations used by `MemoryStore.search` and MCP's screened index. Production gains no ranking switch. Provenance records the base, temporary runtime commit, source-file hashes, patch hash and driver hash. An absent or repeated source anchor refuses the experiment.
+
+The complete dataset hash, explicit type selection, question order, session/turn labels, capture dates, question-date clock, capture normalization/retention, query tokenizer, result limit, screening, candidate bounds and plain BM25 control are fixed. Every run checks its corpus metadata and BM25 turn lists against baseline. The tier factor is constant 0.5 for this capture-only corpus, so tier-off should match baseline and both-off should match recency-off; deviations would need investigation, not a new attribution claim.
+
+The matrix and admissibility decision will be recorded after all conditions complete. No production ranking change is included at this stage.

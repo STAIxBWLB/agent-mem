@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,7 +11,6 @@ test("factor patches are exact and fail closed when any source anchor drifts", (
   for (const file of ["src/memory/store.ts", "src/memory/search-fts.ts"] as const) {
     const original = source(file);
     expect(ablateSource(original, file, "baseline")).toBe(original);
-    expect(ablateSource(original, file, "both-off")).toBe(ablateSource(ablateSource(original, file, "baseline"), file, "both-off"));
     expect(() => ablateSource("unrecognized version", file, "recency-off")).toThrow("source anchor changed");
   }
   const store = source("src/memory/store.ts");
@@ -66,6 +65,10 @@ test("four-runtime matrix keeps fixture corpus/BM25 fixed and removes every temp
       baseCommit: head.stdout.toString().trim(), questionTypes: ["multi-session"] });
     expect(report.runs.map((run: any) => run.mode)).toEqual([...ABLATIONS]);
     expect(report.runs.every((run: any) => run.complete && run.questions === 1 && run.rankingChanges.bm25 === 0)).toBe(true);
+    for (const mode of ABLATIONS) {
+      const saved = JSON.parse(readFileSync(join(root, "reports", mode + ".json"), "utf8"));
+      expect(existsSync(saved.runtime.root)).toBe(false);
+    }
     expect(report.runs[0].changes.every((file: any) => !file.changed)).toBe(true);
     expect(report.runs.slice(1).every((run: any) => run.changes.every((file: any) => file.changed))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
