@@ -11,8 +11,9 @@ The 2026-10-17 measurement (`docs/p1-ac4-recheck.md`) was 0.52 on the curated ti
 
 - Engine: main 5e64b8d (0.9.1 library), `store.search(query, { project: "github.com/staixbwlb/agent-hub", limit: 10 })`, engine `fts5`, curated tier plus the project's capture shard. Same 25 frozen queries (`docs/p0-baseline.md` §3.4) and hit rule as P1: at least one of the first 10 results is directly on the query's subject, judged from the result's title or first line.
 - Corpus: copies only, taken 2026-10-26. The amem home was copied with an APFS clone; the claude-mem database and its WAL files were cloned the same way. Neither live store was opened. The claude-mem copy's SHA-256 was the same before and after the import.
+- Period: the observations under the two mapped keys run from 2026-09-19 to 2026-10-26, so `days: 40` takes all of them. The P0 corpus spans about seven weeks of curated agent-hub notes; claude-mem observations of earlier work sit under other keys and are not mapped here.
 - D2 aliases (added in the copy only; the live home has no alias file yet, and alias review stays a person step of `docs/p5-cutover.md`): `work/dev/agent-hub` (69,803 observations) and `agent-hub` (11,533) mapped to `github.com/staixbwlb/agent-hub`. The ten worktree keys (`work/dev/agent-hub/.worktrees/*`, 30-245 observations each) were left unmapped, as a conservative review would.
-- Import: `importClaudeMemCapture` with `days: 40` (the mapped observations run from 2026-09-19 to 2026-10-26), repeated until `more` was false (9 rounds): **86,257 read, 84,765 added, 1,492 skipped** by the standalone policy and secret screen, 0 spooled.
+- Import: `importClaudeMemCapture` with `days: 40` (the mapped observations run from 2026-09-19 to 2026-10-26), repeated until `more` was false (9 rounds): **86,257 read, 84,765 added, 1,492 skipped**, 0 spooled. The skipped count covers empty text, unreadable timestamps, rows the standalone policy and secret screen declined, and already-imported receipts; the import does not report them separately.
 - Judgment: claude (planner), with the reviewer re-judging. The P0/P1 judgments were by kimi.
 
 ## Per-query outcome (H = on-topic entry in top 10; B = borderline)
@@ -47,10 +48,17 @@ The 2026-10-17 measurement (`docs/p1-ac4-recheck.md`) was 0.52 on the curated ti
 
 Strict: 23/25 = 0.92 (B counted as misses, as P1 did with its two borderline cases). Lenient: 25/25 = 1.00. P1's 10 coverage misses are all hits or borderline now, and no P1 hit was lost.
 
+Residual split (P1 method, top 200 inspected):
+
+- #18 is **match mode**: an on-subject row (#306, a usage-limit refusal from an ACP agent, quota pause and reroute) exists and ranks 12th.
+- #12 is **coverage** by the title rule: "pull-only" appears only in the bodies of rows ranked 6-10 whose titles are on other subjects, and no row in the top 200 has the subject in its title.
+
+The hits were judged by claude and re-judged independently by codex (reviewer) from the same top-10 titles. Codex agrees with all 23 hits and with treating #12 and #18 as misses.
+
 ## Checks
 
 - **Query-text contamination.** The capture tier holds sessions that worked on this measurement itself. In each query's top 10, rows that contain two or more of the 25 query strings verbatim, or measurement terms (`recall@10`, `query set`, `P0 baseline`, `AC4 re`), were flagged: 1 row for query 22 and 2 for query 23, none counted as that query's hit. Every hit above stands without them.
-- **Period.** claude-mem's 1.00 (P0) was on its store as of 2026-10-17; this capture holds observations through 2026-10-26. Both systems hold the same data at cutover, which is what P5 decides on.
+- **Period.** claude-mem's 1.00 (P0) was on its store as of 2026-10-17; this capture holds observations through 2026-10-26. This measures amem on the claude-mem snapshot of 2026-10-26, restricted to the two mapped keys and minus the skipped rows. That is what the import would bring over at cutover, not everything claude-mem holds.
 - **Resources (copy, this Mac).** The import is a person-run CLI step, not a hook: 43 s, 303 MB peak RSS. The capture shard grew to 194 MB (`capture.db`); the whole home went from 33 MB to 226 MB, within the 512 MB capture cap (R6). Opening the store and running the 25 searches under `bun --smol` (the shipped MCP's flag) peaked at 127-141 MB in two runs, under the R3 200 MB peak; P6 still records the live MCP RSS (#13 AC2).
 - **Duplicates.** Several top-10 lists repeat one entry (query 5: one curated task four times; query 11 the same). That is #82 G1b; it does not change this metric.
 
