@@ -2,7 +2,7 @@ import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -20,7 +20,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 type Image = ConfigImage;
 interface PlannedHook { event: string; command: string; timeout: number }
 interface Change { key: string; path: string; before: Image; after: Image; start?: Image }
-interface Receipt { version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
+interface DirectoryIdentity { dev: number; ino: number }
+interface Receipt { createdDirectory?: DirectoryIdentity; version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
   env?: Env; bun?: string; entry?: string; stdinTTY?: boolean; cwd?: string;
   /** Trusted confirmation seam; ordinary CLI use always asks the person through stdin. */
@@ -135,7 +136,7 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
     qwen: [join(qwen, "settings.json")],
-    // Jcode takes JCODE_HOME literally, including an empty, relative or tilde spelling.
+    // Absolute JCODE_HOME spellings stay literal; unset uses the platform-home default.
     jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
     agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
   };
@@ -153,7 +154,11 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
   if (target === "kimi" || target === "jcode" || target === "agy") return null;
   return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
+function assertJcodeHome(env: Env): void {
+  if (env.JCODE_HOME !== undefined && !isAbsolute(env.JCODE_HOME)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
+}
 function assertJcodeRuntime(c: ReturnType<typeof context>): void {
+  assertJcodeHome(c.env);
   if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(target === "agy" ? [c.workspace!.root] : [])]); }
@@ -169,6 +174,10 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
       if (!Number.isInteger(v.mode) || Number(v.mode) < 0 || Number(v.mode) > 0o777 || v.bytes !== null && (typeof v.bytes !== "string" || v.bytes.length > 2 * MAX || Buffer.from(v.bytes, "base64").toString("base64") !== v.bytes)) throw Error("setup receipt invalid");
     }
   }
+  if (value.createdDirectory !== undefined) {
+    const created = record(value.createdDirectory);
+    if (target !== "agy" || Object.keys(created).sort().join() !== "dev,ino" || !Number.isSafeInteger(created.dev) || Number(created.dev) < 0 || !Number.isSafeInteger(created.ino) || Number(created.ino) <= 0) throw Error("setup receipt directory ownership invalid");
+  }
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
@@ -181,6 +190,7 @@ const lifecycle = (target: SetupTarget) => target === "jcode" || target === "agy
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
+  if (targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   const pluginNotes: string[] = [];
@@ -320,12 +330,32 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.
     if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
-    return { value: { version: 1, target, intent: intent(c, target), phase: "prepared", changes }, expected, unchanged: false };
+    return { value: { version: 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
 function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return target === "agy" || !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
 export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[] }
+/** Claim only a directory this invocation actually created, never one merely absent at preview. */
+function prepareCreatedDirectory(c: ReturnType<typeof context>, value: Receipt): void {
+  if (value.target !== "agy") return;
+  const dir = dirname(c.paths.agy[0]!); names(dir);
+  try { mkdirSync(dir, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return; throw error; }
+  // ponytail: mkdir/lstat and lstat/rmdir below cannot exclude external namespace swaps.
+  // Descriptor-relative conditional removal or a shared writer lock is the upgrade.
+  const stat = lstatSync(dir); value.createdDirectory = { dev: stat.dev, ino: stat.ino };
+  // ponytail: a crash between mkdir and this save can leave an empty directory unclaimed.
+  // A durable filesystem intent protocol is the upgrade; never guess ownership during undo.
+  save(c, value);
+}
+function removeCreatedDirectory(c: ReturnType<typeof context>, value: Receipt): void {
+  if (value.target !== "agy" || !value.createdDirectory) return; // Legacy receipts prove no directory ownership.
+  const dir = dirname(c.paths.agy[0]!), stat = lstatSync(dir, { throwIfNoEntry: false });
+  if (!stat?.isDirectory() || stat.isSymbolicLink() || stat.dev !== value.createdDirectory.dev || stat.ino !== value.createdDirectory.ino) return;
+  try { rmdirSync(dir); } // Atomic empty-only removal also preserves files added after the identity check.
+  catch (error) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
+}
 function contextForPlan(plan: SetupPlan, options: SetupContext) {
   const c = context(options, plan.targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (c.workspace) {
@@ -349,6 +379,7 @@ function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyR
     if (value.target === "agy") c.workspace!.assertCurrent();
     if (item.unchanged) { unchanged.push(value.target); continue; }
     save(c, value);
+    prepareCreatedDirectory(c, value);
     for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, publishGuard(c, value.target, options)); }
     value.phase = "applied"; save(c, value); applied.push(value.target);
   }
@@ -359,7 +390,7 @@ function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: 
   const c = contextForPlan(plan, options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
   const pending = receipts.map(value => ({ value, files: value.changes.map((change, index) => { const expected = read(change.path); return { change, expected, restored: restoreChange(value, change, index, expected) }; }) }));
   for (const item of pending) for (const file of item.files) if (!sameImage(read(file.change.path), file.expected)) throw Error("setup configuration changed during undo preparation");
-  for (const item of pending) { if (item.value.target === "agy") c.workspace!.assertCurrent(); for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, publishGuard(c, item.value.target, options)); rmSync(journal(c, item.value.target)); }
+  for (const item of pending) { if (item.value.target === "agy") c.workspace!.assertCurrent(); for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, publishGuard(c, item.value.target, options)); removeCreatedDirectory(c, item.value); rmSync(journal(c, item.value.target)); }
   return { restored: receipts.map(value => value.target) };
 }
 
@@ -384,10 +415,12 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
   finally { closeSync(fd); if (read(file).bytes === Buffer.from(token).toString("base64")) rmSync(file); }
 }
 export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
+  if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => applyUnlocked(plan, options));
 }
 export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
+  if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => undoUnlocked(plan, options));
 }

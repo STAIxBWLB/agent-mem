@@ -11,6 +11,7 @@ Use the setup-only fallback for this native release. MCP registration is indepen
 # Homes and persisted sessions
 
 - `JCODE_HOME` is taken literally as a filesystem path, including relative or empty values. Native code does not expand `~`. With the variable absent, Jcode uses the platform home plus `.jcode`.
+- `amem setup jcode` applies a narrower restriction: an explicitly set `JCODE_HOME` must be absolute. Empty values, relative paths and literal `~` are refused, including whitespace-padded relative values such as `" rel "`. Unset uses the default; absolute values retain their literal spelling without trimming. This is an amem setup restriction, not a change to Jcode's native path handling.
 - Global MCP config is `<JCODE_HOME>/mcp.json`; lifecycle hooks are in `<JCODE_HOME>/config.toml`. They are separate files.
 - Persisted sessions use `<JCODE_HOME>/sessions/<id>.json`. Snapshot and append-journal/checkpoint behavior must not be mistaken for an immutable JSONL transcript.
 - **Persisted-history capture is not established by this research.** The current session working directory can change while older messages remain, and stored messages lack their own cwd/origin. Neither the latest session directory nor a hook cwd proves the origin of every historical message. MCP setup can be supported independently; automatic ingest requires a verified per-message origin boundary.
