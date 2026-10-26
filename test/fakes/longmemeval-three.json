@@ -1,0 +1,42 @@
+[
+  {
+    "question_id": "synthetic-single",
+    "question_type": "single-session-user",
+    "question": "What ferry reference did I choose?",
+    "answer": "LIME-7",
+    "question_date": "2026/10/27 (Tue) 10:00",
+    "haystack_dates": ["2026/10/25 (Sun) 10:00", "2026/10/26 (Mon) 10:00"],
+    "haystack_session_ids": ["single-evidence", "single-distractor"],
+    "haystack_sessions": [
+      [{ "role": "user", "content": "For the fictional ferry plan, I chose reference LIME-7.", "has_answer": true }, { "role": "assistant", "content": "The plan is recorded.", "has_answer": false }],
+      [{ "role": "user", "content": "The fictional bus route is blue.", "has_answer": false }]
+    ],
+    "answer_session_ids": ["single-evidence"]
+  },
+  {
+    "question_id": "synthetic-multi",
+    "question_type": "multi-session",
+    "question": "Which two colors did the fictional display plan retain?",
+    "answer": "Amber and teal",
+    "question_date": "2026/10/27 (Tue) 11:00",
+    "haystack_dates": ["2026/10/23 (Fri) 10:00", "2026/10/24 (Sat) 10:00", "2026/10/26 (Mon) 11:00"],
+    "haystack_session_ids": ["multi-amber", "multi-teal", "multi-distractor"],
+    "haystack_sessions": [
+      [{ "role": "user", "content": "The fictional display should retain amber.", "has_answer": true }],
+      [{ "role": "user", "content": "What is the second display color?", "has_answer": false }, { "role": "assistant", "content": "The fictional plan retains teal as its second color.", "has_answer": true }],
+      [{ "role": "user", "content": "The unrelated fictional banner is violet.", "has_answer": false }]
+    ],
+    "answer_session_ids": ["multi-amber", "multi-teal"]
+  },
+  {
+    "question_id": "synthetic-unanswerable_abs",
+    "question_type": "single-session-user",
+    "question": "Which fictional hotel room did I book?",
+    "answer": "The available conversations do not specify a hotel room.",
+    "question_date": "2026/10/27 (Tue) 12:00",
+    "haystack_dates": ["2026/10/26 (Mon) 12:00"],
+    "haystack_session_ids": ["abstention-distractor"],
+    "haystack_sessions": [[{ "role": "user", "content": "I have not selected a fictional hotel yet.", "has_answer": false }]],
+    "answer_session_ids": []
+  }
+]
