@@ -5,6 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { budgetGroup, BudgetStall } from "./budget-attempt.ts";
+import { measureMcpVolume } from "./measure-mcp-volume.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,4 +223,7 @@ try {
 // #48: a single watchdog stall retries even at normal speed; this is the only MCP retry layer.
 const measured = await budgetGroup("mcp-session", measureSession, report => ({ wallPass: report.wallTimingPass, rssPass: report.R3.pass }), { retryPolicy: "stall" });
 
-console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2));
+// The existing mixed 5,001-row session remains unchanged; volume gets its own fresh child/watchdog.
+const volume = await budgetGroup("mcp-volume", measureMcpVolume, report => ({ wallPass: report.wallTimingPass, rssPass: report.R3.pass }), { retryPolicy: "stall" });
+console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts,
+  volume: { ...volume.result, groupAttempts: volume.attempts }, pass: measured.result.pass && volume.result.pass }, null, 2));

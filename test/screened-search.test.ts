@@ -46,7 +46,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")("spil
     return result;
   };
   const before = new Set(files().map(file => file.ino)), value = index(), db = database(value);
-  db.run("PRAGMA temp.cache_size = -16"); db.run("PRAGMA temp.cache_spill = 1");
+  db.run("PRAGMA temp.cache_size = -16");
   value.append(Array.from({ length: 64 }, (_, n) => row(`spill-${n}`, "needle ".repeat(1024))));
   const spilled = files().filter(file => !before.has(file.ino) && file.links === 0);
   expect(spilled.length).toBeGreaterThan(0);
@@ -61,6 +61,11 @@ test("query state lives only in SQLite TEMP with a bounded file-backed cache", (
   expect(db.query("SELECT COUNT(*) AS n FROM temp.sqlite_master WHERE name = 'docs'").get()).toEqual({ n: 1 });
   expect(db.query("PRAGMA temp_store").get()).toEqual({ temp_store: 1 });
   expect(db.query("PRAGMA temp.cache_size").get()).toEqual({ cache_size: -2048 });
+  const pageSize = (db.query("PRAGMA temp.page_size").get() as { page_size: number }).page_size;
+  const spillPages = (db.query("PRAGMA temp.cache_spill").get() as { cache_spill: number }).cache_spill;
+  expect(spillPages).toBeGreaterThan(0);
+  // A platform's independent spill minimum must not override the configured cache target.
+  expect(spillPages * pageSize).toBeLessThanOrEqual(2048 * 1024);
   expect(db.query("SELECT COUNT(*) AS n FROM temp.docs").get()).toEqual({ n: 1 });
   const main = (db.query("PRAGMA database_list").all() as { name: string; file: string }[]).find(row => row.name === "main");
   expect(main?.file).toBe("");
