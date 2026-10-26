@@ -41,6 +41,14 @@ test("upstream turn2session widens k without compacting repeated session contrib
   expect(result[0]).toBe(1); expect(result[1]).toBe(0);
   expect(result[2]).toBeCloseTo(2 / (2 + 1 / Math.log2(3)), 12);
 });
+test("upstream five/ten cutoffs are inclusive with hand-computed DCG", () => {
+  const corpus = Array.from({ length: 10 }, (_, i) => (i === 4 ? "a" : i === 9 ? "b" : "noise" + i) + "_0");
+  const ranking = corpus.map((_, i) => i), gold = ["a_0", "b_0"];
+  const at5 = evaluate_retrieval_turn2session(ranking, gold, corpus, 5);
+  const at10 = evaluate_retrieval_turn2session(ranking, gold, corpus, 10);
+  expect(at5[0]).toBe(1); expect(at5[1]).toBe(0); expect(at5[2]).toBeCloseTo(1 / Math.log2(5) / 2, 12);
+  expect(at10[1]).toBe(1); expect(at10[2]).toBeCloseTo((1 / Math.log2(5) + 1 / Math.log2(10)) / 2, 12);
+});
 test("upstream repeated SID uses cumulative ordinals and includes every relevant corpus turn in ideal", () => {
   const gold: GoldEvidence = { sessionIds: ["answer_a", "b"], turns: [turn("answer_a"), turn("b")],
     corpusSessions: [{ sessionId: "answer_a", turns: 3 }, { sessionId: "noise", turns: 1 }, { sessionId: "b", turns: 1 }] };

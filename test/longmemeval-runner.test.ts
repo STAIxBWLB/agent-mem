@@ -35,12 +35,14 @@ test("gold IDs and question text never become searchable capture content", async
 test("repeated session IDs keep every turn and have unambiguous receipt/gold ordinals", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-longmemeval-repeat-"));
   try {
-    const input = join(root, "input.json"), turn = { role: "user", content: "precisionneedle public evidence", has_answer: true };
+    const input = join(root, "input.json"), turn = { role: "assistant", content: "precisionneedle public evidence", has_answer: true };
     writeFileSync(input, JSON.stringify([{ question_id: "repeat", question_type: "single-session-user", question: "precisionneedle",
       question_date: "2024-01-01T00:00:00Z", haystack_session_ids: ["same", "same"],
       haystack_dates: ["2023-12-01T00:00:00Z", "2023-12-01T00:00:00Z"], haystack_sessions: [[turn], [turn]], answer_session_ids: ["same"] }]));
     const report = await runLongMemEval({ input, output: join(root, "report.json"), sourceRoot, questionTimeoutMs: 5000 });
     expect(report.failed).toEqual([]); expect(report.results[0].rows).toMatchObject({ input: 2, stored: 2, duplicateSessionIds: 1 });
+    expect(report.duplicateSessionIds).toBe(1); expect(report.upstreamNoUserTarget).toBe(1);
+    expect(report.results[0].gold.corpusSessions).toEqual([{ sessionId: "same", turns: 2 }]);
     expect(report.results[0].gold.turns).toEqual([{ sessionId: "same", turnIndex: 0 }, { sessionId: "same", turnIndex: 1 }]);
     for (const backend of ["mcp", "library", "bm25"]) expect(report.metrics.overall[backend].turnRecallAt10).toBe(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
