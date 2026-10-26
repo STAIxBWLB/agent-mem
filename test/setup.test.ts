@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -479,15 +479,23 @@ test("Jcode managed-entry edits refuse apply and undo, while runtime upgrades re
   expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
 });
 
-test("JCODE_HOME preserves literal empty, relative and tilde spellings in preview", () => {
-  const f = fixture();
-  for (const value of ["", "~", "relative jcode", " relative jcode "]) {
-    const plan = planSetup("jcode", "preview", { ...f.options, env: { ...f.env, JCODE_HOME: value } });
-    expect(plan.actions[0]!.files).toEqual([join(process.cwd(), value, "mcp.json")]);
+test("JCODE_HOME refuses empty and relative values before any setup effect", () => {
+  const f = fixture(), before = snapshot(f.home), plan = f.plan("jcode", "apply");
+  for (const value of ["", "rel", "~", " rel ", "relative jcode"]) {
+    const options = { ...f.options, env: { ...f.env, JCODE_HOME: value } };
+    for (const mode of ["preview", "apply", "undo"] as const) {
+      expect(() => planSetup("jcode", mode, options)).toThrow("absolute JCODE_HOME");
+      expect(() => planSetup("all", mode, options)).toThrow("absolute JCODE_HOME");
+    }
+    expect(() => applySetup(plan, options)).toThrow("absolute JCODE_HOME");
+    expect(() => undoSetup({ ...plan, mode: "undo" }, options)).toThrow("absolute JCODE_HOME");
+    expect(snapshot(f.home)).toEqual(before);
   }
   const env = { ...f.env }; delete env.JCODE_HOME;
   expect(planSetup("jcode", "preview", { ...f.options, env }).actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json")]);
-  expect(f.calls).toEqual([]);
+  const absolute = join(f.home, "absolute jcode ");
+  expect(planSetup("jcode", "preview", { ...f.options, env: { ...env, JCODE_HOME: absolute } }).actions[0]!.files).toEqual([join(absolute, "mcp.json")]);
+  expect(snapshot(f.home)).toEqual(before); expect(f.calls).toEqual([]);
 });
 
 test("Jcode rejects native environment interpolation in runtime paths before effects", () => {
@@ -603,4 +611,70 @@ test("Antigravity strict JSON ceiling and semantic ownership preserve unrelated 
   undoSetup(f.agyPlan("undo"), f.options);
   expect(text(file)).toContain('"unknown":9007199254740995'); expect(JSON.parse(text(file)).mcpServers.amem).toBeUndefined();
   expect(JSON.parse(text(file)).mcpServers.other.command).toBe("keep");
+});
+
+
+test("Antigravity undo removes only its setup-created empty directory across reapply", () => {
+  const f = agyFixture(), dir = join(f.home, ".agents"), plan = f.agyPlan("apply"), journal = plan.actions[0]!.receipt;
+  expect(existsSync(dir)).toBe(false); applySetup(plan, f.options);
+  const created = JSON.parse(text(journal)).createdDirectory;
+  expect(created).toEqual({ dev: lstatSync(dir).dev, ino: lstatSync(dir).ino });
+  expect(applySetup(f.agyPlan("apply"), f.options).unchanged).toEqual(["agy"]);
+  const moved = { ...f.options, entry: f.entry + "-new" };
+  applySetup(planSetup("agy", "apply", moved), moved);
+  expect(JSON.parse(text(journal)).createdDirectory).toEqual(created);
+  undoSetup(planSetup("agy", "undo", moved), moved);
+  expect(existsSync(dir)).toBe(false); expect(existsSync(journal)).toBe(false);
+});
+
+test("Antigravity undo preserves pre-existing and nonempty setup-created directories", () => {
+  for (const existing of [false, true]) {
+    const f = agyFixture(), dir = join(f.home, ".agents");
+    if (existing) mkdirSync(dir);
+    applySetup(f.agyPlan("apply"), f.options);
+    if (!existing) put(join(dir, "keep.txt"), "user data");
+    undoSetup(f.agyPlan("undo"), f.options);
+    expect(existsSync(dir)).toBe(true); expect(existsSync(join(dir, "mcp_config.json"))).toBe(false);
+    if (!existing) expect(text(join(dir, "keep.txt"))).toBe("user data");
+  }
+});
+
+test("Antigravity legacy receipts undo files without claiming directory ownership", () => {
+  const f = agyFixture(), plan = f.agyPlan("apply"), journal = plan.actions[0]!.receipt;
+  applySetup(plan, f.options); const legacy = JSON.parse(text(journal)); delete legacy.createdDirectory; put(journal, JSON.stringify(legacy));
+  undoSetup(f.agyPlan("undo"), f.options);
+  expect(existsSync(join(f.home, ".agents"))).toBe(true); expect(existsSync(plan.actions[0]!.files[0]!)).toBe(false);
+});
+
+test("Antigravity undo preserves a replacement directory with identical configuration", () => {
+  const f = agyFixture(), dir = join(f.home, ".agents"), plan = f.agyPlan("apply");
+  applySetup(plan, f.options); const installed = text(plan.actions[0]!.files[0]!);
+  renameSync(dir, dir + "-original"); mkdirSync(dir); put(join(dir, "mcp_config.json"), installed);
+  undoSetup(f.agyPlan("undo"), f.options);
+  expect(existsSync(dir)).toBe(true); expect(existsSync(join(dir, "mcp_config.json"))).toBe(false);
+  expect(text(join(dir + "-original", "mcp_config.json"))).toBe(installed);
+});
+
+test("Antigravity interrupted publication keeps directory ownership available for undo", () => {
+  const f = agyFixture(), plan = f.agyPlan("apply"), journal = plan.actions[0]!.receipt, dir = join(f.home, ".agents");
+  expect(() => applySetup(plan, { ...f.options, beforePublish: () => { throw Error("interrupted fixture"); } })).toThrow("interrupted fixture");
+  expect(JSON.parse(text(journal)).createdDirectory).toEqual({ dev: lstatSync(dir).dev, ino: lstatSync(dir).ino });
+  undoSetup(f.agyPlan("undo"), f.options); expect(existsSync(dir)).toBe(false);
+});
+
+test("Antigravity never claims a directory created after preview by another writer", () => {
+  const f = agyFixture(), dir = join(f.home, ".agents"), plan = f.agyPlan("apply");
+  mkdirSync(dir); applySetup(plan, f.options);
+  expect(JSON.parse(text(plan.actions[0]!.receipt)).createdDirectory).toBeUndefined();
+  undoSetup(f.agyPlan("undo"), f.options); expect(existsSync(dir)).toBe(true);
+});
+
+test("Antigravity refuses invalid directory ownership receipts before changing configuration", () => {
+  const f = agyFixture(), plan = f.agyPlan("apply"), journal = plan.actions[0]!.receipt;
+  applySetup(plan, f.options); const current = JSON.parse(text(journal)), before = image(plan.actions[0]!.files[0]!);
+  for (const createdDirectory of [true, { dev: -1, ino: 1 }, { dev: 1, ino: 0 }, { dev: 1, ino: 1, path: f.home }]) {
+    put(journal, JSON.stringify({ ...current, createdDirectory }));
+    expect(() => undoSetup({ ...plan, mode: "undo" }, f.options)).toThrow();
+    expect(image(plan.actions[0]!.files[0]!)).toEqual(before);
+  }
 });
