@@ -1,0 +1,53 @@
+# Qwen Code capture contract
+
+Qwen Code user settings and transcript runtime storage have separate resolution rules. `QWEN_HOME` selects the user config directory and also supplies the runtime default when no runtime override applies. Do not assume transcripts always live under the operating-system home.
+
+# Source pin and verification
+
+- Checked official `QwenLM/qwen-code` main on 2026-10-26 at [`1ce173117196ab9a9f77b5d19ac148cbabe25dfd`](https://github.com/QwenLM/qwen-code/commit/1ce173117196ab9a9f77b5d19ac148cbabe25dfd).
+- The checked [`package.json`](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/package.json#L4) declares `0.26.1`. Earlier research pinned `338f13366c1d86e586f7e0785942740da3503887`, also reported as `0.26.1`; a version string alone does not pin source behavior.
+- Evidence is official source/API inspection and synthetic fixtures. No native Qwen command, real Qwen home, credentials, or private transcript was accessed. Installed-client behavior remains unverified.
+
+# Settings and native MCP registration
+
+- User MCP entries (`mcpServers`) and command hooks (`hooks`) share `<QWEN_HOME>/settings.json`; absent `QWEN_HOME`, use `~/.qwen/settings.json`. Project settings use `<cwd>/.qwen/settings.json`.
+- Path expansion recognizes exact `~`, `~/` and `~\`; other relative paths resolve against the calling process cwd. Values are not trimmed.
+- MCP registration only configures the amem stdio server; capture hooks are separate entries in the same settings file. Preserve unrelated MCP and hook entries; registration does not require model authentication.
+- Native syntax is `qwen mcp add --scope user --transport stdio <name> <command> [args...]` and `qwen mcp remove --scope user <name>`. Scope choices are `user` and `project`, defaulting to `user`.
+- System overrides are `QWEN_CODE_SYSTEM_SETTINGS_PATH` and `QWEN_CODE_SYSTEM_DEFAULTS_PATH`.
+- Semantic hook ownership follows the existing command-key contract. Removing a command or replacing it with a different command is treated as a user hook; undo leaves the replacement alone. Metadata edits on the same owned command conflict instead of being overwritten. Global hook control fields are preserved, including disabled hooks.
+
+Sources: [storage paths](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/config/storage.ts#L193), [MCP add](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/commands/mcp/add.ts#L212), [MCP remove](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/commands/mcp/remove.ts#L47), [system path overrides](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/config/storage-paths-lite.ts#L170).
+
+# Runtime and transcript discovery
+
+- Runtime precedence is pinned runtime context, `QWEN_RUNTIME_DIR`, configurable context, configured runtime base, then the global Qwen directory. The global directory honors `QWEN_HOME`.
+- CLI startup sets the configured runtime base from merged `advanced.runtimeOutputDir`. Relative settings values resolve against the project cwd. Relative `QWEN_RUNTIME_DIR` resolves against the process cwd; both support the tilde forms above.
+- Legacy transcript location is `<runtimeBase>/projects/<sanitizeCwd(projectRoot)>/chats/<sessionId>.jsonl`.
+- `sanitizeCwd` replaces each character outside ASCII letters/digits with `-`; Windows lowercases first. This encoding can collide. Directory spelling cannot establish project identity; validate each row's `cwd`.
+- The chat recorder's older comment mentioning `tmp/<project_id>/chats` is stale; the actual writer uses `storage.getProjectDir()` and `chats/<sessionId>.jsonl`.
+- amem intentionally discovers only the exact env/default runtime root. It does not clone merged Qwen settings, read `.env`, or accept stdin `transcript_path` as an arbitrary-file capability. Users of `advanced.runtimeOutputDir` must export the matching `QWEN_RUNTIME_DIR` for manual and SessionEnd capture. Private in-process runtime contexts are unsupported unless exposed through the same explicit environment binding.
+
+Sources: [runtime precedence](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/config/storage.ts#L165), [settings runtime wiring](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/config/config.ts#L1848), [project directory](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/config/storage.ts#L619), [sanitizeCwd](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/utils/paths.ts#L388), [actual transcript writer](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L1391).
+
+# Supported transcript envelope
+
+- The verified legacy JSONL record contains `uuid`, `parentUuid`, `sessionId`, `timestamp`, `type`, `cwd`, and `version`. `timestamp` is written as ISO time; `version` is the CLI version or `unknown`, not a transcript schema version.
+- Record types include `user`, `assistant`, `tool_result`, and `system`. Content-bearing rows use `message.parts`, not the dual-output protocol's `message.content`.
+- User rows store user-role Content; assistant rows store model-role Content; tool-result rows store user-role Content with function responses. Parts can contain `text`, `functionCall`, `functionResponse`, and thought data. Tool responses use object-valued `response`, including `{ output }` or `{ error }`, and may carry media `parts`. Unsupported/non-text/private parts must not be interpreted as ordinary authored text.
+- Normal session IDs are UUIDs. Qwen also validates internal UUID IDs with an Arena `-agent-...` suffix and preserves legacy spelling. amem recognizes the verified ordinary UUID and Arena-suffixed session forms; the directory name still never establishes project identity.
+- A valid metadata/system row or assistant metadata row can lack `message`. This is an internal transcript format, not a stable public API. amem supports the verified `0.26.1` envelope; `version` is not a public schema discriminator. Validate the supported envelope and part shapes; future version strings are not compatibility evidence.
+- Managed runtime journals and hub dual-output event files are separate protocols. The sibling `agent-hub/src/adapters/qwen-dual.ts` consumes `message.content` event blocks and checks its protocol version; `acp.ts` consumes ACP JSON-RPC. Neither defines native chat JSONL.
+
+Sources: [ChatRecord definition](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L374), [base fields](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L1566), [user recording](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L2508), [assistant recording](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L2959), [tool-result recording](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/services/chatRecordingService.ts#L3216), [Content conversion](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/core/genai-compat.ts#L96), [tool response construction](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/core/coreToolScheduler.ts#L986), [session ID validation](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/config/session-id.ts#L7).
+
+# Command hooks
+
+- Hook definitions use `hooks.<Event> = [{ matcher?, hooks: [{ type: "command", command, timeout? }] }]`. Verified events include `SessionStart`, `PostToolUse`, `Stop`, and `SessionEnd`.
+- Command hook timeouts are seconds below `1000`; values at or above `1000` retain legacy millisecond meaning. Default command timeout is 60 seconds. Thus `timeout: 3` means three seconds.
+- Input is a JSON object on stdin, followed by EOF, with `session_id`, `transcript_path`, `cwd`, `hook_event_name`, and `timestamp`. `SessionEnd` adds `reason`.
+- Hook children inherit sanitized environment plus `QWEN_PROJECT_DIR`, `CLAUDE_PROJECT_DIR`, and `GEMINI_PROJECT_DIR`. Hook-specific `env` can override those values. Resolved settings-based runtime output is not automatically exported as `QWEN_RUNTIME_DIR`.
+- Normal Ink and OpenTUI exit cleanup awaits `SessionEnd` with `prompt_input_exit`; process kills/crashes have no verified delivery guarantee. Bare/safe mode loads no configured hooks. Passive capture exits successfully without blocking output; exit code `2` is a blocking hook result.
+- Qwen can bootstrap `QWEN_HOME`/`QWEN_RUNTIME_DIR` and resolve settings placeholders from user `.env` files. Redirecting `QWEN_HOME` alone does not isolate native setup: inherited home `.env` and legacy `.qwen/.env` are also recognized. Native setup verification must stage home, cwd, config/runtime overrides and system settings paths. amem discovery does not need to read `.env` or credentials.
+
+Sources: [hook types/input](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/hooks/types.ts#L261), [timeout semantics](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/hooks/hook-timeout.ts#L14), [hook child environment](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/hooks/hookRunner.ts#L1623), [blocking exit](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/core/src/hooks/hookRunner.ts#L1647), [Ink exit](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/ui/AppContainer.tsx#L1372), [OpenTUI exit](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/ui/opentui/start-opentui-ui.tsx#L679), [hook disabling](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/config/hook-settings.ts#L29), [environment bootstrap](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/packages/cli/src/config/environment.ts#L178).

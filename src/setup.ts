@@ -12,7 +12,7 @@ import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
-export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi"] as const;
+export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen"] as const;
 export type SetupTarget = typeof SETUP_TARGETS[number];
 type Env = Readonly<Record<string, string | undefined>>;
 type Image = ConfigImage;
@@ -89,17 +89,20 @@ function write(file: string, value: Image, expected?: Image, beforePublish?: (fi
 function context(options: SetupContext) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const root = (key: string, fallback: string) => {
-    if (!env[key]?.trim()) return join(home, fallback);
-    const given = resolve(env[key]!), withinHome = relative(resolve(env.HOME?.trim() || homedir()), given);
+    const setting = env[key];
+    if (!(key === "QWEN_HOME" ? setting : setting?.trim())) return join(home, fallback);
+    const expanded = key === "QWEN_HOME" && /^~(?:[/\\]|$)/.test(setting!) ? join(home, ...setting!.slice(2).split(/[/\\]/)) : setting!;
+    const given = resolve(expanded), withinHome = relative(resolve(env.HOME?.trim() || homedir()), given);
     // Canonicalize the HOME alias only; named configuration-directory symlinks must still be refused.
     return withinHome !== ".." && !withinHome.startsWith("../") && !isAbsolute(withinHome) ? join(home, withinHome) : given;
   };
-  const claude = root("CLAUDE_CONFIG_DIR", ".claude"), codex = root("CODEX_HOME", ".codex"), kimi = root("KIMI_CODE_HOME", ".kimi-code"), pi = root("PI_CODING_AGENT_DIR", ".pi/agent");
+  const claude = root("CLAUDE_CONFIG_DIR", ".claude"), codex = root("CODEX_HOME", ".codex"), kimi = root("KIMI_CODE_HOME", ".kimi-code"), pi = root("PI_CODING_AGENT_DIR", ".pi/agent"), qwen = root("QWEN_HOME", ".qwen");
   const paths: Record<SetupTarget, string[]> = {
     claude: [env.CLAUDE_CONFIG_DIR?.trim() ? join(claude, ".claude.json") : join(home, ".claude.json"), join(claude, "settings.json")],
     codex: [join(codex, "config.toml"), join(codex, "hooks.json")],
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
+    qwen: [join(qwen, "settings.json")],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
   const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
@@ -113,7 +116,7 @@ function context(options: SetupContext) {
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi") return null;
-  return [target, "mcp", "add", ...(target === "claude" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
+  return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, `${target}.json`); }
@@ -137,7 +140,7 @@ function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): Plann
 }
 const lifecycle = (target: SetupTarget) => target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
-  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|all [--apply|--undo]");
+  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|all [--apply|--undo]");
   const c = context(options), targets = target === "all" ? [...SETUP_TARGETS] : [target as SetupTarget];
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
@@ -148,20 +151,21 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     try { for (const key of Object.keys(record(json(read(join(dirname(c.paths.claude[1]!), "plugins", "installed_plugins.json"))).plugins ?? {}))) ids.add(key); } catch { /* Optional plugin metadata must never prevent setup or recovery; authoritative settings/receipts keep their guards. */ }
     for (const id of [...ids].filter(key => /^agent-mem(?:@[A-Za-z0-9._-]+)?$/.test(key))) pluginNotes.push(`Installed Claude plugin ${id} detected: if enabled, direct setup would duplicate its MCP server and seven hooks. Choose plugin installation or direct setup; disable/uninstall the plugin before applying direct setup.`);
   }
+  if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
   return { targets, mode, actions: targets.map(target => {
     const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
     const original = read(c.paths[target][0]!);
     const document = target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
     const hasAmem = Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
-    const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"];
+    const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
   }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
   // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
   const help = spawnSync(target, ["--help"], { cwd, env: { ...env }, encoding: "utf8", timeout: 5000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
-  if (help.status !== 0 || !/^\s+(?:pi\s+)?mcp(?:\s|$)/m.test(help.stdout)) throw Error(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
+  if (help.status !== 0 || !/^\s+(?:(?:pi|qwen)\s+)?mcp(?:\s|$)/m.test(help.stdout)) throw Error(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
 }
 function native(argv: readonly string[], env: Env, cwd: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { cwd, env: { ...env }, encoding: "utf8", timeout: 10_000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
@@ -198,8 +202,11 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
-    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent") };
+    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent"), QWEN_HOME: join(staging, ".qwen") };
     Object.assign(env, { XDG_CONFIG_HOME: join(staging, ".config"), XDG_DATA_HOME: join(staging, ".local", "share"), XDG_CACHE_HOME: join(staging, ".cache"), XDG_STATE_HOME: join(staging, ".local", "state"), TMPDIR: join(staging, "tmp"), TMP: join(staging, "tmp"), TEMP: join(staging, "tmp") });
+    env.QWEN_RUNTIME_DIR = join(staging, "qwen-runtime");
+    env.QWEN_CODE_SYSTEM_SETTINGS_PATH = join(staging, "qwen-system-settings.json");
+    env.QWEN_CODE_SYSTEM_DEFAULTS_PATH = join(staging, "qwen-system-defaults.json");
     mkdirSync(env.TMPDIR!, { mode: 0o700 });
     if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
     const staged = context({ ...options, env });
@@ -214,7 +221,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const text = expected[0]!.bytes === null ? "" : Buffer.from(expected[0]!.bytes!, "base64").toString("utf8");
       const document = target === "codex" ? toml(text) : json(expected[0]!);
       const servers = document[target === "codex" ? "mcp_servers" : "mcpServers"];
-      if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" ? ["--scope", "user"] : []), "amem"], env, staging);
+      if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"], env, staging);
       (options.native ?? native)(argv, env, staging);
       changes[0]!.after = { ...read(staged.paths[target][0]!), mode: changes[0]!.before.mode };
       if (changes[0]!.after.bytes === null) throw Error("native registration produced no configuration");
@@ -229,8 +236,10 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
         if (!isDeepStrictEqual(withoutAmem(document), withoutAmem(installed))) throw Error("native registration changed unrelated settings; no configuration published");
       } else {
         // Keep all unrelated JSON settings from the original; use only the CLI-generated server record.
-        document.mcpServers = { ...record(document.mcpServers ?? {}), amem: installedServer };
-        changes[0]!.after = objectImage(document, changes[0]!.before);
+        // Qwen's restored image also retires its previous managed hook on a runtime upgrade.
+        const kept = target === "qwen" ? json(changes[0]!.before) : document;
+        kept.mcpServers = { ...record(kept.mcpServers ?? {}), amem: installedServer };
+        changes[0]!.after = objectImage(kept, changes[0]!.before);
       }
     } else {
       const document = json(changes[0]!.before), servers = document.mcpServers === undefined ? {} : record(document.mcpServers);
@@ -240,6 +249,8 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind}`;
     if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`);
     if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3);
+    // Qwen's user MCP and hooks share settings.json: publish and journal one combined image.
+    if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3);
     if (target === "kimi") {
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
       const parsed = toml(old), hooks = parsed.hooks ?? [];

@@ -26,19 +26,24 @@ export function putMcpRecord(target: string, current: ConfigImage, value: unknow
   return finishJson(doc, current, { bytes: null, mode: current.mode });
 }
 interface Hook { event: string; matcher: string; core: Record<string, unknown>; id: string; command: string }
+// QwenLM/qwen-code 1ce1731 packages/core/src/hooks/types.ts HOOKS_CONFIG_FIELDS.
+// These are user-owned controls, not event groups; setup never enables or restores them.
+const qwenHookControls = new Set(["enabled", "disabled", "notifications"]);
 const matcher = (value: unknown) => value === undefined || value === "" || value === "*" ? "*" : String(value);
-function hook(event: string, group: Record<string, unknown>, value: unknown): Hook | undefined {
+function hook(event: string, group: Record<string, unknown>, value: unknown, strict = false): Hook | undefined {
   const h = object(value);
-  const core = h.type === "command" ? { type: h.type, command: h.command, ...(h.timeout !== undefined ? { timeout: h.timeout } : {}) }
+  const core = h.type === "command" && !strict ? { type: h.type, command: h.command, ...(h.timeout !== undefined ? { timeout: h.timeout } : {}) }
     : Object.fromEntries(Object.entries(h).filter(([key]) => !["trusted_hash", "trustedHash"].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
   const match = matcher(group.matcher);
-  return { event, matcher: match, core, command: typeof h.command === "string" ? h.command : "", id: JSON.stringify([event, match, core]) };
+  const groupCore = strict ? Object.fromEntries(Object.entries(group).filter(([key]) => !["matcher", "hooks"].includes(key)).sort(([a], [b]) => a.localeCompare(b))) : undefined;
+  return { event, matcher: match, core, command: typeof h.command === "string" ? h.command : "", id: JSON.stringify([event, match, core, ...(strict ? [groupCore] : [])]) };
 }
-function hooks(doc: Record<string, unknown>): Hook[] {
+function hooks(doc: Record<string, unknown>, strict = false): Hook[] {
   const out: Hook[] = [];
   for (const [event, raw] of Object.entries(object(doc.hooks ?? {}))) {
+    if (strict && qwenHookControls.has(event)) continue;
     if (!Array.isArray(raw)) throw Error("setup hook groups must be arrays");
-    for (const value of raw) { const group = object(value); if (!Array.isArray(group.hooks)) throw Error("setup hook handlers must be arrays"); for (const h of group.hooks) { const row = hook(event, group, h); if (row) out.push(row); } }
+    for (const value of raw) { const group = object(value); if (!Array.isArray(group.hooks)) throw Error("setup hook handlers must be arrays"); for (const h of group.hooks) { const row = hook(event, group, h, strict); if (row) out.push(row); } }
   }
   return out;
 }
@@ -46,8 +51,8 @@ function added<T>(before: T[], after: T[], key: (value: T) => string): T[] {
   const counts = new Map<string, number>(); for (const row of before) counts.set(key(row), (counts.get(key(row)) ?? 0) + 1);
   return after.filter(row => { const id = key(row), n = counts.get(id) ?? 0; if (!n) return true; counts.set(id, n - 1); return false; });
 }
-function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: ConfigImage): ConfigImage {
-  const b = json(before), a = json(after), c = json(current), original = hooks(b), installed = hooks(a), live = hooks(c);
+function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: ConfigImage, strict = false): ConfigImage {
+  const b = json(before), a = json(after), c = json(current), original = hooks(b, strict), installed = hooks(a, strict), live = hooks(c, strict);
   const ours = added(original, installed, row => row.id), remaining = new Map<string, number>();
   for (const row of ours) {
     const count = live.filter(value => value.id === row.id).length;
@@ -56,11 +61,12 @@ function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: Conf
   }
   const groups = object(c.hooks ?? {});
   for (const [event, raw] of Object.entries(groups)) {
+    if (strict && qwenHookControls.has(event)) continue;
     const next: unknown[] = [];
     for (const value of raw as unknown[]) {
       const group = object(value); let removed = false;
       const handlers = (group.hooks as unknown[]).filter(h => {
-        const row = hook(event, group, h), n = row && (remaining.get(row.id) ?? 0);
+        const row = hook(event, group, h, strict), n = row && (remaining.get(row.id) ?? 0);
         if (!row || !n) return true; remaining.set(row.id, n - 1); removed = true; return false;
       });
       if (handlers.length || !removed) next.push({ ...group, hooks: handlers });
@@ -88,21 +94,24 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
   if (before.bytes === null && Object.keys(object(Bun.TOML.parse(result))).length === 0) return { ...before, mode: current.mode };
   return rendered(result, current);
 }
+function restoreMcpOwned(target: string, before: ConfigImage, after: ConfigImage, current: ConfigImage): ConfigImage {
+  const b = mcpRecord(target, before), a = mcpRecord(target, after), c = mcpRecord(target, current);
+  if (isDeepStrictEqual(c, b) && !(target === "codex" && b === undefined && toml(before).mcp_servers === undefined && toml(current).mcp_servers !== undefined && Object.keys(object(toml(current).mcp_servers)).length === 0)) return current;
+  if (c !== undefined && !isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
+  let result = putMcpRecord(target, current, b);
+  if (target === "codex" && b === undefined && toml(before).mcp_servers === undefined && Object.keys(object(toml(result).mcp_servers ?? {})).length === 0) result = rendered(setTomlPath(text(result), ["mcp_servers"], undefined), current);
+  if (target !== "codex" && json(before).mcpServers !== undefined && json(result).mcpServers === undefined) { const value = json(result); value.mcpServers = {}; result = rendered(JSON.stringify(value, null, 2) + "\n", current); }
+  if (result.bytes === null && before.bytes !== null) return target === "codex" ? rendered("", current) : finishJson({}, current, before);
+  if (before.bytes === null && Object.keys(target === "codex" ? toml(result) : json(result)).length === 0) return { ...before, mode: current.mode };
+  return result;
+}
 /** Exact restore when untouched; otherwise reverse only this receipt's managed entry/rows. */
 export function restoreOwned(target: string, index: number, before: ConfigImage, after: ConfigImage, current: ConfigImage): ConfigImage {
   if (sameImage(current, after)) return before;
   if (sameImage(current, before)) return current;
-  if (index === 0) {
-    const b = mcpRecord(target, before), a = mcpRecord(target, after), c = mcpRecord(target, current);
-    if (isDeepStrictEqual(c, b) && !(target === "codex" && b === undefined && toml(before).mcp_servers === undefined && toml(current).mcp_servers !== undefined && Object.keys(object(toml(current).mcp_servers)).length === 0)) return current;
-    if (c !== undefined && !isDeepStrictEqual(c, a)) throw Error("setup-owned MCP entry changed; refusing to overwrite it");
-    let result = putMcpRecord(target, current, b);
-    if (target === "codex" && b === undefined && toml(before).mcp_servers === undefined && Object.keys(object(toml(result).mcp_servers ?? {})).length === 0) result = rendered(setTomlPath(text(result), ["mcp_servers"], undefined), current);
-    if (target !== "codex" && json(before).mcpServers !== undefined && json(result).mcpServers === undefined) { const value = json(result); value.mcpServers = {}; result = rendered(JSON.stringify(value, null, 2) + "\n", current); }
-    if (result.bytes === null && before.bytes !== null) return target === "codex" ? rendered("", current) : finishJson({}, current, before);
-    if (before.bytes === null && Object.keys(target === "codex" ? toml(result) : json(result)).length === 0) return { ...before, mode: current.mode };
-    return result;
-  }
+  // Qwen keeps both managed surfaces in one settings file and one receipt image.
+  if (target === "qwen" && index === 0) return restoreJsonHooks(before, after, restoreMcpOwned(target, before, after, current), true);
+  if (index === 0) return restoreMcpOwned(target, before, after, current);
   if (target === "claude" || target === "codex") return restoreJsonHooks(before, after, current);
   if (target === "kimi") return restoreKimi(before, after, current);
   if (current.bytes === after.bytes) return { ...before, mode: current.mode };
@@ -110,6 +119,10 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
   throw Error("setup-owned Pi extension changed; refusing to overwrite it");
 }
 export function managedAfter(target: string, index: number, before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
+  if (target === "qwen" && index === 0) {
+    const needed = added(hooks(json(before), true), hooks(json(after), true), row => row.id), live = hooks(json(current), true);
+    return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current)) && needed.every(row => live.some(value => value.id === row.id));
+  }
   if (index === 0) return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current));
   if (target === "claude" || target === "codex") {
     const needed = added(hooks(json(before)), hooks(json(after)), row => row.id), live = hooks(json(current));

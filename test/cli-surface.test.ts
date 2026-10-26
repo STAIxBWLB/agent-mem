@@ -85,7 +85,7 @@ test("`amem mcp`, `amem hook` and `amem ingest` keep their own agent-facing path
     expect(await runCli(["ingest", "codex", "--help"], agent)).toContain("usage: amem");
     // `ingest` with a bad kind is the argument parser's own error, not the person-only refusal: it is an agent-reachable command.
     const bad = await message(runCli(["ingest", "nonsense"], agent));
-    expect(bad).toContain("kind takes codex or kimi or pi"); expect(bad).not.toBe(PERSON_ONLY); expect(bad).not.toMatch(HOST);
+    expect(bad).toContain("kind takes codex or kimi or pi or qwen"); expect(bad).not.toBe(PERSON_ONLY); expect(bad).not.toMatch(HOST);
   } finally { r.restore(); }
 });
 

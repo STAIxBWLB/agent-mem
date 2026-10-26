@@ -6,7 +6,7 @@ import { delimiter, dirname, join } from "node:path";
 import { realPath } from "../src/memory/platform.ts";
 import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupApplied, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, probeSmokeSetupTerminal, preservingCleanup, registeredSmokeCommand, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
 const HOME = "/isolated/home", APP = join(HOME, "app"), ROOT = join(APP, "node_modules", "@staix", "agent-mem"), ENTRY = join(ROOT, "bin", "amem.js"), CHECKOUT = "/workspace/agent-mem", TMP = join(HOME, "tmp");
-const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi"], actions: ["claude", "codex", "kimi", "pi"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: target === "kimi" ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
+const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi", "qwen"], actions: ["claude", "codex", "kimi", "pi", "qwen"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: target === "kimi" ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
 
 test("installed smoke guards require the artifact bin outside checkout and child TMPDIR", () => {
   expect(() => assertInstalledEntry(ENTRY, ROOT, CHECKOUT, TMP)).not.toThrow();
@@ -22,16 +22,17 @@ test("installed smoke public API resolution refuses checkout fallback and siblin
 });
 test("installed smoke child environment is an allowlist with isolated config/cache/tmp and no inherited authority", () => {
   const env = allowlistedSmokeEnv(HOME, "/runtime/bin:/usr/bin:/bin"); expect(env.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe("0");
+  expect(env.QWEN_HOME).toBe(join(HOME, "clients", "qwen")); expect(env.QWEN_RUNTIME_DIR).toBe(join(HOME, "qwen-runtime"));
   expect(env.HOME).toBe(HOME); expect(env.TMPDIR).toBe(TMP); expect(env.AMEM_HOME).toBe(join(HOME, "memory")); expect(env.XDG_CONFIG_HOME).toBe(join(HOME, ".config")); expect(env.BUN_INSTALL_CACHE_DIR).toBe(join(HOME, ".cache", "bun"));
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "NODE_OPTIONS", "NODE_PATH", "BUN_OPTIONS", "AMEM_HOOK_BOOT_AT", "AGENTHUB_HOME", "AGENTHUB_PEER_ID", "CLAUDECODE", "CODEX_THREAD_ID"]) expect(Object.hasOwn(env, key)).toBe(false);
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);
 });
 test("installed smoke permits only all-target setup apply and native ingest in addition to its fixed read/hook commands", () => {
-  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
+  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"], ["ingest", "qwen"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
   for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["ingest"], ["ingest", "claude"], ["ingest", "codex", "extra"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
 });
 test("installed apply needs a complete confirmed result rather than preview, cancellation or partial targets", () => {
-  const applied = { applied: ["claude", "codex", "kimi", "pi"], unchanged: [] };
+  const applied = { applied: ["claude", "codex", "kimi", "pi", "qwen"], unchanged: [] };
   expect(() => assertSetupApplied('preview\r\nType yes to apply the listed configuration changes: yes\r\n' + JSON.stringify(applied, null, 2) + '\r\n')).not.toThrow();
   for (const result of [plan(), { cancelled: true }, { ...applied, applied: ["claude"] }, { ...applied, unchanged: ["codex"] }]) expect(() => assertSetupApplied(JSON.stringify(result))).toThrow();
 });
@@ -45,7 +46,7 @@ test("installed smoke rejects legacy output while retaining normal compatible ho
   for (const text of ["usage: ahub memory", "Try AHUB setup", '{"notice":"ahub"}']) expect(() => assertNoHubBranding(text)).toThrow("legacy host command");
 });
 test("installed smoke setup validation rejects apply, missing targets and escaped config paths", () => {
-  expect(assertSetupPreview(plan(), HOME, ENTRY)).toHaveLength(8);
+  expect(assertSetupPreview(plan(), HOME, ENTRY)).toHaveLength(10);
   expect(() => assertSetupPreview({ ...plan(), mode: "apply" }, HOME, ENTRY)).toThrow();
   expect(() => assertSetupPreview({ ...plan(), actions: plan().actions.slice(1) }, HOME, ENTRY)).toThrow();
   const outside = plan(); outside.actions[0]!.files = ["/real-user/config"];

@@ -25,16 +25,16 @@ function snapshot(root: string): Array<{ name: string; mode: number; bytes?: str
 }
 function fixture() {
   const home = realPath(mkdtempSync(join(tmpdir(), "amem-setup-test-"))); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent") };
+  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), QWEN_HOME: join(home, ".qwen") };
   const calls: Call[] = [], entry = join(home, "package with space", "bin", "amem.js"), bun = process.execPath;
   const native: NonNullable<SetupContext["native"]> = (argv, stagedEnv, cwd) => {
     calls.push({ argv: [...argv], env: { ...stagedEnv }, cwd });
     expect(stagedEnv.HOME).toBe(cwd); expect(cwd).not.toBe(home); expect(realPath(cwd)).toBe(cwd);
     const target = argv[0] as SetupTarget, remove = argv[2] === "remove", marker = argv.indexOf("--"), launch = argv.slice(marker + 1);
-    expect(["claude", "codex", "pi"]).toContain(target);
+    expect(["claude", "codex", "pi", "qwen"]).toContain(target);
     expect(argv.slice(1, 3)).toEqual(["mcp", remove ? "remove" : "add"]);
     const file = target === "claude" ? stagedEnv.CLAUDE_CONFIG_DIR ? join(stagedEnv.CLAUDE_CONFIG_DIR, ".claude.json") : join(cwd, ".claude.json")
-      : target === "codex" ? join(stagedEnv.CODEX_HOME!, "config.toml") : join(stagedEnv.PI_CODING_AGENT_DIR!, "mcp.json");
+      : target === "codex" ? join(stagedEnv.CODEX_HOME!, "config.toml") : target === "qwen" ? join(stagedEnv.QWEN_HOME!, "settings.json") : join(stagedEnv.PI_CODING_AGENT_DIR!, "mcp.json");
     if (target === "codex") {
       const source = existsSync(file) ? text(file) : "", kept: string[] = []; let skipping = false;
       for (const line of source.split("\n")) { if (/^\s*\[/.test(line)) skipping = /^\s*\[mcp_servers\.amem\]\s*$/.test(line); if (!skipping) kept.push(line); }
@@ -61,6 +61,7 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
   put(f.file("kimi"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } } }) + "\n", 0o640);
   put(f.file("kimi", 1), '# user config\nmodel = "fixture"\n[[hooks]]\nevent = "Stop"\ncommand = "existing-kimi"\n', 0o640);
   put(f.file("pi"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } } }) + "\n", 0o640);
+  put(f.file("qwen"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } }, hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "existing-qwen" }] }] }, ui: { theme: "keep" } }) + "\n", 0o640);
   const rules = ["AGENTS.md", "CLAUDE.md", ".claude/rules/keep.md", ".codex/rules/keep.rules", ".pi/agent/extensions/keep.ts"].map(name => join(f.home, name));
   for (const rule of rules) put(rule, "unrelated user content\n", 0o640);
   return rules;
@@ -68,8 +69,8 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
 const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : JSON.parse(text(file)).mcpServers;
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
-  expect(shown.targets).toEqual([...SETUP_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(4);
-  for (const action of shown.actions) { expect(action.files).toHaveLength(2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
+  expect(shown.targets).toEqual([...SETUP_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(5);
+  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
@@ -78,7 +79,7 @@ test("setup preview inventories every target without commands, files or confirma
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
   expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_TARGETS], unchanged: [] });
-  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi"]);
+  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen"]);
   for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
   for (const target of SETUP_TARGETS) {
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
@@ -104,14 +105,14 @@ test("undo restores original bytes, modes and missing files without touching unr
 });
 test("existing amem registration is removed before add while other MCP entries survive", () => {
   const f = fixture(); seedOtherFiles(f);
-  for (const target of ["claude", "pi"] as const) { const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.amem = { command: "old-amem", args: ["old"] }; put(file, JSON.stringify(document)); }
+  for (const target of ["claude", "pi", "qwen"] as const) { const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.amem = { command: "old-amem", args: ["old"] }; put(file, JSON.stringify(document)); }
   put(f.file("codex"), text(f.file("codex")) + '\n[mcp_servers.amem]\ncommand = "old-amem"\nargs = ["old"]\n');
-  const before = [...SETUP_TARGETS].flatMap(target => [f.file(target), f.file(target, 1)]).map(image);
+  const before = [...SETUP_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image);
   applySetup(f.plan("all", "apply"), f.options);
-  expect(f.calls.map(call => [call.argv[0], call.argv[2]])).toEqual([["claude", "remove"], ["claude", "add"], ["codex", "remove"], ["codex", "add"], ["pi", "remove"], ["pi", "add"]]);
+  expect(f.calls.map(call => [call.argv[0], call.argv[2]])).toEqual([["claude", "remove"], ["claude", "add"], ["codex", "remove"], ["codex", "add"], ["pi", "remove"], ["pi", "add"], ["qwen", "remove"], ["qwen", "add"]]);
   expect(f.calls[0]?.argv).toEqual(["claude", "mcp", "remove", "--scope", "user", "amem"]);
   for (const target of SETUP_TARGETS) expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
-  undoSetup(f.plan("all", "undo"), f.options); expect([...SETUP_TARGETS].flatMap(target => [f.file(target), f.file(target, 1)]).map(image)).toEqual(before);
+  undoSetup(f.plan("all", "undo"), f.options); expect([...SETUP_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image)).toEqual(before);
 });
 test("runSetup cancellation and missing terminal cause no registration or file changes", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home); let confirmations = 0;
@@ -161,7 +162,7 @@ test("a later target preparation failure publishes no earlier prepared config", 
   expect(files.map(image)).toEqual(before); for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false); expect(f.calls.every(call => !existsSync(call.cwd))).toBe(true);
 });
 test("explicit agent config roots stay inside the isolated HOME and undo restores all originally absent files", () => {
-  const f = fixture(), env = { ...f.env, CLAUDE_CONFIG_DIR: join(f.home, "custom claude"), CODEX_HOME: join(f.home, "custom codex"), KIMI_CODE_HOME: join(f.home, "custom kimi"), PI_CODING_AGENT_DIR: join(f.home, "custom pi") }, options = { ...f.options, env };
+  const f = fixture(), env = { ...f.env, CLAUDE_CONFIG_DIR: join(f.home, "custom claude"), CODEX_HOME: join(f.home, "custom codex"), KIMI_CODE_HOME: join(f.home, "custom kimi"), PI_CODING_AGENT_DIR: join(f.home, "custom pi"), QWEN_HOME: join(f.home, "custom qwen") }, options = { ...f.options, env };
   const plan = planSetup("all", "apply", options), files = plan.actions.flatMap(action => action.files);
   expect(plan.actions[0]?.files).toEqual([join(env.CLAUDE_CONFIG_DIR, ".claude.json"), join(env.CLAUDE_CONFIG_DIR, "settings.json")]);
   expect(files.every(file => !existsSync(file))).toBe(true); applySetup(plan, options);
@@ -301,4 +302,126 @@ test("Bun path version detection: any version segment warns, a moving symlink do
   const versioned = ["/home/u/.local/share/mise/installs/bun/1.4.2/bin/bun", "/home/u/.proto/tools/bun/1.4.2/bin/bun", "/nix/store/abc123-bun-1.4.2/bin/bun", "/opt/homebrew/Cellar/bun/1.4.2/bin/bun"];
   for (const bun of versioned) expect(planSetup("claude", "preview", { ...f.options, bun }).notes.join("\n")).toContain(warn);
   for (const bun of ["/home/u/.local/share/mise/installs/bun/latest/bin/bun", "/home/u/.local/share/mise/shims/bun"]) expect(planSetup("claude", "preview", { ...f.options, bun }).notes.join("\n")).not.toContain(warn);
+});
+
+test("Qwen has one atomic settings image for native MCP and bounded SessionEnd ingest", () => {
+  const f = fixture(); seedOtherFiles(f);
+  const plan = f.plan("qwen", "apply"), action = plan.actions[0]!;
+  expect(action.files).toEqual([join(f.env.QWEN_HOME!, "settings.json")]);
+  expect(action.hooks).toEqual([{ event: "SessionEnd", command: `'${f.bun}' --smol '${f.entry}' ingest qwen`, timeout: 3 }]);
+  const before = image(action.files[0]!);
+  expect(applySetup(plan, f.options).applied).toEqual(["qwen"]);
+  expect(f.receipt("qwen").changes).toHaveLength(1);
+  expect(f.calls[0]!.argv).toEqual(["qwen", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", "--", f.bun, "--smol", f.entry, "mcp"]);
+  expect(f.calls[0]!.env.QWEN_HOME).toBe(join(f.calls[0]!.cwd, ".qwen"));
+  expect(f.calls[0]!.env.QWEN_RUNTIME_DIR).toBe(join(f.calls[0]!.cwd, "qwen-runtime"));
+  expect(f.calls[0]!.env.QWEN_CODE_SYSTEM_SETTINGS_PATH).toBe(join(f.calls[0]!.cwd, "qwen-system-settings.json"));
+  expect(f.calls[0]!.env.QWEN_CODE_SYSTEM_DEFAULTS_PATH).toBe(join(f.calls[0]!.cwd, "qwen-system-defaults.json"));
+  const doc = JSON.parse(text(action.files[0]!));
+  expect(doc.ui).toEqual({ theme: "keep" });
+  expect(doc.hooks.SessionEnd).toHaveLength(2);
+  expect(doc.hooks.SessionEnd[0].hooks[0].command).toBe("existing-qwen");
+  expect(doc.hooks.SessionEnd[1].hooks[0]).toEqual({ type: "command", command: action.hooks[0]!.command, timeout: 3 });
+  expect(applySetup(f.plan("qwen", "apply"), f.options).unchanged).toEqual(["qwen"]);
+  undoSetup(f.plan("qwen", "undo"), f.options); expect(image(action.files[0]!)).toEqual(before);
+});
+
+test("Qwen undo preserves later unrelated MCP, hook and settings changes in its shared file", () => {
+  const f = fixture(); seedOtherFiles(f); const file = f.file("qwen");
+  applySetup(f.plan("qwen", "apply"), f.options);
+  const doc = JSON.parse(text(file)); doc.ui.theme = "later";
+  doc.mcpServers.later = { command: "later-server" };
+  doc.hooks.SessionEnd.push({ matcher: "*", hooks: [{ type: "command", command: "later-hook", timeout: 4 }] });
+  doc.hooks.Stop = [{ hooks: [{ type: "command", command: "later-stop" }] }];
+  put(file, JSON.stringify(doc), 0o640);
+  expect(f.plan("qwen").actions[0]!.state).toBe("applied");
+  expect(applySetup(f.plan("qwen", "apply"), f.options).unchanged).toEqual(["qwen"]);
+  undoSetup(f.plan("qwen", "undo"), f.options);
+  const restored = JSON.parse(text(file));
+  expect(restored.ui).toEqual({ theme: "later" }); expect(restored.mcpServers.amem).toBeUndefined();
+  expect(restored.mcpServers.other.command).toBe("other-server"); expect(restored.mcpServers.later.command).toBe("later-server");
+  expect(restored.hooks.SessionEnd.map((row: any) => row.hooks[0].command)).toEqual(["existing-qwen", "later-hook"]);
+  expect(restored.hooks.Stop[0].hooks[0].command).toBe("later-stop");
+});
+
+for (const surface of ["mcp", "hook", "async", "sequential"] as const) test(`Qwen ${surface} ownership conflict refuses the whole shared-file update`, () => {
+  const f = fixture(); seedOtherFiles(f); applySetup(f.plan("qwen", "apply"), f.options);
+  const file = f.file("qwen"), doc = JSON.parse(text(file));
+  if (surface === "mcp") doc.mcpServers.amem.command = "user-edited-runtime";
+  else if (surface === "hook") doc.hooks.SessionEnd[1].hooks[0].timeout = 9;
+  else if (surface === "async") doc.hooks.SessionEnd[1].hooks[0].async = true;
+  else doc.hooks.SessionEnd[1].sequential = true;
+  put(file, JSON.stringify(doc)); const before = image(file), receipt = image(f.receiptFile("qwen")), calls = f.calls.length;
+  expect(() => undoSetup(f.plan("qwen", "undo"), f.options)).toThrow("changed");
+  expect(() => applySetup(f.plan("qwen", "apply"), f.options)).toThrow("changed");
+  expect(image(file)).toEqual(before); expect(image(f.receiptFile("qwen"))).toEqual(receipt); expect(f.calls).toHaveLength(calls);
+});
+
+test("Qwen runtime upgrade and prepared recovery retain one undoable ownership image", () => {
+  const f = fixture(); seedOtherFiles(f); const file = f.file("qwen"), original = image(file);
+  applySetup(f.plan("qwen", "apply"), f.options);
+  const value = f.receipt("qwen"); value.phase = "prepared";
+  restore(file, value.changes[0]!.before); put(f.receiptFile("qwen"), JSON.stringify(value));
+  const calls = f.calls.length;
+  expect(applySetup(f.plan("qwen", "apply"), f.options).applied).toEqual(["qwen"]);
+  expect(f.calls).toHaveLength(calls);
+  const moved = { ...f.options, bun: join(f.home, "new bun"), entry: join(f.home, "new package", "amem.js") };
+  expect(applySetup(planSetup("qwen", "apply", moved), moved).applied).toEqual(["qwen"]);
+  const doc = JSON.parse(text(file));
+  expect(doc.mcpServers.amem.command).toBe(moved.bun);
+  expect(doc.hooks.SessionEnd).toHaveLength(2); expect(doc.hooks.SessionEnd[1].hooks[0].command).toContain(moved.entry);
+  undoSetup(planSetup("qwen", "undo", moved), moved); expect(image(file)).toEqual(original);
+});
+
+
+test("Qwen tilde homes match native resolution and inherited settings redirects are staged", () => {
+  const f = fixture();
+  const env = { ...f.env, QWEN_HOME: "~/custom qwen", QWEN_RUNTIME_DIR: join(f.home, "never-runtime"),
+    QWEN_CODE_SYSTEM_SETTINGS_PATH: join(f.home, "never-settings.json"), QWEN_CODE_SYSTEM_DEFAULTS_PATH: join(f.home, "never-defaults.json") };
+  const options = { ...f.options, env }, plan = planSetup("qwen", "apply", options);
+  expect(plan.actions[0]!.files).toEqual([join(f.home, "custom qwen", "settings.json")]);
+  applySetup(plan, options);
+  const call = f.calls[0]!;
+  for (const key of ["QWEN_HOME", "QWEN_RUNTIME_DIR", "QWEN_CODE_SYSTEM_SETTINGS_PATH", "QWEN_CODE_SYSTEM_DEFAULTS_PATH"]) {
+    expect(call.env[key]!.startsWith(call.cwd + "/")).toBe(true);
+  }
+  expect(existsSync(env.QWEN_RUNTIME_DIR)).toBe(false);
+  expect(existsSync(env.QWEN_CODE_SYSTEM_SETTINGS_PATH)).toBe(false);
+  expect(existsSync(env.QWEN_CODE_SYSTEM_DEFAULTS_PATH)).toBe(false);
+  undoSetup(planSetup("qwen", "undo", options), options);
+  expect(existsSync(plan.actions[0]!.files[0]!)).toBe(false);
+});
+
+for (const enabled of [false, true]) test(`Qwen hook controls remain user-owned when enabled is ${enabled}`, () => {
+  const f = fixture(); seedOtherFiles(f); const file = f.file("qwen");
+  const original = JSON.parse(text(file));
+  original.hooks.enabled = enabled;
+  original.hooks.disabled = ["user-disabled-hook"];
+  // Native declares these as opaque non-event controls; do not infer their behavioral schema.
+  original.hooks.notifications = { user: "original", enabled: false };
+  put(file, JSON.stringify(original), 0o640);
+  const controls = (doc: Record<string, any>) => ({ enabled: doc.hooks.enabled, disabled: doc.hooks.disabled, notifications: doc.hooks.notifications });
+  const before = image(file);
+  applySetup(f.plan("qwen", "apply"), f.options);
+  const installed = JSON.parse(text(file));
+  expect(controls(installed)).toEqual(controls(original));
+  expect(installed.hooks.SessionEnd).toHaveLength(2);
+  expect(f.plan("qwen").actions[0]!.mcpChange).toBe("unchanged");
+  expect(applySetup(f.plan("qwen", "apply"), f.options).unchanged).toEqual(["qwen"]);
+  // Current control values belong to the person even after setup; semantic undo must retain them.
+  installed.ui.theme = "later";
+  installed.hooks.enabled = !enabled;
+  installed.hooks.disabled.push("later-disabled-hook");
+  installed.hooks.notifications = false;
+  put(file, JSON.stringify(installed), 0o640);
+  const later = image(file), calls = f.calls.length;
+  expect(applySetup(f.plan("qwen", "apply"), f.options).unchanged).toEqual(["qwen"]);
+  expect(image(file)).toEqual(later); expect(f.calls).toHaveLength(calls);
+  undoSetup(f.plan("qwen", "undo"), f.options);
+  const restored = JSON.parse(text(file));
+  expect(controls(restored)).toEqual(controls(installed));
+  expect(restored.ui.theme).toBe("later");
+  expect(restored.mcpServers.amem).toBeUndefined();
+  expect(restored.hooks.SessionEnd).toEqual(original.hooks.SessionEnd);
+  expect(image(file).mode).toBe(before.mode);
 });
