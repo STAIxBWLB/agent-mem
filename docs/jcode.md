@@ -6,7 +6,7 @@ The sibling agent-hub receipt `docs/verification/2026-10-26-jcode-0.99.1.md` rec
 
 # Integration decision
 
-Use the setup-only fallback for this native release. MCP registration is independently supported, but do not expose `amem ingest jcode` or install a capture hook without a verified per-message origin contract. For example, native messages written in project A remain after `set_working_dir(B)`; the persisted root then names B while each old message lacks a cwd. Reading that snapshot from B cannot establish that those messages belong to B. Journal checkpointing and mutable message history also prevent reusing the JSONL byte-offset cursor. A future reader needs both stable origin proof and a snapshot/journal consistency contract before cursor design.
+Use the setup-only fallback for this native release. MCP registration is independently supported, but do not expose `amem ingest jcode` or install a capture hook without a verified per-message origin contract. For example, native messages written in project A remain after `set_working_dir(B)`; the persisted root then names B while each old message lacks a cwd. Reading that snapshot from B cannot establish that those messages belong to B. Journal checkpointing and mutable message history also prevent reusing the JSONL byte-offset cursor. A future reader needs a per-message cwd or origin in StoredMessage, plus a snapshot/journal consistency contract, before cursor design.
 
 # Homes and persisted sessions
 
@@ -20,7 +20,8 @@ Source: [storage path resolution](https://github.com/1jehuang/jcode/blob/7206efd
 
 # MCP registration
 
-- The global JSON object accepts `servers` and its alias `mcpServers`. Native serialization uses `servers`; preserve the existing spelling and unrelated entries when editing an owned binding.
+- The global JSON object accepts `servers` and its alias `mcpServers`. Native serialization uses `servers`. amem owns only the `amem` entry under canonical `servers`, reads `mcpServers` as an alias, and must not write both spellings. Preserve unrelated servers and unknown keys byte-for-byte where untouched.
+- Existing receipt, idempotency and undo semantics apply; changes to the owned amem entry must conflict rather than be overwritten.
 - A stdio entry contains `command`, `args` and `env`; `shared` defaults to true. Remote and enable/disable fields also exist and must not be overwritten by a stdio registration.
 - This release has **no native `jcode mcp add` or `remove` command**. Supported actions are `list`, `test`, `login` and `logout`. Registration therefore edits the owned JSON entry directly; do not invent a native registration command.
 - Config loading merges global Jcode entries, live Claude config, then project-local `.jcode/mcp.json`, `.mcp.json` and `.claude/mcp.json`. Later definitions ordinarily override earlier ones, with a special rule retaining existing stdio entries over remote replacements.
