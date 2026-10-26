@@ -15,12 +15,17 @@ for (const tool of ["amem_search", "amem_graph", "amem_timeline"] as const) test
   let now = Date.now() - 86400_000;
   const store = new MemoryStore({ memoryDir: base, now: () => now, deferPromotions: true });
   const make = (text: string) => store.note({ op: "note", project, scope: "project", tier: "long", kind: "contract", peer: "person", source: "person", text, about: ["path:public.ts"] });
-  const later = make("recallpolicy trigger row"); now += 1000; const earlier = make("recallpolicy EARLY_ALLOWED sensitive after tightening"); store.close();
-  const screens: string[] = []; let tightened = false;
+  const first = make("recallpolicy EARLY_ALLOWED first row"); now += 1000;
+  const second = make("recallpolicy EARLY_ALLOWED second row"); store.close();
+  const screens: string[] = []; let tightened = false, earlier = "", later = "";
   const session = createMemoryMcp({ cwd: root, base, project, policy: { host: { screen: async value => {
     const id = (value as { id?: string } | null)?.id;
-    if (id === earlier || id === later) screens.push(id);
-    if (id === later && !tightened) { await Promise.resolve(); writeFileSync(join(base, CONFIG_FILE), JSON.stringify({ piiPatterns: ["EARLY_ALLOWED"] })); tightened = true; }
+    if (id === first || id === second) {
+      screens.push(id);
+      // Tighten after a public row has actually passed screening, regardless of the tool's page order.
+      if (!earlier) earlier = id;
+      else if (id !== earlier && !tightened) { later = id; await Promise.resolve(); writeFileSync(join(base, CONFIG_FILE), JSON.stringify({ piiPatterns: ["EARLY_ALLOWED"] })); tightened = true; }
+    }
     return true;
   } } } }); cleanup.push(() => session.close());
   let result: unknown;

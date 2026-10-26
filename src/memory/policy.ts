@@ -128,7 +128,7 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
       if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
       const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
       const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
-      return !paths.some(path => path && isDenied(posix.normalize(path), deny));
+      return ![...new Set(paths)].some(path => path && isDenied(posix.normalize(path), deny));
     };
     const allowed = check(), bytes = Buffer.byteLength(text);
     if (bytes <= 1024) {

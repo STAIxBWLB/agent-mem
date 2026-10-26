@@ -187,6 +187,56 @@ export class SearchIndex {
   close(): void { this.db?.close(); }
 }
 
+/** Screened query-local corpus in SQLite-owned TEMP storage, removed even when the process exits. */
+export class ScreenedSearchIndex<T> {
+  readonly available = fts5Available();
+  private readonly db: Database;
+  private closed = false;
+
+  constructor() {
+    let db: Database | undefined;
+    try {
+      db = new Database(":memory:");
+      // SQLite owns the anonymous TEMP files; no named plaintext cache survives a killed MCP child.
+      if ((db.query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS memoryOnly").get() as { memoryOnly: number }).memoryOnly) throw Error("disk-backed search unavailable");
+      db.run("PRAGMA temp_store = FILE");
+      db.run(this.available
+        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)"
+        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
+      db.run("PRAGMA temp.cache_size = -2048");
+      this.db = db;
+    } catch (error) { db?.close(); throw error; }
+  }
+
+  append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null }[]): void {
+    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
+        // Invalid deadlines fail closed; this sentinel predates every representable Date.
+        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline);
+      }
+    })();
+  }
+
+  best(query: string, limit: number, now: number, useFts = this.available): { value: T; score: number }[] {
+    if (useFts && !ftsTerms(query)) return [];
+    const rank = useFts ? "-bm25(docs)" : "1.0";
+    const instant = new Date(now).toISOString();
+    const where = "WHERE (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
+    const rows = this.db.query(`SELECT payload, ${rank} * CASE tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
+      / (1 + max(0, (julianday(?) - julianday(at)) / 30.0)) AS score FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`)
+      .all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit) as { payload: string; score: number }[];
+    return rows.map(row => ({ value: JSON.parse(row.payload) as T, score: row.score }));
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.db.close();
+  }
+}
+
 interface RawCaptureRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string }
 
 /**
@@ -222,20 +272,23 @@ export interface ReadWindow {
   anchor?: string;
   prefix?: string;
   id?: string;
+  /** Exhaustive screened scans need stable identity order, not a chronological relevance window. */
+  order?: "id";
   after?: { position: number; id: string };
 }
 export interface ReadRef { id: string; at: string; position: number }
 /** Fixed column names supplied by the three derived stores; all caller values remain SQL parameters. */
-export function readWindowSql(window: ReadWindow, id: "id" | "ref") {
+export function readWindowSql(window: ReadWindow, id: "id" | "ref", identity: "text" | "integer" = "text") {
   if (!Number.isSafeInteger(window.limit) || window.limit < 1 || window.limit > 256) throw new Error("invalid read page limit");
   const bind: (string | number)[] = [];
-  const position = window.anchor ? (bind.push(window.anchor), "abs(julianday(at) - julianday(?))") : "-julianday(at)";
+  const position = window.order === "id" ? (identity === "integer" ? id : "0") : window.anchor ? (bind.push(window.anchor), "abs(julianday(at) - julianday(?))") : "-julianday(at)";
   const columns = `CAST(${id} AS TEXT) AS candidate_id, at, ${position} AS candidate_position`;
   const where = ["project IN (SELECT value FROM json_each(?))"]; bind.push(JSON.stringify(window.projects ?? [window.project]));
   if (window.since) { where.push("julianday(at) >= julianday(?)"); bind.push(window.since); }
   if (window.id !== undefined) { where.push(`${id} = ?`); bind.push(window.id); }
   if (window.prefix !== undefined) { where.push(`substr(${id}, 1, length(?)) = ?`); bind.push(window.prefix, window.prefix); }
-  if (window.after) {
+  if (window.after && window.order === "id") { where.push(`${id} > ?`); bind.push(window.after.id); }
+  else if (window.after) {
     where.push("(candidate_position > ? OR (candidate_position = ? AND candidate_id > ?))");
     bind.push(window.after.position, window.after.position, window.after.id);
   }

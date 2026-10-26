@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
 import { CandidateStore, acceptedCorrectionText, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { capacityReport } from "./memory/capacity.ts";
-import { CaptureStore } from "./memory/capture.ts";
+import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -18,7 +18,7 @@ import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOpt
 import { configuredPolicyOptions } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
-import { type ReadRef, type ReadWindow, SearchIndex } from "./memory/search-fts.ts";
+import { type ReadRef, type ReadWindow, SearchIndex, ScreenedSearchIndex } from "./memory/search-fts.ts";
 import { aliasedKeys, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, readRepoScope, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
@@ -28,9 +28,10 @@ import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
 
 // Graph retains its complete-corpus ceiling; search/timeline/show page matching bodies instead.
 export const MCP_SCAN_LIMIT = 5000;
-// ponytail: rank the newest 5000 permitted matching candidates per tier; use since to narrow or upgrade to a policy-bound persistent index for global ranking.
+// ponytail: evidence still ranks its newest 5000 permitted candidates; upgrade to the screened search stream if evidence needs global ranking.
 const SEARCH_CANDIDATES = 5000;
 const READ_PAGE = 256;
+type SearchValue = { source: "curated"; evidence: true; view: View } | { source: "repo"; evidence: false; view: RepoView } | { source: "capture"; evidence: false; capture: CaptureRow };
 export interface MemoryMcpOptions { cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void }
 export interface MemoryMcp { tools: McpHandlers; close(): void; onEmitted: NonNullable<McpOptions["onEmitted"]> }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
@@ -109,19 +110,25 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
       return screen(rows.filter(row => row.project === project && recallViewIsLive(row, store.readNow())));
     };
-    const readPermitted = async <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef; engine?: "fts5" | "substring" },
-      options: Omit<ReadWindow, "project" | "limit" | "after">, cap: number, matches: (row: T, engine?: "fts5" | "substring") => boolean = () => true): Promise<T[]> => {
-      const result: T[] = []; let after: ReadWindow["after"];
-      while (result.length < cap) {
+    const permittedRows = async function* <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef; engine?: "fts5" | "substring" },
+      options: Omit<ReadWindow, "project" | "limit" | "after">, matches: (row: T, engine?: "fts5" | "substring") => boolean = () => true): AsyncGenerator<T> {
+      let after: ReadWindow["after"];
+      for (;;) {
         guard();
         const page = read({ ...options, project, limit: READ_PAGE, after });
-        for (const row of page.rows) if (await currentPolicy().screen(row) && matches(row, page.engine)) {
-          result.push(row); if (result.length === cap) break;
+        for (const row of page.rows) {
+          const allowed = await currentPolicy().screen(row); guard();
+          if (allowed && matches(row, page.engine)) yield row;
         }
         guard();
         if (!page.next) break;
         after = { position: page.next.position, id: page.next.id };
       }
+    };
+    const readPermitted = async <T>(read: (window: ReadWindow) => { rows: T[]; next?: ReadRef; engine?: "fts5" | "substring" },
+      options: Omit<ReadWindow, "project" | "limit" | "after">, cap: number, matches: (row: T, engine?: "fts5" | "substring") => boolean = () => true): Promise<T[]> => {
+      const result: T[] = [];
+      for await (const row of permittedRows(read, options, matches)) { result.push(row); if (result.length === cap) break; }
       return result;
     };
     const anchorAt = async (id: string): Promise<string | undefined> => {
@@ -183,38 +190,39 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         bound(args, ["query", "limit", "since", "includeCapture"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
         if (args.includeCapture !== undefined && typeof args.includeCapture !== "boolean") unavailable();
         if (!await currentPolicy().screen({ query })) unavailable();
-        const index = new SearchIndex(":memory:");
+        // ponytail: scan all matches into private disposable disk state, keeping one body page in JS.
+        // Work scales with matches; a policy-bound cache is the upgrade if this reaches the unchanged watchdog.
+        const index = new ScreenedSearchIndex<SearchValue>();
+        const releaseIndex = () => index.close(); closers.push(releaseIndex);
         try {
           const words = query.toLowerCase().split(/\s+/).filter(Boolean);
           const captureState: { engine?: "fts5" | "substring" } = {};
-          const recalls = args.includeCapture === false ? [] : await readPermitted(window => {
-            const page = capture.readPage({ ...window, query, ...(captureState.engine === "substring" ? { match: "substring" as const } : {}) });
-            captureState.engine ??= page.engine;
-            return page;
-          }, { since }, SEARCH_CANDIDATES,
-            (row, engine) => index.available && engine === "fts5" || words.every(word => `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}`.toLowerCase().includes(word)));
-          const useFts = index.available && captureState.engine !== "substring";
-          const notes = await readPermitted(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since }, SEARCH_CANDIDATES,
-            view => recallViewIsLive(view, store.readNow()) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
-          const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
-          const hits = [...notes.map(view => ({ source: "curated" as const, evidence: true, view, ref: view.id, at: view.at, tier: view.tier, body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
-            ...repoNotes.map(view => ({ source: "repo" as const, evidence: false, view, ref: `repo:${view.id}`, at: view.at, tier: "long", body: `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}` })),
-            ...recalls.map(row => ({ source: "capture" as const, evidence: false, capture: row, ref: `capture:${row.id}`, at: row.at, tier: "capture", body: `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}` }))].filter(hit => (!since || Date.parse(hit.at) >= Date.parse(since)) && (hit.source !== "curated" || recallViewIsLive(hit.view, store.readNow())));
-          if (useFts) {
-            index.resync(() => hits.map(hit => ({ id: hit.ref, at: hit.at, project, tier: hit.tier, scope: "project", body: hit.body })));
-            if (index.needsResync(hits.length)) unavailable();
+          let batch: { body: string; ref: string; tier: string; at: string; value: SearchValue; expiresAt?: string | null }[] = [];
+          const append = (value: SearchValue) => {
+            const row = value.source === "capture" ? value.capture : value.view;
+            batch.push(value.source === "capture"
+              ? { value, ref: `capture:${value.capture.id}`, at: row.at, tier: "capture", body: `${value.capture.excerpt}\n${value.capture.paths.join(" ")}\n${value.capture.event}` }
+              : { value, ref: value.source === "repo" ? `repo:${value.view.id}` : value.view.id, at: row.at, tier: value.source === "repo" ? "long" : value.view.tier, body: `${value.view.title ?? ""}\n${value.view.text}\n${value.view.about.join(" ")}`, expiresAt: value.source === "curated" ? value.view.expiresAt : null });
+            if (batch.length === READ_PAGE) { index.append(batch); batch = []; }
+          };
+          if (args.includeCapture !== false) {
+            for await (const row of permittedRows(window => {
+              const page = capture.readPage({ ...window, query, ...(captureState.engine === "substring" ? { match: "substring" as const } : {}) });
+              captureState.engine ??= page.engine; return page;
+            }, { since, order: "id" }, (row, engine) => index.available && engine === "fts5" || words.every(word => `${row.excerpt}\n${row.paths.join(" ")}\n${row.event}`.toLowerCase().includes(word)))) {
+              append({ source: "capture", evidence: false, capture: row });
+            }
           }
-          const ranks = new Map((useFts ? index.query(query, MCP_SCAN_LIMIT * 2, project) : []).map(row => [row.ref, row.rank]));
-          const selected = hits.flatMap(hit => {
-            const rank = ranks.get(hit.ref);
-            if (useFts ? rank === undefined : !words.every(word => hit.body.toLowerCase().includes(word))) return [];
-            const weight = hit.tier === "long" ? 1 : hit.tier === "capture" ? 0.5 : 0.9;
-            const score = -(rank ?? -1) * weight / (1 + Math.max(0, Date.now() - Date.parse(hit.at)) / (30 * 86400_000));
-            return [{ source: hit.source, evidence: hit.evidence, ...(hit.source === "capture" ? { capture: hit.capture } : { view: hit.view }), score }];
-          }).sort((a, b) => b.score - a.score).slice(0, limit);
+          const useFts = index.available && captureState.engine !== "substring";
+          for await (const view of permittedRows(window => store.readPage({ ...window, ...(useFts ? { query } : {}) }), { since, order: "id" },
+            view => recallViewIsLive(view, store.readNow()) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))))) append({ source: "curated", evidence: true, view });
+          const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
+          for (const view of repoNotes) append({ source: "repo", evidence: false, view });
+          if (batch.length) index.append(batch);
+          const selected = index.best(query, limit, store.readNow(), useFts).map(({ value, score }) => ({ ...value, score }));
           const probe = stale(), result = { engine: useFts ? "fts5" : "substring", hits: selected.map(hit => hit.source === "curated" && "view" in hit && hit.view ? { ...hit, view: decorate(hit.view as View, probe) } : hit) };
           guard(); return observed(result, selected.flatMap(hit => hit.source === "curated" && "view" in hit && hit.view ? [hit.view.id] : []), selected.map(hit => "view" in hit ? hit.view : hit.capture));
-        } finally { index.close(); }
+        } finally { const position = closers.indexOf(releaseIndex); if (position >= 0) closers.splice(position, 1); releaseIndex(); }
       },
       async amem_show(args) {
         bound(args, ["id"]); guard(); const id = textOf(args, "id")!;

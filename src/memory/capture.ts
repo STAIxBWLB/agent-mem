@@ -619,17 +619,15 @@ export class CaptureStore {
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     this.checkReadBinding();
-    const { columns, where, bind } = readWindowSql(window, "id");
+    const { columns, where, bind } = readWindowSql(window, "id", "integer");
     if (this.recentReadIds) {
       if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");
       where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds));
     }
     const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
-    if (window.query !== undefined && engine === "fts5") {
-      const match = ftsTerms(window.query); if (!match) return { rows: [], engine };
-      where.push("id IN (SELECT rowid FROM mcp_fts WHERE mcp_fts MATCH ?)"); bind.push(match);
-    }
-    const rows = this.db.query(`SELECT *, ${columns} FROM rows WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
+    const plan = captureReadPlan(window, engine, where, bind);
+    if (!plan) return { rows: [], engine };
+    const rows = this.db.query(`SELECT rows.*, ${columns} FROM ${plan.from} WHERE ${where.join(" AND ")} ORDER BY ${plan.order} LIMIT ?`)
       .all(...bind, window.limit) as (RawRow & { candidate_id: string; candidate_position: number })[];
     return { rows: rows.map(toRow), ...(engine ? { engine } : {}), ...(rows.length ? { next: readRef(rows[rows.length - 1]!) } : {}) };
   }
@@ -642,6 +640,26 @@ export class CaptureStore {
   }
 
   close(): void { this.db.close(); }
+}
+
+/** Keep chronological readers intact while exhaustive search consumes FTS's rowid range directly. */
+function captureReadPlan(window: ReadWindow & { query?: string; match?: "substring" }, engine: "fts5" | "substring" | undefined,
+  where: string[], bind: (string | number)[]): { from: string; order: string } | undefined {
+  let from = "rows", order = "candidate_position, candidate_id";
+  if (window.query !== undefined && engine === "fts5") {
+    const match = ftsTerms(window.query); if (!match) return;
+    if (window.order === "id") {
+      from = "mcp_fts JOIN rows ON rows.id = mcp_fts.rowid"; order = "mcp_fts.rowid";
+      where.push("mcp_fts MATCH ?"); bind.push(match);
+      if (window.after) {
+        const cursor = where.indexOf("id > ?");
+        if (cursor < 0) throw Error("missing capture identity cursor");
+        // Qualify the existing predicate so FTS receives the rowid range, without a second condition/bind.
+        where[cursor] = "mcp_fts.rowid > ?";
+      }
+    } else { where.push("id IN (SELECT rowid FROM mcp_fts WHERE mcp_fts MATCH ?)"); bind.push(match); }
+  }
+  return { from, order };
 }
 
 /** One shard's capture totals for the catalog and the capacity advisor, without opening a writer. */
