@@ -36,6 +36,8 @@ for (const shell of shells) {
     expect(candidateRun(shell, script, ["search", "--f"], dir)).toContain("--filter");
     expect(candidateRun(shell, script, ["setup", "q"], dir)).toContain("qwen");
     expect(candidateRun(shell, script, ["setup", "j"], dir)).toContain("jcode");
+    expect(candidateRun(shell, script, ["setup", "a"], dir)).toContain("agy");
+    expect(candidateRun(shell, script, ["ingest", "a"], dir)).not.toContain("agy");
     expect(candidateRun(shell, script, ["ingest", "j"], dir)).not.toContain("jcode");
     expect(candidateRun(shell, script, ["ingest", "q"], dir)).toContain("qwen");
     const goals = candidateRun(shell, script, ["goal", ""], dir);

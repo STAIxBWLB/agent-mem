@@ -3,9 +3,9 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { applySetup, planSetup, runSetup, SETUP_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { applySetup, planSetup, runSetup, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
 import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
-import { realPath } from "../src/memory/platform.ts";
+import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 interface Call { argv: string[]; env: Record<string, string | undefined>; cwd: string }
@@ -70,19 +70,19 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
 const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : target === "jcode" ? JSON.parse(text(file)).servers : JSON.parse(text(file)).mcpServers;
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
-  expect(shown.targets).toEqual([...SETUP_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(6);
+  expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(6);
   for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
-  expect(JSON.parse(output).targets).toEqual([...SETUP_TARGETS]); expect(confirmations).toBe(0); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
+  expect(JSON.parse(output).targets).toEqual([...SETUP_ALL_TARGETS]); expect(confirmations).toBe(0); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
 });
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
-  expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_TARGETS], unchanged: [] });
+  expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
   expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen"]);
   for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
-  for (const target of SETUP_TARGETS) {
+  for (const target of SETUP_ALL_TARGETS) {
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
     expect(receipt).toMatchObject({ version: 1, target, phase: "applied" }); expect(receipt.changes.map(change => change.path)).toEqual(action.files);
     expect(lstatSync(action.receipt).mode & 0o077).toBe(0); expect(lstatSync(dirname(action.receipt)).mode & 0o077).toBe(0);
@@ -96,29 +96,29 @@ test("all-target apply stages native commands, records private receipts and is b
   expect(text(f.file("pi", 1))).toContain("session_shutdown"); expect(text(f.file("pi", 1))).toContain(f.entry);
   expect(rules.map(image)).toEqual(rulesBefore);
   const beforeSecond = snapshot(f.home), calls = f.calls.length;
-  expect(applySetup(f.plan("all", "apply"), f.options)).toEqual({ applied: [], unchanged: [...SETUP_TARGETS] }); expect(f.calls).toHaveLength(calls); expect(snapshot(f.home)).toEqual(beforeSecond);
+  expect(applySetup(f.plan("all", "apply"), f.options)).toEqual({ applied: [], unchanged: [...SETUP_ALL_TARGETS] }); expect(f.calls).toHaveLength(calls); expect(snapshot(f.home)).toEqual(beforeSecond);
 });
 test("undo restores original bytes, modes and missing files without touching unrelated rules", () => {
   const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
   expect(originals.some(value => value.bytes === null)).toBe(true); applySetup(plan, f.options); const calls = f.calls.length;
-  expect(undoSetup(f.plan("all", "undo"), f.options)).toEqual({ restored: [...SETUP_TARGETS] }); expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
-  for (const target of SETUP_TARGETS) expect(existsSync(f.receiptFile(target))).toBe(false);
+  expect(undoSetup(f.plan("all", "undo"), f.options)).toEqual({ restored: [...SETUP_ALL_TARGETS] }); expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
+  for (const target of SETUP_ALL_TARGETS) expect(existsSync(f.receiptFile(target))).toBe(false);
 });
 test("existing amem registration is removed before add while other MCP entries survive", () => {
   const f = fixture(); seedOtherFiles(f);
   for (const target of ["claude", "pi", "qwen"] as const) { const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.amem = { command: "old-amem", args: ["old"] }; put(file, JSON.stringify(document)); }
   put(f.file("codex"), text(f.file("codex")) + '\n[mcp_servers.amem]\ncommand = "old-amem"\nargs = ["old"]\n');
-  const before = [...SETUP_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image);
+  const before = [...SETUP_ALL_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image);
   applySetup(f.plan("all", "apply"), f.options);
   expect(f.calls.map(call => [call.argv[0], call.argv[2]])).toEqual([["claude", "remove"], ["claude", "add"], ["codex", "remove"], ["codex", "add"], ["pi", "remove"], ["pi", "add"], ["qwen", "remove"], ["qwen", "add"]]);
   expect(f.calls[0]?.argv).toEqual(["claude", "mcp", "remove", "--scope", "user", "amem"]);
-  for (const target of SETUP_TARGETS) expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
-  undoSetup(f.plan("all", "undo"), f.options); expect([...SETUP_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image)).toEqual(before);
+  for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
+  undoSetup(f.plan("all", "undo"), f.options); expect([...SETUP_ALL_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image)).toEqual(before);
 });
 test("runSetup cancellation and missing terminal cause no registration or file changes", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home); let confirmations = 0;
   await expect(runSetup("all", "apply", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } })).rejects.toThrow("terminal on stdin");
-  expect(confirmations).toBe(0); expect(JSON.parse(await runSetup("all", "apply", { ...f.options, stdinTTY: true, confirm: async plan => { confirmations++; expect(plan.mode).toBe("apply"); expect(plan.targets).toEqual([...SETUP_TARGETS]); return false; } }))).toEqual({ cancelled: true });
+  expect(confirmations).toBe(0); expect(JSON.parse(await runSetup("all", "apply", { ...f.options, stdinTTY: true, confirm: async plan => { confirmations++; expect(plan.mode).toBe("apply"); expect(plan.targets).toEqual([...SETUP_ALL_TARGETS]); return false; } }))).toEqual({ cancelled: true });
   expect(confirmations).toBe(1); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
   expect(JSON.parse(await runSetup("kimi", "apply", { ...f.options, stdinTTY: true, confirm: async plan => plan.targets.join() === "kimi" }))).toEqual({ applied: ["kimi"], unchanged: [] });
 });
@@ -211,10 +211,10 @@ test("runtime relocation updates managed entries and still restores original byt
   const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
   applySetup(plan, f.options); const calls = f.calls.length;
   const moved: SetupContext = { ...f.options, bun: join(f.home, "relocated-runtime", "bun"), entry: join(f.home, "relocated-package", "bin", "amem.js") };
-  expect(applySetup(planSetup("all", "apply", moved), moved).applied).toEqual([...SETUP_TARGETS]);
+  expect(applySetup(planSetup("all", "apply", moved), moved).applied).toEqual([...SETUP_ALL_TARGETS]);
   expect(f.calls.length).toBeGreaterThan(calls); const updatedCalls = f.calls.length;
-  for (const target of SETUP_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject({ command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
-  expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_TARGETS] });
+  for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject({ command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
+  expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_ALL_TARGETS] });
   expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(updatedCalls);
 });
 
@@ -515,4 +515,92 @@ test("Jcode canonicalizes the HOME alias but refuses a named config-directory sy
   const before = image(victim);
   expect(() => planSetup("jcode", "apply", { ...options, env: { ...env, JCODE_HOME: join(alias, "named-jcode") } })).toThrow("symbolic-link");
   expect(image(victim)).toEqual(before); expect(f.calls).toEqual([]);
+});
+
+function agyGit(cwd: string, ...args: string[]) {
+  const result = memoryGitSync(["-C", cwd, ...args], { env: memoryGitEnv(process.env, { repositoryIsolation: true }), encoding: "utf8" });
+  expect(result.status).toBe(0); return result;
+}
+function agyFixture() {
+  const f = fixture(); agyGit(f.home, "init", "-q");
+  const options = { ...f.options, cwd: f.home };
+  return { ...f, options, agyPlan: (mode: SetupPlan["mode"] = "preview") => planSetup("agy", mode, options) };
+}
+
+test("Antigravity config is repository-bound, direct and excluded from all", () => {
+  const f = agyFixture(), file = join(f.home, ".agents", "mcp_config.json");
+  put(file, '{"mcpServers":{"other":{"command":"keep"}}}\n', 0o640);
+  const original = image(file), inode = lstatSync(file).ino, plan = f.agyPlan("apply"), action = plan.actions[0]!;
+  expect(action.files).toEqual([file]); expect(action.cwd).toBe(f.home);
+  expect(action.receipt).toMatch(/\/agy-[a-f0-9]{64}\.json$/);
+  expect(action.commands).toEqual([]); expect(action.registration).toBeNull(); expect(action.hooks).toEqual([]);
+  expect(action.available).toBe(true); expect(plan.notes.join("\n")).toContain("not Git-ignored");
+  expect(planSetup("all", "preview", f.options).targets).not.toContain("agy");
+  let publications = 0;
+  expect(applySetup(plan, { ...f.options, beforePublish: path => {
+    expect(path).toBe(file); expect(image(file)).toEqual(original); expect(lstatSync(file).ino).toBe(inode); publications++;
+  } }).applied).toEqual(["agy"]);
+  expect(publications).toBe(1); expect(f.calls).toEqual([]);
+  expect(JSON.parse(text(file)).mcpServers.amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], cwd: f.home });
+  expect(JSON.parse(text(file)).mcpServers.other.command).toBe("keep");
+  expect(lstatSync(action.receipt).mode & 0o077).toBe(0);
+  const installed = image(file);
+  expect(applySetup(f.agyPlan("apply"), f.options).unchanged).toEqual(["agy"]); expect(image(file)).toEqual(installed);
+  undoSetup(f.agyPlan("undo"), f.options); expect(image(file)).toEqual(original);
+});
+
+test("Antigravity project receipts and undo are independent in one memory home", () => {
+  const f = agyFixture(), other = join(f.home, "other-repository"); mkdirSync(other); agyGit(other, "init", "-q");
+  const second = { ...f.options, cwd: other }, firstPlan = f.agyPlan("apply"), secondPlan = planSetup("agy", "apply", second);
+  expect(firstPlan.actions[0]!.receipt).not.toBe(secondPlan.actions[0]!.receipt);
+  applySetup(firstPlan, f.options); applySetup(secondPlan, second);
+  const otherFile = secondPlan.actions[0]!.files[0]!, otherBefore = image(otherFile);
+  expect(JSON.parse(text(otherFile)).mcpServers.amem.cwd).toBe(other);
+  undoSetup(f.agyPlan("undo"), f.options); expect(image(otherFile)).toEqual(otherBefore);
+  expect(existsSync(secondPlan.actions[0]!.receipt)).toBe(true);
+  undoSetup(planSetup("agy", "undo", second), second); expect(existsSync(otherFile)).toBe(false);
+});
+
+test("Antigravity refuses outside Git and tracked config in every mode", () => {
+  const plain = fixture(), options = { ...plain.options, cwd: plain.home };
+  for (const mode of ["preview", "apply", "undo"] as const) expect(() => planSetup("agy", mode, options)).toThrow("Git repository");
+  expect(planSetup("all", "preview", options).targets).toEqual([...SETUP_ALL_TARGETS]);
+  const f = agyFixture(), file = join(f.home, ".agents", "mcp_config.json"); put(file, "{}\n");
+  agyGit(f.home, "add", "--", file); const original = image(file);
+  for (const mode of ["preview", "apply", "undo"] as const) expect(() => f.agyPlan(mode)).toThrow("Git-tracked");
+  expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
+});
+
+test("Antigravity refuses tracked config case aliases before any write", () => {
+  const f = agyFixture(), file = join(f.home, ".AGENTS", "MCP_CONFIG.JSON");
+  put(file, "{}\n"); agyGit(f.home, "add", "--", file);
+  const original = image(file);
+  for (const mode of ["preview", "apply", "undo"] as const) for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) {
+    const options = { ...f.options, env: { ...f.options.env, [key]: "1" } };
+    expect(() => planSetup("agy", mode, options)).toThrow("Git-tracked");
+  }
+  expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
+});
+
+test("Antigravity rechecks tracked state after publication callbacks and rejects changed cwd", () => {
+  const f = agyFixture(), file = join(f.home, ".agents", "mcp_config.json"); put(file, "{}\n");
+  const plan = f.agyPlan("apply"), original = image(file);
+  const other = join(f.home, "other"); mkdirSync(other); agyGit(other, "init", "-q");
+  expect(() => applySetup(plan, { ...f.options, cwd: other })).toThrow("changed since preview");
+  expect(existsSync(join(other, ".agents", "mcp_config.json"))).toBe(false);
+  expect(() => applySetup(plan, { ...f.options, beforePublish: () => { agyGit(f.home, "add", "--", file); } })).toThrow("Git-tracked");
+  expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
+});
+
+test("Antigravity strict JSON ceiling and semantic ownership preserve unrelated settings", () => {
+  const f = agyFixture(), file = join(f.home, ".agents", "mcp_config.json");
+  put(file, '{// native JSONC is deliberately outside this setup boundary\n"mcpServers":{}}');
+  const invalid = image(file); expect(() => f.agyPlan("apply")).toThrow(); expect(image(file)).toEqual(invalid);
+  put(file, '{"mcpServers":{"other":{"command":"keep"}},"unknown":9007199254740993}\n');
+  applySetup(f.agyPlan("apply"), f.options);
+  expect(text(file)).toContain('"unknown":9007199254740993');
+  put(file, text(file).replace('"unknown":9007199254740993', '"unknown":9007199254740995'));
+  undoSetup(f.agyPlan("undo"), f.options);
+  expect(text(file)).toContain('"unknown":9007199254740995'); expect(JSON.parse(text(file)).mcpServers.amem).toBeUndefined();
+  expect(JSON.parse(text(file)).mcpServers.other.command).toBe("keep");
 });

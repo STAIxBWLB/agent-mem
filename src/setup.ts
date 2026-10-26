@@ -10,9 +10,11 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
-import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
+import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
-export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode"] as const;
+export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"] as const;
+/** Workspace-scoped Antigravity setup is always selected explicitly. */
+export const SETUP_ALL_TARGETS = SETUP_TARGETS.filter(target => target !== "agy");
 export type SetupTarget = typeof SETUP_TARGETS[number];
 type Env = Readonly<Record<string, string | undefined>>;
 type Image = ConfigImage;
@@ -20,7 +22,7 @@ interface PlannedHook { event: string; command: string; timeout: number }
 interface Change { key: string; path: string; before: Image; after: Image; start?: Image }
 interface Receipt { version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
-  env?: Env; bun?: string; entry?: string; stdinTTY?: boolean;
+  env?: Env; bun?: string; entry?: string; stdinTTY?: boolean; cwd?: string;
   /** Trusted confirmation seam; ordinary CLI use always asks the person through stdin. */
   confirm?: (plan: SetupPlan) => Promise<boolean>;
   /** Host-only race fixture, called after temporary-file fsync and before the final comparison/rename. */
@@ -30,7 +32,7 @@ export interface SetupContext {
 }
 export interface SetupPlan {
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo";
-  actions: { target: SetupTarget; files: string[]; receipt: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
+  actions: { target: SetupTarget; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
 }
 const MAX = SETUP_CONFIG_BYTES, JOURNAL_MAX = 12 * MAX;
@@ -86,7 +88,36 @@ function write(file: string, value: Image, expected?: Image, beforePublish?: (fi
     names(file); renameSync(temporary, file); const parent = openSync(dirname(file), constants.O_RDONLY); try { fsyncSync(parent); } finally { closeSync(parent); }
   } finally { rmSync(temporary, { force: true }); }
 }
-function context(options: SetupContext) {
+interface WorkspaceBinding { root: string; ignored: boolean; assertCurrent(): void }
+function workspaceBinding(options: SetupContext): WorkspaceBinding {
+  const requestedCwd = resolve(options.cwd ?? process.cwd()), cwd = realPath(requestedCwd), env = memoryGitEnv({ ...process.env, ...options.env }, { repositoryIsolation: true });
+  for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) delete env[key];
+  const git = (args: string[]) => memoryGitSync(["-C", cwd, ...args], { env, encoding: "utf8", timeout: 5000, maxBuffer: MAX });
+  const location = (args: string[]) => {
+    const result = git(args);
+    if (result.status !== 0 || result.error || !result.stdout.endsWith("\n")) throw Error("Antigravity setup needs an available Git repository");
+    return realPath(result.stdout.slice(0, -1));
+  };
+  const root = location(["rev-parse", "--show-toplevel"]), gitDir = location(["rev-parse", "--absolute-git-dir"]), stat = lstatSync(root);
+  const within = relative(root, cwd);
+  if (!stat.isDirectory() || within === ".." || within.startsWith("../") || isAbsolute(within)) throw Error("Antigravity workspace must contain the calling directory");
+  const tracked = () => {
+    // Case aliases can name the same tracked file on macOS. Refuse them on every host.
+    const result = git(["ls-files", "--error-unmatch", "--", ":(top,icase,literal).agents/mcp_config.json"]);
+    if (result.status === 0) throw Error("Antigravity setup refuses Git-tracked .agents/mcp_config.json in every mode");
+    if (result.status !== 1 || result.error) throw Error("Antigravity setup cannot verify configuration tracking");
+  };
+  const assertCurrent = () => {
+    const current = lstatSync(root);
+    if (realPath(requestedCwd) !== cwd || current.dev !== stat.dev || current.ino !== stat.ino || location(["rev-parse", "--show-toplevel"]) !== root || location(["rev-parse", "--absolute-git-dir"]) !== gitDir) throw Error("Antigravity workspace binding changed");
+    tracked();
+  };
+  assertCurrent();
+  const ignored = git(["check-ignore", "-q", "--", join(root, ".agents", "mcp_config.json")]);
+  if (![0, 1].includes(ignored.status ?? -1) || ignored.error) throw Error("Antigravity setup cannot verify configuration ignore status");
+  return { root, ignored: ignored.status === 0, assertCurrent };
+}
+function context(options: SetupContext, workspace?: WorkspaceBinding) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const root = (key: string, fallback: string) => {
     const setting = env[key];
@@ -106,6 +137,7 @@ function context(options: SetupContext) {
     qwen: [join(qwen, "settings.json")],
     // Jcode takes JCODE_HOME literally, including an empty, relative or tilde spelling.
     jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
+    agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
   const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
@@ -115,17 +147,17 @@ function context(options: SetupContext) {
     const roots = [resolve(tmpdir()), realPath(tmpdir())], entries = [resolve(entry), realPath(entry)];
     if (roots.some(root => entries.some(file => { const part = relative(root, file); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); }))) throw Error("setup refuses a temporary package entry; install amem in a persistent location first");
   }
-  return { env, home, paths, bun, entry, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
+  return { env, home, paths, bun, entry, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
-  if (target === "kimi" || target === "jcode") return null;
+  if (target === "kimi" || target === "jcode" || target === "agy") return null;
   return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
 function assertJcodeRuntime(c: ReturnType<typeof context>): void {
   if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
 }
-function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry]); }
-function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, `${target}.json`); }
+function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(target === "agy" ? [c.workspace!.root] : [])]); }
+function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
 function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
@@ -140,15 +172,16 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
-  if (target === "jcode") return [];
+  if (target === "jcode" || target === "agy") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
-const lifecycle = (target: SetupTarget) => target === "jcode" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+const lifecycle = (target: SetupTarget) => target === "jcode" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
-  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|all [--apply|--undo]");
-  const c = context(options), targets = target === "all" ? [...SETUP_TARGETS] : [target as SetupTarget];
+  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
+  const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
+  const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
@@ -161,15 +194,20 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
   if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP only. Native saved sessions do not prove per-message project scope, so capture and ingest hooks are unavailable; no hook or config.toml is installed.");
+  if (c.workspace) {
+    pluginNotes.push(`Antigravity MCP is pinned to this repository only: ${c.workspace.root}. Restart the CLI/IDE and use one workspace; no global or plugin definitions are replaced, and same-name definitions elsewhere are unsupported. Native capture is unavailable; no hooks are installed. Only strict JSON is supported; JSONC is refused. Native TUI/IDE presence and live behavior are unverified; availability means this direct configuration operation is supported.`);
+    if (!c.workspace.ignored) pluginNotes.push("WARNING: .agents/mcp_config.json is not Git-ignored; it contains absolute local paths. Setup will refuse it if it becomes tracked.");
+  }
+  if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
   return { targets, mode, actions: targets.map(target => {
     const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
     const original = read(c.paths[target][0]!);
-    const document = target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
-    const hasAmem = target === "jcode" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    const document: Record<string, unknown> = target === "agy" ? {} : target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
+    const hasAmem = target === "jcode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
-    return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
+    return { target, available: available(c, target, options), files: c.paths[target], receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !available(c, target, options) ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
   }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
@@ -220,7 +258,8 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     env.QWEN_CODE_SYSTEM_DEFAULTS_PATH = join(staging, "qwen-system-defaults.json");
     mkdirSync(env.TMPDIR!, { mode: 0o700 });
     if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
-    const staged = context({ ...options, env });
+    // The staging workspace is a trusted private binding, not a Git repository or the real caller cwd.
+    const staged = context({ ...options, env, cwd: staging }, target === "agy" ? { root: staging, ignored: true, assertCurrent() {} } : undefined);
     // Codex refuses an explicit CODEX_HOME that does not exist, even for mcp add.
     mkdirSync(dirname(staged.paths[target][0]!), { recursive: true, mode: 0o700 });
     for (let i = 0; i < changes.length; i++) if (expected[i]!.bytes !== null) write(staged.paths[target][i]!, expected[i]!);
@@ -252,6 +291,8 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
         kept.mcpServers = { ...record(kept.mcpServers ?? {}), amem: installedServer };
         changes[0]!.after = objectImage(kept, changes[0]!.before);
       }
+    } else if (target === "agy") {
+      changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], cwd: c.workspace!.root });
     } else if (target === "jcode") {
       // Shared native pools use the daemon cwd; amem must bind the calling session's project.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], shared: false });
@@ -283,30 +324,42 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
-function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
+function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return target === "agy" || !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
 export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[] }
+function contextForPlan(plan: SetupPlan, options: SetupContext) {
+  const c = context(options, plan.targets.includes("agy") ? workspaceBinding(options) : undefined);
+  if (c.workspace) {
+    const action = plan.actions.find(action => action.target === "agy");
+    if (!action || action.cwd !== c.workspace.root || !isDeepStrictEqual(action.files, c.paths.agy)) throw Error("Antigravity workspace changed since preview");
+  }
+  return c;
+}
+function publishGuard(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext) {
+  return target === "agy" ? (file: string) => { options.beforePublish?.(file); c.workspace!.assertCurrent(); } : options.beforePublish;
+}
 /** Caller enforces person markers/TTY and confirmation; CLI-owned unrelated fields remain live. */
 function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
-  const c = context(options), skipped: { target: SetupTarget; reason: string }[] = [];
+  const c = contextForPlan(plan, options), skipped: { target: SetupTarget; reason: string }[] = [];
   const targets = plan.targets.filter(target => { if (available(c, target, options)) return true; if (plan.targets.length === 1) throw Error(`${target} CLI is not installed`); skipped.push({ target, reason: "CLI not installed" }); return false; });
   const prepared = targets.map(target => prepare(c, target, options));
   for (const item of prepared) if (!item.unchanged) for (let i = 0; i < item.value.changes.length; i++) if (!sameImage(read(item.value.changes[i]!.path), item.expected[i]!)) throw Error("setup configuration changed during preparation");
   const applied: SetupTarget[] = [], unchanged: SetupTarget[] = [];
   for (const item of prepared) {
     const value = item.value;
+    if (value.target === "agy") c.workspace!.assertCurrent();
     if (item.unchanged) { unchanged.push(value.target); continue; }
     save(c, value);
-    for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, options.beforePublish); }
+    for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, publishGuard(c, value.target, options)); }
     value.phase = "applied"; save(c, value); applied.push(value.target);
   }
   return { applied, unchanged, ...(skipped.length ? { skipped } : {}) };
 }
 /** Byte-exact for untouched files, otherwise remove/restore only this installer's owned entries. */
 function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
-  const c = context(options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
+  const c = contextForPlan(plan, options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
   const pending = receipts.map(value => ({ value, files: value.changes.map((change, index) => { const expected = read(change.path); return { change, expected, restored: restoreChange(value, change, index, expected) }; }) }));
   for (const item of pending) for (const file of item.files) if (!sameImage(read(file.change.path), file.expected)) throw Error("setup configuration changed during undo preparation");
-  for (const item of pending) { for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, options.beforePublish); rmSync(journal(c, item.value.target)); }
+  for (const item of pending) { if (item.value.target === "agy") c.workspace!.assertCurrent(); for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, publishGuard(c, item.value.target, options)); rmSync(journal(c, item.value.target)); }
   return { restored: receipts.map(value => value.target) };
 }
 
@@ -331,9 +384,11 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
   finally { closeSync(fd); if (read(file).bytes === Buffer.from(token).toString("base64")) rmSync(file); }
 }
 export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
+  if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => applyUnlocked(plan, options));
 }
 export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
+  if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => undoUnlocked(plan, options));
 }
 

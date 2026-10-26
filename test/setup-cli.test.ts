@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PERSON_ONLY, runCli, type CliContext } from "../src/cli.ts";
 import { COMMANDS, parseCommand } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
-const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "all"] as const;
+const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] as const;
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function put(file: string, value: string, mode = 0o600) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, value); chmodSync(file, mode); }
 function snapshot(root: string): Array<{ file: string; mode: number; bytes?: string }> {
@@ -18,7 +18,7 @@ function snapshot(root: string): Array<{ file: string; mode: number; bytes?: str
 }
 function fixture() {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-setup-cli-"))), home = join(root, "home"), cwd = join(root, "project"), bin = join(root, "bin"), record = join(root, "native-calls");
-  cleanup.push(() => rmSync(root, { recursive: true, force: true })); mkdirSync(home); mkdirSync(cwd); mkdirSync(bin); symlinkSync(process.execPath, join(bin, "bun"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true })); mkdirSync(home); mkdirSync(cwd); expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0); mkdirSync(bin); symlinkSync(process.execPath, join(bin, "bun"));
   const rules = [join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md"), join(home, ".claude", "rules", "user.md"), join(home, ".codex", "rules", "user.rules")];
   for (const rule of rules) put(rule, "original rule bytes\n", 0o640);
   const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_HOME: join(home, "hub"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), XDG_CONFIG_HOME: join(home, ".config"), PATH: `${bin}:/usr/bin:/bin` };
@@ -46,8 +46,8 @@ test("default setup CLI previews every target with no commands, home writes or c
   const f = fixture(), before = snapshot(f.root);
   for (const target of targets) {
     const plan = JSON.parse(await runCli(["setup", target], f.context));
-    expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.slice(0, -1) : [target]);
-    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode"].includes(action.target) ? 1 : 2))).toBe(true);
+    expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.filter(value => value !== "all" && value !== "agy") : [target]);
+    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });
@@ -73,7 +73,7 @@ test("setup CLI refuses invalid targets, unknown flags and conflicting modes bef
 test("cancelled setup CLI confirmations keep both apply and undo dry", async () => {
   const f = fixture(), before = snapshot(f.root); let confirmations = 0;
   for (const [flag, mode] of [["--apply", "apply"], ["--undo", "undo"]] as const) {
-    const output = await runCli(["setup", "all", flag], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual([...SETUP_TARGETS]); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
+    const output = await runCli(["setup", "all", flag], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual(SETUP_TARGETS.filter(target => target !== "agy")); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
     expect(JSON.parse(output)).toEqual({ cancelled: true });
   }
   expect(confirmations).toBe(2); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
