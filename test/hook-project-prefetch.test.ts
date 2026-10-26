@@ -2,9 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { hookCaptureScope } from "../src/hook-spool.ts";
+import { hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
 import { resolveHookProjectAsync } from "../src/hook-project.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [], original = { HOME: process.env.HOME, PATH: process.env.PATH };
 afterEach(() => {
@@ -73,4 +74,27 @@ test("native project resolution defaults to serial reads without speculative met
   await expect(resolveHookProjectAsync(options, { rssKB: 0, rawRssKB: 0 })).resolves.toBe("example.invalid/prefetch/project");
   expect(readFileSync(f.calls, "utf8").trim().split("\n")).toEqual(["origin"]);
   expect(existsSync(f.metadata)).toBe(false);
+});
+
+test("the capture worker overlaps cold identity reads before draining all contended receipts", async () => {
+  const f = fixture("paired"); await f.seed();
+  for (let id = 1; id <= 55; id++) {
+    const pending = await stageHookCapture("PostToolUse", { cwd: f.cwd, session_id: "92-contention", tool_name: "Read", tool_response: `92 replay ${id}` }, { cwd: f.cwd, base: f.base });
+    expect(pending).toBeDefined();
+  }
+  const read = () => { const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+    try { return store.rows().flatMap(row => { const match = /^92 replay (\d+)$/.exec(row.excerpt); return match ? [Number(match[1])] : []; }); }
+    finally { store.close(); }
+  };
+  expect(read()).toEqual([]);
+  // The functional transport waits for handler completion; the mutual Git barrier,
+  // not a wall-time assertion, proves the worker opted into existing prefetch.
+  for (let pass = 0; pass < 2; pass++) {
+    const result = f.runFunctional("PostToolUse", { tool_name: "Read", tool_response: "92 drain barrier" }, { PATH: process.env.PATH });
+    expect(result.exitCode).toBe(0); expect(result.stdout.length).toBe(0); expect(result.stderr.length).toBe(0);
+    expect(existsSync(f.origin)).toBe(true); expect(existsSync(f.metadata)).toBe(true);
+  }
+  const ids = read(); expect(ids.sort((a, b) => a - b)).toEqual(Array.from({ length: 55 }, (_, index) => index + 1));
+  expect(new Set(ids).size).toBe(55);
+  expect(readFileSync(f.calls, "utf8").trim().split("\n").sort()).toEqual(["metadata", "origin"]);
 });
