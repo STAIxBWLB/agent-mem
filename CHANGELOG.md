@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0
+
+- **Behavior change: `amem search` now ranks** (agent-mem#82 G1c, #91). Current-project curated search uses the ranked `store.search` (FTS5/BM25 with tier and recency weights), the same ranking MCP `amem_search` and `amem eval` use. A multi-word query can match notes that contain only some of its words. `--filter` keeps the previous every-word substring filter, newest first. `--history`, `--as-of` and an empty query keep the filter path. `--all-projects` is unchanged and cannot be combined with `--filter`. The command stays person-only, and the refusal happens before the store opens.
+- MCP `amem_search` keeps the best-ranked screened matches at real volume (agent-mem#82 G1e, #85). Every matching row is screened by the complete-row policy, then ranked in a query-local SQLite TEMP index before `limit` is taken. Previously only a first page of matches was ranked, so a better match further back could be missed. Expired rows are excluded before the limit. On a real-volume private copy (84,765 capture rows), MCP recall@10 on the 25 frozen AC4 queries rose from 0.72 to 0.84, which meets the #13 AC4 margin (`docs/p5-recall-recheck.md`, #83).
+- Faster standalone screening without weaker verdicts (agent-mem#82 G1f, #90):
+  - exact fast paths skip the PII patterns when a text has no `@`;
+  - the unquoted secret rescan runs only when quote removal changes the text;
+  - a necessary-literal probe runs before the deny-path check, over the folded and NFC forms.
+  Verdicts are unchanged, as a frozen parity fixture and Unicode cases show.
+- Lower MCP memory at real capture volume (agent-mem#86, #99). macOS SQLite's default temp `cache_spill` floor (20,000 pages, about 80 MiB) let dirty pages of the query-local index accumulate past its 2 MiB `cache_size`. The index now spills at its cache target (`PRAGMA temp.cache_spill = 1`). On the real-volume private copy, `amem mcp --smol` peaked at 168.9 MB instead of 271.3 MB, under the R3 200 MB budget, with identical results on all 25 queries. `scripts/measure-mcp-budget.ts` gains an 85K-row `mcp-volume` group, calibrated from aggregate statistics only, that fails at 200 MB.
+- Qwen Code (agent-mem#82 G3, #93):
+  - `amem setup qwen` registers the MCP server at user scope and adds a bounded SessionEnd ingest hook in `QWEN_HOME/settings.json`. Qwen's own hook controls (`enabled`, `disabled`, notifications) stay user-owned.
+  - `amem ingest qwen` reads Qwen Code 0.26.1 native transcripts with a stable cursor and the same screening as the other readers, with no network or native-client call. `QWEN_RUNTIME_DIR` follows a custom `advanced.runtimeOutputDir`. See `docs/qwen-code.md`.
+- Jcode, MCP only (agent-mem#82 G3, #94, #98):
+  - `amem setup jcode` registers `servers.amem` with `shared: false` in Jcode v0.99.1's global `JCODE_HOME/mcp.json`. It reads the legacy `mcpServers` alias and never writes both spellings. A strict lexical JSON codec leaves unrelated bytes untouched, and undo is conflict-aware.
+  - No ingest or hook is installed: saved messages lack a per-message project origin.
+  - Supported launch: `JCODE_DISABLE_CLAUDE_MCP=1`, no same-name project override, and a fixed-workspace session.
+  - An explicitly set `JCODE_HOME` must be absolute, and this check applies only when jcode is among the targets. See `docs/jcode.md`.
+- Antigravity, per repository, MCP only (agent-mem#82 G3, #95, #98):
+  - `amem setup agy`, run inside a git repository, writes only `<repo>/.agents/mcp_config.json` (`mcpServers.amem` with an absolute `cwd`), with one private receipt per repository.
+  - It never writes the global config, because a global entry would bind every workspace to one project. `setup all` excludes agy.
+  - Strict JSON fails closed on JSONC. A git-tracked config is refused, including case aliases, and the preview warns when the file is not ignored.
+  - Undo removes `.agents/` only if setup created it and it is still empty. Receipts from older releases restore their configuration without removing a directory.
+  - No ingest or hook. See `docs/antigravity.md`.
+- Hook capture drains after contention on slow Git (agent-mem#92, #97). The capture worker now overlaps its cold origin and metadata reads (the resolver's existing prefetch, as SessionStart already did). Serial reads could use up the hook deadline before any drain, leaving captured rows pending; nothing was lost. A deterministic regression covers it, and the budget script prints a failure-only drain inventory. Deadlines and budgets are unchanged. Ceiling: native reads slower than the deadline still defer, durably (`docs/92-hook-drain-triage.md`).
+
 ## 0.9.1
 
 - Cross-generation prune transport no longer blocks sync (agent-mem#68, #79): split-home sync now transports a verified foreign-generation prune unchanged and keeps it as a private, create-once hold receipt instead of refusing the whole sync, so one shared-row prune from another generation no longer stops every project. Each prune is proved against its own origin generation with the realm's complete public witnesses; invalid or incomplete proof still refuses before publication. A held prune is not applied: its targets can stay visible on the receiving machine, and every successful sync, including a no-op, warns "held, not applied" with up to 10 target entry ids and the remedy (bring the machine to the origin generation, or prune the entry there as the person). Holds never feed the native reducer, index, migration or a generation switch. Full cross-generation application remains a separate ceiling (docs/contracts.md, "Per-shard private sync").
