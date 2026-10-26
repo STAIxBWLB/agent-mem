@@ -7,10 +7,10 @@ const WORDS = 178, SHARED_TERMS = 10_400;
 const publicPaths = ["src/memory/public.ts", "src/features/reader.ts", "src/tests/fixture.ts"];
 
 /** Aggregate-only calibration: ~95K terms, ~185 body tokens, mostly ASCII with tiny Unicode inserts. */
-export function mcpVolumeRow(index: number, mask: number): { excerpt: string; paths: string[] } {
+export function mcpVolumeRow(index: number, mask: number, bestIndex = 0): { excerpt: string; paths: string[] } {
   const words = Array.from({ length: WORDS }, (_, token) => `w${((index * 181 + token * 43) % SHARED_TERMS).toString(36).padStart(4, "0")}`);
   words[0] = "rankneedle"; words[1] = `r${index.toString(36).padStart(4, "0")}`;
-  if (index === 0) { words[2] = "exactanchor"; words[3] = "preciseanchor"; }
+  if (index === bestIndex) { words[2] = "exactanchor"; words[3] = "preciseanchor"; }
   if (mask & 1) words[4] = index % 2 ? "공개자료처리검증정상확인" : "공개자료처리검증정상확";
   if (mask & 2) words[5] = `src/./public-${index % 97}.ts`;
   if (mask & 4) words[6] = `src//reader-${index % 89}.ts`;

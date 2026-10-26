@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { fts5Available } from "../src/memory/search-fts.ts";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
-import { featureMasks, mcpVolumeRow, MCP_VOLUME_EXCERPT_BYTES } from "./fakes/mcp-volume-fixture.ts";
+import { featureMasks, mcpVolumeRow, MCP_VOLUME_EXCERPT_BYTES, MCP_VOLUME_ROWS } from "./fakes/mcp-volume-fixture.ts";
 
 test("volume fixture keeps calibrated byte/character density and public feature combinations", async () => {
   const masks = featureMasks(1000), probes = new Map<number, ReturnType<typeof mcpVolumeRow>>();
@@ -33,4 +33,13 @@ test.skipIf(!fts5Available())("volume fixture has about 185 actual unicode61 tok
     expect(stats.vocabulary).toBeGreaterThan(10_000);
     expect(stats.tokens / masks.length).toBeGreaterThan(180); expect(stats.tokens / masks.length).toBeLessThan(190);
   } finally { db.close(); }
+});
+
+
+test("the volume gate can place its old precise winner beyond an ID-page prefix", () => {
+  const best = MCP_VOLUME_ROWS - 1;
+  expect(mcpVolumeRow(0, 0, best).excerpt).not.toContain("exactanchor");
+  const target = mcpVolumeRow(best, 0, best).excerpt;
+  expect(target).toContain("exactanchor preciseanchor");
+  expect(Buffer.byteLength(target)).toBe(MCP_VOLUME_EXCERPT_BYTES);
 });
