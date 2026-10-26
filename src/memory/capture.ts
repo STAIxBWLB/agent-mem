@@ -651,7 +651,12 @@ function captureReadPlan(window: ReadWindow & { query?: string; match?: "substri
     if (window.order === "id") {
       from = "mcp_fts JOIN rows ON rows.id = mcp_fts.rowid"; order = "mcp_fts.rowid";
       where.push("mcp_fts MATCH ?"); bind.push(match);
-      if (window.after) { where.push("mcp_fts.rowid > ?"); bind.push(window.after.id); }
+      if (window.after) {
+        const cursor = where.indexOf("id > ?");
+        if (cursor < 0) throw Error("missing capture identity cursor");
+        // Qualify the existing predicate so FTS receives the rowid range, without a second condition/bind.
+        where[cursor] = "mcp_fts.rowid > ?";
+      }
     } else { where.push("id IN (SELECT rowid FROM mcp_fts WHERE mcp_fts MATCH ?)"); bind.push(match); }
   }
   return { from, order };
