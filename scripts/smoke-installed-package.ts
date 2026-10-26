@@ -24,7 +24,7 @@ export function assertInstalledModule(modulePath: string, installedRoot: string,
 }
 export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
-  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi"].includes(args[1]!)) || args.length === 3 && args.join(" ") === "setup all --apply", "installed smoke refuses unsupported CLI arguments");
+  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && args[1] === "all" || args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!)) || args.length === 3 && args.join(" ") === "setup all --apply", "installed smoke refuses unsupported CLI arguments");
 }
 export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
   const server = object(value);
@@ -35,20 +35,20 @@ export function assertSetupApplied(output: string): void {
   const result = /\{\s*"applied"\s*:[\s\S]*\}\s*$/.exec(output);
   requireSmoke(result, "installed setup confirmation did not return an apply result");
   const applied = object(JSON.parse(result![0]));
-  requireSmoke(JSON.stringify(applied.applied) === JSON.stringify(["claude", "codex", "kimi", "pi"]) && JSON.stringify(applied.unchanged) === "[]", "installed setup did not apply all four targets");
+  requireSmoke(JSON.stringify(applied.applied) === JSON.stringify(["claude", "codex", "kimi", "pi", "qwen"]) && JSON.stringify(applied.unchanged) === "[]", "installed setup did not apply all five targets");
 }
 export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.ProcessEnv {
   requireSmoke(isAbsolute(home), "installed smoke HOME must be absolute");
   // Keep the read-only HOME proof about application effects: Bun's transpiler otherwise caches .pile files during module load.
   return { HOME: home, PATH: runtimePath, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", AMEM_HOME: join(home, "memory"), TMPDIR: join(home, "tmp"), TMP: join(home, "tmp"), TEMP: join(home, "tmp"),
     XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
-    CLAUDE_CONFIG_DIR: join(home, "clients", "claude"), CODEX_HOME: join(home, "clients", "codex"), KIMI_CODE_HOME: join(home, "clients", "kimi"), PI_CODING_AGENT_DIR: join(home, "clients", "pi"),
+    CLAUDE_CONFIG_DIR: join(home, "clients", "claude"), CODEX_HOME: join(home, "clients", "codex"), KIMI_CODE_HOME: join(home, "clients", "kimi"), PI_CODING_AGENT_DIR: join(home, "clients", "pi"), QWEN_HOME: join(home, "clients", "qwen"), QWEN_RUNTIME_DIR: join(home, "qwen-runtime"),
     BUN_INSTALL: join(home, ".bun"), BUN_INSTALL_CACHE_DIR: join(home, ".cache", "bun"), npm_config_cache: join(home, ".cache", "npm"), npm_config_userconfig: join(home, ".config", "npmrc"), npm_config_globalconfig: join(home, ".config", "global-npmrc"), npm_config_prefix: join(home, ".npm-prefix"), npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", TZ: "UTC", NO_COLOR: "1", TERM: "dumb" };
 }
 export function assertSetupPreview(value: unknown, home: string, entry: string): string[] {
   const plan = object(value);
-  requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi"]) && Array.isArray(plan.actions) && plan.actions.length === 4, "installed setup did not return the all-target dry-run plan");
+  requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi", "qwen"]) && Array.isArray(plan.actions) && plan.actions.length === 5, "installed setup did not return the all-target dry-run plan");
   requireSmoke(JSON.stringify(plan.actions.map((action: any) => action?.target)) === JSON.stringify(plan.targets), "installed setup target inventory is incomplete");
   const files: string[] = [];
   for (const raw of plan.actions) { const action = object(raw); requireSmoke(Array.isArray(action.files) && action.files.length > 0 && typeof action.receipt === "string", "installed setup inventory is incomplete");
@@ -225,7 +225,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const runtimePath = [...new Set([traps, dirname(bun), dirname(node!), dirname(npm!), "/usr/bin", "/bin"])].join(delimiter), env = allowlistedSmokeEnv(home, runtimePath);
     writeFileSync(env.npm_config_userconfig!, ""); writeFileSync(env.npm_config_globalconfig!, "");
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    for (const name of ["claude", "codex", "kimi", "pi"]) writeFileSync(join(traps, name), `#!/bin/sh\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
+    for (const name of ["claude", "codex", "kimi", "pi", "qwen"]) writeFileSync(join(traps, name), `#!/bin/sh\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
     const packed = JSON.parse(await ownedCommand(bun, [npm!, "pack", checkout, "--offline", "--json", "--ignore-scripts", "--pack-destination", artifacts], artifacts, env));
     requireSmoke(Array.isArray(packed) && packed.length === 1 && typeof packed[0]?.filename === "string" && basename(packed[0].filename) === packed[0].filename, "npm pack did not return one local artifact");
     const tarball = realPath(join(artifacts, packed[0].filename)); requireSmoke(inside(artifacts, tarball), "packed artifact escaped its private directory");
@@ -241,7 +241,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
     options.afterInstall?.(installed);
     const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, args.length === 3); };
-    const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
+    const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(projectDir, "QWEN.md"), join(env.QWEN_HOME!, "QWEN.md"), join(env.QWEN_HOME!, "rules", "keep.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
     for (const file of ruleFiles) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "installed smoke instruction/rule sentinel, keep exact bytes\n", { mode: 0o600 }); }
     const rules = ruleFiles.map(file => ({ file, bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }));
     const verifyRules = () => { for (const rule of rules) requireSmoke(readFileSync(rule.file).equals(rule.bytes) && (lstatSync(rule.file).mode & 0o777) === rule.mode, "setup or runtime changed an instruction/rule sentinel"); };
@@ -255,17 +255,17 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const nativeStub = join(home, "native-registration.ts");
     writeFileSync(nativeStub, `import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';
 const [target,...args]=process.argv.slice(2);
-if(!['claude','codex','pi'].includes(target))process.exit(97);
+if(!['claude','codex','pi','qwen'].includes(target))process.exit(97);
 if(args.length===1&&args[0]==='--help'){console.log('  mcp Manage MCP servers');process.exit(0);}
 const marker=args.indexOf('--'),launch=args.slice(marker+1),home=process.env.HOME;
 if(args[0]!=='mcp'||args[1]!=='add'||marker<0||process.cwd()!==home||!home.startsWith(${JSON.stringify(env.TMPDIR! + "/amem-setup-")}))process.exit(97);
 appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({target,args,home})+'\\n');
-const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');
+const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):target==='qwen'?join(process.env.QWEN_HOME,'settings.json'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');
 mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bun.TOML.stringify({mcp_servers:{amem:server}}):JSON.stringify({mcpServers:{amem:server}}));\n`);
-    for (const target of ["claude", "codex", "pi"]) writeFileSync(join(traps, target), `#!/bin/sh\nexec ${quote(bun)} --smol ${quote(nativeStub)} ${quote(target)} "$@"\n`, { mode: 0o700 });
+    for (const target of ["claude", "codex", "pi", "qwen"]) writeFileSync(join(traps, target), `#!/bin/sh\nexec ${quote(bun)} --smol ${quote(nativeStub)} ${quote(target)} "$@"\n`, { mode: 0o700 });
     assertSetupApplied(await cli(["setup", "all", "--apply"])); verifyRules();
     const registrations = readFileSync(nativeCalls, "utf8"), calls = registrations.trim().split("\n").map(line => object(JSON.parse(line)));
-    requireSmoke(JSON.stringify(calls.map(call => call.target)) === JSON.stringify(["claude", "codex", "pi"]) && calls.every(call => !existsSync(call.home)), "setup did not use and remove only its private native staging homes");
+    requireSmoke(JSON.stringify(calls.map(call => call.target)) === JSON.stringify(["claude", "codex", "pi", "qwen"]) && calls.every(call => !existsSync(call.home)), "setup did not use and remove only its private native staging homes");
     const seedFile = join(app, "seed-installed.ts");
     writeFileSync(seedFile, `import {MemoryStore,memoryProjectKey,realPath} from '@staix/agent-mem';import {fileURLToPath} from 'node:url';const resolved=realPath(fileURLToPath(import.meta.resolve('@staix/agent-mem')));const project=memoryProjectKey(process.cwd());const store=new MemoryStore({memoryDir:process.env.AMEM_HOME,deferPromotions:true});try{const id=store.note({op:'note',project,scope:'project',tier:'long',kind:'contract',peer:'person',source:'person',text:${JSON.stringify(MARKER)},about:[]});console.log(JSON.stringify({id,project,resolved}));}finally{store.close();}\n`);
     const seed = object(JSON.parse(await ownedCommand(bun, [bun, "--smol", seedFile], projectDir, installedEnv))); assertInstalledModule(seed.resolved, installed, checkout); requireSmoke(/^[a-f0-9]{32}$/.test(seed.id) && typeof seed.project === "string", "installed API seed failed");
@@ -298,14 +298,20 @@ const trip=(name)=>{appendFileSync(marker,JSON.stringify({name})+'\\n');throw Er
 globalThis.fetch=(...args)=>trip('fetch');globalThis.WebSocket=class {constructor(){trip('WebSocket');}};
 for(const [name,keys] of Object.entries({'node:http':['request','get'],'node:https':['request','get'],'node:net':['connect','createConnection'],'node:tls':['connect'],'node:dns':['lookup','resolve','resolve4','resolve6'],'node:dns/promises':['lookup','resolve','resolve4','resolve6']})){const module=require(name);for(const key of keys)module[key]=()=>trip(name+'.'+key);}
 require('node:net').Socket.prototype.connect=function(){return trip('Socket.connect');};Bun.connect=()=>trip('Bun.connect');\n`);
-    const ingest = (kind: "codex" | "kimi" | "pi") => {
+    const ingest = (kind: "codex" | "kimi" | "pi" | "qwen") => {
       const args = ["ingest", kind]; assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
       return ownedCommand(bun, [bun, "--smol", "--preload", networkTripwire, entry, ...args], projectDir, installedEnv);
     };
     const at = "2026-10-23T01:00:00.000Z", nativeLine = (value: unknown) => JSON.stringify(value) + "\n";
-    for (const kind of ["codex", "kimi", "pi"] as const) {
-      const marker = `installed-${kind}-ingest-marker`, sessions = join(kind === "codex" ? env.CODEX_HOME! : kind === "kimi" ? env.KIMI_CODE_HOME! : env.PI_CODING_AGENT_DIR!, "sessions");
-      if (kind === "kimi") {
+    for (const kind of ["codex", "kimi", "pi", "qwen"] as const) {
+      const marker = `installed-${kind}-ingest-marker`, nativeRoot = kind === "codex" ? env.CODEX_HOME! : kind === "kimi" ? env.KIMI_CODE_HOME! : kind === "qwen" ? env.QWEN_RUNTIME_DIR! : env.PI_CODING_AGENT_DIR!;
+      const sessions = kind === "qwen" ? join(nativeRoot, "projects", projectDir.replace(/[^a-zA-Z0-9]/g, "-"), "chats") : join(nativeRoot, "sessions");
+      if (kind === "qwen") {
+        mkdirSync(sessions, { recursive: true });
+        const sessionId = "22222222-2222-4222-8222-222222222222";
+        writeFileSync(join(sessions, `${sessionId}.jsonl`), nativeLine({ uuid: "11111111-1111-4111-8111-111111111111", parentUuid: null,
+          sessionId, timestamp: at, type: "assistant", cwd: projectDir, version: "0.26.1", message: { role: "model", parts: [{ text: marker }] } }));
+      } else if (kind === "kimi") {
         const session = join(sessions, "installed"), wire = join(session, "agents", "main", "wire.jsonl"); mkdirSync(dirname(wire), { recursive: true });
         writeFileSync(join(session, "state.json"), JSON.stringify({ cwd: projectDir }));
         writeFileSync(wire, nativeLine({ type: "metadata", protocol_version: "1.5" }) + nativeLine({ type: "context.append_message", time: Date.parse(at), message: { role: "assistant", content: [{ type: "text", text: marker }] } }));

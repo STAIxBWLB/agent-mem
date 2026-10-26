@@ -25,10 +25,10 @@ export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
   consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
-  setup: { description: "Preview reversible MCP and hook setup for native coding CLIs; apply and undo are person-only", options: { "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "all"] }] },
+  setup: { description: "Preview reversible MCP and hook setup for native coding CLIs; apply and undo are person-only", options: { "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
-  ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi"] }] },
+  ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi", "qwen"] }] },
   "vault-candidates": { description: "List screened durable curated vault candidates (per project, or across projects)", options: { ...json, "--limit": text("Maximum candidates per project (1..100)"),
     "--all-projects": flag("List every active project's candidates; the reply says it crossed projects"), "--project": text("List one named project's candidates") } },
   list: { description: "List memory", options: { ...filters, ...history } },

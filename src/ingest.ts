@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, chmodSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
@@ -11,7 +11,7 @@ import { configuredPolicyOptions } from "./memory/config.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { effectiveAliases } from "./memory/shard.ts";
 
-export type IngestKind = "codex" | "kimi" | "pi";
+export type IngestKind = "codex" | "kimi" | "pi" | "qwen";
 export interface IngestOptions {
   cwd: string; base?: string;
   /** Trusted host/test seam. The ordinary CLI discovers native roots instead. */
@@ -28,6 +28,8 @@ interface Position { identity: string; offset: number; anchor: string; scope: Sc
 interface Cursor extends Position { token: string | null; pid: number | null; signature: string | null }
 const MAX_BYTES = 16 * 1024 * 1024, DEFAULT_BYTES = 4 * 1024 * 1024, MAX_FILES = 128, DEFAULT_FILES = 32;
 const MAX_CURSOR_BYTES = 128 * 1024;
+// Bump after extending the verified Qwen decoder: replay skipped versions with existing capture receipts deduplicating accepted rows.
+const QWEN_CONTRACT = "qwen-0.26.1-v1";
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const MAX_RECORD = 256 * 1024, MAX_RECORDS = 4096, MAX_DISCOVERY = 4096, MAX_DEPTH = 8, ANCHOR_BYTES = 1024;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -115,6 +117,7 @@ function lease(file: string): { position: Position; save(value: Position): void;
 
 /** Native roots only. Discovery never follows a directory symlink or enters an unbounded tree. */
 function discover(kind: IngestKind): { files: string[]; bounded: boolean; unavailable: boolean } {
+  if (kind === "qwen") return discoverQwen();
   const root = kind === "codex" ? process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")
     : kind === "kimi" ? process.env.KIMI_CODE_HOME?.trim() || join(homedir(), ".kimi-code")
       : process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
@@ -139,6 +142,38 @@ function discover(kind: IngestKind): { files: string[]; bounded: boolean; unavai
   return { files: files.sort(), bounded, unavailable: rootsRead === 0 };
 }
 
+/** Only the native projects/<one directory>/chats/*.jsonl layout, never settings or account files. */
+function discoverQwen(): { files: string[]; bounded: boolean; unavailable: boolean } {
+  const given = process.env.QWEN_RUNTIME_DIR || process.env.QWEN_HOME || join(homedir(), ".qwen");
+  const expanded = given === "~" ? homedir() : given.startsWith("~/") || given.startsWith("~\\") ? join(homedir(), ...given.slice(2).split(/[/\\]+/)) : given;
+  const root = resolve(expanded);
+  const files: string[] = []; let visited = 0, bounded = false;
+  const open = (folder: string) => {
+    const stat = lstatSync(folder);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("native directory unavailable");
+    return opendirSync(folder);
+  };
+  let projects: ReturnType<typeof opendirSync>;
+  try { if (lstatSync(root).isSymbolicLink()) throw Error("native directory unavailable"); projects = open(join(root, "projects")); }
+  catch { return { files, bounded, unavailable: true }; }
+  try {
+    for (let project = projects.readSync(); project; project = projects.readSync()) {
+      if (++visited > MAX_DISCOVERY) { bounded = true; break; }
+      if (!project.isDirectory() || project.isSymbolicLink()) continue;
+      let chats: ReturnType<typeof opendirSync>;
+      try { chats = open(join(root, "projects", project.name, "chats")); } catch { continue; }
+      try {
+        for (let item = chats.readSync(); item; item = chats.readSync()) {
+          if (++visited > MAX_DISCOVERY) { bounded = true; break; }
+          if (item.isFile() && !item.isSymbolicLink() && item.name.endsWith(".jsonl")) files.push(join(root, "projects", project.name, "chats", item.name));
+        }
+      } finally { chats.closeSync(); }
+      if (bounded) break;
+    }
+  } finally { projects.closeSync(); }
+  return { files: files.sort(), bounded, unavailable: false };
+}
+
 function timeOf(record: Record<string, any>, kind: IngestKind): string | undefined {
   const value = kind === "kimi" ? record.time : record.timestamp;
   const millis = typeof value === "number" && kind === "kimi" && Number.isFinite(value) && value >= 100_000_000_000 ? value
@@ -151,7 +186,55 @@ function contentText(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content.filter(item => object(item) && ["text", "input_text", "output_text"].includes(item.type) && typeof item.text === "string").map(item => item.text).join("\n");
 }
+const qwenUuid = (value: unknown): boolean => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+const qwenSession = (value: unknown): boolean => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-agent-[a-zA-Z0-9_.-]+)?$/i.test(value);
+function qwenPart(part: unknown): boolean {
+  if (!object(part)) return false;
+  if (part.thought === true) return true;
+  if (Object.keys(part).some(key => !["text", "thought", "thoughtSignature", "functionCall", "functionResponse"].includes(key))) return false;
+  if (part.thought !== undefined && typeof part.thought !== "boolean" || part.thoughtSignature !== undefined && typeof part.thoughtSignature !== "string") return false;
+  const forms = ["text", "functionCall", "functionResponse"].filter(key => part[key] !== undefined);
+  if (forms.length !== 1) return false;
+  if (forms[0] === "text") return typeof part.text === "string";
+  const value = part[forms[0]!];
+  return object(value) && typeof value.name === "string" && value.name.length > 0
+    && (value.id === undefined || typeof value.id === "string")
+    && (forms[0] === "functionCall" ? value.args === undefined || object(value.args)
+      : object(value.response) && (value.parts === undefined || Array.isArray(value.parts)));
+}
+function qwenRecord(raw: Record<string, any>): boolean {
+  // ponytail: CLI version is not a schema tag. Support only the 0.26.1 writer shape verified at
+  // QwenLM/qwen-code 1ce173117196ab9a9f77b5d19ac148cbabe25dfd; extend with native fixtures, not version guessing.
+  if (raw.version !== "0.26.1" || !qwenUuid(raw.uuid) || !qwenSession(raw.sessionId)
+    || raw.parentUuid !== null && !qwenUuid(raw.parentUuid) || !["user", "assistant", "tool_result", "system"].includes(raw.type)
+    || typeof raw.cwd !== "string" || !isAbsolute(raw.cwd) || !timeOf(raw, "qwen")) return false;
+  if (raw.type === "system" || raw.message === undefined) return true;
+  return object(raw.message) && raw.message.role === (raw.type === "assistant" ? "model" : "user")
+    && Array.isArray(raw.message.parts) && raw.message.parts.every(qwenPart);
+}
+function extractQwen(raw: Record<string, any>, project: string): CaptureInput | undefined {
+  if (raw.type === "system" || !object(raw.message)) return undefined;
+  const excerpts: string[] = [], tools: string[] = [], events: string[] = [];
+  for (const part of raw.message.parts) {
+    if (part.thought === true) continue;
+    if (typeof part.text === "string") { if (part.text) { excerpts.push(part.text); events.push("message"); } }
+    else if (object(part.functionCall)) {
+      const call = part.functionCall;
+      excerpts.push(JSON.stringify({ functionCall: { name: call.name, ...(call.id !== undefined ? { id: call.id } : {}), ...(call.args !== undefined ? { args: call.args } : {}) } }));
+      tools.push(call.name); events.push("function_call");
+    } else if (object(part.functionResponse)) {
+      const response = part.functionResponse;
+      // FunctionResponse.parts contains media, not textual tool output. Never stringify it into capture.
+      excerpts.push(JSON.stringify({ functionResponse: { name: response.name, ...(response.id !== undefined ? { id: response.id } : {}), response: response.response } }));
+      tools.push(response.name); events.push("function_call_output");
+    }
+  }
+  if (!excerpts.length) return undefined;
+  return { project, agent: "qwen", event: events.every(event => event === events[0]) ? events[0]! : "message", excerpt: excerpts.join("\n").slice(0, 2000),
+    ...(tools.length && tools.every(tool => tool === tools[0]) ? { tool: tools[0]!.slice(0, 64) } : {}) };
+}
 function extract(kind: IngestKind, raw: Record<string, any>, project: string): CaptureInput | undefined {
+  if (kind === "qwen") return extractQwen(raw, project);
   const message = kind === "codex" && raw.type === "response_item" ? raw.payload
     : kind === "pi" && raw.type === "message" ? raw.message
       : kind === "kimi" && raw.type === "context.append_message" ? raw.message : undefined;
@@ -171,7 +254,10 @@ function extract(kind: IngestKind, raw: Record<string, any>, project: string): C
 /**
  * Incremental deterministic native-message ingestion; no watcher, account, model or network operation.
  * Native source contracts: Codex rust-v0.163.0 protocol RolloutItem; Pi session-manager v3;
- * Kimi b5e28fd6 human/persist/v2/wire.ts (protocol 1.5) and sessionIndexSource.recoverCwd.
+ * Kimi b5e28fd6 human/persist/v2/wire.ts (protocol 1.5) and sessionIndexSource.recoverCwd;
+ * Qwen 1ce173117196ab9a9f77b5d19ac148cbabe25dfd ChatRecord and config/storage.ts.
+ * Qwen discovery uses exported environment roots, not merged settings or .env files. For a configured
+ * advanced.runtimeOutputDir, export its resolved path as QWEN_RUNTIME_DIR or pass a trusted native file.
  * ponytail: discovery covers at most 4096 directory entries and depth 8. A larger native tree reports
  * remaining/source_bound; a future native index cursor can extend coverage without a resident watcher.
  * Within that bound a durable hash-only rotation admits at most maxFiles source attempts per call, including
@@ -185,7 +271,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
   const result: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
   const fail = (reason: NonNullable<IngestReceipt["reason"]>, remaining = false) => { result.errors++; result.reason ??= reason; result.remaining ||= remaining; };
   const bytes = options.maxBytes ?? DEFAULT_BYTES, count = options.maxFiles ?? DEFAULT_FILES;
-  if (!["codex", "kimi", "pi"].includes(kind) || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_BYTES || !Number.isSafeInteger(count) || count < 1 || count > MAX_FILES
+  if (!["codex", "kimi", "pi", "qwen"].includes(kind) || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_BYTES || !Number.isSafeInteger(count) || count < 1 || count > MAX_FILES
     || options.files !== undefined && (!Array.isArray(options.files) || options.files.length > MAX_FILES || options.files.some(file => typeof file !== "string" || !isAbsolute(file) || file.includes("\0")))
     || options.since !== undefined && !Number.isFinite(Date.parse(options.since))) { fail("source_bound"); return result; }
   const since = options.since === undefined ? undefined : new Date(options.since).toISOString();
@@ -238,7 +324,9 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
         if (!cursor) { fail("cursor_busy", true); continue; }
         let position = cursor.position;
         const cutoff = since ?? "", broader = position.cutoff !== "" && (cutoff === "" || cutoff < position.cutoff);
-        if (position.identity !== identity || position.offset > initial.size || position.anchor !== anchor(fd, position.offset) || broader) position = { ...blank(), identity };
+        if (position.identity !== identity || position.offset > initial.size || position.anchor !== anchor(fd, position.offset) || broader
+          || kind === "qwen" && position.protocol !== QWEN_CONTRACT) position = { ...blank(), identity };
+        if (kind === "qwen") position.protocol = QWEN_CONTRACT;
         position.cutoff = cutoff;
         if (!position.anchor) position.anchor = anchor(fd, position.offset);
         cursor.save(position); result.files++;
@@ -299,12 +387,15 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
               : kind === "pi" && raw.type === "session" ? raw : undefined;
             const permitted = await policy.screen(raw);
             guard(); metadataGuard();
-            if (context !== undefined) position.scope = permitted && object(context) ? scopeOf(context.cwd) : "unknown";
+            const known = kind !== "qwen" || qwenRecord(raw);
+            if (kind === "qwen") position.scope = permitted && known ? scopeOf(raw.cwd) : "unknown";
+            else if (context !== undefined) position.scope = permitted && object(context) ? scopeOf(context.cwd) : "unknown";
             else if (raw.cwd !== undefined) position.scope = permitted ? scopeOf(raw.cwd) : "unknown";
             if (kind === "kimi" && raw.type === "metadata") {
               position.protocol = typeof raw.protocol_version === "string" && ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"].includes(raw.protocol_version) ? raw.protocol_version : "unknown";
             }
-            const input = extract(kind, raw, project);
+            if (!known) fail("schema_or_time");
+            const input = known ? extract(kind, raw, project) : undefined;
             if (input) {
               const at = timeOf(raw, kind);
               if (!at || position.scope === "unknown" || kind === "kimi" && !/^1\.[0-5]$/.test(position.protocol)) { fail("schema_or_time"); result.skipped++; }

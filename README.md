@@ -15,7 +15,7 @@ amem setup all
 amem setup claude --apply
 ```
 
-Replace `claude` with `codex`, `kimi` or `pi` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
+Replace `claude` with `codex`, `kimi`, `pi` or `qwen` for that client. Setup shows its changes and asks for confirmation. Complete the client's own hook-trust review when prompted.
 
 Agents submit pending memory candidates through MCP. Inspect them after a session and accept or reject each one:
 
@@ -26,11 +26,13 @@ amem review accept CANDIDATE_ID  # or: amem review reject CANDIDATE_ID
 
 Replace `CANDIDATE_ID` with an id from the list. Acceptance is person-only and applies the configured privacy policy.
 
-Claude's registered hooks capture events during the session. The configured Codex/Kimi SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi`) after each session, then repeat the review loop. The [setup section](#setup--plugin) describes the registration and native trust steps.
+Claude's registered hooks capture events during the session. The configured Codex/Kimi/Qwen SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi` / `qwen`) after each session, then repeat the review loop. The [setup section](#setup--plugin) describes the registration and native trust steps.
 
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
 ## Setup / plugin
+
+`amem setup qwen` previews a user-scope MCP registration and a bounded SessionEnd ingest hook in the same `QWEN_HOME/settings.json` (default `~/.qwen/settings.json`). `--apply` and `--undo` follow the same confirmed, private-receipt contract as the other targets. Unrelated settings, servers and hooks are preserved. Qwen runs this hook on normal interactive exit; use `amem ingest qwen` when the session ends without that hook. Native-client operation is source-verified; the installed-package tests use stub registration CLIs.
 
 Preview the exact configuration files, native registration commands and private undo receipts before changing anything:
 
@@ -284,7 +286,7 @@ Successful native project identities have a private, bounded derived cache (128 
 
 `amem doctor` prints one read-only report of this project's memory: duplicate and stale notes, pending candidates, capture freshness and hook registration for each CLI (a CLI with no hook is `manual`), the SessionStart brief's token cost, whether the index equals a rebuild of the logs, reader leases and the policy in effect. `amem doctor --json` is a stable machine-readable form (`amem.doctor/v1`). It writes nothing into the memory home (every check runs on a temporary copy of the logs) and creates nothing in a home you never used.
 
-Intake runs at the end of each Codex, Kimi and Pi session once `amem setup <cli> --apply` has registered it. Sync is off unless you ask for it: amem registers no sync hook and runs nothing between sessions. To sync on your own schedule, call `amem sync --if-due` from your shell (for example an EXIT trap in `~/.zshrc`; it needs a terminal). It syncs at most hourly, backs off 15 minutes doubling to a day after failures, stops after 30 seconds, and does nothing without a remote set by `amem sync --remote <private git url>`. `--force` skips the schedule and the backoff.
+Intake runs at the end of each Codex, Kimi, Pi and Qwen session once `amem setup <cli> --apply` has registered it. Sync is off unless you ask for it: amem registers no sync hook and runs nothing between sessions. To sync on your own schedule, call `amem sync --if-due` from your shell (for example an EXIT trap in `~/.zshrc`; it needs a terminal). It syncs at most hourly, backs off 15 minutes doubling to a day after failures, stops after 30 seconds, and does nothing without a remote set by `amem sync --remote <private git url>`. `--force` skips the schedule and the backoff.
 
 Split-home sync durably holds verified foreign-generation prunes with a "held, not applied" warning while unrelated sync continues; targets can remain visible, and full cross-generation removal remains a separate ceiling (see [the sync contract](docs/contracts.md#per-shard-private-sync-15-t3)).
 
@@ -299,6 +301,8 @@ amem ingest pi --since 2026-10-01T00:00:00Z --json
 ```
 
 Discovery uses `CODEX_HOME` or `~/.codex` (`sessions/` and `archived_sessions/`), `KIMI_CODE_HOME` or `~/.kimi-code` (`sessions/**/wire.jsonl`), and `PI_CODING_AGENT_DIR` or `~/.pi/agent` (`sessions/`). It does not follow directory symlinks. A native record must carry a recognized schema/time and an observed absolute working-directory binding that resolves to this canonical project, including reviewed aliases. Unknown working directories, unsupported Kimi wire versions, missing timestamps and unavailable source roots are reported rather than guessed as an empty successful history. Foreign/private/secret rows are not imported. Full native envelopes and extracted capture inputs both pass current policy.
+
+Qwen Code uses `QWEN_RUNTIME_DIR`, then `QWEN_HOME`, then `~/.qwen`, with bounded discovery of `projects/*/chats/*.jsonl`. Each row proves its own project through `cwd`; a sanitized directory name is not an identity. The reader supports the verified 0.26.1 native envelope, an internal format rather than a public schema, and excludes thought/media content. For `advanced.runtimeOutputDir`, export the matching `QWEN_RUNTIME_DIR`; amem does not reproduce merged Qwen settings or read `.env`. See the [Qwen capture contract](docs/qwen-code.md) for source pins, cursor upgrade behavior and limitations.
 
 Per-source cursor databases and a fair rotation cursor live in the capture shard's private `ingest/` directory. Filenames and source identities are hashes; cursor contents retain offsets, anchor hashes, scope/protocol/cutoff and ownership metadata, not raw transcript paths or text. Capture receipts make replay idempotent across a crash between append and cursor acknowledgement. Repeating the command resumes its bounded tour instead of repeatedly favoring the first files. Broadening `--since` rechecks earlier history while existing capture receipts prevent duplicates. The JSON receipt reports `files`, `read`, `imported`, `skipped`, `spooled`, `remaining`, `errors` and an optional bounded `reason`; unavailable coverage is not silently represented by zero imported rows.
 

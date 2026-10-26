@@ -168,9 +168,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const parsed = parseCommand(argv);
     if (parsed.options["--help"] === true) return commandHelp();
     const kind = parsed.positionals[0];
-    if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi [--since ISO] [--json]");
+    if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi", "qwen"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi|qwen [--since ISO] [--json]");
     const { ingestTranscript } = await import("./ingest.ts");
-    return JSON.stringify(await ingestTranscript(kind as "codex" | "kimi" | "pi", {
+    return JSON.stringify(await ingestTranscript(kind as "codex" | "kimi" | "pi" | "qwen", {
       cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
     }));
@@ -195,7 +195,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   const { definition, options, rawArgs: args } = parsed;
   if (parsed.path[0] === "setup") {
-    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|all [--apply|--undo]");
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|all [--apply|--undo]");
     const { runSetup } = await import("./setup.ts");
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY,
