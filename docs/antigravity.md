@@ -2,11 +2,15 @@
 
 Step 1 research, checked 2026-10-26. CLI/TUI (`agy`), the standalone IDE and the Antigravity App are distinct surfaces. A shared configuration path does not establish identical process or transcript behavior.
 
-# Proposed integration boundary
+# Setup boundary
 
-Use the MCP setup-only fallback until a supported offline transcript contract proves row time, historical workspace origin and replay behavior. Current mounted workspace paths and completion readback are insufficient, so no ingest kind, capture hook or no-op hook is proposed.
+`amem setup agy` previews a repository-scoped MCP registration. `--apply` writes only the owned `mcpServers.amem` entry in `<repo>/.agents/mcp_config.json`, with an explicit absolute repository `cwd`. The repository is the real git toplevel of the setup working directory. Setup refuses outside a git repository or when the config is git-tracked, and warns when it is not ignored. It never writes the global Gemini configuration. `setup all` excludes agy; run it separately in each repository.
 
-Prefer workspace-local `.agents/mcp_config.json` with an explicit absolute workspace cwd over a global fixed-cwd entry. This needs a trusted setup cwd binding and workspace-keyed private receipts so one installation can serve several separately configured projects. Global and plugin same-name collisions require an explicit refusal or supported no-collision condition; do not assume that local configuration overrides an already-running server. Existing JSONC needs a preserving editor or an explicit fail-closed boundary. This workspace-vs-global choice changes the existing setup scope and remains a design ruling, not an implemented capability.
+Private undo receipts are keyed by repository. Apply is idempotent; undo restores only that repository and refuses an edited owned entry. Unrelated configuration bytes are preserved. Only strict JSON is accepted: comments, trailing commas, BOM and duplicate owned keys refuse. A JSONC-preserving codec is the future upgrade for commented native files.
+
+Restart Antigravity after setup. Use one workspace per session and ensure no other global, plugin or running server is named `amem`; setup can detect collisions only in the workspace file it reads. Native TUI/IDE launch and interactive completion remain unverified; the installed-package smoke initializes the registered MCP command directly.
+
+No ingest kind or capture hook is installed. A supported offline transcript contract with row time, historical workspace origin and stable replay behavior would unlock ingestion. Current mounted workspace paths and completion readback do not prove historical origin.
 
 # Evidence and version boundary
 

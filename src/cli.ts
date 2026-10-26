@@ -195,10 +195,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   const { definition, options, rawArgs: args } = parsed;
   if (parsed.path[0] === "setup") {
-    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|all [--apply|--undo]");
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
     const { runSetup } = await import("./setup.ts");
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
-      env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY,
+      env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
       ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}),
     });
   }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 import { realPath } from "../src/memory/platform.ts";
-import { allowlistedSmokeEnv, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupApplied, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, probeSmokeSetupTerminal, preservingCleanup, registeredSmokeCommand, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
+import { allowlistedSmokeEnv, assertAgySetupPreview, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupApplied, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, probeSmokeSetupTerminal, preservingCleanup, registeredSmokeCommand, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
 const HOME = "/isolated/home", APP = join(HOME, "app"), ROOT = join(APP, "node_modules", "@staix", "agent-mem"), ENTRY = join(ROOT, "bin", "amem.js"), CHECKOUT = "/workspace/agent-mem", TMP = join(HOME, "tmp");
 const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi", "qwen", "jcode"], actions: ["claude", "codex", "kimi", "pi", "qwen", "jcode"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: ["kimi", "jcode"].includes(target) ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: target === "jcode" ? [] : [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
 
@@ -28,8 +28,18 @@ test("installed smoke child environment is an allowlist with isolated config/cac
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);
 });
 test("installed smoke permits only all-target setup apply and native ingest in addition to its fixed read/hook commands", () => {
-  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"], ["ingest", "qwen"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
+  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["setup", "agy"], ["setup", "agy", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"], ["ingest", "qwen"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
   for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["ingest"], ["ingest", "claude"], ["ingest", "jcode"], ["ingest", "codex", "extra"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
+});
+test("installed agy preview binds one workspace and a private receipt without hooks", () => {
+  const project = join(HOME, "project"), value = { mode: "preview", targets: ["agy"], actions: [{ target: "agy", cwd: project,
+    files: [join(project, ".agents", "mcp_config.json")], receipt: join(HOME, "memory", "setup", "agy-hash.json"), registration: null, hooks: [] }] };
+  expect(assertAgySetupPreview(value, HOME, project)).toHaveLength(2);
+  expect(() => assertAgySetupPreview(value, HOME, join(HOME, "other"))).toThrow("workspace");
+  expect(() => assertAgySetupPreview({ ...value, targets: ["agy", "claude"] }, HOME, project)).toThrow();
+  expect(() => assertAgySetupPreview({ ...value, actions: [{ ...value.actions[0], hooks: [{ command: "noop" }] }] }, HOME, project)).toThrow("MCP-only");
+  expect(() => assertSetupApplied(JSON.stringify({ applied: ["agy"], unchanged: [] }), ["agy"])).not.toThrow();
+  expect(() => assertSmokeCliArgs(["ingest", "agy"])).toThrow();
 });
 test("installed apply needs a complete confirmed result rather than preview, cancellation or partial targets", () => {
   const applied = { applied: ["claude", "codex", "kimi", "pi", "qwen", "jcode"], unchanged: [] };

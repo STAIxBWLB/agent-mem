@@ -5,6 +5,8 @@ export interface AgyMcpTextCase {
   /** Unowned lexical fragments that edits must retain verbatim. */
   preserve: readonly string[];
   owned?: unknown;
+  /** Only marked cases are strict JSON; the other JSONC cases must be refused by setup. */
+  strictJson?: true;
 }
 
 export const agyMcpTextCases: readonly AgyMcpTextCase[] = [
@@ -22,6 +24,7 @@ export const agyMcpTextCases: readonly AgyMcpTextCase[] = [
   },
   {
     name: "comment markers and escaped quotes inside strings",
+    strictJson: true,
     input: String.raw`{"mcpServers":{"other":{"command":"https://example.invalid/path//segment","args":["quote\" // still string", "slash\\ /* still string */", "[{},]"]},"amem":{"command":"old"}},"unknown":"literal // and /* comment */"}`,
     preserve: [String.raw`"command":"https://example.invalid/path//segment"`, String.raw`"quote\" // still string"`, String.raw`"slash\\ /* still string */"`, '"[{},]"', '"unknown":"literal // and /* comment */"'],
     owned: { command: "old" },
