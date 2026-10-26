@@ -91,6 +91,7 @@ function write(file: string, value: Image, expected?: Image, beforePublish?: (fi
 interface WorkspaceBinding { root: string; ignored: boolean; assertCurrent(): void }
 function workspaceBinding(options: SetupContext): WorkspaceBinding {
   const requestedCwd = resolve(options.cwd ?? process.cwd()), cwd = realPath(requestedCwd), env = memoryGitEnv({ ...process.env, ...options.env }, { repositoryIsolation: true });
+  for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) delete env[key];
   const git = (args: string[]) => memoryGitSync(["-C", cwd, ...args], { env, encoding: "utf8", timeout: 5000, maxBuffer: MAX });
   const location = (args: string[]) => {
     const result = git(args);
@@ -101,7 +102,8 @@ function workspaceBinding(options: SetupContext): WorkspaceBinding {
   const within = relative(root, cwd);
   if (!stat.isDirectory() || within === ".." || within.startsWith("../") || isAbsolute(within)) throw Error("Antigravity workspace must contain the calling directory");
   const tracked = () => {
-    const result = git(["ls-files", "--error-unmatch", "--", join(root, ".agents", "mcp_config.json")]);
+    // Case aliases can name the same tracked file on macOS. Refuse them on every host.
+    const result = git(["ls-files", "--error-unmatch", "--", ":(top,icase,literal).agents/mcp_config.json"]);
     if (result.status === 0) throw Error("Antigravity setup refuses Git-tracked .agents/mcp_config.json in every mode");
     if (result.status !== 1 || result.error) throw Error("Antigravity setup cannot verify configuration tracking");
   };

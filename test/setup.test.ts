@@ -571,6 +571,17 @@ test("Antigravity refuses outside Git and tracked config in every mode", () => {
   expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
 });
 
+test("Antigravity refuses tracked config case aliases before any write", () => {
+  const f = agyFixture(), file = join(f.home, ".AGENTS", "MCP_CONFIG.JSON");
+  put(file, "{}\n"); agyGit(f.home, "add", "--", file);
+  const original = image(file);
+  for (const mode of ["preview", "apply", "undo"] as const) for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) {
+    const options = { ...f.options, env: { ...f.options.env, [key]: "1" } };
+    expect(() => planSetup("agy", mode, options)).toThrow("Git-tracked");
+  }
+  expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
+});
+
 test("Antigravity rechecks tracked state after publication callbacks and rejects changed cwd", () => {
   const f = agyFixture(), file = join(f.home, ".agents", "mcp_config.json"); put(file, "{}\n");
   const plan = f.agyPlan("apply"), original = image(file);
