@@ -29,6 +29,7 @@ export interface BenchmarkOptions {
 }
 interface Runtime { root: string; commit: string; version: string }
 interface QuestionRun extends QuestionRetrieval {
+  upstreamNoUserTarget: boolean;
   status: "ok" | "partial" | "timeout" | "failed" | "abstention-excluded"; workerError?: string;
   wallMs: number; cleanupMs: number; workerPeakKB: number | null; workerPeakComplete: boolean; workerCheckpointPeakKB?: number; mcpPeakKB: number | null;
   times: Partial<Record<"seed" | "library" | "bm25" | "mcp" | "mcpQuery", number>>;
@@ -48,14 +49,17 @@ function eachTurn(q: LongMemEvalQuestion, visit: (turn: LongMemEvalTurn, session
   });
 }
 function goldOf(q: LongMemEvalQuestion): GoldEvidence {
-  const turns: RankedTurn[] = [];
-  eachTurn(q, (turn, _sessionIndex, ref) => { if (turn.has_answer === true) turns.push(ref); });
-  return { sessionIds: q.answer_session_ids, turns };
+  const turns: RankedTurn[] = [], counts = new Map<string, number>();
+  eachTurn(q, (turn, _sessionIndex, ref) => {
+    if (turn.has_answer === true) turns.push(ref);
+    counts.set(ref.sessionId, (counts.get(ref.sessionId) ?? 0) + 1);
+  });
+  return { sessionIds: q.answer_session_ids, turns, corpusSessions: [...counts].map(([sessionId, turns]) => ({ sessionId, turns })) };
 }
 function baseResult(q: LongMemEvalQuestion): QuestionRun {
   // Detach tiny persistent metadata from a possible substring-backed multi-MB JSON source string.
   const truth = JSON.parse(Buffer.from(JSON.stringify({ id: q.question_id, type: q.question_type,
-    abstention: q.question_id.endsWith("_abs"), gold: goldOf(q) })).toString("utf8"));
+    abstention: q.question_id.includes("_abs"), upstreamNoUserTarget: !q.haystack_sessions.some(session => session.some(turn => turn.role === "user" && turn.has_answer === true)), gold: goldOf(q) })).toString("utf8"));
   return { ...truth,
     rankings: {}, errors: {}, status: "failed", wallMs: 0, cleanupMs: 0, workerPeakKB: null, workerPeakComplete: false, mcpPeakKB: null, times: {}, completedAt: {}, rows: emptyRows() };
 }
@@ -302,13 +306,13 @@ export function markdownReport(report: any): string {
   const lines = ["# LongMemEval retrieval-only report", "", "Dataset SHA-256: " + report.dataset.sha256,
     "", "Runtime commit: " + report.runtime.commit, "", "Complete: " + report.complete + "; examined " + report.questions +
     "; abstentions excluded " + report.abstentions + "; question time limit " + report.questionTimeoutMs + " ms.", "",
-    "| Type | Backend | N | Failed | Any@5 | All@5 | Any@10 | All@10 | NDCG@10 | MRR | Turn@10 |",
+    "| Type | Backend | N | Failed | Any@5 | All@5 | Any@10 | All@10 | ndcg_any@10 | MRR | Turn@10 |",
     "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"];
   const groups = { overall: report.metrics.overall, ...report.metrics.byType };
   for (const [type, scores] of Object.entries(groups)) for (const backend of BACKENDS) {
     const s = (scores as any)[backend];
     lines.push("| " + [cell(type), backend, s.eligible, s.failure, number(s.sessionRecallAnyAt5), number(s.sessionRecallAllAt5),
-      number(s.sessionRecallAnyAt10), number(s.sessionRecallAllAt10), number(s.NDCGAt10), number(s.MRR), number(s.turnRecallAt10)].join(" | ") + " |");
+      number(s.sessionRecallAnyAt10), number(s.sessionRecallAllAt10), number(s.ndcgAnyAt10), number(s.MRR), number(s.turnRecallAt10)].join(" | ") + " |");
   }
   lines.push("", "# Per-question resources", "", "Worker peak includes input, seed, library, BM25 and controller; MCP peak is a separate process. Missing values are not zero.", "",
     "| Question | Type | Status | Wall ms | Worker peak MiB | MCP peak MiB |", "|---|---|---|---:|---:|---:|");
@@ -356,9 +360,9 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
     requireBench(initial.dev === after.dev && initial.ino === after.ino && initial.size === after.size && initial.mtimeMs === after.mtimeMs && initial.ctimeMs === after.ctimeMs, "dataset changed during benchmark");
   } catch (error) { fatal = code(error); }
   finally { process.removeListener("SIGINT", stopRun); process.removeListener("SIGTERM", stopRun); rmSync(root, { recursive: true, force: true }); }
-  const report = { schema: "agent-mem.longmemeval/v1", variant: options.variant ?? "custom", dataset: { ...dataset, file: input }, runtime: source,
-    harnessCommit: git(HERE, ["rev-parse", "HEAD"]).stdout.trim(), harnessSha256: HARNESS_AT_LOAD, definitions: { sessionRanking: "compact distinct sessions by first retrieved turn", NDCGAt10: "binary relevance / log2(rank+1)", MRR: "first gold session in the returned 50-turn-induced session list", turnRecallAt10: "fraction of has_answer turns in the first ten raw hits; turnIndex is cumulative per SID across repeated entries", failures: "failed paths contribute zero; no-turn-label averages are null", clock: "raw session timestamps, question-date UTC clock, retention covers haystack", workerPeakKB: "whole question worker (seed, library, BM25 and MCP controller); MCP child separate; null when incomplete/unavailable", wallMs: "input/seed/query/worker execution; cleanupMs is a separate reap barrier" }, platform: process.platform, bun: Bun.version, limit: LIMIT, questionTimeoutMs: timeoutMs,
-    complete: complete && !fatal, ...(fatal ? { fatal } : {}), questions: results.length, abstentions: results.filter(q => q.abstention).length,
+  const report = { schema: "agent-mem.longmemeval/v2", variant: options.variant ?? "custom", dataset: { ...dataset, file: input }, runtime: source,
+    harnessCommit: git(HERE, ["rev-parse", "HEAD"]).stdout.trim(), harnessSha256: HARNESS_AT_LOAD, definitions: { upstream: "xiaowu0162/LongMemEval@9e0b455f4ef0e2ab8f2e582289761153549043fc/src/retrieval/eval_utils.py", sessionRanking: "upstream turn2session effective_k widening; duplicate turns remain in DCG", ndcgAnyAt10: "upstream dcg: ranks 1 and 2 weight 1, full-corpus ideal at effective_k", MRR: "extra: first gold SID reciprocal raw turn rank among 50 returned turns", turnRecallAt10: "extra: fraction of has_answer turns in the first ten raw hits; turnIndex is cumulative per SID across repeated entries", failures: "failed paths contribute zero; no-turn-label averages are null", clock: "raw session timestamps, question-date UTC clock, retention covers haystack", workerPeakKB: "whole question worker (seed, library, BM25 and MCP controller); MCP child separate; null when incomplete/unavailable", wallMs: "input/seed/query/worker execution; cleanupMs is a separate reap barrier" }, platform: process.platform, bun: Bun.version, limit: LIMIT, questionTimeoutMs: timeoutMs,
+    complete: complete && !fatal, ...(fatal ? { fatal } : {}), questions: results.length, upstreamNoUserTarget: results.filter(q => !q.abstention && q.upstreamNoUserTarget).length, duplicateSessionIds: results.reduce((sum, q) => sum + q.rows.duplicateSessionIds, 0), abstentions: results.filter(q => q.abstention).length,
     failed: results.filter(q => q.status === "failed" || q.status === "timeout" || q.status === "partial").map(q => ({ id: q.id, type: q.type, status: q.status, errors: q.errors })),
     wallMs: performance.now() - started, metrics: aggregateMetrics(results), results };
   writeFileSync(output, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });

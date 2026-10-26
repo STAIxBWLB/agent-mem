@@ -1,7 +1,7 @@
 /** Retrieval-only metrics; no generated answers or answer-quality judgments. */
 export type Backend = "mcp" | "library" | "bm25";
 export interface RankedTurn { sessionId: string; turnIndex: number }
-export interface GoldEvidence { sessionIds: readonly string[]; turns: readonly RankedTurn[] }
+export interface GoldEvidence { sessionIds: readonly string[]; turns: readonly RankedTurn[]; corpusSessions: readonly { sessionId: string; turns: number }[] }
 export interface QuestionRetrieval {
   id: string;
   type: string;
@@ -15,7 +15,7 @@ export interface RetrievalMetrics {
   sessionRecallAllAt5: 0 | 1;
   sessionRecallAnyAt10: 0 | 1;
   sessionRecallAllAt10: 0 | 1;
-  NDCGAt10: number;
+  ndcgAnyAt10: number;
   MRR: number;
   turnRecallAt10: number | null;
 }
@@ -30,31 +30,97 @@ export interface MetricsReport {
   byType: Record<string, Record<Backend, AggregateScore>>;
 }
 const BACKENDS: readonly Backend[] = ["mcp", "library", "bm25"];
-const PRIMARY = ["sessionRecallAnyAt5", "sessionRecallAllAt5", "sessionRecallAnyAt10", "sessionRecallAllAt10", "NDCGAt10", "MRR"] as const;
+const PRIMARY = ["sessionRecallAnyAt5", "sessionRecallAllAt5", "sessionRecallAnyAt10", "sessionRecallAllAt10", "ndcgAnyAt10", "MRR"] as const;
 const turnKey = (turn: RankedTurn): string => JSON.stringify([turn.sessionId, turn.turnIndex]);
 
-/** A session's best turn fixes its position; later turns of it consume no session slot. */
-export function rankSessions(rankedTurns: readonly RankedTurn[]): string[] {
-  return [...new Set(rankedTurns.map(turn => turn.sessionId))];
+/* MIT License
+
+Copyright (c) 2024 Di Wu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+/** TypeScript port of src/retrieval/eval_utils.py at
+ * xiaowu0162/LongMemEval 9e0b455f4ef0e2ab8f2e582289761153549043fc.
+ * MIT, Copyright (c) 2024 Di Wu. NumPy operations become equivalent array operations.
+ * Keep upstream's repeated-session relevance and effective_k control flow unchanged.
+ */
+export function dcg(relevances: readonly number[], k: number): number {
+  relevances = relevances.slice(0, k);
+  if (relevances.length) {
+    return relevances[0]! + relevances.slice(1).reduce((sum, rel, i) => sum + rel / Math.log2(i + 2), 0);
+  }
+  return 0;
+}
+export function ndcg(rankings: readonly number[], correct_docs: readonly string[], corpus_ids: readonly string[], k = 10): number {
+  const relevances = corpus_ids.map(doc_id => correct_docs.includes(doc_id) ? 1 : 0);
+  const sorted_relevances = rankings.slice(0, k).map(idx => relevances[idx]!);
+  const ideal_relevance = [...relevances].sort((a, b) => b - a);
+  const ideal_dcg = dcg(ideal_relevance, k), actual_dcg = dcg(sorted_relevances, k);
+  if (ideal_dcg === 0) return 0;
+  return actual_dcg / ideal_dcg;
+}
+export function evaluate_retrieval(rankings: readonly number[], correct_docs: readonly string[], corpus_ids: readonly string[], k = 10): [number, number, number] {
+  const recalled_docs = new Set(rankings.slice(0, k).map(idx => corpus_ids[idx]!));
+  const recall_any = Number(correct_docs.some(doc => recalled_docs.has(doc)));
+  const recall_all = Number(correct_docs.every(doc => recalled_docs.has(doc)));
+  const ndcg_score = ndcg(rankings, correct_docs, corpus_ids, k);
+  return [recall_any, recall_all, ndcg_score];
+}
+export function evaluate_retrieval_turn2session(rankings: readonly number[], correct_docs: readonly string[], corpus_ids: readonly string[], k = 10): [number, number, number] {
+  const strip_turn_id = (docid: string) => docid.split("_").slice(0, -1).join("_");
+  correct_docs = [...new Set(correct_docs.map(strip_turn_id))];
+  corpus_ids = corpus_ids.map(strip_turn_id);
+  let effective_k = k;
+  let unique_docids = new Set(rankings.slice(0, effective_k).map(idx => corpus_ids[idx]!));
+  while (effective_k <= corpus_ids.length && unique_docids.size < k) {
+    effective_k += 1;
+    unique_docids = new Set(rankings.slice(0, effective_k).map(idx => corpus_ids[idx]!));
+  }
+  return evaluate_retrieval(rankings, correct_docs, corpus_ids, effective_k);
 }
 
-/** Binary session NDCG@10 discounts rank r by 1/log2(r+1); MRR has no top-ten cutoff. */
+/** Adapt amem's returned turns to upstream corpus indices, preserving all corpus relevances. */
 export function scoreRetrieval(gold: GoldEvidence, rankedTurns: readonly RankedTurn[]): RetrievalMetrics {
-  const sessions = rankSessions(rankedTurns), expected = new Set(gold.sessionIds);
-  const any = (k: number): 0 | 1 => Number(sessions.slice(0, k).some(id => expected.has(id))) as 0 | 1;
-  const all = (k: number): 0 | 1 => Number(expected.size > 0 && [...expected].every(id => sessions.slice(0, k).includes(id))) as 0 | 1;
-  const discount = (rank: number): number => 1 / Math.log2(rank + 1);
-  const dcg = sessions.slice(0, 10).reduce((sum, id, index) => sum + (expected.has(id) ? discount(index + 1) : 0), 0);
-  const ideal = Array.from({ length: Math.min(10, expected.size) }, (_, index) => discount(index + 1)).reduce((sum, value) => sum + value, 0);
-  const first = sessions.findIndex(id => expected.has(id));
+  const corpus_ids: string[] = [], offsets = new Map<string, { offset: number; turns: number }>();
+  for (const session of gold.corpusSessions) {
+    if (offsets.has(session.sessionId) || !Number.isSafeInteger(session.turns) || session.turns < 0) throw Error("invalid benchmark corpus");
+    offsets.set(session.sessionId, { offset: corpus_ids.length, turns: session.turns });
+    for (let i = 0; i < session.turns; i++) corpus_ids.push(session.sessionId + "_" + i);
+  }
+  const rankings = rankedTurns.map(turn => {
+    const session = offsets.get(turn.sessionId);
+    if (!session || !Number.isSafeInteger(turn.turnIndex) || turn.turnIndex < 0 || turn.turnIndex >= session.turns) throw Error("ranked turn outside benchmark corpus");
+    return session.offset + turn.turnIndex;
+  });
+  const correct_docs = gold.sessionIds.map(id => id + "_0");
+  const at5 = evaluate_retrieval_turn2session(rankings, correct_docs, corpus_ids, 5);
+  const at10 = evaluate_retrieval_turn2session(rankings, correct_docs, corpus_ids, 10);
+  const first = rankedTurns.findIndex(turn => gold.sessionIds.includes(turn.sessionId));
   const goldTurns = new Set(gold.turns.map(turnKey)), returnedTurns = new Set(rankedTurns.slice(0, 10).map(turnKey));
-  const foundTurns = [...goldTurns].filter(key => returnedTurns.has(key)).length;
   return {
-    sessionRecallAnyAt5: any(5), sessionRecallAllAt5: all(5),
-    sessionRecallAnyAt10: any(10), sessionRecallAllAt10: all(10),
-    NDCGAt10: ideal ? dcg / ideal : 0,
+    sessionRecallAnyAt5: at5[0] as 0 | 1, sessionRecallAllAt5: at5[1] as 0 | 1,
+    sessionRecallAnyAt10: at10[0] as 0 | 1, sessionRecallAllAt10: at10[1] as 0 | 1,
+    ndcgAnyAt10: at10[2],
+    // Extras, absent from upstream eval_utils: raw-turn reciprocal rank and gold-turn fraction.
     MRR: first < 0 ? 0 : 1 / (first + 1),
-    turnRecallAt10: goldTurns.size ? foundTurns / goldTurns.size : null,
+    turnRecallAt10: goldTurns.size ? [...goldTurns].filter(key => returnedTurns.has(key)).length / goldTurns.size : null,
   };
 }
 
@@ -63,11 +129,11 @@ function aggregateBackend(questions: readonly QuestionRetrieval[], backend: Back
     eligible: questions.length, success: 0, failure: 0, turnLabelled: 0,
     sessionRecallAnyAt5: null, sessionRecallAllAt5: null,
     sessionRecallAnyAt10: null, sessionRecallAllAt10: null,
-    NDCGAt10: null, MRR: null, turnRecallAt10: null,
+    ndcgAnyAt10: null, MRR: null, turnRecallAt10: null,
   };
   const sums: Record<typeof PRIMARY[number], number> = {
     sessionRecallAnyAt5: 0, sessionRecallAllAt5: 0, sessionRecallAnyAt10: 0,
-    sessionRecallAllAt10: 0, NDCGAt10: 0, MRR: 0,
+    sessionRecallAllAt10: 0, ndcgAnyAt10: 0, MRR: 0,
   };
   let turnSum = 0;
   for (const question of questions) {
