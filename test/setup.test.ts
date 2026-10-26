@@ -25,7 +25,7 @@ function snapshot(root: string): Array<{ name: string; mode: number; bytes?: str
 }
 function fixture() {
   const home = realPath(mkdtempSync(join(tmpdir(), "amem-setup-test-"))); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), QWEN_HOME: join(home, ".qwen") };
+  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), QWEN_HOME: join(home, ".qwen"), JCODE_HOME: join(home, ".jcode") };
   const calls: Call[] = [], entry = join(home, "package with space", "bin", "amem.js"), bun = process.execPath;
   const native: NonNullable<SetupContext["native"]> = (argv, stagedEnv, cwd) => {
     calls.push({ argv: [...argv], env: { ...stagedEnv }, cwd });
@@ -62,15 +62,16 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
   put(f.file("kimi", 1), '# user config\nmodel = "fixture"\n[[hooks]]\nevent = "Stop"\ncommand = "existing-kimi"\n', 0o640);
   put(f.file("pi"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } } }) + "\n", 0o640);
   put(f.file("qwen"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } }, hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "existing-qwen" }] }] }, ui: { theme: "keep" } }) + "\n", 0o640);
+  put(f.file("jcode"), '{ "servers": {"other":{"command":"other-server","args":["keep"]}}, "unrelated": {"keep":true} }\n', 0o640);
   const rules = ["AGENTS.md", "CLAUDE.md", ".claude/rules/keep.md", ".codex/rules/keep.rules", ".pi/agent/extensions/keep.ts"].map(name => join(f.home, name));
   for (const rule of rules) put(rule, "unrelated user content\n", 0o640);
   return rules;
 }
-const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : JSON.parse(text(file)).mcpServers;
+const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : target === "jcode" ? JSON.parse(text(file)).servers : JSON.parse(text(file)).mcpServers;
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
-  expect(shown.targets).toEqual([...SETUP_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(5);
-  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
+  expect(shown.targets).toEqual([...SETUP_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(6);
+  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
@@ -85,7 +86,7 @@ test("all-target apply stages native commands, records private receipts and is b
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
     expect(receipt).toMatchObject({ version: 1, target, phase: "applied" }); expect(receipt.changes.map(change => change.path)).toEqual(action.files);
     expect(lstatSync(action.receipt).mode & 0o077).toBe(0); expect(lstatSync(dirname(action.receipt)).mode & 0o077).toBe(0);
-    expect(mcp(f.file(target), target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"] });
+    expect(mcp(f.file(target), target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], ...(target === "jcode" ? { shared: false } : {}) });
     expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
   }
   const settings = JSON.parse(text(f.file("claude", 1))); expect(settings.enabledPlugins).toEqual({ "other@catalog": true }); expect(settings.hooks.SessionStart[0].hooks[0].command).toBe("existing-start"); expect(Object.keys(settings.hooks)).toHaveLength(7);
@@ -162,13 +163,13 @@ test("a later target preparation failure publishes no earlier prepared config", 
   expect(files.map(image)).toEqual(before); for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false); expect(f.calls.every(call => !existsSync(call.cwd))).toBe(true);
 });
 test("explicit agent config roots stay inside the isolated HOME and undo restores all originally absent files", () => {
-  const f = fixture(), env = { ...f.env, CLAUDE_CONFIG_DIR: join(f.home, "custom claude"), CODEX_HOME: join(f.home, "custom codex"), KIMI_CODE_HOME: join(f.home, "custom kimi"), PI_CODING_AGENT_DIR: join(f.home, "custom pi"), QWEN_HOME: join(f.home, "custom qwen") }, options = { ...f.options, env };
+  const f = fixture(), env = { ...f.env, CLAUDE_CONFIG_DIR: join(f.home, "custom claude"), CODEX_HOME: join(f.home, "custom codex"), KIMI_CODE_HOME: join(f.home, "custom kimi"), PI_CODING_AGENT_DIR: join(f.home, "custom pi"), QWEN_HOME: join(f.home, "custom qwen"), JCODE_HOME: join(f.home, "custom jcode") }, options = { ...f.options, env };
   const plan = planSetup("all", "apply", options), files = plan.actions.flatMap(action => action.files);
   expect(plan.actions[0]?.files).toEqual([join(env.CLAUDE_CONFIG_DIR, ".claude.json"), join(env.CLAUDE_CONFIG_DIR, "settings.json")]);
   expect(files.every(file => !existsSync(file))).toBe(true); applySetup(plan, options);
   expect(files.every(file => existsSync(file))).toBe(true);
   expect(f.calls.find(call => call.argv[0] === "claude")?.env.CLAUDE_CONFIG_DIR).toBe(join(f.calls[0]!.cwd, ".claude"));
-  for (const action of plan.actions) expect(mcp(action.files[0]!, action.target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"] });
+  for (const action of plan.actions) expect(mcp(action.files[0]!, action.target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], ...(action.target === "jcode" ? { shared: false } : {}) });
   undoSetup(planSetup("all", "undo", options), options); expect(files.every(file => !existsSync(file))).toBe(true);
 });
 
@@ -424,4 +425,94 @@ for (const enabled of [false, true]) test(`Qwen hook controls remain user-owned 
   expect(restored.mcpServers.amem).toBeUndefined();
   expect(restored.hooks.SessionEnd).toEqual(original.hooks.SessionEnd);
   expect(image(file).mode).toBe(before.mode);
+});
+
+test("Jcode setup is direct MCP-only with one private receipt and no native invocation or hook", () => {
+  const f = fixture(); seedOtherFiles(f);
+  const config = join(f.env.JCODE_HOME!, "config.toml"); put(config, '[hooks]\nsession_end = "user-existing-hook"\n', 0o640);
+  const action = f.plan("jcode", "apply").actions[0]!, file = action.files[0]!, before = image(file), hookBefore = image(config);
+  expect(action.files).toEqual([join(f.env.JCODE_HOME!, "mcp.json")]);
+  expect(action.registration).toBeNull(); expect(action.commands).toEqual([]); expect(action.hooks).toEqual([]);
+  expect(action.lifecycle).toContain("MCP only");
+  expect(f.plan("jcode").notes.join("\n")).toContain("capture and ingest hooks are unavailable");
+  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: ["jcode"], unchanged: [] });
+  expect(f.calls).toEqual([]); expect(image(config)).toEqual(hookBefore);
+  const installed = JSON.parse(text(file));
+  expect(installed.servers.amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], shared: false });
+  expect(installed.servers.other).toEqual({ command: "other-server", args: ["keep"] });
+  expect(installed.mcpServers).toBeUndefined();
+  expect(f.receipt("jcode").changes).toHaveLength(1);
+  expect(lstatSync(f.receiptFile("jcode")).mode & 0o077).toBe(0);
+  const applied = image(file);
+  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: [], unchanged: ["jcode"] });
+  expect(image(file)).toEqual(applied); expect(f.calls).toEqual([]);
+  undoSetup(f.plan("jcode", "undo"), f.options); expect(image(file)).toEqual(before); expect(image(config)).toEqual(hookBefore);
+});
+
+test("Jcode legacy alias registration preserves unrelated raw values and semantic undo", () => {
+  const f = fixture(), file = f.file("jcode");
+  const original = '{ "mcpServers": {"other":{"command":"user-server","raw":9007199254740993}}, "unknown":1e99 }\n';
+  put(file, original, 0o640);
+  expect(f.plan("jcode").actions[0]!.mcpChange).toBe("add");
+  applySetup(f.plan("jcode", "apply"), f.options);
+  expect(text(file)).toContain('"servers"'); expect(text(file)).not.toContain('"mcpServers"');
+  expect(text(file)).toContain('"raw":9007199254740993'); expect(text(file)).toContain('"unknown":1e99');
+  // A later root field edit must survive removing only the managed MCP entry.
+  put(file, text(file).replace('"unknown":1e99', '"unknown":2e99'), 0o640);
+  undoSetup(f.plan("jcode", "undo"), f.options);
+  expect(text(file)).toContain('"unknown":2e99'); expect(text(file)).toContain('"raw":9007199254740993');
+  expect(JSON.parse(text(file)).servers?.amem ?? JSON.parse(text(file)).mcpServers?.amem).toBeUndefined();
+});
+
+test("Jcode managed-entry edits refuse apply and undo, while runtime upgrades retire the old registration", () => {
+  const f = fixture(); seedOtherFiles(f); const file = f.file("jcode"), original = image(file);
+  applySetup(f.plan("jcode", "apply"), f.options);
+  const moved = { ...f.options, bun: join(f.home, "new bun"), entry: join(f.home, "new package", "amem.js") };
+  expect(applySetup(planSetup("jcode", "apply", moved), moved).applied).toEqual(["jcode"]);
+  expect(JSON.parse(text(file)).servers.amem).toEqual({ command: moved.bun, args: ["--smol", moved.entry, "mcp"], shared: false });
+  const good = image(file), altered = JSON.parse(text(file)); altered.servers.amem.args.push("user-edit"); put(file, JSON.stringify(altered));
+  const before = image(file), receipt = image(f.receiptFile("jcode"));
+  expect(() => undoSetup(planSetup("jcode", "undo", moved), moved)).toThrow("changed");
+  expect(() => applySetup(planSetup("jcode", "apply", moved), moved)).toThrow("changed");
+  expect(image(file)).toEqual(before); expect(image(f.receiptFile("jcode"))).toEqual(receipt);
+  restore(file, good); undoSetup(planSetup("jcode", "undo", moved), moved);
+  expect(image(file)).toEqual(original); expect(f.calls).toEqual([]);
+});
+
+test("JCODE_HOME preserves literal empty, relative and tilde spellings in preview", () => {
+  const f = fixture();
+  for (const value of ["", "~", "relative jcode", " relative jcode "]) {
+    const plan = planSetup("jcode", "preview", { ...f.options, env: { ...f.env, JCODE_HOME: value } });
+    expect(plan.actions[0]!.files).toEqual([join(process.cwd(), value, "mcp.json")]);
+  }
+  const env = { ...f.env }; delete env.JCODE_HOME;
+  expect(planSetup("jcode", "preview", { ...f.options, env }).actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json")]);
+  expect(f.calls).toEqual([]);
+});
+
+test("Jcode rejects native environment interpolation in runtime paths before effects", () => {
+  const f = fixture(), before = snapshot(f.home);
+  for (const fields of [{ bun: join(f.home, '${RUNTIME}', "bun") }, { entry: join(f.home, '${PACKAGE}', "amem.js") }]) {
+    expect(() => planSetup("jcode", "apply", { ...f.options, ...fields })).toThrow("interpolates");
+    expect(() => planSetup("all", "apply", { ...f.options, ...fields })).toThrow("interpolates");
+  }
+  expect(snapshot(f.home)).toEqual(before); expect(f.calls).toEqual([]);
+});
+
+test("Jcode canonicalizes the HOME alias but refuses a named config-directory symlink", () => {
+  const f = fixture(), alias = f.home + "-alias";
+  symlinkSync(f.home, alias); cleanup.push(() => rmSync(alias, { force: true }));
+  const env = { ...f.env, HOME: alias, JCODE_HOME: join(alias, ".jcode") }, options = { ...f.options, env };
+  const plan = planSetup("jcode", "apply", options);
+  expect(plan.actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json")]);
+  expect(applySetup(plan, options).applied).toEqual(["jcode"]);
+  expect(JSON.parse(text(plan.actions[0]!.files[0]!)).servers.amem.shared).toBe(false);
+  expect(undoSetup(planSetup("jcode", "undo", options), options).restored).toEqual(["jcode"]);
+  expect(existsSync(plan.actions[0]!.files[0]!)).toBe(false);
+  const elsewhere = join(f.home, "elsewhere"), victim = join(elsewhere, "mcp.json");
+  put(victim, '{"servers":{"user":{"command":"keep"}}}\n');
+  symlinkSync(elsewhere, join(f.home, "named-jcode"));
+  const before = image(victim);
+  expect(() => planSetup("jcode", "apply", { ...options, env: { ...env, JCODE_HOME: join(alias, "named-jcode") } })).toThrow("symbolic-link");
+  expect(image(victim)).toEqual(before); expect(f.calls).toEqual([]);
 });
