@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { fstatSync } from "node:fs";
-import { fts5Available, ScreenedSearchIndex, setFts5AvailableForTest } from "../src/memory/search-fts.ts";
+import { fts5Available, ftsTerms, ScreenedSearchIndex, setFts5AvailableForTest } from "../src/memory/search-fts.ts";
 
 type Payload = { id: string; detail: { text: string } };
 const now = Date.parse("2026-10-26T00:00:00.000Z");
@@ -62,6 +62,13 @@ test("query state lives only in SQLite TEMP with a bounded file-backed cache", (
   expect(db.query("PRAGMA temp_store").get()).toEqual({ temp_store: 1 });
   expect(db.query("PRAGMA temp.cache_size").get()).toEqual({ cache_size: -2048 });
   expect(db.query("SELECT COUNT(*) AS n FROM temp.docs").get()).toEqual({ n: 1 });
+  if (value.available) {
+    expect(db.query("SELECT COUNT(*) AS n FROM temp.records").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT body FROM temp.docs").get()).toEqual({ body: null });
+    expect(db.query("SELECT payload FROM temp.records").get()).toEqual({ payload: JSON.stringify(row("private-fixture").value) });
+    expect(db.query("SELECT COUNT(*) AS n FROM temp.sqlite_master WHERE name = 'docs_content'").get()).toEqual({ n: 0 });
+    expect((db.query("PRAGMA temp.table_info(docs)").all() as { name: string }[]).map(column => column.name)).toEqual(["body"]);
+  }
   const main = (db.query("PRAGMA database_list").all() as { name: string; file: string }[]).find(row => row.name === "main");
   expect(main?.file).toBe("");
   // Anonymous temporary-file permissions and unlinking belong to the SQLite VFS.
@@ -104,7 +111,7 @@ test("streamed batches apply recency and tier before limiting raw BM25 leaders",
     value.append(leaders.slice(32));
     const target = row(`weighted-${scenario}`, "needle ordinary filler", scenario === "tier" ? "long" : "capture");
     value.append([target, row("nonmatching", "unrelated content")]);
-    const first = database(value).query("SELECT ref FROM temp.docs WHERE docs MATCH ? ORDER BY bm25(docs), ref LIMIT 8")
+    const first = database(value).query("SELECT r.ref FROM temp.docs JOIN temp.records r ON r.rowid = docs.rowid WHERE docs MATCH ? ORDER BY bm25(docs), r.ref LIMIT 8")
       .all('"needle"') as { ref: string }[];
     expect(first).toHaveLength(8);
     expect(first.every(hit => hit.ref.startsWith("leader-"))).toBe(true);
@@ -117,6 +124,59 @@ test("streamed batches apply recency and tier before limiting raw BM25 leaders",
     expect(wider[0]).toEqual(best[0]);
     value.close();
   }
+});
+
+test("contentless TEMP ranking and scores equal the prior full-content schema", () => {
+  if (!fts5Available()) return;
+  const value = index(), reference = new Database(":memory:");
+  // Freeze the previous query-local schema and score formula as a differential oracle.
+  // Both corpora get exactly the same bodies, append order, deadlines and payloads.
+  reference.run("CREATE VIRTUAL TABLE docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)");
+  const samples: (ReturnType<typeof row> & { expiresAt?: string | null })[] = [
+    row("strong-capture", "needle needle exactanchor", "capture"),
+    row("old-long", "needle exactanchor", "long", 60),
+    row("recent-short", "needle ordinary filler", "short"),
+    row("recent-long", "needle ordinary filler", "long"),
+    row("accent", "café needle", "long", 1),
+    row("korean", "메모리를 정리하는 규칙", "long"),
+    { ...row("expired-strong", "exactanchor exactanchor", "long"), expiresAt: at() },
+    { ...row("invalid-expiry", "needle exactanchor", "long"), expiresAt: "invalid" },
+    { ...row("wide-date", "needle distant deadline", "short"), expiresAt: new Date(8640000000000000).toISOString() },
+    { ...row("future", "needle exactanchor", "long"), expiresAt: new Date(now + 1000).toISOString() },
+  ];
+  try {
+    value.append(samples.slice(0, 4)); value.append(samples.slice(4));
+    const insert = reference.query("INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const sample of samples) {
+      const deadline = sample.expiresAt == null ? null : Date.parse(sample.expiresAt);
+      insert.run(sample.body, sample.ref, sample.tier, sample.at, JSON.stringify(sample.value),
+        deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline);
+    }
+    for (const query of ["needle", "exactanchor needle", "cafe", "메모리는", "missingterm"]) {
+      const match = ftsTerms(query);
+      const expectedRanks = reference.query("SELECT ref, bm25(docs) AS rank FROM docs WHERE docs MATCH ? ORDER BY rank, ref").all(match);
+      const actualRanks = database(value).query("SELECT r.ref, bm25(docs) AS rank FROM docs JOIN records r ON r.rowid = docs.rowid WHERE docs MATCH ? ORDER BY rank, r.ref").all(match);
+      expect(actualRanks).toEqual(expectedRanks);
+      for (const useFts of [true, false]) for (const instant of [now, now + 1000]) for (const limit of [1, 3, 20]) {
+        const rank = useFts ? "-bm25(docs)" : "1.0";
+        const rows = reference.query(`SELECT payload, ${rank} * CASE tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
+          / (1 + max(0, (julianday(?) - julianday(at)) / 30.0)) AS score FROM docs
+          WHERE (expires IS NULL OR expires > ?) ${useFts ? "AND docs MATCH ?" : ""} ORDER BY score DESC, ref LIMIT ?`)
+          .all(new Date(instant).toISOString(), instant, ...(useFts ? [match] : []), limit) as { payload: string; score: number }[];
+        expect(value.best(query, limit, instant, useFts)).toEqual(rows.map(hit => ({ value: JSON.parse(hit.payload), score: hit.score })));
+      }
+    }
+  } finally { reference.close(); }
+});
+
+test("a failed append batch rolls both payload records and contentless terms back", () => {
+  if (!fts5Available()) return;
+  const value = index(), db = database(value);
+  value.append([row("retained")]);
+  const circular = { ...row("invalid").value, self: undefined as unknown }; circular.self = circular;
+  expect(() => value.append([row("rolled-back"), { ...row("invalid"), value: circular }])).toThrow();
+  expect(db.query("SELECT ref FROM records ORDER BY rowid").all()).toEqual([{ ref: "retained" }]);
+  expect(value.best("needle", 10, now).map(hit => hit.value.id)).toEqual(["retained"]);
 });
 
 test("without FTS the already screened matching stream keeps weighted fallback and payloads", () => {

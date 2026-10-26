@@ -200,21 +200,31 @@ export class ScreenedSearchIndex<T> {
       // SQLite owns the anonymous TEMP files; no named plaintext cache survives a killed MCP child.
       if ((db.query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS memoryOnly").get() as { memoryOnly: number }).memoryOnly) throw Error("disk-backed search unavailable");
       db.run("PRAGMA temp_store = FILE");
-      db.run(this.available
-        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)"
-        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
+      if (this.available) {
+        // The FTS corpus retains tokens only; the full screened payload is stored once.
+        db.run("CREATE TEMP TABLE records (ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
+        db.run("CREATE VIRTUAL TABLE temp.docs USING fts5(body, content='')");
+      } else db.run("CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
       db.run("PRAGMA temp.cache_size = -2048");
       this.db = db;
     } catch (error) { db?.close(); throw error; }
   }
 
   append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null }[]): void {
-    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
+    const insert = this.db.query(this.available
+      ? "INSERT INTO records (ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?)"
+      : "INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
+    const terms = this.available ? this.db.query("INSERT INTO docs (rowid, body) VALUES (?, ?)") : undefined;
     this.db.transaction(() => {
       for (const row of rows) {
         const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
         // Invalid deadlines fail closed; this sentinel predates every representable Date.
-        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline);
+        const expires = deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline;
+        const payload = JSON.stringify(row.value);
+        if (terms) {
+          const result = insert.run(row.ref, row.tier, row.at, payload, expires);
+          terms.run(result.lastInsertRowid, row.body);
+        } else insert.run(row.body, row.ref, row.tier, row.at, payload, expires);
       }
     })();
   }
@@ -223,9 +233,10 @@ export class ScreenedSearchIndex<T> {
     if (useFts && !ftsTerms(query)) return [];
     const rank = useFts ? "-bm25(docs)" : "1.0";
     const instant = new Date(now).toISOString();
-    const where = "WHERE (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
-    const rows = this.db.query(`SELECT payload, ${rank} * CASE tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
-      / (1 + max(0, (julianday(?) - julianday(at)) / 30.0)) AS score FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`)
+    const from = this.available ? (useFts ? "docs JOIN records r ON r.rowid = docs.rowid" : "records r") : "docs r";
+    const where = "WHERE (r.expires IS NULL OR r.expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
+    const rows = this.db.query(`SELECT r.payload, ${rank} * CASE r.tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
+      / (1 + max(0, (julianday(?) - julianday(r.at)) / 30.0)) AS score FROM ${from} ${where} ORDER BY score DESC, r.ref LIMIT ?`)
       .all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit) as { payload: string; score: number }[];
     return rows.map(row => ({ value: JSON.parse(row.payload) as T, score: row.score }));
   }
