@@ -139,10 +139,17 @@ function defaultPathProbe(): DefaultPathProbe | undefined {
   return needles.every((value): value is string => value !== undefined) ? { names: needles, segments: [...DENY_SEGMENTS] } : undefined;
 }
 
+function containsPathLiteral(text: string, probe: DefaultPathProbe, deny: readonly string[]): boolean {
+  return text.includes("/.") || text.includes("//") || deny.some(entry => text.includes(entry))
+    || probe.segments.some(entry => text.includes(entry)) || probe.names.some(needle => text.includes(needle));
+}
+
 function mayNeedPathCheck(text: string, probe: DefaultPathProbe | undefined, deny: readonly string[]): boolean {
-  // Only ASCII without path rewrites: NFC and candidate extraction cannot create a missing literal.
-  if (!probe || !/^\p{ASCII}*$/u.test(text) || text.includes("/.") || text.includes("//")) return true;
-  return deny.some(entry => text.includes(entry)) || probe.segments.some(entry => text.includes(entry)) || probe.names.some(needle => text.includes(needle));
+  if (!probe || containsPathLiteral(text, probe, deny)) return true;
+  // Raw/node/token paths are substrings of text; pathCandidates takes substrings after NFC.
+  // Inspect both: removing ignorables or lowercasing after NFKC can leave a non-NFC result.
+  const canonical = text.normalize("NFC");
+  return canonical !== text && containsPathLiteral(canonical, probe, deny);
 }
 
 /** No filesystem, model, network or storage work occurs while constructing or screening this policy. */
