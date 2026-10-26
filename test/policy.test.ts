@@ -2,6 +2,18 @@ import { expect, test } from "bun:test";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
 import { DENY_NAMES, DENY_SEGMENTS } from "../src/memory/platform.ts";
 
+test("repeated prose tokens retain full path screening and fresh host decisions", async () => {
+  let calls = 0;
+  const policy = createStandalonePolicy({ denyPaths: ["hidden.ts"], host: { screen: async () => ++calls === 1 } });
+  const prose = "ordinary fixture context ".repeat(70);
+  const publicRow = { excerpt: `${prose}public.ts public.ts` };
+  expect(await policy.screen(publicRow)).toBe(true);
+  expect(await policy.screen(publicRow)).toBe(false);
+  expect(calls).toBe(2);
+  expect(await policy.screen({ excerpt: `${prose}hidden.ts hidden.ts` })).toBe(false);
+  expect(calls).toBe(2); // Standalone refusal still precedes the host, even after many repeated tokens.
+});
+
 test("standalone policy allows public JSON scalars, capture and work metadata with explicit false privacy flags", async () => {
   const policy = createStandalonePolicy();
   for (const value of [null, true, false, 0, "public lesson", { private: false, pii: false, privateTurn: false, title: "Public contract", about: ["path:src/main.ts"] },
