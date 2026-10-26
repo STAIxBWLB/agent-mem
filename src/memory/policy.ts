@@ -99,6 +99,7 @@ function literals(value: unknown, label: string): string[] {
 
 function defaultPii(text: string): boolean {
   if (/\b(?:\d{6}-\d{7}|\d{3}-\d{2}-\d{4})\b/.test(text)) return true;
+  if (!text.includes("@")) return false;
   // Bound each email candidate before matching; arbitrary user regexes are never run.
   for (const token of text.split(/[\s<>()\[\]{}",;:]+/)) if (token.includes("@")) {
     if (token.length > 320 || /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(token)) return true;
