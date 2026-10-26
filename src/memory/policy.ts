@@ -124,7 +124,9 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
     const cached = textChecks.get(text);
     if (cached !== undefined) return cached;
     const check = () => {
-      if (looksSecret(text) || looksSecret(text.replace(/["']/g, ""))) return false;
+      if (looksSecret(text)) return false;
+      const unquoted = text.replace(/["']/g, "");
+      if (unquoted !== text && looksSecret(unquoted)) return false;
       const normalized = fold(text);
       if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
       const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
