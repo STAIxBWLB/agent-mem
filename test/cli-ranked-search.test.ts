@@ -1,0 +1,119 @@
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { rawMemoryCommand } from "../src/memory/commands.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
+import { fts5Available, setFts5AvailableForTest } from "../src/memory/search-fts.ts";
+import { MemoryStore, type View } from "../src/memory/store.ts";
+
+const roots: string[] = [], savedHome = process.env.AMEM_HOME;
+afterEach(() => {
+  setFts5AvailableForTest(undefined);
+  if (savedHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = savedHome;
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "amem-ranked-cli-")); roots.push(root);
+  process.env.AMEM_HOME = join(root, "memory");
+  const project = memoryProjectKey(root); let at = Date.now() - 120000;
+  const store = new MemoryStore({ home: root, now: () => at, screen: () => "keep" });
+  const note = (text: string, fields: Partial<Pick<View, "kind" | "peer" | "tier">> = {}) => {
+    at += 1000;
+    return store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "writer", text, about: [], source: "person", ...fields }, fields.tier === "short");
+  };
+  const context = { cwd: root, env: {}, stdinTTY: false };
+  const search = async (...args: string[]) => JSON.parse(await runCli(["search", ...args, "--json"], context)) as View[];
+  return { root, project, store, note, context, search };
+}
+
+test("person CLI uses curated store.search ranking and keeps the legacy --filter", async () => {
+  if (!fts5Available()) return;
+  const f = fixture();
+  try {
+    const strong = f.note("needle needle needle"), recent = f.note("needle " + "ordinary filler ".repeat(40));
+    const expected = f.store.search("needle", { project: f.project, includeCapture: false }).hits.map(hit => hit.view!);
+    expect(expected[0]!.id).toBe(strong);
+    expect(await f.search("needle")).toEqual(expected);
+    expect((await f.search("needle", "--filter")).map(row => row.id)).toEqual([recent, strong]);
+    expect((await f.search("needle", "--filter", "--filter")).map(row => row.id)).toEqual([recent, strong]);
+    f.note("lighthouse"); f.note("beacon");
+    expect((await f.search("lighthouse", "beacon")).length).toBe(2);
+    expect(await f.search("lighthouse", "beacon", "--filter")).toEqual([]);
+  } finally { f.store.close(); }
+});
+
+test("metadata filters precede the effective limit, capture stays out, and reads do not promote", async () => {
+  const f = fixture();
+  try {
+    const wanted = f.note("needle weak " + "public context ".repeat(20), { kind: "contract", peer: "reader", tier: "short" });
+    for (let index = 0; index < 55; index++) f.note(`needle needle needle leader ${index}`);
+    const args = ["needle", "--kind", "contract", "--peer", "reader", "--tier", "short", "--machine", f.store.machine.id, "--limit", "1"];
+    const rows = await f.search(...args);
+    expect(rows.map(row => row.id)).toEqual([wanted]); expect(rows[0]!.tier).toBe("short");
+    expect(await f.search(...args, "--since", new Date(Date.now()).toISOString())).toEqual([]);
+    expect(await f.search("needle", "--machine", "not-this-machine")).toEqual([]);
+    const capture = new CaptureStore({ home: f.root, project: f.project });
+    try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "captureonly" }); }
+    finally { capture.close(); }
+    expect(await f.search("captureonly")).toEqual([]);
+    const check = new MemoryStore({ home: f.root, deferPromotions: true });
+    try { expect(check.get(wanted, f.project)?.tier).toBe("short"); }
+    finally { check.close(); }
+  } finally { f.store.close(); }
+});
+
+test("legacy empty/history modes, fallback and unscreened person fields remain compatible", async () => {
+  const f = fixture();
+  try {
+    const first = f.note("password: synthetic-fixture needle"), second = f.note("needle current");
+    expect((await f.search()).map(row => row.id)).toEqual([second, first]);
+    expect((await f.search("password")).map(row => row.id)).toEqual([first]);
+    const history = await runCli(["search", "needle", "--history", "--json"], f.context);
+    expect(JSON.parse(history).entries.map((row: View) => row.id)).toEqual([second, first]);
+    const filteredHistory = JSON.parse(await runCli(["search", "needle", "--history", "--filter", "--json"], f.context));
+    expect(filteredHistory.entries).toEqual(JSON.parse(history).entries);
+    expect(filteredHistory.notices).toEqual(JSON.parse(history).notices);
+    const past = JSON.parse(await runCli(["search", "needle", "--as-of", f.store.get(first, f.project)!.at, "--json"], f.context));
+    expect(past.entries.map((row: View) => row.id)).toEqual([first]);
+  } finally { f.store.close(); }
+  setFts5AvailableForTest(false);
+  const fallback = fixture();
+  try {
+    const first = fallback.note("needle older"), second = fallback.note("needle newer");
+    expect((await fallback.search("needle")).map(row => row.id)).toEqual([second, first]);
+  } finally { fallback.store.close(); }
+});
+
+test("host raw recall stays screened/newest-first and ranked opt-in requires person intent before opening", async () => {
+  const f = fixture();
+  try {
+    const older = f.note("needle needle needle"), newer = f.note("needle later");
+    const unfiltered = JSON.parse(await rawMemoryCommand(["search", "needle", "--json"], f.root, {
+      project: f.project, store: f.store, open: () => f.store, readable: rows => rows, importPolicy: () => () => false,
+    })) as View[];
+    expect(unfiltered.map(row => row.id)).toEqual([newer, older]);
+    const emitted: string[][] = [];
+    const result = JSON.parse(await rawMemoryCommand(["search", "needle", "--limit", "1", "--json"], f.root, {
+      project: f.project, store: f.store, open: () => f.store, readable: rows => rows.filter(row => row.id !== newer),
+      outputReady: rows => { emitted.push(rows.map(row => row.id)); }, importPolicy: () => () => false,
+    })) as View[];
+    expect(result.map(row => row.id)).toEqual([older]); expect(emitted).toEqual([[older]]);
+    let opens = 0;
+    await expect(rawMemoryCommand(["search", "needle"], f.root, { rankedSearch: true, open: () => { opens++; return f.store; }, readable: rows => rows, importPolicy: () => () => false })).rejects.toThrow("person intent");
+    expect(opens).toBe(0);
+  } finally { f.store.close(); }
+});
+
+test("search modes retain agent refusal before store access, read TTY rules, and cross-project validation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-ranked-gate-")); roots.push(root);
+  const home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
+  for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) for (const args of [["search", "needle"], ["search", "needle", "--filter"]]) {
+    await expect(runCli(args, { cwd: root, env: { [marker]: "fixture" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
+    expect(existsSync(home)).toBe(false);
+  }
+  await expect(runCli(["search", "needle", "--filter", "--all-projects"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--filter applies to project-local search");
+  await expect(runCli(["forget", "missing"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow(/terminal|TTY/);
+});

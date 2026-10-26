@@ -76,10 +76,11 @@ test("with no answerable question the 'answerable' row reports null, never a mea
   expect(evalText(report, "x")).toContain("n/a");
 });
 
-test("the report names the engine it measured: the ranked store.search, not the amem search filter (review finding 4)", () => {
+test("the report identifies the default CLI ranked engine and explicit legacy filter", () => {
   const report = runEval(() => [], names(), one(["a"]), "fts5", [1]);
   const text = evalText(report, "x");
-  expect(text).toContain("ranked store.search"); expect(text).toContain("not the `amem search` filter");
+  expect(text).toContain("ranked store.search"); expect(text).toContain("same ranked search path as default `amem search`");
+  expect(text).toContain("`--filter` keeps legacy substring matching");
   expect(evalText({ ...report, engine: "substring" }, "x")).toContain("substring fallback");
 });
 
