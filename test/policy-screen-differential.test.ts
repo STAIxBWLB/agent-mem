@@ -149,3 +149,43 @@ test("unsupported default-list shapes preserve verdicts and getter invocation co
     }
   } finally { restore(); }
 });
+
+test("probe count and source-size ceilings retain the canonical deny verdict", async () => {
+  try {
+    DENY_NAMES.push(...Array.from({ length: 65 }, (_, index) => `^ceiling_${index}$`));
+    await compare(["public prose", "ceiling_64", { excerpt: "public ceiling_64" }]);
+    restore();
+    DENY_SEGMENTS.push(...Array.from({ length: 65 }, (_, index) => `segment_${index}`));
+    await compare(["public prose", "segment_64", "src/segment_64/file.ts"]);
+    restore();
+    for (const length of [255, 256, 257]) {
+      DENY_NAMES.push("^" + "x".repeat(length) + "$");
+      await compare(["public prose", "x".repeat(length), { excerpt: "x".repeat(length) }]);
+      restore();
+    }
+  } finally { restore(); }
+});
+
+test("warmed probes fall back when a same-revision default becomes an accessor", async () => {
+  const run = async (factory: typeof before, segments: boolean) => {
+    restore();
+    const values = segments ? DENY_SEGMENTS : DENY_NAMES;
+    const descriptor = Object.getOwnPropertyDescriptor(values, "0")!;
+    const calls: unknown[] = [];
+    const policy = factory({ host: { screen: async value => { calls.push(value); return true; } } });
+    expect(await policy.screen("warm public prose")).toBe(true);
+    let reads = 0;
+    Object.defineProperty(values, "0", { configurable: true, enumerable: true, get() { return ++reads === 1 ? descriptor.value : segments ? "ordinary" : "^ordinary$"; } });
+    try {
+      const verdict = await policy.screen("ordinary");
+      return { verdict, reads, calls };
+    } finally { Object.defineProperty(values, "0", descriptor); }
+  };
+  try {
+    for (const segments of [false, true]) {
+      const expected = await run(before, segments);
+      expect(expected.verdict).toBe(false);
+      expect(await run(createStandalonePolicy, segments)).toEqual(expected);
+    }
+  } finally { restore(); }
+});

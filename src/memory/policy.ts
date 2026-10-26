@@ -107,6 +107,44 @@ function defaultPii(text: string): boolean {
   return false;
 }
 
+interface DefaultPathProbe { names: string[]; segments: string[] }
+
+/** A mandatory literal, not a deny verdict. All other regex grammar uses the canonical checker. */
+function necessaryDenyLiteral(source: string): string | undefined {
+  if (source.length > 256) return;
+  let index = source.startsWith("^") ? 1 : 0, literal = "";
+  for (; index < source.length; index++) {
+    const character = source[index]!;
+    if (/^[A-Za-z0-9_-]$/.test(character)) literal += character;
+    else if (character === "\\" && source[index + 1] === ".") { literal += "."; index++; }
+    else break;
+  }
+  const rest = source.slice(index);
+  return literal && (rest === "" || rest === "$" || rest === "(\\.|$)") ? literal : undefined;
+}
+
+/** Do not add getter reads or assumptions about malformed/mutated exported defaults. */
+function plainDefaultStrings(values: readonly string[]): boolean {
+  if (types.isProxy(values) || !Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype || values.length > 64 || Object.getOwnPropertySymbols(values).length || "toJSON" in values) return false;
+  if (Object.getOwnPropertyNames(values).length !== values.length + 1) return false;
+  for (let index = 0; index < values.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(values, String(index));
+    if (!descriptor || !("value" in descriptor) || typeof descriptor.value !== "string") return false;
+  }
+  return true;
+}
+
+function defaultPathProbe(): DefaultPathProbe | undefined {
+  const needles = DENY_NAMES.map(necessaryDenyLiteral);
+  return needles.every((value): value is string => value !== undefined) ? { names: needles, segments: [...DENY_SEGMENTS] } : undefined;
+}
+
+function mayNeedPathCheck(text: string, probe: DefaultPathProbe | undefined, deny: readonly string[]): boolean {
+  // Only ASCII without path rewrites: NFC and candidate extraction cannot create a missing literal.
+  if (!probe || !/^\p{ASCII}*$/u.test(text) || text.includes("/.") || text.includes("//")) return true;
+  return deny.some(entry => text.includes(entry)) || probe.segments.some(entry => text.includes(entry)) || probe.names.some(needle => text.includes(needle));
+}
+
 /** No filesystem, model, network or storage work occurs while constructing or screening this policy. */
 export function createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy {
   if (!options || typeof options !== "object" || types.isProxy(options) || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length) throw new Error("invalid standalone policy options");
@@ -120,6 +158,10 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
   // Evict the batch when full; a measured need for better hit rates can upgrade this to an LRU.
   const textChecks = new Map<string, boolean>(); let textBytes = 0;
   let defaultDenyRevision = "";
+  // ponytail: the negative probe supports at most 64 dense default entries and 256-character simple name sources.
+  // Everything else falls back; extend the grammar only with differential proof, never an approximate verdict.
+  let pathProbe: DefaultPathProbe | undefined;
+  let defaultsWerePlain = false;
   const publicText = (text: string): boolean => {
     const cached = textChecks.get(text);
     if (cached !== undefined) return cached;
@@ -129,6 +171,7 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
       if (unquoted !== text && looksSecret(unquoted)) return false;
       const normalized = fold(text);
       if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
+      if (!mayNeedPathCheck(normalized, pathProbe, deny)) return true;
       const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
       const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
       return ![...new Set(paths)].some(path => path && isDenied(posix.normalize(path), deny));
@@ -143,8 +186,14 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
   const standalone = (value: unknown): { ok: boolean; value?: unknown } => {
     try {
       // The exported default lists can be tightened by a host between calls.
+      // A getter can change behavior without changing its first serialized value: validate shape every time.
+      const defaultsPlain = plainDefaultStrings(DENY_NAMES) && plainDefaultStrings(DENY_SEGMENTS);
       const revision = JSON.stringify([DENY_NAMES, DENY_SEGMENTS]);
-      if (revision !== defaultDenyRevision) { textChecks.clear(); textBytes = 0; defaultDenyRevision = revision; }
+      const changed = revision !== defaultDenyRevision;
+      if (changed) { textChecks.clear(); textBytes = 0; defaultDenyRevision = revision; }
+      if (!defaultsPlain) pathProbe = undefined;
+      else if (changed || !defaultsWerePlain) pathProbe = defaultPathProbe();
+      defaultsWerePlain = defaultsPlain;
       const complete = snapshot(value);
       if (!complete) return { ok: false };
       // Only pure text checks are reused. Shape/bounds/private flags and the host's detached
