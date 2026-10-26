@@ -8,12 +8,15 @@ import { join } from "node:path";
 export interface RunnerProbe { cpuMs: number; spawnMs: number; ioMs: number; ioSamplesMs: readonly [number, number, number]; checksum: string }
 export interface RunnerBaseline { cpuMs: number; spawnMs: number; ioMs: number; factor: number; source?: string }
 export const RUNNER_CHECKSUM = "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5";
-// ponytail: a fixed 2x healthy-hosted baseline factor permits one re-measure, not a budget multiplier.
-// Upgrade to versioned hardware-specific baselines when enough probe history exists.
+// ponytail: any raw I/O sample over the fixed 2x healthy-hosted median baseline permits
+// one re-measure, not a budget multiplier; isolated healthy spikes can also grant that retry.
+// Before/after probes can miss intermittent slowness inside a workload (40217188778 hook-workloads).
+// Upgrade to in-workload sampling if that gap recurs; do not lower the envelope to fit that failure.
 // #71 per-reading eligibility, run 40209400516: outer-before plus neighbors of successful
 // first-attempt suites without stalls. Linux attempts 1+2 supply 18 eligible readings;
 // Mac attempt 1 supplies 11. Outer-after and failed-suite neighbors remain excluded evidence.
 // CPU/spawn maxima and the median of eligible three-write medians are rounded up to 0.01 ms.
+// #80 keeps those baselines: compare the raw peak, retaining ioMs as a verified median receipt.
 export const RUNNER_BASELINES: Record<string, RunnerBaseline> = {
   linux: { cpuMs: 10.73, spawnMs: 15.44, ioMs: 2.78, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516" },
   darwin: { cpuMs: 7.28, spawnMs: 12.36, ioMs: 2.79, factor: 2, source: "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516/job/121217210762" },
@@ -66,7 +69,7 @@ export function median(values: readonly number[]): number {
 export function runnerIsSlow(before: RunnerProbe, after: RunnerProbe, baseline: RunnerBaseline): boolean {
   if (![baseline.cpuMs, baseline.spawnMs, baseline.ioMs, baseline.factor].every(value => Number.isFinite(value) && value > 0) || baseline.factor <= 1) throw Error("invalid runner baseline");
   for (const probe of [before, after]) if (![probe.cpuMs, probe.spawnMs, probe.ioMs].every(value => Number.isFinite(value) && value > 0) || probe.checksum !== RUNNER_CHECKSUM || probe.ioSamplesMs?.length !== 3 || median(probe.ioSamplesMs) !== probe.ioMs) throw Error("invalid runner probe");
-  return [before, after].some(probe => probe.cpuMs > baseline.cpuMs * baseline.factor || probe.spawnMs > baseline.spawnMs * baseline.factor || probe.ioMs > baseline.ioMs * baseline.factor);
+  return [before, after].some(probe => probe.cpuMs > baseline.cpuMs * baseline.factor || probe.spawnMs > baseline.spawnMs * baseline.factor || Math.max(...probe.ioSamplesMs) > baseline.ioMs * baseline.factor);
 }
 
 if (import.meta.main) console.log(JSON.stringify({ platform: process.platform, bun: Bun.version, samples: Array.from({ length: 5 }, probeRunnerSpeed) }));
