@@ -1,6 +1,11 @@
 # #13 AC4 pre-cutover recall re-measure (#82 G1a)
 
-Owner decision 2026-10-26 (#82 D1): P5 waits for this measurement. Result: **recall@10 = 23/25 = 0.92 under the P1 strictness (25/25 counting the two borderline hits), above the 0.80 margin.** The 2026-10-17 measurement (`docs/p1-ac4-recheck.md`) was 0.52 on the curated tier alone; the difference is the capture tier fed by the claude-mem capture import.
+Owner decision 2026-10-26 (#82 D1): P5 waits for this measurement. Result, on the same imported copy:
+
+- **Library `store.search`: recall@10 = 23/25 = 0.92** under the P1 strictness (25/25 counting the two borderline hits), above the 0.80 margin.
+- **MCP `amem_search`, the path agents use: 18/25 = 0.72 strict, below the margin** (23/25 = 0.92 counting five borderline hits). See "MCP path" below.
+
+The 2026-10-17 measurement (`docs/p1-ac4-recheck.md`) was 0.52 on the curated tier alone; the difference is the capture tier fed by the claude-mem capture import. The gap between the two paths is MCP's candidate selection at this capture volume, so P5 stays blocked until that is fixed and re-measured (#82 G1e).
 
 ## Method
 
@@ -49,6 +54,22 @@ Strict: 23/25 = 0.92 (B counted as misses, as P1 did with its two borderline cas
 - **Resources (copy, this Mac).** The import is a person-run CLI step, not a hook: 43 s, 303 MB peak RSS. The capture shard grew to 194 MB (`capture.db`); the whole home went from 33 MB to 226 MB, within the 512 MB capture cap (R6). Opening the store and running the 25 searches under `bun --smol` (the shipped MCP's flag) peaked at 127-141 MB in two runs, under the R3 200 MB peak; P6 still records the live MCP RSS (#13 AC2).
 - **Duplicates.** Several top-10 lists repeat one entry (query 5: one curated task four times; query 11 the same). That is #82 G1b; it does not change this metric.
 
+## MCP path
+
+The same 25 queries through `amem mcp` (`bun --smol`, `AMEM_HOME` on the copy, cwd in the agent-hub checkout) with `tools/call amem_search {query, limit: 10}`. The top 10 shares only 1-8 of 10 results with `store.search`.
+
+| # | MCP | Note |
+|---|:-:|---|
+| 1, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 20, 21, 22, 24, 25 | H | 3, 10 and 22 by the P1 precedents (#424 follow-ups, #273 owed native, #110 P0 resource task) |
+| 2 | B | done-to-approved "never throws after a write" row; the #243 row is not in the top 10 |
+| 12, 18 | B | as in the library table |
+| 17 | B | agent-mem busy_timeout and "database is locked" rows; the hub #303 rows are not in the top 10 |
+| 23 | B | #112 P2 work lists and #383 work-list follow-ups |
+| 6 | - | the #296 turn-free silent-waits rows rank first in `store.search` but are not in the MCP top 10 |
+| 19 | - | submodule rows without the sandbox subject; the #281 sandbox rows are missing |
+
+Why the paths differ: `amem_search` (src/mcp-memory.ts) screens each tier's rows before selection (the P2 contract) and keeps at most `SEARCH_CANDIDATES` = 5,000 permitted candidates per tier in page order, then ranks them in an in-memory index. With 84,765 capture rows, a broad query matches more rows than that, and the precise older rows can be cut before ranking. `store.search` ranks the whole shard. Each MCP search also took 1.8-5.9 s on this corpus (65 s for the 25 calls), against 2-3 s for the 25 library searches.
+
 ## What this means for P5
 
-The coverage gap of `docs/p1-ac4-recheck.md` closes once the person's alias review maps the claude-mem keys and the `--capture-days` import runs. P5 can proceed on this result (#82 D1), with the import step's aliases matching the two keys above. P6 re-measures the same 25 queries on the live home after the cutover.
+The coverage gap of `docs/p1-ac4-recheck.md` closes in the library once the person's alias review maps the claude-mem keys and the `--capture-days` import runs. Agents recall through MCP, and that path is at 0.72 strict. P5 waits for #82 G1e (MCP candidate selection at real capture volume) and a re-run of this MCP measurement. The import step's aliases should match the two keys above. P6 re-measures the same 25 queries on the live home after the cutover.
