@@ -201,27 +201,32 @@ export class ScreenedSearchIndex<T> {
       if ((db.query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS memoryOnly").get() as { memoryOnly: number }).memoryOnly) throw Error("disk-backed search unavailable");
       db.run("PRAGMA temp_store = FILE");
       db.run(this.available
-        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED)"
-        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT)");
+        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)"
+        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
       db.run("PRAGMA temp.cache_size = -2048");
       this.db = db;
     } catch (error) { db?.close(); throw error; }
   }
 
-  append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T }[]): void {
-    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload) VALUES (?, ?, ?, ?, ?)");
+  append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null }[]): void {
+    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
     this.db.transaction(() => {
-      for (const row of rows) insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value));
+      for (const row of rows) {
+        const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
+        // Invalid deadlines fail closed; this sentinel predates every representable Date.
+        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline);
+      }
     })();
   }
 
   best(query: string, limit: number, now: number, useFts = this.available): { value: T; score: number }[] {
     if (useFts && !ftsTerms(query)) return [];
     const rank = useFts ? "-bm25(docs)" : "1.0";
-    const where = useFts ? "WHERE docs MATCH ?" : "";
+    const instant = new Date(now).toISOString();
+    const where = "WHERE (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
     const rows = this.db.query(`SELECT payload, ${rank} * CASE tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
       / (1 + max(0, (julianday(?) - julianday(at)) / 30.0)) AS score FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`)
-      .all(new Date(now).toISOString(), ...(useFts ? [ftsTerms(query)] : []), limit) as { payload: string; score: number }[];
+      .all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit) as { payload: string; score: number }[];
     return rows.map(row => ({ value: JSON.parse(row.payload) as T, score: row.score }));
   }
 

@@ -197,12 +197,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         try {
           const words = query.toLowerCase().split(/\s+/).filter(Boolean);
           const captureState: { engine?: "fts5" | "substring" } = {};
-          let batch: { body: string; ref: string; tier: string; at: string; value: SearchValue }[] = [];
+          let batch: { body: string; ref: string; tier: string; at: string; value: SearchValue; expiresAt?: string | null }[] = [];
           const append = (value: SearchValue) => {
             const row = value.source === "capture" ? value.capture : value.view;
             batch.push(value.source === "capture"
               ? { value, ref: `capture:${value.capture.id}`, at: row.at, tier: "capture", body: `${value.capture.excerpt}\n${value.capture.paths.join(" ")}\n${value.capture.event}` }
-              : { value, ref: value.source === "repo" ? `repo:${value.view.id}` : value.view.id, at: row.at, tier: value.source === "repo" ? "long" : value.view.tier, body: `${value.view.title ?? ""}\n${value.view.text}\n${value.view.about.join(" ")}` });
+              : { value, ref: value.source === "repo" ? `repo:${value.view.id}` : value.view.id, at: row.at, tier: value.source === "repo" ? "long" : value.view.tier, body: `${value.view.title ?? ""}\n${value.view.text}\n${value.view.about.join(" ")}`, expiresAt: value.source === "curated" ? value.view.expiresAt : null });
             if (batch.length === READ_PAGE) { index.append(batch); batch = []; }
           };
           if (args.includeCapture !== false) {
@@ -219,7 +219,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           for (const view of repoNotes) append({ source: "repo", evidence: false, view });
           if (batch.length) index.append(batch);
-          const selected = index.best(query, limit, Date.now(), useFts).map(({ value, score }) => ({ ...value, score }));
+          const selected = index.best(query, limit, store.readNow(), useFts).map(({ value, score }) => ({ ...value, score }));
           const probe = stale(), result = { engine: useFts ? "fts5" : "substring", hits: selected.map(hit => hit.source === "curated" && "view" in hit && hit.view ? { ...hit, view: decorate(hit.view as View, probe) } : hit) };
           guard(); return observed(result, selected.flatMap(hit => hit.source === "curated" && "view" in hit && hit.view ? [hit.view.id] : []), selected.map(hit => "view" in hit ? hit.view : hit.capture));
         } finally { const position = closers.indexOf(releaseIndex); if (position >= 0) closers.splice(position, 1); releaseIndex(); }

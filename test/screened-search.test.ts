@@ -19,6 +19,22 @@ const database = (value: ScreenedSearchIndex<Payload>) => (value as unknown as {
 const row = (ref: string, body = "needle", tier = "long", daysAgo = 0) =>
   ({ ref, body, tier, at: at(daysAgo), value: { id: ref, detail: { text: "공개 합성 자료" } } });
 
+for (const fallback of [false, true]) test(`expiry is filtered before the final ${fallback ? "substring" : "FTS"} LIMIT`, () => {
+  setFts5AvailableForTest(fallback ? false : undefined);
+  const value = index();
+  value.append([
+    { ...row("expired-strong"), expiresAt: at() },
+    { ...row("invalid-deadline"), expiresAt: "invalid" },
+    { ...row("live-weaker", "needle ordinary filler", "short"), expiresAt: new Date(now + 1000).toISOString() },
+  ]);
+  expect(value.best("needle", 1, now).map(hit => hit.value.id)).toEqual(["live-weaker"]);
+  expect(value.best("needle", 1, now + 1000)).toEqual([]);
+  value.append([row("no-deadline")]);
+  expect(value.best("needle", 1, now + 1000).map(hit => hit.value.id)).toEqual(["no-deadline"]);
+  value.append([{ ...row("future-beyond-sqlite-calendar"), expiresAt: new Date(8640000000000000).toISOString() }]);
+  expect(value.best("needle", 10, now).map(hit => hit.value.id)).toContain("future-beyond-sqlite-calendar");
+});
+
 test.skipIf(process.platform !== "linux" && process.platform !== "darwin")("spilled TEMP state is owner-only and already unlinked while open", () => {
   const files = () => {
     const result: { ino: number; mode: number; links: number }[] = [];
