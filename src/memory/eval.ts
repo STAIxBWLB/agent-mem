@@ -88,7 +88,7 @@ export interface EvalQuestionResult {
 /** `recall` and `hit` are null when no question counts (no answerable question), never 0: an empty average is not a measured zero. */
 export interface EvalAggregate { questions: number; recall: Record<number, number | null>; hit: Record<number, number | null>; mrr: number | null }
 export interface EvalReport {
-  /** The search that was scored: the ranked, project-scoped `store.search` (BM25 with tier and recency weights) that MCP and hub recall use, NOT the `amem search` command's substring filter. */
+  /** Ranked project-scoped `store.search` (BM25 with tier and recency weights), the engine used by default current curated `amem search`; `--filter` keeps legacy substring matching. */
   engine: string;
   ks: number[];
   /** Every question. A question whose expected entry is not in the store scores 0, as a search that cannot find it would. */
@@ -142,7 +142,7 @@ const pct = (value: number | null): string => value === null ? "  n/a" : value.t
 export function evalText(report: EvalReport, label: string): string {
   const head = (name: string, row: EvalAggregate) => `${name.padEnd(11)} ${String(row.questions).padStart(4)}  ${report.ks.map(k => `${pct(row.recall[k] ?? null)}/${pct(row.hit[k] ?? null)}`.padStart(13)).join(" ")}  ${pct(row.mrr).padStart(6)}`;
   return [
-    `eval: ${label} (${report.engine === "substring" ? "substring fallback" : "ranked store.search, engine " + report.engine}; this is the ranking MCP and hub recall use, not the \`amem search\` filter)`,
+    `eval: ${label} (${report.engine === "substring" ? "substring fallback" : "ranked store.search, engine " + report.engine}; same ranked search path as default \`amem search\`; \`--filter\` keeps legacy substring matching)`,
     `${"".padEnd(11)} ${"n".padStart(4)}  ${report.ks.map(k => `@${k} recall/hit`.padStart(13)).join(" ")}  ${"MRR".padStart(6)}`,
     head("all", report.all),
     head("answerable", report.answerable),

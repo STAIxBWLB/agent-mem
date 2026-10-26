@@ -15,6 +15,8 @@ export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 export interface MemoryCommandOptions {
   /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
   person?: boolean;
+  /** Standalone person CLI opt-in. Hosts omit this to retain their screened substring recall. */
+  rankedSearch?: boolean;
   /** Defaults to amem's own names. */
   names?: CommandNames;
   /** Startup-bound canonical project supplied by a host; no model-facing selector. */
@@ -67,6 +69,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
   const names = opts.names ?? AMEM_NAMES, usage = memoryUsage(names.memory);
   if (args.some(arg => arg === "--history" || arg === "--as-of" || arg.startsWith("--history=") || arg.startsWith("--as-of=")) && opts.person !== true) fail("historical recall requires authenticated person intent from the host");
+  if (opts.rankedSearch && opts.person !== true) fail("ranked CLI search requires person intent");
   const store = opts.store ?? opts.open();
   const actor = "user";
   const project = opts.project ?? memoryProjectKey(cwd);
@@ -89,8 +92,14 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (kind && !KINDS.includes(kind as Kind)) fail(`--kind takes ${KINDS.join(", ")}`);
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const q = sub === "search" ? rest.join(" ") : undefined;
-        const state = recallRows(store, project, { person: opts.person, history, asOf, query: q, limit: Number.MAX_SAFE_INTEGER });
-        const all = state.views.filter(view => (!tier || view.tier === tier) && (!kind || view.kind === kind) && (!peer || view.peer === peer) && (!machine || view.machine === machine) && (!since || Date.parse(view.at) >= Date.parse(since)));
+        const ranked = opts.rankedSearch && q?.trim() && !history && asOf === undefined;
+        const state = recallRows(store, project, { person: opts.person, history, asOf, query: ranked ? undefined : q, limit: Number.MAX_SAFE_INTEGER });
+        // Retained history has its own snapshot; the current index cannot rank it. Empty queries keep list semantics.
+        // ponytail: fetch up to the current curated-view count before display caps, so metadata/readable exclusions consume no slots.
+        // Upgrade to paged ranked views if this full-pool person read reaches the R3 ceiling.
+        const candidates = ranked ? store.withDeferredPromotions(() => store.search(q!, { project, includeCapture: false, limit: Math.max(1, state.views.length) }))
+          .hits.flatMap(hit => hit.view ? [hit.view] : []) : state.views;
+        const all = candidates.filter(view => (!tier || view.tier === tier) && (!kind || view.kind === kind) && (!peer || view.peer === peer) && (!machine || view.machine === machine) && (!since || Date.parse(view.at) >= Date.parse(since)));
         const readable = opts.readable(all), rows = readable.slice(0, limit ? Number(limit) : 50);
         ready(rows);
         if (history || asOf !== undefined) {

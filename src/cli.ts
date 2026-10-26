@@ -589,6 +589,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     return options["--json"] ? JSON.stringify(written, null, 2) : `${op === "forget" ? "forgot" : op === "archive" ? "archived" : "unarchived"} ${written.key}${requested !== written.key ? ` (alias ${requested})` : ""}`;
   }
   if (sub === "search" && options["--all-projects"] === true) {
+    if (options["--filter"] === true) throw new Error("--filter applies to project-local search, not --all-projects");
     const words = parsed.positionals.join(" ");
     if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
     const result = searchAllProjects(memoryHome(), words, { ...(options["--limit"] !== undefined ? { limit: Number(options["--limit"]) } : {}), includeArchived: options["--include-archived"] === true });
@@ -731,11 +732,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (args[index] === "--capture-days") { captureArgs.add(index); captureArgs.add(index + 1); }
     else if (args[index]?.startsWith("--capture-days=")) captureArgs.add(index);
   }
-  const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index));
+  // --filter selects the standalone CLI mode; hosts keep their existing raw command arguments.
+  const legacySearch = options["--filter"] === true;
+  const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index) && (!legacySearch || arg !== "--filter"));
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, rankedSearch: !legacySearch, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) {
