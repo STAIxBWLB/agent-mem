@@ -204,6 +204,12 @@ export class ScreenedSearchIndex<T> {
         // The FTS corpus retains tokens only; the full screened payload is stored once.
         db.run("CREATE TEMP TABLE records (ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
         db.run("CREATE VIRTUAL TABLE temp.docs USING fts5(body, content='')");
+        // Bind each screened row once; the trigger keeps payload and token rowids together.
+        db.run("CREATE TEMP VIEW incoming AS SELECT NULL AS body, ref, tier, at, payload, expires FROM records WHERE 0");
+        db.run(`CREATE TEMP TRIGGER incoming_insert INSTEAD OF INSERT ON incoming BEGIN
+          INSERT INTO records (ref, tier, at, payload, expires) VALUES (NEW.ref, NEW.tier, NEW.at, NEW.payload, NEW.expires);
+          INSERT INTO docs (rowid, body) VALUES (last_insert_rowid(), NEW.body);
+        END`);
       } else db.run("CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
       db.run("PRAGMA temp.cache_size = -2048");
       this.db = db;
@@ -212,19 +218,14 @@ export class ScreenedSearchIndex<T> {
 
   append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null }[]): void {
     const insert = this.db.query(this.available
-      ? "INSERT INTO records (ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?)"
+      ? "INSERT INTO incoming (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)"
       : "INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
-    const terms = this.available ? this.db.query("INSERT INTO docs (rowid, body) VALUES (?, ?)") : undefined;
     this.db.transaction(() => {
       for (const row of rows) {
         const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
         // Invalid deadlines fail closed; this sentinel predates every representable Date.
         const expires = deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline;
-        const payload = JSON.stringify(row.value);
-        if (terms) {
-          const result = insert.run(row.ref, row.tier, row.at, payload, expires);
-          terms.run(result.lastInsertRowid, row.body);
-        } else insert.run(row.body, row.ref, row.tier, row.at, payload, expires);
+        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), expires);
       }
     })();
   }

@@ -126,7 +126,7 @@ test("streamed batches apply recency and tier before limiting raw BM25 leaders",
   }
 });
 
-test("contentless TEMP ranking and scores equal the prior full-content schema", () => {
+test("trigger-backed contentless TEMP ranking and scores equal the prior full-content schema", () => {
   if (!fts5Available()) return;
   const value = index(), reference = new Database(":memory:");
   // Freeze the previous query-local schema and score formula as a differential oracle.
@@ -177,6 +177,26 @@ test("a failed append batch rolls both payload records and contentless terms bac
   expect(() => value.append([row("rolled-back"), { ...row("invalid"), value: circular }])).toThrow();
   expect(db.query("SELECT ref FROM records ORDER BY rowid").all()).toEqual([{ ref: "retained" }]);
   expect(value.best("needle", 10, now).map(hit => hit.value.id)).toEqual(["retained"]);
+  value.append([]);
+  value.append([row("after-rollback", "uniquereplayterm")]);
+  expect(value.best("uniquereplayterm", 10, now).map(hit => hit.value.id)).toEqual(["after-rollback"]);
+  expect(value.best("needle", 10, now).map(hit => hit.value.id)).toEqual(["retained"]);
+  expect(db.query("SELECT r.ref FROM docs JOIN records r ON r.rowid = docs.rowid WHERE docs MATCH 'uniquereplayterm'").all()).toEqual([{ ref: "after-rollback" }]);
+});
+
+test("TEMP trigger associates each token stream with its own payload across batches and repeated refs", () => {
+  if (!fts5Available()) return;
+  const value = index(), db = database(value);
+  const first = row("shared-ref", "firstuniqueterm"), second = row("shared-ref", "seconduniqueterm");
+  first.value.id = "first-payload"; second.value.id = "second-payload";
+  value.append([first]); value.append([]); value.append([second, row("third", "thirduniqueterm")]);
+  for (const [query, expected] of [["firstuniqueterm", "first-payload"], ["seconduniqueterm", "second-payload"], ["thirduniqueterm", "third"]] as const) {
+    expect(value.best(query, 10, now).map(hit => hit.value.id)).toEqual([expected]);
+  }
+  expect(db.query("SELECT COUNT(*) AS n FROM records").get()).toEqual({ n: 3 });
+  expect(db.query("SELECT COUNT(*) AS n FROM docs").get()).toEqual({ n: 3 });
+  expect(db.query("SELECT COUNT(*) AS n FROM incoming").get()).toEqual({ n: 0 });
+  expect(db.query("SELECT COUNT(*) AS n FROM main.sqlite_master").get()).toEqual({ n: 0 });
 });
 
 test("without FTS the already screened matching stream keeps weighted fallback and payloads", () => {
