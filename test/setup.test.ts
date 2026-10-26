@@ -678,3 +678,19 @@ test("Antigravity refuses invalid directory ownership receipts before changing c
     expect(image(plan.actions[0]!.files[0]!)).toEqual(before);
   }
 });
+
+test("invalid JCODE_HOME does not block other selected setup targets", () => {
+  for (const JCODE_HOME of ["rel", ""]) {
+    const f = fixture(), options = { ...f.options, env: { ...f.env, JCODE_HOME } }, before = snapshot(f.home);
+    const plan = planSetup("claude", "apply", options);
+    expect(planSetup("claude", "preview", options).targets).toEqual(["claude"]);
+    expect(planSetup("codex", "preview", options).targets).toEqual(["codex"]);
+    expect(snapshot(f.home)).toEqual(before);
+    expect(applySetup(plan, options).applied).toEqual(["claude"]);
+    expect(JSON.parse(text(plan.actions[0]!.files[0]!)).mcpServers.amem).toBeDefined();
+    expect(() => planSetup("jcode", "preview", options)).toThrow("absolute JCODE_HOME");
+    expect(() => planSetup("all", "preview", options)).toThrow("absolute JCODE_HOME");
+    undoSetup(planSetup("claude", "undo", options), options);
+    expect(existsSync(plan.actions[0]!.files[0]!)).toBe(false);
+  }
+});

@@ -122,7 +122,6 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const root = (key: string, fallback: string) => {
     const setting = env[key];
-    if (key === "JCODE_HOME" && setting !== undefined && !isAbsolute(setting)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
     const present = key === "JCODE_HOME" ? setting !== undefined : key === "QWEN_HOME" ? !!setting : !!setting?.trim();
     if (!present) return join(home, fallback);
     const expanded = key === "QWEN_HOME" && /^~(?:[/\\]|$)/.test(setting!) ? join(home, ...setting!.slice(2).split(/[/\\]/)) : setting!;
@@ -155,7 +154,11 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
   if (target === "kimi" || target === "jcode" || target === "agy") return null;
   return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
+function assertJcodeHome(env: Env): void {
+  if (env.JCODE_HOME !== undefined && !isAbsolute(env.JCODE_HOME)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
+}
 function assertJcodeRuntime(c: ReturnType<typeof context>): void {
+  assertJcodeHome(c.env);
   if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(target === "agy" ? [c.workspace!.root] : [])]); }
@@ -187,6 +190,7 @@ const lifecycle = (target: SetupTarget) => target === "jcode" || target === "agy
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
+  if (targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   const pluginNotes: string[] = [];
@@ -411,10 +415,12 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
   finally { closeSync(fd); if (read(file).bytes === Buffer.from(token).toString("base64")) rmSync(file); }
 }
 export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
+  if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => applyUnlocked(plan, options));
 }
 export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
+  if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => undoUnlocked(plan, options));
 }
