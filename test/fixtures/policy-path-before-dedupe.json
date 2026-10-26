@@ -1,0 +1,104 @@
+{
+  "schema": "amem.policy-path-parity/v1",
+  "baselineCommit": "d45f6ade6592f25ae625924a53de6cf27417613d",
+  "baselineSourceSha256": "389f6b49fd8173e23f118efd44233fe24ce417ac3d59b51707089757ad69f467",
+  "corpusSha256": "1b80e81cdad6ccc320e63cd10af1de80db5fe9f82fd231989a6ade68aa01ae5e",
+  "options": {
+    "denyPaths": [
+      "hidden.ts"
+    ],
+    "piiPatterns": [
+      "restricted-marker"
+    ]
+  },
+  "results": [
+    {
+      "name": "public-repeated-prose",
+      "allow": true
+    },
+    {
+      "name": "denied-token-repeated",
+      "allow": false
+    },
+    {
+      "name": "one-denied-among-duplicates",
+      "allow": false
+    },
+    {
+      "name": "longer-prefix-existing-denial",
+      "allow": false
+    },
+    {
+      "name": "shorter-prefix-alone",
+      "allow": true
+    },
+    {
+      "name": "denied-after-shorter-prefix",
+      "allow": false
+    },
+    {
+      "name": "denied-after-public-prefix",
+      "allow": false
+    },
+    {
+      "name": "denied-case-variant",
+      "allow": false
+    },
+    {
+      "name": "denied-fold-variant",
+      "allow": false
+    },
+    {
+      "name": "default-denied-fold-variant",
+      "allow": false
+    },
+    {
+      "name": "normalized-dot-path",
+      "allow": false
+    },
+    {
+      "name": "pii-literal-repeated",
+      "allow": false
+    },
+    {
+      "name": "hangul-public-prose",
+      "allow": true
+    },
+    {
+      "name": "hangul-one-denied-token",
+      "allow": false
+    },
+    {
+      "name": "string-at-16384-bytes",
+      "allow": true
+    },
+    {
+      "name": "string-over-16384-bytes",
+      "allow": false
+    },
+    {
+      "name": "total-at-262144-bytes",
+      "allow": true
+    },
+    {
+      "name": "total-over-262144-bytes",
+      "allow": false
+    },
+    {
+      "name": "nodes-at-4096",
+      "allow": true
+    },
+    {
+      "name": "nodes-over-4096",
+      "allow": false
+    }
+  ],
+  "hostCallOrder": [
+    "public-repeated-prose",
+    "shorter-prefix-alone",
+    "hangul-public-prose",
+    "string-at-16384-bytes",
+    "total-at-262144-bytes",
+    "nodes-at-4096"
+  ]
+}
