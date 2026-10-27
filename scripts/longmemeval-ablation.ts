@@ -81,7 +81,7 @@ export async function runAblations(options: AblationOptions): Promise<any> {
           }
         }
         runs.push({ provenance, report });
-      } finally { git(source, ["worktree", "remove", runtime]); }
+      } finally { git(source, ["worktree", "remove", "--force", runtime]); }
     }
     // ponytail: these four factors target the fixed capture benchmark, not arbitrary score tuning;
     // add a separately reviewed experiment rather than exposing production ranking flags.
