@@ -18,6 +18,14 @@ function put(path: string, text: string | Buffer): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text);
 }
+/** Fixture reference for the shipped Claude encoder, including long macOS temporary paths. */
+function claudeDirectory(cwd: string): string {
+  const physical = realpathSync(cwd), encoded = physical.replace(/[^a-zA-Z0-9]/g, "-");
+  if (encoded.length <= 200) return encoded;
+  let hash = 0;
+  for (let i = 0; i < physical.length; i++) hash = ((hash << 5) - hash + physical.charCodeAt(i)) | 0;
+  return `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
 function candidates(base: string) {
   const store = new CandidateStore({ memoryDir: base });
   try { return store.list({ project: PROJECT, status: "all", kind: "memory", limit: 500 }); }
@@ -51,10 +59,10 @@ test("claude-auto imports only direct project memory Markdown, preserves bytes a
 });
 
 test("default source roots honor Claude and Codex environment configuration and Claude stays on the bound project", async () => {
-  const root = temp("configured"), base = join(root, "memory"), repo = join(root, "repo.with.dot");
+  const root = temp("configured"), base = join(root, "memory"), repo = join(root, "repo.with.dot_and_underscore");
   mkdirSync(repo, { recursive: true });
   const claude = join(root, "claude-profile"), codex = join(root, "codex-home");
-  const encoded = realpathSync(repo).replace(/[/.]/g, "-");
+  const encoded = claudeDirectory(repo);
   put(join(claude, "projects", encoded, "memory", "own.md"), "bound project memory");
   put(join(claude, "projects", "-Users-other-project", "memory", "other.md"), "OTHER-PROJECT-PRIVATE");
   put(join(codex, "memories", "codex.md"), "configured Codex memory");
@@ -64,6 +72,30 @@ test("default source roots honor Claude and Codex environment configuration and 
   expect(JSON.stringify(candidates(base))).toContain("bound project memory");
   expect(JSON.stringify(candidates(base))).not.toContain("OTHER-PROJECT-PRIVATE");
   expect(await importExternalMemory({ base, project: PROJECT, source: "codex", cwd: repo, env, policy: allow })).toMatchObject({ files: 1, added: 1 });
+});
+
+test("Claude default project selection uses non-alphanumeric encoding for spaces, punctuation and Unicode", async () => {
+  const root = temp("encoded"), repo = join(root, "repo.with space_and한글"), claude = join(root, "claude");
+  mkdirSync(repo);
+  const physical = realpathSync(repo), encoded = claudeDirectory(repo);
+  put(join(claude, "projects", encoded, "memory", "own.md"), "encoded path memory");
+  // Deliberately obsolete encoding: the importer must never select this negative fixture.
+  put(join(claude, "projects", physical.replace(/[/.]/g, "-"), "memory", "old.md"), "WRONG-PROJECT-PRIVATE");
+  const base = join(root, "memory");
+  expect(await importExternalMemory({ base, project: PROJECT, source: "claude-auto", cwd: repo, env: { CLAUDE_CONFIG_DIR: claude }, policy: allow })).toMatchObject({ files: 1, added: 1 });
+  expect(JSON.stringify(candidates(base))).toContain("encoded path memory");
+  expect(JSON.stringify(candidates(base))).not.toContain("WRONG-PROJECT-PRIVATE");
+});
+
+test("Claude project selection uses its 200-character prefix and signed path hash for long paths", async () => {
+  const root = temp("long-encoded"), repo = join(root, "a".repeat(80), "b".repeat(80), "with space"), claude = join(root, "claude");
+  mkdirSync(repo, { recursive: true });
+  const physical = realpathSync(repo), encoded = physical.replace(/[^a-zA-Z0-9]/g, "-");
+  expect(encoded.length).toBeGreaterThan(200);
+  put(join(claude, "projects", claudeDirectory(repo), "memory", "own.md"), "long path memory");
+  const base = join(root, "memory");
+  expect(await importExternalMemory({ base, project: PROJECT, source: "claude-auto", cwd: repo, env: { CLAUDE_CONFIG_DIR: claude }, policy: allow })).toMatchObject({ files: 1, added: 1 });
+  expect(JSON.stringify(candidates(base))).toContain("long path memory");
 });
 
 test("codex imports recursive Markdown and JSONL strings/objects while skipping malformed records", async () => {

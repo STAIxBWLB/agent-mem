@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportProject } from "../src/memory/project-export.ts";
 import { importProject } from "../src/memory/project-import.ts";
-import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
+import { appendAlias, ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { entryId, MEMORY_SCHEMA, MemoryStore, openShardStore, type NoteEntry } from "../src/memory/store.ts";
 
@@ -88,6 +88,29 @@ test("a split target routes an imported alias note to its existing alias shard",
   cleanup.push(() => restored.close());
   expect(await importProject(restored, { from: file, project, policy: () => true, confirm: true })).toMatchObject({ read: 2, added: 2, skipped: { invalid: 0 } });
   expect(restored.portableNotes(project).find(note => note.id === aliased)?.project).toBe(alias);
+});
+
+test("a split import refuses an unopened alias owner before appending its canonical row", async () => {
+  const source = home("unopened-alias-source"), target = home("unopened-alias-target"), alias = "unopened-portable";
+  const original = populate(source.dir, source.base);
+  original.note({ op: "note", project: alias, scope: "project", tier: "long", kind: "decision", peer: "kimi", source: "person", text: "Alias row follows canonical row", about: [] });
+  appendAlias(source.base, { alias, key: project, actor: "person", machine: "fixture" });
+  const file = join(source.dir, "unopened-alias.jsonl");
+  await exportProject(source.base, project, { to: file, format: "jsonl" });
+
+  const seed = new MemoryStore({ home: target.dir, deferPromotions: true }); seed.close();
+  ensureShardDescriptor(target.base, project);
+  await migrateShards({ memoryDir: target.base, mode: "apply", authorizedPerson: true, tty: true });
+  appendAlias(target.base, { alias, key: project, actor: "person", machine: "fixture" });
+  ensureShardDescriptor(target.base, alias);
+  expect(existsSync(join(shardDir(target.base, alias), "generation.json"))).toBe(false);
+  const restored = openShardStore({ memoryDir: target.base, project, deferPromotions: true, reconcile: { canonical: project, aliases: [alias] } });
+  cleanup.push(() => restored.close());
+  const log = join(restored.dir, "log", `${restored.machine.id}.jsonl`), before = existsSync(log) ? readFileSync(log, "utf8") : "";
+  await expect(importProject(restored, { from: file, project, policy: () => true, confirm: true })).rejects.toThrow("entry does not belong to this curated shard");
+  expect(existsSync(log) ? readFileSync(log, "utf8") : "").toBe(before);
+  expect(restored.portableNotes(project)).toEqual([]);
+  expect(existsSync(join(shardDir(target.base, alias), "generation.json"))).toBe(false);
 });
 
 test("legacy absent source, null optional fields and empty text survive the id round trip", async () => {
@@ -194,7 +217,7 @@ test("preview reports provenance and validation refuses external relations, futu
   ]);
   const preview = await importProject(restored, { from: file, project, policy: () => true });
   expect(preview).toMatchObject({ applied: false, read: 8, added: 0, wouldAdd: 2, skipped: { invalid: 6 },
-    provenance: { source: { person: 1, hub: 1 }, peer: { legacy: 1, agent: 1 }, scope: { project: 2 } } });
+    provenance: { source: { person: 1, hub: 1 }, peer: { legacy: 1, agent: 1 }, scope: { project: 2 }, machine: { crafted: 2 } } });
   expect(restored.list({ includeSuperseded: true }).map(note => note.id)).toEqual([existing]);
   expect(restored.get(existing, project)?.text).toBe("Existing person note");
   const applied = await importProject(restored, { from: file, project, policy: () => true, confirm: true });
@@ -209,6 +232,24 @@ test("relationships may target another row in the same file", async () => {
   const file = await craftedFile(target.dir, "relations.jsonl", [old, noteBody({ text: "Replacement row", supersedes: oldId })]);
   const restored = new MemoryStore({ home: target.dir, deferPromotions: true }); cleanup.push(() => restored.close());
   expect(await importProject(restored, { from: file, project, policy: () => true, confirm: true })).toMatchObject({ read: 2, added: 2, skipped: { invalid: 0 } });
+});
+
+for (const reversed of [false, true]) test(`policy-refused relation targets invalidate dependent rows before import, reversed=${reversed}`, async () => {
+  const target = home("policy-relations"), refused = noteBody({ text: "PRIVATE-MARKER", machine: "refused-machine" });
+  const refusedId = entryId(refused as unknown as Omit<NoteEntry, "id">);
+  const child = noteBody({ text: "Supersedes a refused row", supersedes: refusedId });
+  const childId = entryId(child as unknown as Omit<NoteEntry, "id">);
+  const grandchild = noteBody({ text: "Promoted from an invalidated relation", promotedFrom: childId });
+  const independent = noteBody({ text: "Independent accepted row", machine: "accepted-machine" });
+  const bodies = [refused, child, grandchild, independent];
+  const file = await craftedFile(target.dir, "policy-relations.jsonl", reversed ? bodies.reverse() : bodies);
+  const restored = new MemoryStore({ home: target.dir, deferPromotions: true }); cleanup.push(() => restored.close());
+  const policy = (note: { text: string }) => !note.text.includes("PRIVATE-MARKER");
+  const preview = await importProject(restored, { from: file, project, policy });
+  expect(preview).toMatchObject({ read: 4, added: 0, wouldAdd: 1, skipped: { invalid: 2, policy: 1 }, provenance: { machine: { "accepted-machine": 1 } } });
+  expect(restored.portableNotes(project)).toEqual([]);
+  expect(await importProject(restored, { from: file, project, policy, confirm: true })).toMatchObject({ added: 1, skipped: { invalid: 2, policy: 1 } });
+  expect(restored.portableNotes(project).map(note => note.text)).toEqual(["Independent accepted row"]);
 });
 
 test("shared scope requires an explicit person opt-in", async () => {

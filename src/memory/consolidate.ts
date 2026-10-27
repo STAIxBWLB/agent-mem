@@ -1,4 +1,4 @@
-import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
+import { CandidateStore, ConsolidationReviewLimit, candidateInputId, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
 import { consolidationClusters } from "./consolidation-clusters.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { recallViewIsLive } from "./recall.ts";
@@ -20,7 +20,10 @@ export interface ConsolidationReport {
   model?: ModelConsolidationReport;
 }
 export class ConsolidationProposalError extends Error {
-  constructor(readonly proposed: string[]) { super(`consolidation proposal interrupted; candidates already queued: ${proposed.join(", ") || "none"}; no curated notes changed`); this.name = "ConsolidationProposalError"; }
+  constructor(readonly proposed: string[], readonly refusal?: ConsolidationReviewLimit) {
+    super(`consolidation proposal interrupted; candidates already queued: ${proposed.join(", ") || "none"}; no curated notes changed${refusal ? `; ${refusal.message}` : ""}`);
+    this.name = "ConsolidationProposalError";
+  }
 }
 const modelAnswer = (row: View) => row.peer === "amem-model" || row.text.startsWith("Model answer:");
 /** On-demand candidate writes only. Every source is screened once under one policy and source revision. */
@@ -67,12 +70,12 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
     // put() is INSERT OR IGNORE: a candidate the person already accepted or rejected keeps its status, so it is neither written again nor reported as queued.
     for (const input of prepared) {
       check();
-      const known = candidates.get(candidateInputId(input), project);
-      if (known && known.status !== "pending") { report.alreadyReviewed++; continue; }
-      const id = candidates.put(input, "public");
+      const id = candidateInputId(input), known = candidates.get(id, project);
+      if (known && known.status !== "pending" || candidates.reviewedConsolidation(id, project)) { report.alreadyReviewed++; continue; }
+      candidates.put(input, "public");
       report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
     }
     if (options.model !== undefined) report.model = await proposeModelConsolidations(store, candidates, synced, options.model, { project, actor: options.actor, check, policy });
-  } catch { throw new ConsolidationProposalError(report.candidates.map(row => row.id)); }
+  } catch (error) { throw new ConsolidationProposalError(report.candidates.map(row => row.id), error instanceof ConsolidationReviewLimit ? error : undefined); }
   return report;
 }
