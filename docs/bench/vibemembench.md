@@ -109,4 +109,50 @@ The complete candidate is checked by the same configured policy and shared priva
 
 Synthetic verification on dgx02: **31 pass, 0 fail** (all 16 existing tests plus 15 compact tests), with the existing Python/Bun network tripwires enabled. Checks cover exact rendering, caps including multibyte paths, template stripping, no-anchor/no-fallback, identical parent hit and rows, source attribution, excluded raw payload, scope isolation, replay/determinism and record-policy refusals. Replay inside the retained checkout: `cd VibeMemBench/scripts && ../../.adapter-venv/bin/python -m unittest -v test_amem_adapter test_amem_compact`.
 
-No real-data `run_memory.py` build, agent run, model call or API key was used for this variant. Probe outcomes remain unmeasured; the reviewer builds and runs it serially after the running pilot. Refs #89 and Refs #88; both stay open.
+Implementing and testing this variant used no real-data `run_memory.py` build, agent run, model call or API key. The reviewer's later real-data build and probe run are reported in Results below.
+
+
+## Results
+
+Both runs used the API solver at the paper's settings: `openrouter/deepseek/deepseek-v4-pro`, mini-swe-agent at the pinned harness configuration, 4 seeds, one job at a time on dgx02. The pilot and probe were pre-registered before scoring, and the full reports are the issue comments linked below. Differences are in points, with a target-level percentile bootstrap 95% CI (10,000 resamples, seed `0x6d2b79f5`). With n = 19 targets, every result is directional.
+
+### Pilot (#88)
+
+[Pre-registration](https://github.com/STAIxBWLB/agent-mem/issues/88#issuecomment-6439830753), [amendment](https://github.com/STAIxBWLB/agent-mem/issues/88#issuecomment-6446691592), [report](https://github.com/STAIxBWLB/agent-mem/issues/88#issuecomment-6451687811).
+
+The pilot covers 20 targets: 12 Python, 4 JavaScript, and one each in TypeScript, Java, Go and Swift. `dbt-labs__dbt-redshift-420` has policy-empty amem memory, which the harness refuses, so the primary analysis uses the other 19. All 236 runs reached `Submitted`.
+
+| Condition | Resolved (19) | Mean steps | Mean input tokens | Cost |
+| --- | --- | --- | --- | --- |
+| base (memory off) | 76.3% | 51.6 | 1.75M | $22.13 |
+| amem | 75.0% | 42.1 | 1.23M | $14.58 |
+| distractor | 77.6% | 43.9 | 1.34M | $19.60 |
+
+- **amem - base:** -1.32 [-13.16, +10.53]. With all 20 targets, counting dbt-redshift-420 as base: -1.25 [-13.75, +8.75].
+- **distractor - base:** +1.32 [-9.21, +14.47].
+- **amem - distractor:** -2.63 [-18.42, +11.84].
+- **Headroom:** amem's losses all fall on targets that base solves 4/4 (marathon-consul-212 4->2, woodwork-640 4->1, cfn-lint-3342 4->3). Its gains fall on 1/4 and 3/4 targets.
+- **Steps:** amem cuts steps and input tokens about as much as the distractor does, so fewer steps is not evidence of useful memory.
+- **Injected record:** a raw capture hit with a median of 2,387 bytes.
+
+The current injected form does not beat memory-off. There is no full 111-target run, and the pilot became the #89 baseline.
+
+### Probe 1 (#89)
+
+[Pre-registration](https://github.com/STAIxBWLB/agent-mem/issues/89#issuecomment-6448103705), [report](https://github.com/STAIxBWLB/agent-mem/issues/89#issuecomment-6454052107).
+
+`amem_compact` (above) ran on the same 19 targets and seeds, with the same top-1 hit for all 18 targets that got a record. Its records have a median of 290 bytes. `allegro__marathon-consul-212` has no file anchor, so it was not run and is scored as base. All 72 runs completed.
+
+| Condition | Resolved (19 scored) | Cost |
+| --- | --- | --- |
+| base | 76.32% | $21.88 |
+| amem | 75.00% | $14.58 |
+| amem_compact | 78.95% | $14.61 |
+
+- **amem_compact - base:** +2.63 [-9.21, +14.47].
+- **amem_compact - amem:** +3.95 [-2.63, +10.53]. On the 18 targets that ran, it is +1.39 [-2.78, +5.56]; most of the primary gap is the base-scored marathon-consul-212.
+- **woodwork-640:** it still drops 4->1 under the compact record from the same hit. The harm comes from which past fix is surfaced, not from its raw form.
+
+The next-step rule required a CI lower bound for `amem_compact - base` above -2 points, and it was not met. Compact anchored rendering (#89 changes 1 and 3) is recorded as a fail at this n, and there is no amem source change from probe 1. #89 continues with change 4 (timing).
+
+`run_eval.py --skip-existing` rewrites `eval_summary.csv` with only the newly scored rows. The probe analysis therefore read harness verdicts rebuilt from every run's `eval_report.json` (`all_ok and passed_match and not error`, matching `eval.py`'s exit rule). The rebuilt verdicts match the harness's 72-row CSV and every pilot per-target count. The run outputs, rebuilt verdicts and analysis JSON stay in the dgx02 scratch checkout under `VibeMemBench/outputs/`.
