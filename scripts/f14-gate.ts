@@ -1,6 +1,6 @@
 /**
  * F14v2 (#107) supersedes the #82 every-set-gain rule: pre-register the target,
- * require target gain, and enforce non-target fixture plus LongMemEval guardrails.
+ * require target gain, and enforce all fixture and LongMemEval guardrails, including declared targets.
  * For the author's record of older experiments remains in docs/contracts.md; those
  * candidates are never automatically re-admitted under this rule.
  * Usage: bun scripts/f14-gate.ts [--json] prints baseline fixtures only.
@@ -128,7 +128,8 @@ export function adopts(input: AdoptionInput): AdoptionVerdict {
     if (!validFixturePair(a, b)) { missing(`fixture ${name}: missing, invalid or mismatched reports`); continue; }
     if (target.fixtureSets.includes(name)) {
       if (!(b!.all.mrr! > a!.all.mrr! || b!.all.hit[1]! > a!.all.hit[1]!)) reject(`fixture target ${name}: no MRR or hit@1 gain`);
-    } else if (b!.all.mrr! < a!.all.mrr! || b!.all.hit[1]! < a!.all.hit[1]! || b!.all.hit[10]! < a!.all.hit[10]!) reject(`fixture guardrail ${name}: MRR, hit@1 or hit@10 decreased`);
+    }
+    if (b!.all.mrr! < a!.all.mrr! || b!.all.hit[1]! < a!.all.hit[1]! || b!.all.hit[10]! < a!.all.hit[10]!) reject(`fixture guardrail ${name}: MRR, hit@1 or hit@10 decreased`);
   }
   for (const dataset of ["S", "M"] as const) {
     const pair = input.longMemEval?.[dataset];

@@ -48,15 +48,31 @@ test("every non-target fixture guardrail covers MRR, hit@1 and hit@10, including
   expect(adopts(input).adopt).toBe(false); // MRR and hit@1 gain cannot hide lost hit@10 on a non-target.
 });
 
-test("declared fixture targets use the primary OR gain rule, not non-target guardrails", () => {
-  const input = evidence(); input.baselineFixtures.temporal = report([2, 2]); input.candidateFixtures.temporal = report([1, 20]);
-  expect(adopts(input).adopt).toBe(true);
+test("fixture targets must gain without losing MRR, hit@1 or hit@10", () => {
+  const cases = [
+    { before: [2, 3, null], after: [1, null, null], losing: "hit10" }, // MRR and hit@1 gain, hit@10 loss.
+    { before: [2, 2, 2], after: [1, 10, 10], losing: "mrr" },        // hit@1 gain, MRR loss.
+    { before: [1, 10, 10], after: [2, 2, 2], losing: "hit1" },       // MRR gain, hit@1 loss.
+  ];
+  for (const name of FIXTURE_NAMES) for (const entry of cases) {
+    const input = evidence(); input.target.fixtureSets = [name];
+    const baseline = report(entry.before), candidate = report(entry.after);
+    input.baselineFixtures[name] = baseline; input.candidateFixtures[name] = candidate;
+    expect(candidate.all.mrr! > baseline.all.mrr! || candidate.all.hit[1]! > baseline.all.hit[1]!).toBe(true);
+    if (entry.losing === "hit10") {
+      expect(candidate.all.mrr!).toBeGreaterThan(baseline.all.mrr!);
+      expect(candidate.all.hit[10]!).toBeLessThan(baseline.all.hit[10]!);
+    }
+    const verdict = adopts(input);
+    expect(verdict.adopt).toBe(false); expect(verdict.status).toBe("fail");
+    expect(verdict.reasons.some(reason => reason.includes(`fixture guardrail ${name}`))).toBe(true);
+  }
 });
 
 test("fixture primary accepts MRR-only or hit@1-only gains", () => {
   const input = evidence(); input.candidateFixtures.temporal = report([2, 2, null]);
   expect(adopts(input).adopt).toBe(true);
-  input.baselineFixtures.temporal = report([2, 2]); input.candidateFixtures.temporal = report([1, null]);
+  input.baselineFixtures.temporal = report([2, 2, 2]); input.candidateFixtures.temporal = report([1, 4, 4]);
   expect(adopts(input).adopt).toBe(true);
   input.baselineFixtures.ko = report([1, 10, 10]); input.candidateFixtures.ko = report([2, 2, 2]);
   expect(adopts(input).reasons.some(reason => reason.includes("fixture guardrail ko"))).toBe(true);
