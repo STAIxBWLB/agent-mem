@@ -4,7 +4,8 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
 
 ## Before you start
 
-- **amem installed at the released version**, the same one agent-hub pins (`bun add -g @staix/agent-mem@<version>`). Check it with `amem --version`.
+- **amem installed at the released version**, the same one agent-hub pins (`bun add -g @staix/agent-mem@<version>`). Check it with `amem --version`. Never install a version older than agent-hub's pin, even if an older `dot` recommends it.
+- **A dot release that includes [dotfiles#300](https://github.com/STAIxBWLB/dotfiles/issues/300).** `dot ai memory status` must name the installed version shown by `amem --version`, without a version mismatch. An older `dot` can recommend a downgrade and overwrite registrations owned by amem; upgrade it before trusting its version guidance, and skip its registration command below until then.
 - **A release that has `--capture-days`.** The bounded capture import (#13 design G, PR #76) shipped after 0.8.0; `amem import claude-mem --help` must list `--capture-days`. With an older release only curated notes and `work_state` lists move, and recent observations stay in the archived claude-mem home.
 - **No agent session is writing memory** while you import, so the cursors read a stable source.
 
@@ -15,8 +16,12 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `amem status`: where the memory home is (default `~/.agenthub/memory`, movable with `AMEM_HOME`).
 - **Register amem with every client**
   - `amem setup all` prints the plan and changes nothing. Read it.
-  - `amem setup all --apply` asks for confirmation, then registers `amem mcp` and the hooks each client supports. `amem setup all --undo` reverses it byte for byte.
-  - `dot ai memory install`, then `dot ai memory status`: dotfiles registers amem for the agents it manages and prints the lines for Claude Code and Codex.
+  - **Claude Code, Codex, Kimi, Pi, Qwen and Jcode: amem only.** `amem setup all --apply` asks for confirmation, then registers `amem mcp` and the hooks each client supports. Jcode is MCP-only. Setup reports and skips missing clients; check that every client you use is available in the plan.
+    - Kimi's default files are `~/.kimi-code/mcp.json` and `~/.kimi-code/config.toml`; Qwen's is `~/.qwen/settings.json`. Custom `KIMI_CODE_HOME` and `QWEN_HOME` change those roots. Do not overwrite these entries with another registering tool.
+  - **Antigravity: amem only, per repository.** Run `amem setup agy` inside each repository to read its plan, then `amem setup agy --apply`. It writes `<repo>/.agents/mcp_config.json`; it is excluded from `all` and never registers a global entry.
+  - **Kiro and Copilot: dot only.**
+    - Before `dot ai memory install`, copy `~/.kiro/settings/mcp.json` and `~/.copilot/mcp-config.json`, if present, into `~/claude-mem-backup-<date>/pre-dot/`, keeping their paths (`pre-dot/.kiro/settings/mcp.json` and `pre-dot/.copilot/mcp-config.json`). Record which files did not exist.
+    - Run `dot ai memory install`, then `dot ai memory status`, only with a released `dot` that includes dotfiles#300. With an older `dot`, skip `dot ai memory install`: it overwrites amem's Kimi and Qwen entries and adds a global Antigravity entry at `~/.gemini/config/mcp_config.json`, invalidating amem's undo receipts. Do not run dot's manual Claude Code or Codex registration lines after amem setup.
 - **Map claude-mem project keys** (#15 D2). claude-mem keys are often basenames (`agent-hub`, `work/dev/agent-hub`). Nothing merges on a name match.
   - `amem alias list` shows the existing aliases.
   - `amem alias add <claude-mem-key> <repository-key>` for each key you want carried over. `amem projects` lists the repository keys.
@@ -53,9 +58,10 @@ The retirement never deletes data, but current dotfiles cannot recreate what it 
 - Move `~/.claude-mem.archive-<date>` back to `~/.claude-mem`.
 - Reinstall the claude-mem plugin and marketplace at the recorded versions with `claude plugin` and `codex plugin`.
 - Copy the backed-up MCP config files and `~/.claude/settings.json` back to their paths.
+  - For Kiro and Copilot, restore the copies from `~/claude-mem-backup-<date>/pre-dot/`, not the later retirement backup. If a file was recorded as absent before dot installation, remove its newly created file if it contains no other configuration; otherwise remove only its `amem` server entry.
 - Copy `~/.config/dotfiles/agents/AGENTS.md` and every rendered instruction file back from the backup. Do not run `dot ai agents apply` while amem is on PATH: it would write the amem block again and render it everywhere. Read back that the SSOT and each target contain the claude-mem block again. Run `dot ai agents apply` only after amem is uninstalled, or after a dotfiles change that lets you keep the claude-mem block.
 - The bridge and sync agents come back only if you passed the gate above: point each backed-up plist's ProgramArguments at the pre-#296 `dot`, copy it to `~/Library/LaunchAgents/`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`. Without that release, leave them out; they were not running before the cutover either.
-- `amem setup all --undo` removes the amem registrations. The amem home keeps everything it imported; nothing in it needs undoing.
+- `amem setup all --undo` reverses only amem's registrations for Claude Code, Codex, Kimi, Pi, Qwen and Jcode, using its receipts. For Antigravity, run `amem setup agy --undo` inside each repository where you applied it. These commands do not undo dot's Kiro or Copilot registrations; restore their pre-dot state as above. The amem home keeps everything it imported; nothing in it needs undoing.
 
 ## P6 live week
 
