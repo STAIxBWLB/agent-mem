@@ -3,7 +3,12 @@ import { openSync, closeSync, fstatSync, readSync, constants } from "node:fs";
 import { scoreRetrieval, type Backend, type GoldEvidence, type RankedTurn } from "./longmemeval-metrics.ts";
 
 export const PAIRED_RANDOMIZATION_SEED = 0x6d2b79f5;
+export type Bm25Control = "strict" | "reported";
+export const BM25_REPORTED_NOTICE = "BM25 ranking-list equality is waived for this reported comparison; BM25 movement is descriptive and does not imply adoption.";
 const PERMUTATIONS = 10_000, MAX_REPORT_BYTES = 128 * 1024 * 1024;
+export interface CompareOptions { bm25Control?: Bm25Control }
+export interface Bm25MovementRow { type: "overall" | string; metric: "sessionRecallAllAt10" | "sessionRecallAnyAt10" | "MRR" | "ndcgAnyAt10"; n: number; baseline: number; candidate: number; delta: number }
+export interface Bm25Movement { eligibleQuestions: number; changedQuestions: number; changedRankingLists: number; rows: Bm25MovementRow[] }
 type Direction = "gain" | "loss";
 export interface PairedRandomizationResult { n: number; delta: number; pValue: number; permutations: number; seed: number }
 export interface LongMemEvalComparisonRow {
@@ -17,6 +22,7 @@ export interface LongMemEvalTargetTest {
 }
 export interface LongMemEvalComparison {
   scope: "single-pair"; ruleVersion: "f14v2"; rows: LongMemEvalComparisonRow[]; targetTests: LongMemEvalTargetTest[];
+  bm25Control: Bm25Control; notices: string[]; bm25Movement?: Bm25Movement;
   guardrailsPass: boolean; targetsPass: boolean; pairPass: boolean;
 }
 type ReportQuestion = {
@@ -110,7 +116,7 @@ function scoreRows(report: Report, type: string | "overall", backend: "mcp" | "l
   return { values, mean: sum / values.size };
 }
 
-function sameControls(base: Report, candidate: Report): void {
+function sameControls(base: Report, candidate: Report, bm25Control: Bm25Control): void {
   for (const key of ["sha256", "bytes"] as const) assert(base.dataset[key] === candidate.dataset[key], `dataset ${key} mismatch`);
   for (const key of ["limit", "harnessSha256"] as const) assert(base[key] === candidate[key], `${key} mismatch`);
   for (const key of ["definitions", "selection"] as const) assert(canonical(base[key]) === canonical(candidate[key]), `${key} mismatch`);
@@ -119,13 +125,15 @@ function sameControls(base: Report, candidate: Report): void {
   for (const [id, left] of a) {
     const right = b.get(id)!;
     for (const key of ["type", "abstention", "gold", "rows", "upstreamNoUserTarget"] as const) assert(canonical(left[key]) === canonical(right[key]), `${key} mismatch for ${id}`);
-    assert(canonical(left.rankings.bm25) === canonical(right.rankings.bm25), `BM25 ranking mismatch for ${id}`);
+    if (bm25Control === "strict") assert(canonical(left.rankings.bm25) === canonical(right.rankings.bm25), `BM25 ranking mismatch for ${id}`);
   }
 }
 
-export function compareLongMemEval(baseValue: unknown, candidateValue: unknown, targetTypes: readonly string[] = []): LongMemEvalComparison {
+export function compareLongMemEval(baseValue: unknown, candidateValue: unknown, targetTypes: readonly string[] = [], options: CompareOptions = {}): LongMemEvalComparison {
+  const bm25Control = options.bm25Control ?? "strict";
+  assert(bm25Control === "strict" || bm25Control === "reported", "invalid bm25Control");
   const base = validateReport(baseValue, "baseline"), candidate = validateReport(candidateValue, "candidate");
-  sameControls(base, candidate);
+  sameControls(base, candidate, bm25Control);
   assert(Array.isArray(targetTypes) && new Set(targetTypes).size === targetTypes.length && targetTypes.every(t => typeof t === "string" && t.length > 0), "invalid target types");
   const types = [...new Set(base.results.map(q => q.type))].sort();
   for (const type of types) assert(base.results.some(q => q.type === type && !q.abstention), `type ${type} has no eligible questions`);
@@ -161,7 +169,24 @@ export function compareLongMemEval(baseValue: unknown, candidateValue: unknown, 
   }
   const guardrailsPass = rows.every(row => row.guardrailPass);
   const targetsPass = targetTests.length === 2 && targetTests.every(test => test.targetGain);
-  return { scope: "single-pair", ruleVersion: "f14v2", rows, targetTests, guardrailsPass, targetsPass, pairPass: guardrailsPass && targetsPass };
+  let bm25Movement: Bm25Movement | undefined;
+  if (bm25Control === "reported") {
+    const eligible = base.results.filter(q => !q.abstention).slice().sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const candidateById = new Map(candidate.results.map(q => [q.id, q]));
+    const changedQuestions = eligible.filter(q => canonical(q.rankings.bm25) !== canonical(candidateById.get(q.id)!.rankings.bm25)).length;
+    const movementRows: Bm25MovementRow[] = [];
+    const movementMetrics = ["sessionRecallAllAt10", "sessionRecallAnyAt10", "MRR", "ndcgAnyAt10"] as const;
+    for (const type of ["overall", ...types]) for (const metric of movementMetrics) {
+      const selected = eligible.filter(q => type === "overall" || q.type === type);
+      const before = selected.map(q => scoreRetrieval(q.gold, q.rankings.bm25)[metric]);
+      const after = selected.map(q => scoreRetrieval(q.gold, candidateById.get(q.id)!.rankings.bm25)[metric]);
+      const baseline = before.reduce((sum, value) => sum + value, 0) / before.length;
+      const candidateMean = after.reduce((sum, value) => sum + value, 0) / after.length;
+      movementRows.push({ type, metric, n: selected.length, baseline, candidate: candidateMean, delta: candidateMean - baseline });
+    }
+    bm25Movement = { eligibleQuestions: eligible.length, changedQuestions, changedRankingLists: changedQuestions, rows: movementRows };
+  }
+  return { scope: "single-pair", ruleVersion: "f14v2", rows, targetTests, bm25Control, notices: bm25Control === "reported" ? [BM25_REPORTED_NOTICE] : [], ...(bm25Movement ? { bm25Movement } : {}), guardrailsPass, targetsPass, pairPass: guardrailsPass && targetsPass };
 }
 
 export function readBoundedReport(file: string): unknown {
@@ -177,15 +202,17 @@ export function readBoundedReport(file: string): unknown {
   } finally { closeSync(fd); }
 }
 
-function cliArgs(args: readonly string[]): { baseline: string; candidate: string; targetTypes: string[]; json: boolean } {
-  let baseline: string | undefined, candidate: string | undefined, targetRaw: string | undefined, json = false;
+function cliArgs(args: readonly string[]): { baseline: string; candidate: string; targetTypes: string[]; json: boolean; bm25Control: Bm25Control } {
+  let baseline: string | undefined, candidate: string | undefined, targetRaw: string | undefined, json = false, bm25Control: Bm25Control = "strict", bm25ControlSeen = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--json" && !json) { json = true; continue; }
-    if (["--baseline", "--candidate", "--target-types"].includes(arg) && args[i + 1] !== undefined) {
+    if (["--baseline", "--candidate", "--target-types", "--bm25-control"].includes(arg) && args[i + 1] !== undefined) {
       const value = args[++i]!; if (arg === "--baseline" && baseline === undefined) baseline = value;
       else if (arg === "--candidate" && candidate === undefined) candidate = value;
-      else if (arg === "--target-types" && targetRaw === undefined) targetRaw = value; else throw Error("LongMemEval compare: duplicate or invalid argument");
+      else if (arg === "--target-types" && targetRaw === undefined) targetRaw = value;
+      else if (arg === "--bm25-control" && !bm25ControlSeen && (value === "strict" || value === "reported")) { bm25Control = value; bm25ControlSeen = true; }
+      else throw Error("LongMemEval compare: duplicate or invalid argument");
       continue;
     }
     throw Error("LongMemEval compare: invalid arguments; use --baseline FILE --candidate FILE [--target-types a,b] [--json]");
@@ -193,16 +220,18 @@ function cliArgs(args: readonly string[]): { baseline: string; candidate: string
   assert(!!baseline && !!candidate, "--baseline and --candidate are required");
   const targetTypes = targetRaw === undefined ? [] : targetRaw.split(",");
   assert(new Set(targetTypes).size === targetTypes.length, "duplicate target type");
-  return { baseline, candidate, targetTypes, json };
+  return { baseline, candidate, targetTypes, json, bm25Control };
 }
 
 if (import.meta.main) {
-  if (process.argv.length === 3 && process.argv[2] === "--help") console.log("bun scripts/longmemeval-compare.ts --baseline FILE --candidate FILE [--target-types knowledge-update,multi-session] [--json]");
+  if (process.argv.length === 3 && process.argv[2] === "--help") console.log("bun scripts/longmemeval-compare.ts --baseline FILE --candidate FILE [--target-types knowledge-update,multi-session] [--bm25-control strict|reported] [--json]");
   else {
-    const args = cliArgs(process.argv.slice(2)), result = compareLongMemEval(readBoundedReport(args.baseline), readBoundedReport(args.candidate), args.targetTypes);
+    const args = cliArgs(process.argv.slice(2)), result = compareLongMemEval(readBoundedReport(args.baseline), readBoundedReport(args.candidate), args.targetTypes, { bm25Control: args.bm25Control });
     if (args.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log("LongMemEval comparison scope: single-pair; this is NOT an adoption decision");
+      for (const notice of result.notices) console.log(`NOTICE\t${notice}`);
+      if (result.bm25Movement) for (const row of result.bm25Movement.rows) console.log(`BM25 MOVEMENT\t${row.type}\t${row.metric}\tn=${row.n}\t${row.baseline.toFixed(4)} -> ${row.candidate.toFixed(4)}\tdelta=${row.delta.toFixed(4)}`);
       for (const test of result.targetTests) console.log(`POOLED TARGET\t${test.backend}\ttypes=${test.types.join(",")}\tn=${test.n}\t${test.baseline.toFixed(4)} -> ${test.candidate.toFixed(4)}\tdelta=${test.delta.toFixed(4)}\tpGain=${test.pGain.toFixed(4)}\ttargetGain=${test.targetGain}`);
       for (const row of result.rows) console.log(`${row.type}\t${row.backend}\t${row.metric}\tn=${row.n}\t${row.baseline.toFixed(4)} -> ${row.candidate.toFixed(4)}\tdelta=${row.delta.toFixed(4)}\ttol=${row.tolerance.toFixed(3)}\tpGain=${row.pGain.toFixed(4)}\tpLoss=${row.pLoss.toFixed(4)}\tguardrail=${row.guardrailPass}\ttargetGain=${row.targetGain}`);
       console.log(`single-pair verdict: ${args.targetTypes.length ? result.pairPass ? "PASS" : "FAIL" : "guardrails-only (no target declared)"}; guardrails=${result.guardrailsPass}; targets=${result.targetsPass}; NOT an adoption decision`);

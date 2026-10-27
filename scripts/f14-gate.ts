@@ -7,7 +7,7 @@
  */
 import { evalSeeded, FIXTURE_PATH, KO_FIXTURE_PATH, readEvalSet, type RankFn } from "../src/memory/eval-fixture.ts";
 import type { EvalReport } from "../src/memory/eval.ts";
-import { compareLongMemEval, type LongMemEvalComparison } from "./longmemeval-compare.ts";
+import { compareLongMemEval, BM25_REPORTED_NOTICE, type Bm25Control, type LongMemEvalComparison } from "./longmemeval-compare.ts";
 import type { View } from "../src/memory/store.ts";
 
 const PROJECT = "example.test/eval/fixture";
@@ -84,6 +84,8 @@ export interface PreRegisteredTarget { fixtureSets: readonly FixtureName[]; long
 export interface ReportPair { baseline: unknown; candidate: unknown }
 export interface AdoptionInput {
   target: PreRegisteredTarget;
+  /** Explicit pre-registered query-preparation experiment; default keeps BM25 lists fixed. */
+  bm25Control?: Bm25Control;
   baselineFixtures: Record<string, EvalReport>;
   candidateFixtures: Record<string, EvalReport>;
   longMemEval?: Partial<Record<"S" | "M", ReportPair>>;
@@ -121,8 +123,9 @@ export function adopts(input: AdoptionInput): AdoptionVerdict {
   let incomplete = false, failed = false;
   const missing = (reason: string) => { reasons.push(reason); incomplete = true; };
   const reject = (reason: string) => { reasons.push(reason); failed = true; };
+  if (input?.bm25Control === "reported") reasons.push(BM25_REPORTED_NOTICE);
   const target = input?.target;
-  if (!validTarget(target)) return { ruleVersion: "f14v2", adopt: false, status: "incomplete", reasons: ["an explicit valid pre-registered target is required"], comparisons };
+  if (!validTarget(target)) return { ruleVersion: "f14v2", adopt: false, status: "incomplete", reasons: [...reasons, "an explicit valid pre-registered target is required"], comparisons };
   for (const name of FIXTURE_NAMES) {
     const a = input.baselineFixtures?.[name], b = input.candidateFixtures?.[name];
     if (!validFixturePair(a, b)) { missing(`fixture ${name}: missing, invalid or mismatched reports`); continue; }
@@ -135,7 +138,7 @@ export function adopts(input: AdoptionInput): AdoptionVerdict {
     const pair = input.longMemEval?.[dataset];
     if (!pair) { missing(`LongMemEval ${dataset}: paired reports required`); continue; }
     try {
-      const result = compareLongMemEval(pair.baseline, pair.candidate, target.longMemEvalTypes);
+      const result = compareLongMemEval(pair.baseline, pair.candidate, target.longMemEvalTypes, { bm25Control: input.bm25Control });
       const full = (report: any) => report.selection?.questionTypes === null && report.selection?.skippedByType === 0 && report.selection?.examined === report.questions;
       if (!full(pair.baseline) || !full(pair.candidate)) { missing(`LongMemEval ${dataset}: full unfiltered dataset reports required`); continue; }
       comparisons[dataset] = result;

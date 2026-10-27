@@ -220,7 +220,7 @@ F14v2 supersedes #82's requirement for a gain on every fixture set. It changes m
 
 The paired test uses 10,000 independent sign-flip permutations of the per-question candidate-minus-baseline differences, xorshift32 seed `0x6d2b79f5` reset for each test, and `(extreme + 1) / (10000 + 1)` Monte Carlo p-values. Gain and loss use opposite one-sided tails; ties count as extreme (with 1e-15 comparison slack for floating-point ties). Inputs are paired by stable question ID and abstentions are excluded identically to the existing metric scorer. Aggregate means are recomputed from the ranked turns with `scoreRetrieval`, not trusted from the report's summary fields. Missing/error backends and interrupted reports are refused, not silently dropped.
 
-`scripts/longmemeval-compare.ts` reads two bounded regular-file reports and refuses mismatched dataset hash/size, question IDs/type/abstention, gold/corpus evidence, stored-row metadata, BM25 turn lists, harness/metric definitions, selection or result limit. Runtime commit/version and variant labels may differ because those identify the candidate. It prints each dataset pair's overall/per-type deltas, tolerances, gain/loss p-values, pooled target tests and single-pair verdict. The output explicitly **is not an adoption decision**: it lacks the other dataset, fixture evidence and private AC4. With no declared LongMemEval target it reports guardrails only. The full gate requires unfiltered S/M reports with distinct dataset identities; a subset comparison cannot establish adoption.
+`scripts/longmemeval-compare.ts` reads two bounded regular-file reports and refuses mismatched dataset hash/size, question IDs/type/abstention, gold/corpus evidence, stored-row metadata, BM25 turn lists (the default `strict` control), harness/metric definitions, selection or result limit. Runtime commit/version and variant labels may differ because those identify the candidate. It prints each dataset pair's overall/per-type deltas, tolerances, gain/loss p-values, pooled target tests and single-pair verdict. The output explicitly **is not an adoption decision**: it lacks the other dataset, fixture evidence and private AC4. With no declared LongMemEval target it reports guardrails only. The full gate requires unfiltered S/M reports with distinct dataset identities; a subset comparison cannot establish adoption.
 
 ```sh
 bun scripts/longmemeval-compare.ts --baseline baseline-S.json --candidate candidate-S.json --target-types knowledge-update,multi-session --json
@@ -302,3 +302,75 @@ bun scripts/longmemeval-recency-summary.ts --directory /reports --output /report
 ```
 
 The manifest records the frozen measurement driver SHA-256 `9b9bbfb017759a0f74c18ac4523512cfd1b055db862ec410ca50799e5c8d2317` and the exact gate/comparison source hashes. The summary is portable and includes no raw downloaded questions or corpus text. Its report hashes bind this execution; source/data/harness hashes and the fixed transforms support independent reruns.
+
+
+## Reported BM25 control for query-preparation experiments (#104)
+
+The default comparator and `adopts` input keep `bm25Control: "strict"`: a changed BM25 ranking list still refuses the comparison. A pre-registered query-preparation experiment can explicitly request `bm25Control: "reported"` (CLI `--bm25-control reported`). This waives only BM25 ranking equality; all dataset, question, gold/corpus, stored-row, harness, metric-definition, selection, limit and completion controls remain strict. Every such comparison and gate verdict names the waiver, and the output reports BM25 overall/per-type all@10, any@10, MRR and ndcg_any@10 deltas plus changed ranking-list counts. BM25 movement is descriptive, not a target gain or an adoption decision.
+
+#104's primary target is pooled all@10 over all six eligible LongMemEval types (the overall eligible set), separately for S/M and MCP/library: four one-sided tests, all p < 0.05. MRR up remains an unchanged recorded expectation and is enforced through the existing guardrails, not a new gain test. Fixture targets are empty; all four fixtures must be no-loss. The 33-word candidate list and expectations remain as registered in issuecomment-6433195809. Existing reports contain no query text, so a per-question assertion for queries without stopwords is skipped per the planner ruling; pure query-preparation tests cover nonmembers and Korean invariance.
+
+
+## Full pre-registered Lucene33 comparison (#104)
+
+The fixed 33-word candidate is **not publicly eligible under F14v2**. Overall all@10 decreases in S and M on both MCP and library, so none of the four required positive, significant primary gain tests passes. All fixture and LongMemEval guardrails pass, but matching guardrails does not replace primary gain. No production query-preparation change is retained. Private AC4 was not run; the actual full verdict stays `incomplete` with explicit AC4 missing and the four known primary failures.
+
+Baseline is main `6d557ad6c9df158d25e312f9f751b37fc0d2499a` after the #113 merge. The implementation and explicit reported-BM25 gate mode were frozen before measurement in `b7838b7`; the word list, fallback, expectations and target were not tuned after scores. Baseline/candidate each completed full S and M: 500 questions per run, 470 eligible, 30 excluded abstentions, zero failed paths. Only the private candidate runtime's `ftsTerms` changes: whole lowercased variants lose the fixed Lucene33 words before OR join; an empty filter restores original bounded variants. The existing 32-term/64-variant windows are not refilled or widened, and Korean handling is unchanged.
+
+The [compact manifest](stopwords-104-summary.json) contains source/data/driver/report/patch hashes, all fixture aggregates, per-type deltas and p-values, BM25 movement and real verdict reasons. Full raw reports remain on dgx02. The aggregator validated every receipt and source/patch/report hash, all dataset/question/gold/row/harness/selection controls, and identical S/M treatment code. `bm25Control: "reported"` explicitly waives only BM25 ranking equality and prints that waiver; the default remains strict.
+
+### Fixture MRR
+
+| Fixture | Baseline | Lucene33 |
+|---|---:|---:|
+| built-in | 0.9063 | 0.9063 |
+| held-out | 0.8739 | 0.8739 |
+| ko | 0.8934 | 0.8934 |
+| temporal | 0.6782 | 0.7731 |
+
+All four fixtures are no-loss on MRR, hit@1 and hit@10. No fixture or gold expectation was edited.
+
+### Full S/M overall results
+
+| Set | Backend | Baseline all@10 | Lucene33 all@10 | Baseline any@10 | Lucene33 any@10 | Baseline MRR | Lucene33 MRR |
+|---|---|---:|---:|---:|---:|---:|---:|
+| S | mcp | 0.865957 | 0.861702 | 0.974468 | 0.976596 | 0.891640 | 0.889545 |
+| S | library | 0.865957 | 0.861702 | 0.974468 | 0.976596 | 0.891624 | 0.889311 |
+| S | bm25 | 0.893617 | 0.891489 | 0.970213 | 0.968085 | 0.899303 | 0.899090 |
+| M | mcp | 0.710638 | 0.708511 | 0.917021 | 0.914894 | 0.785471 | 0.784731 |
+| M | library | 0.717021 | 0.714894 | 0.919149 | 0.917021 | 0.784331 | 0.788297 |
+| M | bm25 | 0.772340 | 0.776596 | 0.919149 | 0.921277 | 0.790366 | 0.791743 |
+
+### Primary overall all@10 tests
+
+All six non-abstention types are pooled (470 questions) within each dataset/backend. These are the four fixed-seed, one-sided 10,000-permutation tests; MRR remains a recorded expectation and existing guardrail, not a newly added primary test.
+
+| Set | Backend | Delta | p(gain) | Target gain |
+|---|---|---:|---:|---|
+| S | mcp | -0.004255 | 1.000000 | no |
+| S | library | -0.004255 | 1.000000 | no |
+| M | mcp | -0.002128 | 0.874213 | no |
+| M | library | -0.002128 | 0.874513 | no |
+
+### Moving plain-BM25 control
+
+| Set | Eligible BM25 lists changed | all@10 delta | any@10 delta | MRR delta | ndcg_any@10 delta |
+|---|---:|---:|---:|---:|---:|
+| S | 221 / 470 | -0.002128 | -0.002128 | -0.000213 | +0.005637 |
+| M | 208 / 470 | +0.004255 | +0.002128 | +0.001378 | +0.004274 |
+
+Per-type BM25 deltas appear beside candidate deltas in the manifest. Ranking-list equality was not silently assumed: both comparisons and the actual gate verdict carry the explicit waiver notice. Invalid BM25 turns and every other evidence mismatch still refuse evaluation. Current reports have no query text, so the conditional no-stopword-question assertion was skipped per planner ruling; unit tests verify nonmember, whole-term and Korean invariance without adding plumbing.
+
+The expectation of overall all@10 increases is missed for both datasets/backends. The S overall MRR increase expectation is also missed, and not every type is flat/up. These observations remain in the tables/manifest without changing the registered expectation or trying another list. No guardrail row fails under the existing tolerances and significance waiver; the binding failure is the absence of primary all@10 gain.
+
+### Reproduction
+
+Use fresh output paths for both `baseline` and `stopwords`, each S and M, and collect each mode's four fixture reports with its S run. The producer verifies the pinned dataset hash and size. Smoke `--max-questions` reports are explicitly incomplete and cannot establish adoption.
+
+```sh
+bun scripts/longmemeval-stopwords.ts --mode baseline --input /data/longmemeval_s_cleaned.json --output /reports/baseline-S.json --variant S --fixtures-output /reports/baseline-fixtures.json
+bun scripts/longmemeval-stopwords-summary.ts --directory /reports --output /reports/summary.json
+bun scripts/longmemeval-compare.ts --baseline /reports/baseline-S.json --candidate /reports/stopwords-S.json --target-types single-session-user,single-session-assistant,single-session-preference,multi-session,knowledge-update,temporal-reasoning --bm25-control reported --json
+```
+
+The source/ranking implementation remains baseline; the package gains no query flag, config key, tokenizer/schema change or runtime dependency from this evidence PR. The fixed candidate exists only in disposable experimental runtimes. The manifest records driver SHA-256 `7215c688f789a711615f0071bbcffd47748d2b887a565117851a1b907cd5816f` and the gate/comparison source hashes; no raw downloaded questions or corpus text is committed.
