@@ -1,3 +1,4 @@
+import { rankedScoreSql, rankedScoreSqlDetails, type ScoreFactors } from "./search-score.ts";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -187,6 +188,8 @@ export class SearchIndex {
   close(): void { this.db?.close(); }
 }
 
+const SCREENED_SCORE = rankedScoreSql(), SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
+
 /** Screened query-local corpus in SQLite-owned TEMP storage, removed even when the process exits. */
 export class ScreenedSearchIndex<T> {
   readonly available = fts5Available();
@@ -222,15 +225,21 @@ export class ScreenedSearchIndex<T> {
     })();
   }
 
-  best(query: string, limit: number, now: number, useFts = this.available): { value: T; score: number }[] {
+  best(query: string, limit: number, now: number, useFts = this.available, explain = false): { value: T; score: number; scoreDetails?: ScoreFactors }[] {
     if (useFts && !ftsTerms(query)) return [];
-    const rank = useFts ? "-bm25(docs)" : "1.0";
+    const score = useFts ? SCREENED_SCORE : SCREENED_SUBSTRING_SCORE;
     const instant = new Date(now).toISOString();
     const where = "WHERE (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
-    const rows = this.db.query(`SELECT payload, ${rank} * CASE tier WHEN 'long' THEN 1.0 WHEN 'capture' THEN 0.5 ELSE 0.9 END
-      / (1 + max(0, (julianday(?) - julianday(at)) / 30.0)) AS score FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`)
-      .all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit) as { payload: string; score: number }[];
-    return rows.map(row => ({ value: JSON.parse(row.payload) as T, score: row.score }));
+    const factors = explain ? rankedScoreSqlDetails(useFts ? "bm25(docs)" : "-1.0", useFts) : undefined;
+    const columns = factors ? `, ${factors.rawBm25Rank} AS rawBm25Rank, ${factors.tierFactor} AS tierFactor, ${factors.recencyFactor} AS recencyFactor` : "";
+    const statement = this.db.query(`SELECT payload, ${score} AS score${columns} FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`);
+    const rows = (explain ? statement.all(instant, instant, now, ...(useFts ? [ftsTerms(query)] : []), limit)
+      : statement.all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit)) as { payload: string; score: number; rawBm25Rank?: number | null; tierFactor?: number | null; recencyFactor?: number | null }[];
+    return rows.map(row => {
+      const hit: { value: T; score: number; scoreDetails?: ScoreFactors } = { value: JSON.parse(row.payload) as T, score: row.score };
+      if (explain) hit.scoreDetails = { rawBm25Rank: row.rawBm25Rank ?? null, tierFactor: row.tierFactor ?? null, recencyFactor: row.recencyFactor ?? null, finalScore: row.score, matchMode: useFts ? "fts5" : "substring" };
+      return hit;
+    });
   }
 
   close(): void {

@@ -10,6 +10,8 @@ import { memoryHome } from "./home.ts";
 import { machineId, type Machine } from "./machine.ts";
 import { assertProjectActive } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
+import { rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
+export type { SearchScoreDetails } from "./search-score.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
@@ -168,10 +170,12 @@ export interface Filter { project?: string; tier?: Tier; kind?: Kind; peer?: str
 /** #13 search: `Filter` plus the capture-tier switch (on by default; capture is recall, never curated evidence). */
 export interface SearchFilter extends Filter {
   includeCapture?: boolean;
+  /** Attach score factors only when explicitly requested. */
+  explain?: boolean;
   /** A host that writes capture with a `retentionDays` override passes the same value here; files decide otherwise. */
   captureRetentionDays?: number;
 }
-export interface SearchHit { source: "curated" | "capture"; score: number; view?: View; capture?: CaptureRow }
+export interface SearchHit { source: "curated" | "capture"; score: number; scoreDetails?: SearchScoreDetails; view?: View; capture?: CaptureRow }
 export interface SearchResult { engine: "fts5" | "substring"; hits: SearchHit[] }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
 
@@ -1057,12 +1061,15 @@ export class MemoryStore {
    */
   search(q: string, f: SearchFilter = {}): SearchResult {
     const limit = f.limit ?? 200;
-    if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map((view) => ({ source: "curated" as const, score: 0, view })) };
+    if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map(view => {
+      const hit: SearchHit = { source: "curated", score: 0, view };
+      if (f.explain) hit.scoreDetails = unrankedScoreDetails("curated", hit.score);
+      return hit;
+    }) };
     const visible = new Map(this.live(f).filter((v) => (!f.project || this.inScope(v.project, f.project) || v.scope === "shared")
       && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)).map((v) => [v.id, v]));
     for (const store of this.readStores()) store.syncSearchIndex();
     const now = this.now();
-    const recency = (at: string): number => 1 / (1 + Math.max(0, now - Date.parse(at)) / (30 * 24 * 3600_000));
     const hits: SearchHit[] = [];
     // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
     // starve this project's LIMIT.
@@ -1082,7 +1089,9 @@ export class MemoryStore {
           if (!view || seen.has(hit.ref)) continue;
           seen.add(hit.ref);
           found++;
-          hits.push({ source: "curated", score: -hit.rank * (view.tier === "long" ? 1 : 0.9) * recency(hit.at), view });
+          const selected: SearchHit = { source: "curated", score: rankedScore(hit.rank, view.tier, hit.at, now), view };
+          if (f.explain) selected.scoreDetails = rankedScoreDetails("curated", hit.rank, view.tier, hit.at, now, selected.score);
+          hits.push(selected);
         }
         if (ranked.length < page) break;
       }
@@ -1097,12 +1106,18 @@ export class MemoryStore {
       const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
       const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
       for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {
-        hits.push({ source: "capture", score: -rank * 0.5 * recency(row.at), capture: row });
+        const selected: SearchHit = { source: "capture", score: rankedScore(rank, "capture", row.at, now), capture: row };
+        if (f.explain) selected.scoreDetails = rankedScoreDetails("capture", rank, "capture", row.at, now, selected.score);
+        hits.push(selected);
       }
     }
     // Where FTS misses entirely (a stopword-only query, a tokenization edge), the substring filter is the safety net.
     if (!hits.length && q.trim()) {
-      for (const view of this.list({ ...f, q })) hits.push({ source: "curated", score: 0, view });
+      for (const view of this.list({ ...f, q })) {
+        const hit: SearchHit = { source: "curated", score: 0, view };
+        if (f.explain) hit.scoreDetails = unrankedScoreDetails("curated", hit.score);
+        hits.push(hit);
+      }
     }
     const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));

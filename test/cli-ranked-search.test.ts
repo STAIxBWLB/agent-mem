@@ -37,6 +37,15 @@ test("person CLI uses curated store.search ranking and keeps the legacy --filter
     const expected = f.store.search("needle", { project: f.project, includeCapture: false }).hits.map(hit => hit.view!);
     expect(expected[0]!.id).toBe(strong);
     expect(await f.search("needle")).toEqual(expected);
+    const explained = await f.search("needle", "--explain");
+    expect(explained.map(row => row.id)).toEqual(expected.map(row => row.id));
+    expect(explained.every(row => "scoreDetails" in row)).toBe(true);
+    const repeatedExplain = await f.search("needle", "--explain", "--explain");
+    expect(repeatedExplain.map(row => row.id)).toEqual(explained.map(row => row.id));
+    expect(repeatedExplain.every(row => "scoreDetails" in row)).toBe(true);
+    const plainText = await runCli(["search", "needle"], f.context), explainedText = await runCli(["search", "needle", "--explain"], f.context);
+    expect(plainText).not.toContain("score:"); expect(explainedText).toContain("score:");
+    expect(explainedText.split("\n").filter(line => !line.startsWith("score: ")).join("\n")).toBe(plainText);
     expect((await f.search("needle", "--filter")).map(row => row.id)).toEqual([recent, strong]);
     expect((await f.search("needle", "--filter", "--filter")).map(row => row.id)).toEqual([recent, strong]);
     f.note("lighthouse"); f.note("beacon");
@@ -53,6 +62,9 @@ test("metadata filters precede the effective limit, capture stays out, and reads
     const args = ["needle", "--kind", "contract", "--peer", "reader", "--tier", "short", "--machine", f.store.machine.id, "--limit", "1"];
     const rows = await f.search(...args);
     expect(rows.map(row => row.id)).toEqual([wanted]); expect(rows[0]!.tier).toBe("short");
+    const explained = await f.search(...args, "--explain");
+    expect(explained.map(row => row.id)).toEqual([wanted]);
+    expect(explained[0]).toHaveProperty("scoreDetails");
     expect(await f.search(...args, "--since", new Date(Date.now()).toISOString())).toEqual([]);
     expect(await f.search("needle", "--machine", "not-this-machine")).toEqual([]);
     const capture = new CaptureStore({ home: f.root, project: f.project });
@@ -103,6 +115,8 @@ test("host raw recall stays screened/newest-first and ranked opt-in requires per
     expect(result.map(row => row.id)).toEqual([older]); expect(emitted).toEqual([[older]]);
     let opens = 0;
     await expect(rawMemoryCommand(["search", "needle"], f.root, { rankedSearch: true, open: () => { opens++; return f.store; }, readable: rows => rows, importPolicy: () => () => false })).rejects.toThrow("person intent");
+    await expect(rawMemoryCommand(["search", "needle", "--explain"], f.root, { person: true, open: () => { opens++; return f.store; }, readable: rows => rows, importPolicy: () => () => false })).rejects.toThrow("ranked search and person intent");
+    await expect(rawMemoryCommand(["show", "missing"], f.root, { person: true, rankedSearch: true, explainSearch: true, open: () => { opens++; return f.store; }, readable: rows => rows, importPolicy: () => () => false })).rejects.toThrow("applies only to search");
     expect(opens).toBe(0);
   } finally { f.store.close(); }
 });
@@ -110,10 +124,14 @@ test("host raw recall stays screened/newest-first and ranked opt-in requires per
 test("search modes retain agent refusal before store access, read TTY rules, and cross-project validation", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-ranked-gate-")); roots.push(root);
   const home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
-  for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) for (const args of [["search", "needle"], ["search", "needle", "--filter"]]) {
+  for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) for (const args of [["search", "needle"], ["search", "needle", "--filter"], ["search", "needle", "--explain"]]) {
     await expect(runCli(args, { cwd: root, env: { [marker]: "fixture" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
     expect(existsSync(home)).toBe(false);
   }
   await expect(runCli(["search", "needle", "--filter", "--all-projects"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--filter applies to project-local search");
+  for (const args of [["--filter"], ["--history"], ["--as-of", "2026-01-01T00:00:00Z"], ["--all-projects"], []] as string[][]) {
+    await expect(runCli(["search", ...(args.length ? ["needle"] : []), "--explain", ...args], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
+  }
+  await expect(runCli(["search", "--explain"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
   await expect(runCli(["forget", "missing"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow(/terminal|TTY/);
 });

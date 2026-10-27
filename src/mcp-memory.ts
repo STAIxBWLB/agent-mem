@@ -187,8 +187,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         } finally { index.close(); }
       },
       async amem_search(args) {
-        bound(args, ["query", "limit", "since", "includeCapture"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
+        bound(args, ["query", "limit", "since", "includeCapture", "explain"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
         if (args.includeCapture !== undefined && typeof args.includeCapture !== "boolean") unavailable();
+        if (args.explain !== undefined && typeof args.explain !== "boolean") unavailable();
         if (!await currentPolicy().screen({ query })) unavailable();
         // ponytail: scan all matches into private disposable disk state, keeping one body page in JS.
         // Work scales with matches; a policy-bound cache is the upgrade if this reaches the unchanged watchdog.
@@ -219,7 +220,10 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           for (const view of repoNotes) append({ source: "repo", evidence: false, view });
           if (batch.length) index.append(batch);
-          const selected = index.best(query, limit, store.readNow(), useFts).map(({ value, score }) => ({ ...value, score }));
+          const selected = index.best(query, limit, store.readNow(), useFts, args.explain === true).map(({ value, score, scoreDetails }) => {
+            const hit = { ...value, score };
+            return scoreDetails ? { ...hit, scoreDetails: { source: value.source, ...scoreDetails } } : hit;
+          });
           const probe = stale(), result = { engine: useFts ? "fts5" : "substring", hits: selected.map(hit => hit.source === "curated" && "view" in hit && hit.view ? { ...hit, view: decorate(hit.view as View, probe) } : hit) };
           guard(); return observed(result, selected.flatMap(hit => hit.source === "curated" && "view" in hit && hit.view ? [hit.view.id] : []), selected.map(hit => "view" in hit ? hit.view : hit.capture));
         } finally { const position = closers.indexOf(releaseIndex); if (position >= 0) closers.splice(position, 1); releaseIndex(); }

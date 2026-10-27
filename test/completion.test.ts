@@ -80,15 +80,17 @@ test("default command options and equals values share parser validation with com
   expect(() => parseCommand(["list", "--json=true"])).toThrow();
 });
 
-test("search filter is a shared boolean option in parsing, help and completion metadata", () => {
-  const parsed = parseCommand(["search", "lighthouse", "beacon", "--filter", "--json"]);
-  expect(parsed.options).toMatchObject({ "--filter": true, "--json": true });
+test("search filter and explain are shared boolean options in parsing, help and completion metadata", () => {
+  const parsed = parseCommand(["search", "lighthouse", "beacon", "--filter", "--explain", "--json"]);
+  expect(parsed.options).toMatchObject({ "--filter": true, "--explain": true, "--json": true });
   expect(parsed.positionals).toEqual(["lighthouse", "beacon"]);
-  expect(parsed.rawArgs).toEqual(["search", "lighthouse", "beacon", "--filter", "--json"]);
+  expect(parsed.rawArgs).toEqual(["search", "lighthouse", "beacon", "--filter", "--explain", "--json"]);
   const search = completionDefinitions().find(definition => definition.path.join(" ") === "search")!;
   expect(search.options["--filter"]?.value).toBeUndefined();
   expect(search.options["--filter"]?.description).toContain("newest first");
-  expect(commandHelp().split("\n").find(line => line.trimStart().startsWith("search "))).toContain("[--filter]");
+  expect(search.options["--explain"]?.value).toBeUndefined();
+  expect(search.options["--explain"]?.description).toContain("score factors");
+  expect(commandHelp().split("\n").find(line => line.trimStart().startsWith("search "))).toContain("[--explain]");
   expect(() => parseCommand(["list", "--filter"])).toThrow();
 });
 
@@ -119,11 +121,11 @@ test("completion metadata and CLI parser cover the retained raw command cases an
         for (const flag of flags) expect(Object.keys(row.options)).toContain(flag);
         // #15 T5: `search --all-projects` and `--include-archived` are the person's cross-project read, handled by src/cli.ts before the raw command (like --policy-free);
         // the raw command, which hosts share, refuses them (test/cli-projects.test.ts). The exemption is these two flags on `search` only.
-        // #82 G1c: the CLI strips --filter and selects its rankedSearch opt-in; raw host searches keep the legacy path.
+        // #82 G1c: the CLI strips --filter/--explain and selects standalone search behavior; raw host searches keep the legacy path.
         // #40 F16: `sync --if-due --force` are the person's schedule gate, handled by src/cli.ts before the raw command, which never sees them (test/sync-cadence.test.ts); the exemption is these two flags on `sync` only.
         // #15 T4: `promote --to repo --confirm --confirm-public` are the person's repo-scope promotion, handled by src/cli.ts before the raw command; the raw command refuses them (test/repo-scope.test.ts). The exemption is these three flags on `promote` only.
         // #13 G: `import claude-mem --capture-days` is handled by src/cli.ts after the curated import and is stripped before the raw command.
-        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived", "--filter"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force"].includes(flag) || name === "import" && flag === "--capture-days").toBe(true);
+        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived", "--filter", "--explain"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force"].includes(flag) || name === "import" && flag === "--capture-days").toBe(true);
       }
     }
   }

@@ -33,7 +33,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--all-projects": flag("List every active project's candidates; the reply says it crossed projects"), "--project": text("List one named project's candidates") } },
   list: { description: "List memory", options: { ...filters, ...history } },
   search: { description: "Rank current curated project notes; history/as-of and empty queries retain newest-first filtering", options: { ...filters, ...history,
-    "--filter": flag("Current-project curated notes: match every word as a substring, newest first; not with --all-projects"), "--all-projects": flag("Search every active project; the reply says it crossed projects"),
+    "--filter": flag("Current-project curated notes: match every word as a substring, newest first; not with --all-projects"), "--explain": flag("Include the score factors for ranked project-local results"), "--all-projects": flag("Search every active project; the reply says it crossed projects"),
     "--include-archived": flag("With --all-projects, also read archived projects") }, args: [{ name: "words", variadic: true }] },
   brief: { description: "Read intent/path memory: fails first, then decisions and contracts; untrusted data within a UTF-8 byte cap", options: { ...json,
     "--for": text("Explicit intent"), "--paths": text("Repeatable named path"), "--symbols": text("Repeatable named symbol"), "--bytes": text("Complete brief-body byte cap (1..8192, default 2048)") } },

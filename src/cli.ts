@@ -43,6 +43,7 @@ import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, 
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
 import { evalText, parseKs } from "./memory/eval.ts";
+import { unrankedScoreDetails } from "./memory/search-score.ts";
 import { builtinSet, evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
 import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
@@ -589,6 +590,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     return options["--json"] ? JSON.stringify(written, null, 2) : `${op === "forget" ? "forgot" : op === "archive" ? "archived" : "unarchived"} ${written.key}${requested !== written.key ? ` (alias ${requested})` : ""}`;
   }
   if (sub === "search" && options["--all-projects"] === true) {
+    if (options["--explain"] === true) throw new Error("--explain applies to current-project ranked search, not --all-projects");
     if (options["--filter"] === true) throw new Error("--filter applies to project-local search, not --all-projects");
     const words = parsed.positionals.join(" ");
     if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
@@ -598,6 +600,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     return [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
   }
   if (sub === "search" && options["--include-archived"] === true) throw new Error("--include-archived only applies with --all-projects");
+  if (sub === "search" && options["--explain"] === true) {
+    if (options["--filter"] === true) throw new Error("--explain cannot be combined with --filter");
+    if (options["--history"] === true || options["--as-of"] !== undefined) throw new Error("--explain cannot be combined with --history or --as-of");
+    if (!parsed.positionals.join(" ").trim()) throw new Error("--explain requires a non-empty search query");
+  }
   if (sub === "alias") {
     if (parsed.path[1] === "add") {
       const [from, to] = parsed.positionals;
@@ -686,10 +693,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const kind = options["--kind"], since = options["--since"], limit = options["--limit"] !== undefined ? Number(options["--limit"]) : 50;
     const rows = read.views.filter(row => options["--tier"] !== "short" && (kind === undefined || row.kind === kind) && (typeof since !== "string" || Date.parse(row.at) >= Date.parse(since))
       && words.every(word => `${row.title ?? ""}\n${row.text}\n${row.about.join(" ")}`.toLowerCase().includes(word))).slice(0, limit);
-    if (options["--json"]) { try { const base = JSON.parse(output) as unknown[]; return JSON.stringify([...base, ...rows], null, 2); } catch { return output; } }
+    const repoDetails = explainSearch ? rows.map(row => ({ ...row, scoreDetails: unrankedScoreDetails("repo", null) })) : rows;
+    if (options["--json"]) { try { const base = JSON.parse(output) as unknown[]; return JSON.stringify([...base, ...repoDetails], null, 2); } catch { return output; } }
     const line = (row: RepoView) => `repo:${row.id.slice(0, 8)}  ${row.at.slice(0, 16).replace("T", " ")}  repo  ${row.kind.padEnd(8)} ${`${row.title ? `${row.title}: ` : ""}${row.text}`.replace(/\s+/g, " ").slice(0, 100)}`;
     const note = read.state === "unsafe" ? [`(repo scope unavailable: ${read.reason})`] : read.skipped.malformed + read.skipped.mismatched + read.skipped.withheld ? [`(${read.skipped.malformed + read.skipped.mismatched} repo lines skipped as invalid, ${read.skipped.withheld} withheld by the screen)`] : [];
-    return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...rows.map(line)] : []), ...note].join("\n");
+    const lines = explainSearch ? rows.flatMap(row => [line(row), `score: ${JSON.stringify(unrankedScoreDetails("repo", null))}`]) : rows.map(line);
+    return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...lines] : []), ...note].join("\n");
   };
   const crosses = definition.policyFree === true;
   const cwd = context.cwd ?? process.cwd();
@@ -732,13 +741,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (args[index] === "--capture-days") { captureArgs.add(index); captureArgs.add(index + 1); }
     else if (args[index]?.startsWith("--capture-days=")) captureArgs.add(index);
   }
-  // --filter selects the standalone CLI mode; hosts keep their existing raw command arguments.
+  // --filter and --explain select standalone CLI behavior; hosts keep their existing raw command arguments.
   const legacySearch = options["--filter"] === true;
-  const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index) && (!legacySearch || arg !== "--filter"));
+  const explainSearch = sub === "search" && options["--explain"] === true;
+  const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index) && (!legacySearch || arg !== "--filter") && (!explainSearch || arg !== "--explain"));
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, rankedSearch: !legacySearch, project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) {

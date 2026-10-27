@@ -1,6 +1,6 @@
 /** Measurement-only factor isolation. Never adds a production ranking switch. */
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -8,7 +8,9 @@ import { runLongMemEval } from "./longmemeval.ts";
 
 export const ABLATIONS = ["baseline", "recency-off", "tier-off", "both-off"] as const;
 export type Ablation = typeof ABLATIONS[number];
-const FILES = ["src/memory/store.ts", "src/memory/search-fts.ts"] as const;
+const LEGACY_FILES = ["src/memory/store.ts", "src/memory/search-fts.ts"] as const;
+const SCORE_FILE = "src/memory/search-score.ts" as const;
+type AblationFile = typeof LEGACY_FILES[number] | typeof SCORE_FILE;
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const DRIVER_AT_LOAD = sha(readFileSync(import.meta.filename, "utf8"));
 function once(source: string, from: string, to: string): string {
@@ -16,9 +18,18 @@ function once(source: string, from: string, to: string): string {
   return source.replace(from, to);
 }
 /** Exact, version-fenced changes only in disposable runtime worktrees. */
-export function ablateSource(source: string, file: typeof FILES[number], mode: Ablation): string {
+export function ablateSource(source: string, file: AblationFile, mode: Ablation): string {
   if (!ABLATIONS.includes(mode)) throw Error("unknown ablation");
   const recency = mode === "recency-off" || mode === "both-off", tier = mode === "tier-off" || mode === "both-off";
+  if (file === SCORE_FILE) {
+    const tierAnchor = "const TIER_FACTOR: ScoreExpr = { op: \"tier\" };";
+    const recencyAnchor = "const RECENCY_FACTOR: ScoreExpr = { op: \"reciprocal\", value: DENOMINATOR };";
+    // Even baseline validates both anchors, fencing experiments to the shared fixed recipe.
+    let output = once(source, tierAnchor, tier ? "const TIER_FACTOR: ScoreExpr = { op: \"constant\", value: 1 };" : tierAnchor);
+    return once(output, recencyAnchor, recency
+      ? "const RECENCY_FACTOR: ScoreExpr = { op: \"reciprocal\", value: { op: \"add\", left: { op: \"constant\", value: 1 }, right: { op: \"multiply\", left: { op: \"constant\", value: 0 }, right: DENOMINATOR } } };"
+      : recencyAnchor);
+  }
   if (file === "src/memory/store.ts") {
     const age = "const recency = (at: string): number => 1 / (1 + Math.max(0, now - Date.parse(at)) / (30 * 24 * 3600_000));";
     source = once(source, age, recency ? "const recency = (_at: string): number => 1;" : age);
@@ -56,16 +67,18 @@ export async function runAblations(options: AblationOptions): Promise<any> {
       if (sha(readFileSync(import.meta.filename, "utf8")) !== DRIVER_AT_LOAD) throw Error("ablation driver changed during run");
       const runtime = join(temporary, mode); git(source, ["worktree", "add", "--detach", runtime, options.baseCommit]);
       try {
-        const changes = FILES.map(file => {
+        // New runtimes share the score recipe; pinned historical runtimes retain their exact two-file transforms.
+        const files: readonly AblationFile[] = existsSync(join(runtime, SCORE_FILE)) ? [SCORE_FILE] : LEGACY_FILES;
+        const changes = files.map(file => {
           const before = readFileSync(join(runtime, file), "utf8"), after = ablateSource(before, file, mode);
           if (after !== before) writeFileSync(join(runtime, file), after);
           return { file, before: sha(before), after: sha(after), changed: before !== after };
         });
         if (mode !== "baseline") {
-          git(runtime, ["add", "--", ...FILES]);
+          git(runtime, ["add", "--", ...files]);
           git(runtime, ["-c", "user.name=LongMemEval measurement", "-c", "user.email=benchmark@example.invalid", "commit", "--no-gpg-sign", "-m", "test: isolate " + mode + " for LongMemEval measurement"]);
         }
-        const commit = git(runtime, ["rev-parse", "HEAD"]), patch = git(runtime, ["diff", "--no-ext-diff", "--no-textconv", options.baseCommit, "HEAD", "--", ...FILES]);
+        const commit = git(runtime, ["rev-parse", "HEAD"]), patch = git(runtime, ["diff", "--no-ext-diff", "--no-textconv", options.baseCommit, "HEAD", "--", ...files]);
         const provenance = { mode, baseCommit: options.baseCommit, runtimeCommit: commit, patchSha256: sha(patch), changes, driverSha256: DRIVER_AT_LOAD };
         writeFileSync(join(output, mode + "-provenance.json"), JSON.stringify(provenance, null, 2) + "\n", { mode: 0o600 });
         const report = await runLongMemEval({ input, output: join(output, mode + ".json"), sourceRoot: runtime,
