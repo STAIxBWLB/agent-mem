@@ -12,10 +12,10 @@ export const MAX_QUESTIONS = 500, MAX_ENTRIES = 200, MAX_QUESTION_CHARS = 500, M
 export const DEFAULT_KS: readonly number[] = [1, 5, 10];
 
 export const EVAL_KINDS = ["decision", "finding", "contract", "fail"] as const;
-export interface EvalEntry { key: string; title?: string; text: string; kind?: (typeof EVAL_KINDS)[number]; tier?: "short" | "long"; about?: string[] }
+export interface EvalEntry { key: string; title?: string; text: string; kind?: (typeof EVAL_KINDS)[number]; tier?: "short" | "long"; about?: string[]; /** Explicit seed date; absent keeps the legacy positional day. */ at?: string }
 /** `tag` is an optional label for what a question probes (a test counts them); it never changes the scoring. */
 export interface EvalQuestion { q: string; expect: string[]; tag?: string }
-export interface EvalSet { schema: typeof EVAL_SCHEMA; entries?: EvalEntry[]; questions: EvalQuestion[] }
+export interface EvalSet { schema: typeof EVAL_SCHEMA; entries?: EvalEntry[]; questions: EvalQuestion[]; /** Search clock for a self-contained set; defaults to one day after its latest seed. */ now?: string }
 
 const fail = (message: string): never => { throw new Error(`invalid eval set: ${message}`); };
 const object = (value: unknown, what: string): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : fail(`${what} must be an object`);
@@ -24,17 +24,25 @@ function exact(row: Record<string, unknown>, allowed: readonly string[], what: s
 }
 const text = (value: unknown, what: string, max: number): string => typeof value === "string" && value.trim() !== "" && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) ? value : fail(`${what} must be a non-empty string of at most ${max} characters`);
 
+/** ISO calendar date or canonical UTC timestamp; reject Date.parse's rollover and locale-dependent forms. */
+function date(value: unknown, what: string): string {
+  if (typeof value !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{3})?Z)?$/.test(value)) return fail(`${what} must be an ISO date or UTC timestamp`);
+  const ms = Date.parse(value), normalized = value.length === 10 ? value + "T00:00:00.000Z" : value.length === 20 ? value.slice(0, -1) + ".000Z" : value;
+  if (!Number.isFinite(ms) || new Date(ms).toISOString() !== normalized) return fail(`${what} must be a valid ISO date or UTC timestamp`);
+  return value;
+}
+
 /** Strict, bounded parse of untrusted JSON. Unknown keys are errors, so a typo cannot silently change what is measured. */
 export function parseEvalSet(raw: unknown): EvalSet {
   const root = object(raw, "the set");
-  exact(root, ["schema", "entries", "questions"], "the set");
+  exact(root, ["schema", "entries", "questions", "now"], "the set");
   if (root.schema !== EVAL_SCHEMA) fail(`schema must be "${EVAL_SCHEMA}"`);
   const entries: EvalEntry[] = [], keys = new Set<string>();
   if (root.entries !== undefined) {
     if (!Array.isArray(root.entries) || !root.entries.length || root.entries.length > MAX_ENTRIES) fail(`entries must hold 1 to ${MAX_ENTRIES} items when present`);
     for (const [index, item] of (root.entries as unknown[]).entries()) {
       const row = object(item, `entries[${index}]`);
-      exact(row, ["key", "title", "text", "kind", "tier", "about"], `entries[${index}]`);
+      exact(row, ["key", "title", "text", "kind", "tier", "about", "at"], `entries[${index}]`);
       const key = text(row.key, `entries[${index}].key`, 80);
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key)) fail(`entries[${index}].key may use letters, digits, ".", "_" and "-"`);
       if (keys.has(key)) fail(`entries[${index}].key "${key}" repeats`);
@@ -42,9 +50,10 @@ export function parseEvalSet(raw: unknown): EvalSet {
       const kind = row.kind === undefined ? undefined : (EVAL_KINDS as readonly unknown[]).includes(row.kind) ? row.kind as EvalEntry["kind"] : fail(`entries[${index}].kind must be one of ${EVAL_KINDS.join(", ")}`);
       const tier = row.tier === undefined ? undefined : row.tier === "short" || row.tier === "long" ? row.tier : fail(`entries[${index}].tier must be short or long`);
       const about = row.about === undefined ? undefined : Array.isArray(row.about) && row.about.length <= 20 ? (row.about as unknown[]).map((value, at) => text(value, `entries[${index}].about[${at}]`, 200)) : fail(`entries[${index}].about must be a list of at most 20 strings`);
-      entries.push({ key, text: text(row.text, `entries[${index}].text`, MAX_ENTRY_CHARS), ...(row.title === undefined ? {} : { title: text(row.title, `entries[${index}].title`, 200) }), ...(kind ? { kind } : {}), ...(tier ? { tier } : {}), ...(about ? { about } : {}) });
+      entries.push({ key, text: text(row.text, `entries[${index}].text`, MAX_ENTRY_CHARS), ...(row.title === undefined ? {} : { title: text(row.title, `entries[${index}].title`, 200) }), ...(kind ? { kind } : {}), ...(tier ? { tier } : {}), ...(about ? { about } : {}), ...(row.at === undefined ? {} : { at: date(row.at, `entries[${index}].at`) }) });
     }
   }
+  if (root.now !== undefined && !entries.length) fail("now requires self-contained entries");
   if (!Array.isArray(root.questions) || !root.questions.length || root.questions.length > MAX_QUESTIONS) fail(`questions must hold 1 to ${MAX_QUESTIONS} items`);
   const questions = (root.questions as unknown[]).map((item, index): EvalQuestion => {
     const row = object(item, `questions[${index}]`);
@@ -58,7 +67,7 @@ export function parseEvalSet(raw: unknown): EvalSet {
     }
     return { q: text(row.q, `questions[${index}].q`, MAX_QUESTION_CHARS), expect, ...(tag ? { tag } : {}) };
   });
-  return { schema: EVAL_SCHEMA, ...(entries.length ? { entries } : {}), questions };
+  return { schema: EVAL_SCHEMA, ...(entries.length ? { entries } : {}), questions, ...(root.now === undefined ? {} : { now: date(root.now, "now") }) };
 }
 
 /** `--k 1,5,10`: ascending, unique, 1 to MAX_K. */

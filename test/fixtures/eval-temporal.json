@@ -1,0 +1,697 @@
+{
+  "schema": "amem.eval/v1",
+  "entries": [
+    {
+      "key": "glass-old",
+      "title": "Old glasshouse misting schedule",
+      "text": "At the Aster Vale botanical conservatory, the north glasshouse misting cycle ran every 40 minutes during daylight. Staff recorded humidity after each cycle.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "glasshouse misting"
+      ],
+      "at": "2023-02-14T09:00:00Z"
+    },
+    {
+      "key": "glass-new",
+      "title": "Revised glasshouse misting schedule",
+      "text": "The north glasshouse misting cycle was changed to every 25 minutes during daylight. The humidity log is still checked after each spray cycle.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "glasshouse misting"
+      ],
+      "at": "2025-08-03T12:00:00Z"
+    },
+    {
+      "key": "kiln-old",
+      "title": "Old ceramic kiln cooldown rule",
+      "text": "The blue-clay kiln at the fictional Brindle Works had to cool below 90 degrees before its door could be opened after a firing.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "kiln cooldown"
+      ],
+      "at": "2022-06-11T10:30:00Z"
+    },
+    {
+      "key": "kiln-new",
+      "title": "Updated ceramic kiln cooldown rule",
+      "text": "After a safety review, the Brindle Works blue-clay kiln door may be opened only once its temperature is below 70 degrees following a firing.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "kiln cooldown"
+      ],
+      "at": "2024-11-19T15:00:00Z"
+    },
+    {
+      "key": "beacon-old",
+      "title": "Old fog beacon reporting interval",
+      "text": "The Lumen Shoal fog beacon sent a condition report to the keeper station once every six hours, including during clear weather.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "fog beacon reports"
+      ],
+      "at": "2023-09-05T08:00:00Z"
+    },
+    {
+      "key": "beacon-new",
+      "title": "New fog beacon reporting interval",
+      "text": "The Lumen Shoal beacon now reports its condition every two hours. Reports continue in clear weather so the keeper station can detect a failed radio.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "fog beacon reports"
+      ],
+      "at": "2026-01-22T08:00:00Z"
+    },
+    {
+      "key": "moth-old",
+      "title": "Earlier moon-moth survey route",
+      "text": "The moon-moth survey began at Fern Arch and followed the eastern footpath to the reed pond, where observers counted adults for twenty minutes.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "moon-moth survey"
+      ],
+      "at": "2022-04-28T06:15:00Z"
+    },
+    {
+      "key": "moth-new",
+      "title": "Current moon-moth survey route",
+      "text": "The moon-moth survey route was moved to the western boardwalk, starting at Slate Gate and ending at the reed pond. Counts remain twenty minutes long.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "moon-moth survey"
+      ],
+      "at": "2025-05-16T06:15:00Z"
+    },
+    {
+      "key": "archive-old",
+      "title": "Old archive duplicate retention",
+      "text": "The fictional Cloudberry Archive kept duplicate weather folios for 30 days before removing the extra copy from cold storage.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "archive retention"
+      ],
+      "at": "2023-01-10T13:00:00Z"
+    },
+    {
+      "key": "archive-new",
+      "title": "Revised archive duplicate retention",
+      "text": "Duplicate weather folios at the Cloudberry Archive are retained for 90 days before the extra copy is removed from cold storage.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "archive retention"
+      ],
+      "at": "2024-07-02T13:00:00Z"
+    },
+    {
+      "key": "tram-old",
+      "title": "Old tram night service frequency",
+      "text": "The imaginary Alderloop tram ran every 18 minutes after 9 pm on the northern circuit, with the same interval on weekdays and weekends.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "tram night frequency"
+      ],
+      "at": "2022-12-01T20:00:00Z"
+    },
+    {
+      "key": "tram-new",
+      "title": "Updated tram night service frequency",
+      "text": "Since the timetable revision, the Alderloop northern circuit runs every 12 minutes after 9 pm, on both weekdays and weekends.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "tram night frequency"
+      ],
+      "at": "2026-03-04T20:00:00Z"
+    },
+    {
+      "key": "seed-old",
+      "title": "Former seed vault inspection interval",
+      "text": "The Ember Vale seed vault was inspected once each month for condensation and seal damage; a paper checklist was filed after inspection.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "seed vault inspection"
+      ],
+      "at": "2021-10-08T11:00:00Z"
+    },
+    {
+      "key": "seed-new",
+      "title": "New seed vault inspection interval",
+      "text": "The Ember Vale seed vault inspection now happens every two weeks, checking condensation and seal damage on the same paper checklist.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "seed vault inspection"
+      ],
+      "at": "2025-10-20T11:00:00Z"
+    },
+    {
+      "key": "glider-old",
+      "title": "Old glider launch wind limit",
+      "text": "At the imaginary Kestrel Ridge, training gliders could launch when measured crosswind stayed under 14 knots for five minutes.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "glider wind limit"
+      ],
+      "at": "2022-08-09T07:30:00Z"
+    },
+    {
+      "key": "glider-new",
+      "title": "Revised glider launch wind limit",
+      "text": "Training gliders at Kestrel Ridge now require crosswind below 10 knots for five continuous minutes before launch approval.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "glider wind limit"
+      ],
+      "at": "2024-03-21T07:30:00Z"
+    },
+    {
+      "key": "bell-old",
+      "title": "Earlier bell tower calibration",
+      "text": "The Nine Bells tower clock was calibrated against the valley noon chime on the first day of each month.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "tower clock calibration"
+      ],
+      "at": "2023-05-01T12:00:00Z"
+    },
+    {
+      "key": "bell-new",
+      "title": "Latest bell tower calibration",
+      "text": "The Nine Bells tower clock is now calibrated against the valley noon chime every Monday, rather than monthly.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "tower clock calibration"
+      ],
+      "at": "2026-06-08T12:00:00Z"
+    },
+    {
+      "key": "water-old",
+      "title": "Earlier cistern sampling frequency",
+      "text": "Before the 2025 change, the fictional Mossglass cistern was sampled for mineral content every ten days, with each vial marked by basin number.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "cistern sampling"
+      ],
+      "at": "2024-02-05T09:00:00Z"
+    },
+    {
+      "key": "water-new",
+      "title": "Current cistern sampling frequency",
+      "text": "From 2025 onward, Mossglass cistern mineral samples are collected every four days; technicians still mark each vial with its basin number.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "cistern sampling"
+      ],
+      "at": "2025-02-05T09:00:00Z"
+    },
+    {
+      "key": "paper-old",
+      "title": "Earlier map paper storage temperature",
+      "text": "The imaginary Northglass map room stored survey paper at 19 degrees Celsius to reduce brittleness during winter.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "map paper storage"
+      ],
+      "at": "2023-03-18T14:00:00Z"
+    },
+    {
+      "key": "paper-new",
+      "title": "Current map paper storage temperature",
+      "text": "Since the 2024 conservation update, Northglass survey paper is stored at 17 degrees Celsius to limit brittleness year round.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "map paper storage"
+      ],
+      "at": "2024-10-06T14:00:00Z"
+    },
+    {
+      "key": "kite-old",
+      "title": "Earlier kite festival wind cutoff",
+      "text": "The made-up Saffron Plain kite festival paused launches when gusts exceeded 22 kilometres per hour.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "kite launch cutoff"
+      ],
+      "at": "2022-05-22T10:00:00Z"
+    },
+    {
+      "key": "kite-new",
+      "title": "Current kite festival wind cutoff",
+      "text": "The Saffron Plain festival now pauses kite launches above 18 kilometres per hour of gust speed, a change recorded in 2025.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "kite launch cutoff"
+      ],
+      "at": "2025-04-12T10:00:00Z"
+    },
+    {
+      "key": "fern-old",
+      "title": "Earlier fern greenhouse lighting duration",
+      "text": "The imaginary Silver Fern nursery illuminated its propagation bench for 11 hours each day during the 2021 growing season.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "fern lighting duration"
+      ],
+      "at": "2021-07-19T06:00:00Z"
+    },
+    {
+      "key": "fern-new",
+      "title": "Current fern greenhouse lighting duration",
+      "text": "The Silver Fern propagation bench has used a 13-hour daily light period since the 2023 growing season.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "fern lighting duration"
+      ],
+      "at": "2023-07-19T06:00:00Z"
+    },
+    {
+      "key": "ferry-old",
+      "title": "Earlier island ferry boarding window",
+      "text": "At fictional Pebble Key, the morning ferry boarding gate closed five minutes before departure during the 2022 summer schedule.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "ferry boarding window"
+      ],
+      "at": "2022-06-02T05:45:00Z"
+    },
+    {
+      "key": "ferry-new",
+      "title": "Current island ferry boarding window",
+      "text": "Under the 2024 schedule, Pebble Key morning ferry boarding closes eight minutes before departure to allow a final manifest check.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "ferry boarding window"
+      ],
+      "at": "2024-06-02T05:45:00Z"
+    },
+    {
+      "key": "comet-old",
+      "title": "Earlier comet chart publication day",
+      "text": "The fictional Tallow Observatory published its comet visibility chart on the 10th day of each month in 2023.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "comet chart publication"
+      ],
+      "at": "2023-01-10T16:00:00Z"
+    },
+    {
+      "key": "comet-new",
+      "title": "Current comet chart publication day",
+      "text": "Since January 2026, Tallow Observatory publishes its monthly comet visibility chart on the 5th day of the month.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "comet chart publication"
+      ],
+      "at": "2026-01-05T16:00:00Z"
+    },
+    {
+      "key": "map-symbol",
+      "title": "Map legend uses a hollow diamond for springs",
+      "text": "In the fictional Northglass atlas, a hollow diamond marks a natural spring, while a filled diamond marks a seasonal seep. This symbol distinction applies to every regional sheet.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "atlas symbols"
+      ],
+      "at": "2021-02-12T09:00:00Z"
+    },
+    {
+      "key": "bead-knot",
+      "title": "Weavers tie a double loop for repair markers",
+      "text": "At the imaginary Loomwater guild, a repair marker is a double loop of blue thread; a single loop means the cloth is awaiting inspection.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "weaving markers"
+      ],
+      "at": "2022-07-04T10:15:00Z"
+    },
+    {
+      "key": "fossil-label",
+      "title": "Fossil drawer labels put species before site",
+      "text": "Every Amber Shelf fossil drawer label lists the species name first and the excavation site second, separated by a slash.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "fossil labels"
+      ],
+      "at": "2023-11-19T13:30:00Z"
+    },
+    {
+      "key": "bell-material",
+      "title": "Nine Bells clappers are made from bronze",
+      "text": "The nine tower clappers at the fictional Nine Bells are cast from bronze. Their outer housings are cedar, but the striking pieces are bronze.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "bell clapper material"
+      ],
+      "at": "2024-04-23T08:45:00Z"
+    },
+    {
+      "key": "tea-water",
+      "title": "Cloudmint tea uses water just below boiling",
+      "text": "For the imaginary Cloudmint tea recipe, steep one spoon of leaves in water at 92 degrees Celsius for three minutes; the water should not be at a rolling boil.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "tea preparation"
+      ],
+      "at": "2025-01-16T16:20:00Z"
+    },
+    {
+      "key": "rail-gauge",
+      "title": "Alderloop miniature rail uses a 32 millimetre gauge",
+      "text": "The Alderloop museum miniature railway has a track gauge of 32 millimetres, measured between the inside edges of its two rails.",
+      "kind": "finding",
+      "tier": "long",
+      "about": [
+        "miniature rail gauge"
+      ],
+      "at": "2021-09-30T11:10:00Z"
+    },
+    {
+      "key": "shell-storage",
+      "title": "Blue shell specimens are stored in paper sleeves",
+      "text": "At the fictional Lumen Shoal natural history room, blue shell specimens go in acid-free paper sleeves, not glass jars, to prevent trapped moisture.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "shell specimen storage"
+      ],
+      "at": "2022-12-08T14:05:00Z"
+    },
+    {
+      "key": "lantern-color",
+      "title": "Market lanterns use amber glass",
+      "text": "The imaginary Brindle night market uses amber glass in its wayfinding lanterns. The color makes the signs readable without confusing them with white workshop lights.",
+      "kind": "decision",
+      "tier": "long",
+      "about": [
+        "market lantern color"
+      ],
+      "at": "2023-06-21T19:00:00Z"
+    },
+    {
+      "key": "seed-code",
+      "title": "Ember Vale seed packets encode the harvest year",
+      "text": "Every Ember Vale seed packet prints the four-digit harvest year after the plant variety name. The year is a label field, not a measure of seed age in storage.",
+      "kind": "contract",
+      "tier": "long",
+      "about": [
+        "seed packet labels"
+      ],
+      "at": "2024-10-02T07:25:00Z"
+    }
+  ],
+  "questions": [
+    {
+      "q": "For the north glasshouse, what changed between the earlier and later daylight misting schedules?",
+      "expect": [
+        "glass-old",
+        "glass-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "Compare the Brindle Works kiln cooldown threshold before and after its safety revision.",
+      "expect": [
+        "kiln-old",
+        "kiln-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "How did the Lumen Shoal beacon's keeper-station report cadence change over time?",
+      "expect": [
+        "beacon-old",
+        "beacon-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "What was changed about the moon-moth survey route, and what stayed constant?",
+      "expect": [
+        "moth-old",
+        "moth-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "Compare the old and revised cold-storage retention for duplicate Cloudberry weather folios.",
+      "expect": [
+        "archive-old",
+        "archive-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "How did the Alderloop northern circuit late-evening tram interval change?",
+      "expect": [
+        "tram-old",
+        "tram-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "What changed in the Ember Vale seed vault inspection cadence?",
+      "expect": [
+        "seed-old",
+        "seed-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "Compare Kestrel Ridge's former and revised training-glider crosswind launch limits.",
+      "expect": [
+        "glider-old",
+        "glider-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "How did the Nine Bells clock calibration frequency change from the earlier schedule to the latest one?",
+      "expect": [
+        "bell-old",
+        "bell-new"
+      ],
+      "tag": "knowledge-update"
+    },
+    {
+      "q": "As of September 2026, how often does the north glasshouse mist during daylight?",
+      "expect": [
+        "glass-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, what is the Brindle blue-clay kiln temperature threshold for opening its door after firing?",
+      "expect": [
+        "kiln-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, how often does Lumen Shoal report its condition?",
+      "expect": [
+        "beacon-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, where does the moon-moth survey start and finish?",
+      "expect": [
+        "moth-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, what is the duplicate folio retention period at Cloudberry Archive?",
+      "expect": [
+        "archive-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, what is the Alderloop northern tram interval after 9 pm?",
+      "expect": [
+        "tram-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, how frequently is the Ember Vale seed vault checked?",
+      "expect": [
+        "seed-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, what crosswind limit governs Kestrel Ridge training glider launches?",
+      "expect": [
+        "glider-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "As of September 2026, what is the weekly calibration day for the Nine Bells tower clock?",
+      "expect": [
+        "bell-new"
+      ],
+      "tag": "newest-state"
+    },
+    {
+      "q": "Before the 2025 sampling change, how many days apart were Mossglass mineral samples collected?",
+      "expect": [
+        "water-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "What storage temperature did Northglass use for survey paper before the 2024 conservation update?",
+      "expect": [
+        "paper-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "In the earlier Saffron Plain festival rule, above what gust speed were kite launches paused?",
+      "expect": [
+        "kite-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "During the 2021 growing season, how long was the Silver Fern propagation bench lit each day?",
+      "expect": [
+        "fern-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "Under the 2022 Pebble Key summer ferry schedule, when did morning boarding close relative to departure?",
+      "expect": [
+        "ferry-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "In 2023, on which day of the month did Tallow Observatory publish its comet chart?",
+      "expect": [
+        "comet-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "What was the earlier Mossglass cistern sampling interval, before collections moved to every four days?",
+      "expect": [
+        "water-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "Before the 2024 update, what temperature was used to store Northglass map paper?",
+      "expect": [
+        "paper-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "What was the pre-2025 gust cutoff for Saffron Plain kite launches?",
+      "expect": [
+        "kite-old"
+      ],
+      "tag": "earlier-state"
+    },
+    {
+      "q": "On a Northglass atlas, which shape marks a natural spring?",
+      "expect": [
+        "map-symbol"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "At Loomwater, what thread loop identifies cloth awaiting repair?",
+      "expect": [
+        "bead-knot"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "In what order are species and excavation site written on Amber Shelf fossil drawer labels?",
+      "expect": [
+        "fossil-label"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "What material are the Nine Bells tower clappers cast from?",
+      "expect": [
+        "bell-material"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "For Cloudmint tea, what water temperature and steeping time does the recipe specify?",
+      "expect": [
+        "tea-water"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "What is the track gauge of the Alderloop museum miniature railway?",
+      "expect": [
+        "rail-gauge"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "How are Lumen Shoal blue shell specimens stored in the natural history room?",
+      "expect": [
+        "shell-storage"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "What glass color is used in Brindle night market wayfinding lanterns?",
+      "expect": [
+        "lantern-color"
+      ],
+      "tag": "timeless-control"
+    },
+    {
+      "q": "Where on an Ember Vale seed packet is the harvest year printed?",
+      "expect": [
+        "seed-code"
+      ],
+      "tag": "timeless-control"
+    }
+  ]
+}
