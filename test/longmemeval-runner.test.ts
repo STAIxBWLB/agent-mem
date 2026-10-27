@@ -77,3 +77,17 @@ test("deadline receipts retain only backends completed before the recorded limit
   expect(result.rankings.library).toEqual(ranking); expect(result.rankings.bm25).toEqual(ranking); expect(result.rankings.mcp).toBeUndefined();
   expect(result.errors!.mcp).toContain("deadline"); expect(result.workerPeakKB).toBe(1234); expect(result.workerPeakComplete).toBe(true);
 });
+
+
+test("explicit question types scan the full dataset and report subset coverage", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-longmemeval-selection-"));
+  try {
+    const report = await runLongMemEval({ input: join(import.meta.dir, "fakes/longmemeval-three.json"), output: join(root, "report.json"), sourceRoot, questionTypes: ["multi-session"] });
+    expect(report.complete).toBe(true); expect(report.questions).toBe(1);
+    expect(report.selection).toEqual({ questionTypes: ["multi-session"], examined: 3, skippedByType: 2 });
+    expect(report.results[0].type).toBe("multi-session"); expect(report.failed).toEqual([]);
+    const missing = await runLongMemEval({ input: join(import.meta.dir, "fakes/longmemeval-three.json"), output: join(root, "missing.json"), sourceRoot, questionTypes: ["knowledge-update"] }).catch(() => null);
+    expect(missing).toBeNull();
+    expect(JSON.parse(readFileSync(join(root, "missing.json"), "utf8"))).toMatchObject({ complete: false, questions: 0, fatal: "LongMemEval: requested question type absent from dataset" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
