@@ -97,7 +97,7 @@ function candidateAssessment(baseline: any, candidate: any, baseFixtures: any, g
   return { byDataset: { S: comparisons.S!, M: comparisons.M! }, verdict: decision, publicEligibility: publicEligibility(verdict) };
 }
 export async function summarizeStopwords(directory: string) {
-  const context: SummaryContext = { directory: resolve(directory), expectedByMode: Object.fromEntries(STOPWORD_MODES.map(mode => [mode, sourceExpectations(mode)])) as SummaryContext["expectedByMode"] };
+  const context: SummaryContext = { directory: resolve(directory), expectedByMode: { baseline: sourceExpectations("baseline"), stopwords: sourceExpectations("stopwords") } };
   const driverSha = sha(readFileSync(join(import.meta.dir, "longmemeval-stopwords.ts")));
   const gateSha = sha(readFileSync(join(import.meta.dir, "f14-gate.ts")));
   const compareSha = sha(readFileSync(join(import.meta.dir, "longmemeval-compare.ts")));
