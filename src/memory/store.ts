@@ -494,18 +494,30 @@ export class MemoryStore {
   // `ownClock`: a note asked for short-term on purpose expires on its own clock, open task or not, and is never promoted.
   note(n: NoteInput, ownClock = false): string { return this.append(n.tier === "short" && !n.expires && (ownClock || !n.task || this.settled(n.task)) ? { ...n, expires: this.until() } : n, n.tier === "short"); }
 
+  /** The already-opened owner of an imported row, shared by preflight and append. */
+  private importOwner(n: NoteInput): MemoryStore {
+    if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
+    if (this.userOverlay && n.scope === "shared") return this.userOverlay.importOwner(n);
+    if (this.profile.sharded && !this.profile.shardUser && n.scope === "project" && n.project !== this.profile.shardKey) {
+      const owner = this.aliasStores.find(store => store.profile.shardKey === n.project);
+      if (owner) return owner.importOwner(n);
+    }
+    if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
+    return this;
+  }
+
+  /** Check every import route before a multi-row caller appends; never creates a missing alias shard. */
+  assertImportable(notes: Iterable<NoteInput>): void {
+    for (const note of notes) this.importOwner(note);
+  }
+
   /**
    * An entry from another store with its own time (`ahub memory import claude-mem`): the same source row always gives
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
   importNote(n: NoteInput, at: string, identity: { machine?: string; expectedId?: string } = {}): { id: string; added: boolean } {
-    if (this.bootstrapOnly) throw new Error("migration bootstrap cannot import memory");
-    if (this.userOverlay && n.scope === "shared") return this.userOverlay.importNote(n, at, identity);
-    if (this.profile.sharded && !this.profile.shardUser && n.scope === "project" && n.project !== this.profile.shardKey) {
-      const owner = this.aliasStores.find(store => store.profile.shardKey === n.project);
-      if (owner) return owner.importNote(n, at, identity);
-    }
-    if (this.profile.sharded && (this.profile.shardUser ? n.scope !== "shared" : n.scope !== "project" || n.project !== this.profile.shardKey)) throw new Error("entry does not belong to this curated shard");
+    const owner = this.importOwner(n);
+    if (owner !== this) return owner.importNote(n, at, identity);
     assertSharedV1Op(n.op);
     // A fixed machine: the same observation imported on two machines is one entry once they sync. A project import preserves the exported identity instead.
     const body = { schema: MEMORY_SCHEMA, at, machine: identity.machine ?? "claude-mem", ...n, text: stripPrivateSpans(n.text).slice(0, MAX_TEXT), ...(n.title ? { title: stripPrivateSpans(n.title).slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;

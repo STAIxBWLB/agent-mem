@@ -574,7 +574,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       try {
         const result = await importProject(store, { from: options["--from"], project: key, confirm: options["--confirm"] === true,
           allowShared: options["--allow-shared"] === true, policy: note => policy.screenStandalone(note) });
-        const counts = `sources ${JSON.stringify(result.provenance.source)}, peers ${JSON.stringify(result.provenance.peer)}, scopes ${JSON.stringify(result.provenance.scope)}`;
+        const counts = `sources ${JSON.stringify(result.provenance.source)}, peers ${JSON.stringify(result.provenance.peer)}, scopes ${JSON.stringify(result.provenance.scope)}, machines ${JSON.stringify(result.provenance.machine)}`;
         const summary = result.applied ? `imported ${result.added} of ${result.read} curated notes into ${result.project} with their original ids`
           : `preview: ${result.wouldAdd} of ${result.read} curated notes can be imported into ${result.project} with their original ids (re-run with --confirm to write)`;
         return options["--json"] ? JSON.stringify(result, null, 2)

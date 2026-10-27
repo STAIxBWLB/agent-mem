@@ -225,7 +225,7 @@ test("project export and import preview provenance before confirmation and prese
   const { dir, person } = rig();
   note(dir, A, "portable CLI decision");
   const original = new MemoryStore({ home: dir, deferPromotions: true });
-  const expected = original.list().map(view => view.id); original.close();
+  const originalRows = original.list(), expected = originalRows.map(view => view.id), machine = originalRows[0]!.machine; original.close();
   const jsonl = join(dir, "portable.jsonl"), markdown = join(dir, "portable.md");
   expect(await json(["project", "export", A, "--to", jsonl, "--format", "jsonl", "--json"], person)).toMatchObject({ format: "jsonl", counts: { curated: 1 } });
   expect(await json(["project", "export", A, "--to", markdown, "--format", "markdown", "--json"], person)).toMatchObject({ format: "markdown" });
@@ -233,7 +233,8 @@ test("project export and import preview provenance before confirmation and prese
 
   process.env.AMEM_HOME = join(dir, "restored");
   expect(await json(["project", "import", A, "--from", jsonl, "--json"], { ...person, stdinTTY: false })).toMatchObject({ applied: false, read: 1, added: 0, wouldAdd: 1,
-    provenance: { source: { person: 1 }, peer: { codex: 1 }, scope: { project: 1 } } });
+    provenance: { source: { person: 1 }, peer: { codex: 1 }, scope: { project: 1 }, machine: { [machine]: 1 } } });
+  expect(await runCli(["project", "import", A, "--from", jsonl], { ...person, stdinTTY: false })).toContain(`machines ${JSON.stringify({ [machine]: 1 })}`);
   expect(await json(["project", "import", A, "--from", jsonl, "--confirm", "--json"], person)).toMatchObject({ applied: true, read: 1, added: 1 });
   const restored = new MemoryStore({ memoryDir: process.env.AMEM_HOME, deferPromotions: true });
   expect(restored.list().map(view => view.id)).toEqual(expected); restored.close();

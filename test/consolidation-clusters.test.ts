@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { consolidationClusters, CONSOLIDATION_PROPOSAL_LIMIT } from "../src/memory/consolidation-clusters.ts";
+import { consolidationClusters, CONSOLIDATION_PROPOSAL_LIMIT, isAcceptedConsolidation } from "../src/memory/consolidation-clusters.ts";
 import { setFts5AvailableForTest } from "../src/memory/search-fts.ts";
 import type { View } from "../src/memory/store.ts";
 const now = Date.parse("2026-10-25T00:00:00.000Z");
@@ -39,7 +39,23 @@ test("bounded source and proposal windows explicitly report truncation", () => {
   expect(result.truncated).toBe(true); expect(result.clusters).toHaveLength(CONSOLIDATION_PROPOSAL_LIMIT);
   expect(result.clusters.flatMap(row => row.sources).every(row => row.id !== rows[256]!.id)).toBe(true);
 });
-const accepted = (n: number, action: string, extra: Partial<View> = {}) => note(n, { text: `Accepted consolidation candidate: ${"c".repeat(64)}\nAction: ${action}\nSources: mem:x\n\nwriter lease contention blocks transaction`, ...extra });
+const accepted = (n: number, action: string, extra: Partial<View> = {}) => note(n, { text: `Accepted consolidation candidate: ${"c".repeat(64)}\nAction: ${action}\nSources: mem:${note(8).id}\n\nwriter lease contention blocks transaction`, ...extra });
+
+test("only the complete acceptance header excludes a consolidation source, not a person's quoted prefix", () => {
+  const valid = accepted(1, "merge");
+  expect(isAcceptedConsolidation(valid)).toBe(true);
+  for (const text of [
+    "Accepted consolidation candidate: notes about the proposal",
+    valid.text.replace("c".repeat(64), "c".repeat(63)),
+    valid.text.replace("Action: merge", "Action: unknown"),
+    valid.text.replace(`mem:${note(8).id}`, "mem:x"),
+    valid.text.replace("\n\n", "\n"),
+  ]) {
+    const quoted = note(2, { kind: "decision", text, supersedes: [note(8).id, note(9).id] });
+    expect(isAcceptedConsolidation(quoted)).toBe(false);
+    expect(consolidationClusters([quoted], "project", now).clusters).toMatchObject([{ action: "merge", sources: [{ id: quoted.id }] }]);
+  }
+});
 test("an accepted recurring-fix summary is not a fail source and does not pair with its own sources (task #439)", () => {
   const fails = [note(1), note(2, { text: "writer lease contention blocks second transaction" })], decision = note(3, { kind: "decision", text: "bound writer lease duration before transaction" });
   const first = consolidationClusters([...fails, decision], "project", now).clusters.filter(row => row.action === "recurring-fix");
@@ -54,4 +70,14 @@ test("an accepted merge or supersession head is not proposed again as a single-s
   expect(consolidationClusters([head, other], "project", now).clusters).toEqual([]);
   const plain = note(3, { kind: "decision", supersedes: [note(8).id, note(9).id] });   // a person's own multi-original head still gets the chain summary
   expect(consolidationClusters([plain, other], "project", now).clusters.map(row => row.action)).toEqual(["merge"]);
+});
+
+test("accepted merge and decision summaries never enter pair merges or seed a recurring-fix proposal", () => {
+  const summary = accepted(4, "merge", { kind: "decision", supersedes: [note(8).id, note(9).id] });
+  const ordinary = note(3, { kind: "decision", text: "writer lease contention blocks bounded transaction" });
+  expect(consolidationClusters([summary, ordinary], "project", now).clusters).toEqual([]);
+  const fails = [note(1), note(2, { text: "writer lease contention blocks second transaction" })];
+  const result = consolidationClusters([...fails, summary], "project", now);
+  expect(result.clusters.some(row => row.action === "recurring-fix")).toBe(false);
+  expect(result.clusters.every(row => row.sources.every(source => source.id !== summary.id))).toBe(true);
 });
