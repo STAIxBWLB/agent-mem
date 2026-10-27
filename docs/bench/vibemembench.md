@@ -17,7 +17,7 @@ The Hugging Face revision API, read on 2026-10-27, reports a public dataset, Apa
 
 Source delivery is retained on dgx02 under `~/code-src/`, outside this repository:
 
-- Checkout: `vibemembench-amem-88`, branch `amem-adapter-88`, at the scratch commit above.
+- Checkout: `vibemembench-amem-88`, branch `amem-adapter-88`; the baseline adapter receipt is the scratch commit above, and the current probe head is recorded below.
 - Adapter: `VibeMemBench/scripts/memory_systems/amem.py`; SHA-256 `9eb3649f7e3b11e8b2ca12bbc0c05deb8071dad989aaba5065c8028f7513f9e5`.
 - Synthetic checks: `VibeMemBench/scripts/test_amem_adapter.py`; SHA-256 `10c244dd8392ba1b39a85de5a8977e4e360b99cd1d5b0547cf1bb5b052595d48`.
 - Fix patch against the retained run-only commit `a5192e0c03ae6ed91628a46b364fe27010b73639`: `amem-adapter-88-fix.patch`; SHA-256 `1c46c65b3e94be59b345be6b224b3727a3b0e806a8d5b13b523d1e4990037187`. That run-only commit remains an ancestor, unchanged.
@@ -88,3 +88,25 @@ AMEM_SOURCE=/src/amem-runtime-88 ../.adapter-venv/bin/python scripts/run_memory.
 Run from `VibeMemBench` in the dgx02 source container, it completed **111 succeeded, 0 skipped, 0 failed**. Auditing every expected target confirmed all 222 `memory.json` / `memory.txt` files belong to `pilot88`, with native capture source/project guards intact: 107 nonempty memories and four explicit policy-denied empty memories (the four target IDs named above). The harness skipped one over-size history session under its unchanged 64 MB limit; no target was skipped. Build success is not a claim that all targets received memory, and this run did not execute a solver or call a model.
 
 The retained build log is `~/code-src/amem-adapter-88-rebuild.log`. The audit manifest, `~/code-src/amem-adapter-88-rebuild-receipt.json`, records relative paths, sizes and SHA-256 hashes for all 222 files, the source/runtime revisions, empty-memory target IDs and skipped-history count; its SHA-256 is `4efd5823922890869aff8bb9889c23ec859df782ea903fa650caa88b9ea0ff91`. The output files remain at `~/code-src/vibemembench-amem-88/VibeMemBench/outputs/memory/amem` for the reviewer's pilot. No API key or agent run was used in this correction.
+
+
+### Probe 1 variant
+
+[Probe 1 pre-registration](https://github.com/STAIxBWLB/agent-mem/issues/89#issuecomment-6448103705) is implemented as `MEMORY_SYSTEM = AmemCompactMemorySystem`, a subclass of the existing adapter. The remote branch has exactly one new commit above `ff6d3e0`: `8bb042d4f0bc140d0bef7dad8989036fbd4bdab2`. It adds only these two files under `VibeMemBench/scripts/`:
+
+| File | SHA-256 |
+| --- | --- |
+| `memory_systems/amem_compact.py` | `d9f9bdcd1ea43a38b06843b1550bceffb8f4709938d612daefae93dc25b58ab8` |
+| `test_amem_compact.py` | `94911a9455b86d2feb1008dc14061ab6dcb6fcd70949cd9873c6efa5825c06d3` |
+
+`add()` calls the parent unchanged and caches a record from that history alone. `search()` calls the parent once, retains its top-one id, score, timestamp, metadata and source attribution, and replaces only content. No-anchor results return `[]` without falling back to another hit. The original `amem.py`, `run_agent.py` and `run_eval.py` remain unchanged; this task did not write `outputs/`.
+
+The first user message's `<pr_description>` block and exact `Consider the following PR description:` preamble are stripped before taking its first nonempty issue line. These boundaries match public history samples and the pinned mini-swe-agent `bc85a45654e6348dcc6e4c5a40ad146ed0bb144d` configuration `src/minisweagent/config/benchmarks/swebench.yaml`. Only the final exit's `extra.submission` (legacy content fallback) supplies diff headers and hunk contexts.
+
+The record has at most three lines and 600 UTF-8 bytes: the `Earlier fix in ...` line is capped at 160 characters; `Files changed:` contains up to five unique destination paths, joined with `, `; optional `Changed code:` contains up to five unique contexts, each capped at 80 characters and joined with `; `. Byte budgeting preserves complete file paths, drops trailing paths when needed, then shortens the first line further and includes only contexts that fit. If even one complete anchor cannot fit, it returns no record rather than a partial filename. This cap-edge interpretation is exposed here for review before any probe build.
+
+The complete candidate is checked by the same configured policy and shared private-span primitive, through the inherited isolated runner. A disallowed raw-history field therefore cannot re-enter through rendering. Missing anchors and declined compact records have distinct target-ID log markers; other errors propagate. Only the issue line, file headers and hunk contexts are rendered; raw command, tool-output, patch-body and harness-template fields are not copied.
+
+Synthetic verification on dgx02: **31 pass, 0 fail** (all 16 existing tests plus 15 compact tests), with the existing Python/Bun network tripwires enabled. Checks cover exact rendering, caps including multibyte paths, template stripping, no-anchor/no-fallback, identical parent hit and rows, source attribution, excluded raw payload, scope isolation, replay/determinism and record-policy refusals. Replay inside the retained checkout: `cd VibeMemBench/scripts && ../../.adapter-venv/bin/python -m unittest -v test_amem_adapter test_amem_compact`.
+
+No real-data `run_memory.py` build, agent run, model call or API key was used for this variant. Probe outcomes remain unmeasured; the reviewer builds and runs it serially after the running pilot. Refs #89 and Refs #88; both stay open.
