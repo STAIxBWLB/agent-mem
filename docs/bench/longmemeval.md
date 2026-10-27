@@ -127,4 +127,46 @@ The measurement-only `scripts/longmemeval-ablation.ts` runs baseline, recency-of
 
 The complete dataset hash, explicit type selection, question order, session/turn labels, capture dates, question-date clock, capture normalization/retention, query tokenizer, result limit, screening, candidate bounds and plain BM25 control are fixed. Every run checks its corpus metadata and BM25 turn lists against baseline. The tier factor is constant 0.5 for this capture-only corpus, so tier-off should match baseline and both-off should match recency-off; deviations would need investigation, not a new attribution claim.
 
-The matrix and admissibility decision will be recorded after all conditions complete. No production ranking change is included at this stage.
+To reproduce the serial attribution matrix against the pinned runtime:
+
+```sh
+bun scripts/longmemeval-ablation.ts --input /data/longmemeval_m_cleaned.json --output-dir /data/new-ablation-run --base-commit 8a0f73f56235504fe39c48f15440f764b6f75ad4
+```
+
+The output directory must be new. It contains each condition's provenance, full report, per-question receipts and `matrix.json`. Run from a Git checkout with the pinned commit available. `--max-questions` is for a partial smoke only; it cannot establish the full attribution claim.
+
+All four conditions completed 211 selected questions (193 eligible, 18 abstentions), with zero failed paths/timeouts. The original and rebased harness sources have identical content hashes; the measured driver SHA-256 is `44cecf5335b842d25314e14b8ff70e901b2847b592b01c5adb2a388fd1e9bc78`. Source runtime remains main `8a0f73f`. The M dataset SHA-256 is unchanged from the first result table.
+
+| Condition | Type | MCP all@10 | Library all@10 | Plain BM25 all@10 | MCP ndcg_any@10 | Library ndcg_any@10 |
+|---|---|---:|---:|---:|---:|---:|
+| baseline | knowledge-update | 0.5833 | 0.5972 | 0.9583 | 0.4474 | 0.4506 |
+| baseline | multi-session | 0.5620 | 0.5620 | 0.5868 | 0.3811 | 0.3816 |
+| recency-off | knowledge-update | 0.9583 | 0.9583 | 0.9583 | 0.5269 | 0.5297 |
+| recency-off | multi-session | 0.5868 | 0.5868 | 0.5868 | 0.3914 | 0.3910 |
+| tier-off | knowledge-update | 0.5833 | 0.5972 | 0.9583 | 0.4474 | 0.4506 |
+| tier-off | multi-session | 0.5620 | 0.5620 | 0.5868 | 0.3811 | 0.3816 |
+| both-off | knowledge-update | 0.9583 | 0.9583 | 0.9583 | 0.5269 | 0.5297 |
+| both-off | multi-session | 0.5868 | 0.5868 | 0.5868 | 0.3914 | 0.3910 |
+
+Recency-off closes 100% of the observed all@10 gap in both subsets for both amem paths. Tier-off changes no ranked turn list; both-off matches recency-off. Plain BM25 changes no list in any condition. This attributes this capture-only gap to recency weighting; it says nothing about tier preferences on a mixed curated/capture corpus.
+
+Two fixed candidates were checked using the same seeded evaluation library as `amem eval`, with no parameter search. A 0.5 recency floor uses the original curve's value at 30 days and preserves the first 30 days. Recency only as an exact score tie-breaker is the issue's second structural example. Both are disposable runtime patches at the same `8a0f73f` base. The floor wraps the library's recency expression in `Math.max(0.5, ...)` and caps the screened SQL age denominator with `min(2.0, ...)`. The tie candidate removes recency multiplication from the library's primary score, then compares recency only after equal primary scores and before the existing reference tie-breaker; screened SQL uses the equivalent `ORDER BY score DESC, recency DESC, ref`. Tier factors, candidate bounds and screening remain fixed.
+
+| Candidate | Built-in MRR / hit@1 | Korean MRR / hit@1 | Held-out MRR / hit@1 |
+|---|---:|---:|---:|
+| Baseline | 0.9063 / 0.8750 | 0.8934 / 0.8684 | 0.8739 / 0.8378 |
+| Floor 0.5 | 0.9063 / 0.8750 | 0.8956 / 0.8684 | 0.8739 / 0.8378 |
+| Recency tie-breaker | 0.9063 / 0.8750 | 0.9167 / 0.8947 | 0.8892 / 0.8649 |
+
+Both candidates lose no aggregate MRR, hit@1/5/10 or recall@1/5/10 on these sets. Floor 0.5 changes only one Korean question from rank 4 to rank 3; all built-in/held-out ranks are unchanged. The tie-breaker swaps built-in ranks 1 and 2 on two questions (aggregate unchanged), and improves three Korean and three held-out ranks. No fixture was edited.
+
+The corrected #102 gate is the existing `scripts/f14-gate.ts` rule: a gain on every gate set (built-in and held-out), plus no loss on Korean, full LongMemEval S/M and the reviewer's private AC4 rerun. Neither fixed candidate passes F14: floor 0.5 changes neither gate set, while the tie-breaker gains only on held-out. Held-out was evaluated once for these predeclared candidates, never used for parameter tuning. The gate helper and curated-only evidence helper remain unchanged. Any revised admission rule needs the person's decision; these measurements do not authorize a production change.
+
+Full S validation of floor 0.5 completed all 500 questions (470 eligible, 30 abstentions), with no failed path. Dataset, question/gold labels, stored-row metadata and every plain-BM25 turn list match the full baseline. It improves session all@10 from 0.8660 to 0.8894 for both amem paths, but fails the aggregate no-loss check on MRR:
+
+| S metric | Baseline MCP | Floor MCP | Baseline library | Floor library |
+|---|---:|---:|---:|---:|
+| MRR | 0.89164005 | 0.89111676 | 0.89162377 | 0.89145626 |
+| Temporal-reasoning MRR | 0.86437887 | 0.85745542 | 0.86700502 | 0.86008592 |
+
+The S comparison checks session any/all@5/10, ndcg_any@10, MRR and turn recall@10 overall and by type. MRR is the only decreasing overall metric, with the decreases in temporal reasoning. Full M validation also completed all 500 questions (470 eligible, 30 abstentions), with zero failures and the same dataset/question/gold/stored-row/BM25 controls matching baseline for all 500. Session all@10 rises from 0.7106 to 0.7660 (MCP) and 0.7170 to 0.7681 (library), but overall MRR falls from 0.78547064 to 0.78463768 (MCP) and 0.78433128 to 0.78349631 (library). Temporal-reasoning MRR falls from 0.77734803 to 0.76882307 (MCP) and 0.77736005 to 0.76882765 (library); its ndcg_any@10 falls from 0.39939223 to 0.39759473 and 0.39921656 to 0.39853589, respectively. No other checked overall metric decreases. Thus floor 0.5 fails the no-loss condition on both S and M, independently of its F14 failure. The tie-breaker S run was interrupted after question 74 and supplies no completed S/M claim. No private AC4 rerun has been performed for either candidate; no production ranking change is included.
