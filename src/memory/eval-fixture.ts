@@ -79,18 +79,22 @@ export function evalSeeded(set: EvalSet, ks?: readonly number[], rank?: RankFn):
     const base = join(dir, "memory");
     mkdirSync(base, { recursive: true });
     // One entry per day, so the recency weight (a 30-day scale) is exercised, long-tier entries first and short-tier ones last: a short-term note leaves the index 14 days after it is
-    // written, and the clock stops a day after the last entry, so the short ones written in that window are live when the set is searched (a set with more short entries than that
+    // written, and the undated clock stops a day after the last entry, so the short ones written in that window are live when the set is searched (a set with more short entries than that
     // window holds loses its oldest, and a question naming one is then reported as not in the store, like any other missing entry).
+    // Explicit dates override only their entry; undated entries retain their legacy file-order day.
+    // Search a day after the latest actual seed time unless the set supplies its own clock.
     let current = EPOCH;
     store = new MemoryStore({ memoryDir: base, now: () => current, screen: () => "keep" });
     const ids = new Map<string, string>();
     const ordered = [...set.entries.filter(entry => entry.tier !== "short"), ...set.entries.filter(entry => entry.tier === "short")];
+    let latest = -Infinity;
     for (const [index, entry] of ordered.entries()) {
-      current = EPOCH + index * DAY;
+      current = entry.at === undefined ? EPOCH + index * DAY : Date.parse(entry.at);
+      latest = Math.max(latest, current);
       ids.set(entry.key, store.note({ op: "note", project: PROJECT, scope: "project", tier: entry.tier ?? "long", kind: entry.kind ?? "finding", peer: "eval", source: "person",
         ...(entry.title ? { title: entry.title } : {}), text: entry.text, about: entry.about ?? [] }, entry.tier === "short"));
     }
-    current = EPOCH + ordered.length * DAY;
+    current = set.now === undefined ? latest + DAY : Date.parse(set.now);
     const window = Math.max(...(ks ?? [10]));
     const search = rank ? { rank: (question: string) => rank(store!, question, window), engine: () => "custom" } : ranker(store, PROJECT, window);
     // Resolved through `store.get`, so a note that has already expired is absent, not silently present: coverage stays separate from ranking.

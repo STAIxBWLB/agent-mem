@@ -170,3 +170,38 @@ Full S validation of floor 0.5 completed all 500 questions (470 eligible, 30 abs
 | Temporal-reasoning MRR | 0.86437887 | 0.85745542 | 0.86700502 | 0.86008592 |
 
 The S comparison checks session any/all@5/10, ndcg_any@10, MRR and turn recall@10 overall and by type. MRR is the only decreasing overall metric, with the decreases in temporal reasoning. Full M validation also completed all 500 questions (470 eligible, 30 abstentions), with zero failures and the same dataset/question/gold/stored-row/BM25 controls matching baseline for all 500. Session all@10 rises from 0.7106 to 0.7660 (MCP) and 0.7170 to 0.7681 (library), but overall MRR falls from 0.78547064 to 0.78463768 (MCP) and 0.78433128 to 0.78349631 (library). Temporal-reasoning MRR falls from 0.77734803 to 0.76882307 (MCP) and 0.77736005 to 0.76882765 (library); its ndcg_any@10 falls from 0.39939223 to 0.39759473 and 0.39921656 to 0.39853589, respectively. No other checked overall metric decreases. Thus floor 0.5 fails the no-loss condition on both S and M, independently of its F14 failure. The tie-breaker S run was interrupted after question 74 and supplies no completed S/M claim. No private AC4 rerun has been performed for either candidate; no production ranking change is included.
+
+
+## Dated temporal fixture (#107 part 1)
+
+`test/fixtures/eval-temporal.json` contains 39 invented, public-safe long-tier entries and 36 questions, nine each for knowledge updates (both older and newer versions expected), newest state, earlier state and timeless controls. Every entry has an explicit UTC date, spanning 2021-2026. Long-tier entries keep expiry from confounding temporal ranking. Gold keys identify the requested versions; knowledge-update recall requires both versions, not merely the first matching fact.
+
+The fixture was authored independently of candidate scores and frozen in commit `1c29940` before its first baseline run. Its SHA-256 is `13334c7fc02dbbb71bb0b103ef84a8267aa9cab8b59795e5993d3e5fd5131374`. No #104 or #105 candidate has been run against it, and it must merge in its own PR before any such measurement. This PR records only the ranking already on main `128b6eda100710285de258a6f4c3b9b63b0cf90c`; the date support changes evaluation seeding, not search ranking. The F14 rule from #82 remains in force. F14v2 and the LongMemEval comparison command belong to the next part of #107.
+
+Self-contained `amem.eval/v1` sets now accept an optional entry `at` and optional root `now`. Accepted forms are `YYYY-MM-DD` (UTC midnight), `YYYY-MM-DDTHH:mm:ssZ` and `YYYY-MM-DDTHH:mm:ss.sssZ`; invalid calendar dates, local timestamps and locale-dependent dates are refused. With no explicit entry date, the original long-first/short-last positional day is retained. Search uses one day after the latest actual seed timestamp, or the set's explicit `now`. An explicit clock requires a self-contained set. `now` affects the search/expiry clock, not the stored seed dates. Mixed dated/undated sets retain positional fallback dates for their undated entries. With neither field present, seeding and the stopped clock remain unchanged.
+
+Linux / Bun 1.4.2 baseline, default `store.search`, k=1,5,10:
+
+| Set / category | Questions | MRR | Hit@1 | Recall@1 | Hit@5 / @10 | Recall@5 / @10 |
+|---|---:|---:|---:|---:|---:|---:|
+| Overall | 36 | 0.6782 | 0.4444 | 0.3472 | 1.0000 / 1.0000 | 1.0000 / 1.0000 |
+| Knowledge update | 9 | 0.8889 | 0.7778 | 0.3889 | 1.0000 / 1.0000 | 1.0000 / 1.0000 |
+| Newest state | 9 | 0.8333 | 0.6667 | 0.6667 | 1.0000 / 1.0000 | 1.0000 / 1.0000 |
+| Earlier state | 9 | 0.3796 | 0.0000 | 0.0000 | 1.0000 / 1.0000 | 1.0000 / 1.0000 |
+| Timeless control | 9 | 0.6111 | 0.3333 | 0.3333 | 1.0000 / 1.0000 | 1.0000 / 1.0000 |
+
+All 36 questions are answerable and no expected entry is missing; `all` and `answerable` aggregates match. These are the existing fixture metrics (MRR uses the first expected hit, recall counts each expected version), not LongMemEval session all@10. No performance or real-corpus recall claim follows from these synthetic rows.
+
+The undated built-in, held-out and Korean sets were evaluated with both the exact main seeder/parser and the changed seeder/parser using the same unchanged store implementation. `JSON.stringify` of the full reports, including every per-question result, was identical for all three:
+
+| Set | MRR | Hit@1 | Full-report SHA-256 (compact JSON) |
+|---|---:|---:|---|
+| Built-in | 0.9063 | 0.8750 | `db4b3a7fbb8641b0e77f8fd7caab93e60b58e1ca5d7cfe095b7f1fd3c3bd11bb` |
+| Held-out | 0.8739 | 0.8378 | `ac17f0b88df39b0d145f660478c7804527400c3660a0b2c2dd0cdd16cafddc56` |
+| Korean | 0.8934 | 0.8684 | `762247b6c53fec9242d4092f19c30b5d9ba4fa31b7a67da0dc370a5f437f2d7d` |
+
+To reproduce the baseline through the library (no candidate callback):
+
+```sh
+bun -e 'import { evalSeeded, readEvalSet } from "./src/memory/eval-fixture.ts"; console.log(JSON.stringify(evalSeeded(readEvalSet("test/fixtures/eval-temporal.json")), null, 2));'
+```
