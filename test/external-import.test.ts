@@ -66,6 +66,32 @@ test("default source roots honor Claude and Codex environment configuration and 
   expect(await importExternalMemory({ base, project: PROJECT, source: "codex", cwd: repo, env, policy: allow })).toMatchObject({ files: 1, added: 1 });
 });
 
+test("Claude default project selection uses non-alphanumeric encoding for spaces, punctuation and Unicode", async () => {
+  const root = temp("encoded"), repo = join(root, "repo.with space_and한글"), claude = join(root, "claude");
+  mkdirSync(repo);
+  const physical = realpathSync(repo), encoded = physical.replace(/[^a-zA-Z0-9]/g, "-");
+  put(join(claude, "projects", encoded, "memory", "own.md"), "encoded path memory");
+  put(join(claude, "projects", physical.replace(/[/.]/g, "-"), "memory", "old.md"), "WRONG-PROJECT-PRIVATE");
+  const base = join(root, "memory");
+  expect(await importExternalMemory({ base, project: PROJECT, source: "claude-auto", cwd: repo, env: { CLAUDE_CONFIG_DIR: claude }, policy: allow })).toMatchObject({ files: 1, added: 1 });
+  expect(JSON.stringify(candidates(base))).toContain("encoded path memory");
+  expect(JSON.stringify(candidates(base))).not.toContain("WRONG-PROJECT-PRIVATE");
+});
+
+test("Claude project selection uses its 200-character prefix and signed path hash for long paths", async () => {
+  const root = temp("long-encoded"), repo = join(root, "a".repeat(80), "b".repeat(80), "with space"), claude = join(root, "claude");
+  mkdirSync(repo, { recursive: true });
+  const physical = realpathSync(repo), encoded = physical.replace(/[^a-zA-Z0-9]/g, "-");
+  expect(encoded.length).toBeGreaterThan(200);
+  // Reference the shipped encoder's signed 32-bit recurrence; this fixture reads only synthetic memory.
+  let hash = 0;
+  for (let i = 0; i < physical.length; i++) hash = ((hash << 5) - hash + physical.charCodeAt(i)) | 0;
+  put(join(claude, "projects", `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`, "memory", "own.md"), "long path memory");
+  const base = join(root, "memory");
+  expect(await importExternalMemory({ base, project: PROJECT, source: "claude-auto", cwd: repo, env: { CLAUDE_CONFIG_DIR: claude }, policy: allow })).toMatchObject({ files: 1, added: 1 });
+  expect(JSON.stringify(candidates(base))).toContain("long path memory");
+});
+
 test("codex imports recursive Markdown and JSONL strings/objects while skipping malformed records", async () => {
   const root = temp("codex"), source = join(root, "source"), base = join(root, "memory");
   const note = join(source, "nested", "note.md"), records = join(source, "records.jsonl");

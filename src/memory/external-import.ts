@@ -206,7 +206,14 @@ function title(source: ExternalMemorySource, file: SourceFile, record: RawRecord
 }
 
 function portable(path: string): string { return path.split(sep).join("/"); }
-function claudeProjectDirectory(cwd: string): string { return realPath(cwd).replace(/[/.]/g, "-"); }
+/** Claude Code 2.1.311's project-path encoding, including its long-name suffix. */
+function claudeProjectDirectory(cwd: string): string {
+  const path = realPath(cwd), encoded = path.replace(/[^a-zA-Z0-9]/g, "-");
+  if (encoded.length <= 200) return encoded;
+  let hash = 0;
+  for (let index = 0; index < path.length; index++) hash = (Math.imul(hash, 31) + path.charCodeAt(index)) | 0;
+  return `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
 
 export async function importExternalMemory(opts: {
   base: string;

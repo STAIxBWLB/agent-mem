@@ -13,6 +13,15 @@ export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
 /** First line of every note written by accepting a consolidation candidate; `consolidationClusters` reads it to avoid proposing summaries of its own summaries. */
 export const ACCEPTED_CONSOLIDATION_PREFIX = "Accepted consolidation candidate: ";
 export const CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400_000 } as const;
+export const CONSOLIDATION_REVIEW_LIMIT = 10_000;
+export class ConsolidationReviewLimit extends Error {
+  readonly code = "consolidation_review_limit";
+  readonly limit = CONSOLIDATION_REVIEW_LIMIT;
+  constructor(readonly project: string, readonly count: number) {
+    super(`consolidation review cap reached: project ${project}, count ${count}, limit ${CONSOLIDATION_REVIEW_LIMIT}; no reviewed identities evicted`);
+    this.name = "ConsolidationReviewLimit";
+  }
+}
 export const COUNTER_RETENTION = { count: 10_000, ageMs: 90 * 86400_000 } as const;
 export type CandidateVerdict = "public" | "private" | "pii" | "unknown";
 export interface CandidateTarget { id: string; revision: string }
@@ -27,6 +36,7 @@ export type CandidateInput = { project: string } & (
 );
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
 export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null }
+export interface ConsolidationReview { status: Exclude<CandidateStatus, "pending">; acceptedNoteId: string | null }
 export interface CandidateFilter { project: string; status?: CandidateStatus | "all"; kind?: CandidateInput["kind"]; limit?: number }
 export interface CounterKey { entryId: string; project: string; task?: string | null; turn?: string | null; session?: string | null; deliveryId: string }
 export interface CounterValues { rendered?: number | null; delivered?: number | null; cited?: number | null }
@@ -146,13 +156,27 @@ export class CandidateStore {
     // F7 / AC4: when a candidate was first shown to the person. In place and nullable: an older database gains it here, and a reader without it treats every row as unshown.
     // Several processes open this store at once (every `amem mcp` builds it at startup), so the check and the ALTER are one immediate transaction: the loser waits, then sees the column.
     if (!hasShownColumn(this.db)) this.db.transaction(() => { if (!hasShownColumn(this.db)) this.db.run("ALTER TABLE candidates ADD COLUMN shown_at INTEGER"); }).immediate();
+    this.db.run("CREATE TABLE IF NOT EXISTS consolidation_reviews (id TEXT PRIMARY KEY, project TEXT NOT NULL, status TEXT NOT NULL, note_id TEXT)");
     this.db.run("CREATE TABLE IF NOT EXISTS counters (id TEXT PRIMARY KEY, project TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL, rendered INTEGER, delivered INTEGER, cited INTEGER)");
     this.prune();
   }
   close(): void { this.db.close(); }
+  /** Keep only identity and disposition after payload retention, never source text or target lists. */
+  private retainConsolidationReviews(): void {
+    const overflow = this.db.query(`SELECT project, count(*) AS n FROM consolidation_reviews GROUP BY project HAVING count(*) > ?
+      UNION ALL SELECT c.project, count(*) + (SELECT count(*) FROM consolidation_reviews WHERE project = c.project) AS n FROM candidates c LEFT JOIN consolidation_reviews r ON r.id = c.id
+      WHERE c.kind = 'consolidation' AND c.status IN ('accepting', 'accepted', 'rejected') AND r.id IS NULL
+      GROUP BY c.project HAVING count(*) + (SELECT count(*) FROM consolidation_reviews WHERE project = c.project) > ? LIMIT 1`)
+      .get(CONSOLIDATION_REVIEW_LIMIT, CONSOLIDATION_REVIEW_LIMIT) as { project: string; n: number } | null;
+    if (overflow) throw new ConsolidationReviewLimit(overflow.project, overflow.n);
+    this.db.run(`INSERT INTO consolidation_reviews (id, project, status, note_id)
+      SELECT id, project, status, note_id FROM candidates WHERE kind = 'consolidation' AND status IN ('accepting', 'accepted', 'rejected')
+      ON CONFLICT(id) DO UPDATE SET status = excluded.status, note_id = excluded.note_id`);
+  }
   private prune(): void {
     this.db.transaction(() => {
       const now = this.now();
+      this.retainConsolidationReviews();
       // Candidates (AC4, no candidate expires unshown): by age only a decided one, or a pending one that was shown and has had its grace period, goes. By count three tiers decide who is
       // kept: unshown pending first, then shown pending, then decided, so a cap eviction takes decided rows before a shown one (which is owed its grace) and shown ones before an unseen one.
       this.db.query("DELETE FROM candidates WHERE at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))").run(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS);
@@ -174,10 +198,19 @@ export class CandidateStore {
     // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
     return this.db.transaction((): string => {
       this.prune();
+      if (input.kind === "consolidation" && this.reviewedConsolidation(id, input.project)) return id;
       // AC4: a new candidate never pushes an unshown one out. With the cap's worth waiting the person has to review first, and the refusal says so (a named error an MCP tool can map).
       const waiting = (this.db.query("SELECT COUNT(*) AS n FROM candidates WHERE project = ? AND status IN ('pending', 'accepting') AND shown_at IS NULL").get(input.project) as { n: number }).n;
       const known = this.db.query("SELECT 1 FROM candidates WHERE id = ?").get(id);
       if (!known && waiting >= CANDIDATE_RETENTION.count) throw new CandidateQueueFull(waiting);
+      if (!known && input.kind === "consolidation") {
+        const allocated = this.db.query(`SELECT (SELECT count(*) FROM consolidation_reviews WHERE project = ?) +
+          (SELECT count(*) FROM candidates c WHERE project = ? AND kind = 'consolidation' AND status IN ('pending', 'accepting')
+            AND NOT EXISTS (SELECT 1 FROM consolidation_reviews r WHERE r.id = c.id)) AS n`).get(input.project, input.project) as { n: number };
+        // ponytail: 10,000 lasting review identities per project; refuse new proposals instead of forgetting a person's decision.
+        // Upgrade with an explicit person-audited receipt archive before increasing this bounded sidecar capacity.
+        if (allocated.n >= CONSOLIDATION_REVIEW_LIMIT) throw new ConsolidationReviewLimit(input.project, allocated.n);
+      }
       this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, input.project, input.kind, payload, this.now());
       this.prune();
       return id;
@@ -188,6 +221,11 @@ export class CandidateStore {
     this.prune();
     const row = this.db.query("SELECT * FROM candidates WHERE id = ? AND project IN (SELECT value FROM json_each(?))").get(id, this.scope(project)) as Parameters<CandidateStore["decode"]>[0] | null;
     return row ? this.decode(row) : undefined;
+  }
+  reviewedConsolidation(id: string, project: string): ConsolidationReview | undefined {
+    if (!candidateId(id) || !text(project, 400)) throw new Error("invalid candidate identity");
+    const row = this.db.query("SELECT status, note_id FROM consolidation_reviews WHERE id = ? AND project IN (SELECT value FROM json_each(?))").get(id, this.scope(project)) as { status: ConsolidationReview["status"]; note_id: string | null } | null;
+    return row ? { status: row.status, acceptedNoteId: row.note_id } : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
     if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"].includes(filter.kind)) throw new Error("invalid candidate filter");
@@ -221,6 +259,7 @@ export class CandidateStore {
       if (!candidate) throw new Error("candidate unavailable");
       if (candidate.status === "accepted" || candidate.status === "accepting") throw new Error("candidate acceptance already started; inspect its ordinary note before any further action");
       this.db.query("UPDATE candidates SET status = 'rejected' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'pending'").run(id, this.scope(context.project));
+      if (candidate.input.kind === "consolidation") this.retainConsolidationReviews();
     }).immediate();
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
@@ -321,7 +360,10 @@ export class CandidateStore {
           // report every confirmed effect; recovery requires person inspection before any replay.
           throw Error(`consolidation interrupted: inspect note ${noteId}; superseded ${applied.join(", ") || "none"}; remaining or uncertain ${data.targets.filter(target => !applied.includes(target.id)).map(target => target.id).join(", ")}`);
         }
-        this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, candidate.id, this.scope(context.project));
+        this.db.transaction(() => {
+          this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, candidate.id, this.scope(context.project));
+          this.db.query("UPDATE consolidation_reviews SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, candidate.id, this.scope(context.project));
+        }).immediate();
         return { candidateId: candidate.id, noteId, alreadyAccepted: false };
       });
     });
@@ -379,6 +421,7 @@ export class CandidateStore {
       if (current.status !== "pending") throw Error("candidate is rejected or acceptance was interrupted; no automatic replay");
       before?.();
       this.db.query("UPDATE candidates SET status = 'accepting' WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(id, this.scope(project));
+      if (current.input.kind === "consolidation") this.retainConsolidationReviews();
       return undefined;
     }).immediate();
   }

@@ -15,7 +15,7 @@ const NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "sc
 const OPERATIONS_WARNING = "Supersede, demote, settle and forget operations are not exported; re-import restores authored note rows only.";
 
 type ImportedNote = { id: string; at: string; machine: string; note: NoteInput };
-type Provenance = { source: Record<string, number>; peer: Record<string, number>; scope: Record<string, number> };
+type Provenance = { source: Record<string, number>; peer: Record<string, number>; scope: Record<string, number>; machine: Record<string, number> };
 export interface ProjectImportResult {
   applied: boolean;
   project: string;
@@ -46,13 +46,18 @@ function increment(counts: Map<string, number>, value: string | undefined): void
 }
 
 function provenance(notes: Iterable<ImportedNote>): Provenance {
-  const source = new Map<string, number>(), peer = new Map<string, number>(), scope = new Map<string, number>();
-  for (const { note } of notes) {
+  const source = new Map<string, number>(), peer = new Map<string, number>(), scope = new Map<string, number>(), machine = new Map<string, number>();
+  for (const { note, machine: origin } of notes) {
     increment(source, note.source);
     increment(peer, note.peer);
     increment(scope, note.scope);
+    increment(machine, origin);
   }
-  return { source: Object.fromEntries(source), peer: Object.fromEntries(peer), scope: Object.fromEntries(scope) };
+  return { source: Object.fromEntries(source), peer: Object.fromEntries(peer), scope: Object.fromEntries(scope), machine: Object.fromEntries(machine) };
+}
+
+function relationTargets(imported: ImportedNote): string[] {
+  return [imported.note.supersedes, imported.note.promotedFrom].filter((target): target is string => typeof target === "string");
 }
 
 function unchangedAfterNormalization(note: NoteInput): boolean {
@@ -71,10 +76,10 @@ export async function importProject(store: MemoryStore, opts: {
   const fd = openSync(opts.from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   const stream = createReadStream(opts.from, { fd, encoding: "utf8" });
   const result: ProjectImportResult = { applied: opts.confirm === true, project: opts.project, read: 0, added: 0, wouldAdd: 0,
-    skipped: { invalid: 0, policy: 0, other: 0 }, provenance: { source: {}, peer: {}, scope: {} }, warnings: [OPERATIONS_WARNING] };
+    skipped: { invalid: 0, policy: 0, other: 0 }, provenance: { source: {}, peer: {}, scope: {}, machine: {} }, warnings: [OPERATIONS_WARNING] };
   let header = false, bytes = 0;
   let aliases: string[] = [];
-  const pending = new Map<string, ImportedNote>(), accepted: ImportedNote[] = [];
+  const pending = new Map<string, ImportedNote>(), accepted = new Map<string, ImportedNote>();
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > PROJECT_IMPORT_MAX_BYTES) throw new Error("project import needs a regular JSONL file of at most 64 MiB");
@@ -121,22 +126,34 @@ export async function importProject(store: MemoryStore, opts: {
     if (!header) throw new Error("project import has no header");
 
     for (const imported of pending.values()) {
-      if (["supersedes", "promotedFrom"].some(field => {
-        const target = imported.note[field as "supersedes" | "promotedFrom"] as string | null | undefined;
-        return target !== undefined && target !== null && !pending.has(target);
-      })) {
+      if (relationTargets(imported).some(target => !pending.has(target))) {
         result.skipped.invalid++;
         continue;
       }
       const screened = stripPrivateDeep(imported.note);
       if (looksSecret(JSON.stringify(screened)) || !await opts.policy(screened)) { result.skipped.policy++; continue; }
-      accepted.push(imported);
+      accepted.set(imported.id, imported);
     }
-    result.provenance = provenance(accepted);
+    // A policy-refused target cannot authorize its dependents. Propagate removals before any append,
+    // regardless of file order, in linear time even when a long relation chain is refused.
+    const dependents = new Map<string, string[]>(), refused: string[] = [];
+    for (const imported of accepted.values()) for (const target of relationTargets(imported)) {
+      const rows = dependents.get(target) ?? [];
+      rows.push(imported.id); dependents.set(target, rows);
+      if (!accepted.has(target)) refused.push(imported.id);
+    }
+    for (let at = 0; at < refused.length; at++) {
+      const id = refused[at]!;
+      if (!accepted.delete(id)) continue;
+      result.skipped.invalid++;
+      for (const dependent of dependents.get(id) ?? []) refused.push(dependent);
+    }
+    result.provenance = provenance(accepted.values());
     const existing = new Set(store.portableNotes(opts.project).map(note => note.id));
-    result.wouldAdd = accepted.filter(note => !existing.has(note.id)).length;
+    result.wouldAdd = [...accepted.keys()].filter(id => !existing.has(id)).length;
     if (opts.confirm === true) {
-      for (const imported of accepted) {
+      store.assertImportable([...accepted.values()].map(imported => imported.note));
+      for (const imported of accepted.values()) {
         const written = store.importNote(imported.note, imported.at, { machine: imported.machine, expectedId: imported.id });
         if (written.added) result.added++;
       }
