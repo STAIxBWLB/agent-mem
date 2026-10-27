@@ -2,6 +2,18 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.11.0
+
+- **Explain ranked search** (#106, #111). `amem search <words> --explain`, MCP `amem_search({ query, explain: true })` and `MemoryStore.search(query, { explain: true })` report, per hit, the source, raw BM25 rank, tier and recency factors, final score and match mode. Default output and ranking are unchanged. One scoring recipe in `src/memory/search-score.ts` drives both the library and the screened SQL path.
+- **Dated eval sets** (#107, #108). An `amem.eval/v1` entry accepts an optional ISO `at`, and a self-contained set an optional `now`. `amem eval` seeds dated entries at their dates and searches one day after the latest one unless `now` is given. Undated sets keep their previous positional days.
+- Import and consolidation boundaries (#40, #112):
+  - Claude Code transcript import matches Claude Code's project directory encoding for spaces, punctuation, Unicode and long paths (200-character prefix plus hash suffix), so those projects are no longer missed.
+  - Import screens relation targets against the accepted rows, and checks every target shard owner before the first append.
+  - Consolidation review decisions survive payload pruning through a small machine-local receipt. At 10,000 decisions per project, new proposals are refused with `ConsolidationReviewLimit` instead of evicting a decision.
+  - `withGitTimeout` keeps independent deadlines for concurrent and nested operations.
+  - **Compatibility:** every amem that shares a memory home's candidate sidecar must run 0.11.0 or later to keep review receipts. A decision already pruned by an older version cannot be reconstructed.
+- Measurement only, no ranking change: LongMemEval through MCP and library (#101), recency attribution (#102, #103), the F14v2 adoption rule and report comparison (#107, #110), and the pre-registered recency tie-breaker (#105, #113) and stopword (#104, #114) candidates, both rejected. Evidence is in `docs/bench/longmemeval.md`; these scripts are not in the package.
+
 ## 0.10.0
 
 - **Behavior change: `amem search` now ranks** (agent-mem#82 G1c, #91). Current-project curated search uses the ranked `store.search` (FTS5/BM25 with tier and recency weights), the same ranking MCP `amem_search` and `amem eval` use. A multi-word query can match notes that contain only some of its words. `--filter` keeps the previous every-word substring filter, newest first. `--history`, `--as-of` and an empty query keep the filter path. `--all-projects` is unchanged and cannot be combined with `--filter`. The command stays person-only, and the refusal happens before the store opens.
