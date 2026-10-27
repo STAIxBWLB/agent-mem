@@ -228,3 +228,77 @@ bun scripts/longmemeval-compare.ts --baseline baseline-M.json --candidate candid
 ```
 
 The command compares existing reports, makes no network/model call and changes no memory data. A valid comparison exits successfully whether the numeric verdict passes or fails; malformed or mismatched evidence fails the command. `bun scripts/f14-gate.ts --json` defaults to the four baseline fixture reports, without running historical candidate templates. Explicit candidate measurement through `runGate` requires a valid target, and adoption still requires the full evidence input and reviewer AC4 status. The function accepts the declared target; review verifies its pre-registration timing and expected directions against the issue rather than treating a command-line flag as proof of prior registration.
+
+
+## Full pre-registered recency comparison (#105)
+
+The registered exact-score tie-breaker is **not publicly eligible under F14v2**. Its four pooled target gain tests pass and every fixture is no-loss, but S single-session-preference MRR and M temporal-reasoning MRR decrease significantly beyond the 0.02 per-type tolerance on both MCP and library. No production ranking change is retained. The full verdict remains `incomplete` because the reviewer's private AC4 status is `missing`; that does not erase the four known public guardrail failures. AC4 was not run.
+
+The floor-0.5 comparison arm passes the public checks and remains pending AC4, but is comparison-only and is not selected for adoption in this issue. The registered candidate was not replaced, tuned or redefined after measuring.
+
+Fresh runs use main `80764b5ad609f7c873bdd3f7490b974cc71b808b` after #106, with the unchanged upstream-metric harness and the same pinned S/M input hashes above. Driver implementation and both patches were frozen in `0eebc99` before fixture or full-data measurement. Each of the six runs completed all 500 questions (470 eligible, 30 abstentions), with zero failed paths. Every mode has a separate private detached runtime; floor is `1/min(2, denominator)`, equivalent to the pre-registered 0.5 floor while preserving native quotient order. The tie candidate removes recency from the primary score and applies the shared curve only after exactly equal BM25 x tier scores, before the existing reference tie-breaker.
+
+Full raw reports, per-question receipts, runtime patches and provenance remain on dgx02. The [compact result manifest](recency-105-summary.json) contains source/data/driver/report/patch hashes, all per-type deltas and p-values, fixture aggregates and the unmodified F14v2 verdicts. The aggregator verifies the report hashes, source patches derived from the pinned base, S/M treatment identity and all dataset/question/gold/row/BM25/harness/selection controls before judging. It never substitutes a public score for private AC4.
+
+### Fixture results
+
+| Fixture | Baseline MRR | Tie MRR | Floor 0.5 MRR |
+|---|---:|---:|---:|
+| built-in | 0.9063 | 0.9063 | 0.9063 |
+| held-out | 0.8739 | 0.8892 | 0.8739 |
+| ko | 0.8934 | 0.9167 | 0.8956 |
+| temporal | 0.6782 | 0.8750 | 0.8889 |
+
+MRR, hit@1 and hit@10 are no-loss on every fixture for both arms; full aggregates are in the manifest. No fixture or gold expectation was edited.
+
+### Full S/M overall results
+
+| Set | Mode | MCP all@10 | Library all@10 | MCP MRR | Library MRR |
+|---|---|---:|---:|---:|---:|
+| S | baseline | 0.865957 | 0.865957 | 0.891640 | 0.891624 |
+| S | recency-tie | 0.889362 | 0.893617 | 0.898364 | 0.899303 |
+| S | floor-half | 0.889362 | 0.889362 | 0.891117 | 0.891456 |
+| M | baseline | 0.710638 | 0.717021 | 0.785471 | 0.784331 |
+| M | recency-tie | 0.770213 | 0.772340 | 0.789343 | 0.789302 |
+| M | floor-half | 0.765957 | 0.768085 | 0.784638 | 0.783496 |
+
+### Pooled target tests
+
+The target is the pre-registered union of knowledge-update and multi-session questions, 193 eligible questions per dataset/backend. Each row is a separate one-sided paired 10,000-permutation test with the fixed F14v2 seed and add-one p-value. S and M are never paired together.
+
+| Arm | Set | Backend | Baseline all@10 | Arm all@10 | Delta | p(gain) |
+|---|---|---|---:|---:|---:|---:|
+| tie | S | mcp | 0.823834 | 0.870466 | +0.046632 | 0.00590 |
+| tie | S | library | 0.823834 | 0.875648 | +0.051813 | 0.00320 |
+| tie | M | mcp | 0.569948 | 0.725389 | +0.155440 | 0.00010 |
+| tie | M | library | 0.575130 | 0.725389 | +0.150259 | 0.00010 |
+| floor 0.5 | S | mcp | 0.823834 | 0.870466 | +0.046632 | 0.00170 |
+| floor 0.5 | S | library | 0.823834 | 0.870466 | +0.046632 | 0.00170 |
+| floor 0.5 | M | mcp | 0.569948 | 0.699482 | +0.129534 | 0.00010 |
+| floor 0.5 | M | library | 0.575130 | 0.699482 | +0.124352 | 0.00010 |
+
+All eight target tests pass p < 0.05. This alone is not adoption: fixture and per-type guardrails remain binding.
+
+### Failed tie-breaker guardrails
+
+| Set / type | Backend | Baseline MRR | Tie MRR | Delta | p(loss) | Tolerance |
+|---|---|---:|---:|---:|---:|---:|
+| S / single-session-preference | mcp | 0.501581 | 0.477064 | -0.024517 | 0.01760 | 0.02 |
+| S / single-session-preference | library | 0.501013 | 0.476958 | -0.024055 | 0.02350 | 0.02 |
+| M / temporal-reasoning | mcp | 0.777348 | 0.756885 | -0.020463 | 0.00860 | 0.02 |
+| M / temporal-reasoning | library | 0.777360 | 0.756794 | -0.020566 | 0.00870 | 0.02 |
+
+These are the only failed public guardrail rows for the tie candidate. Each decrease exceeds 0.02 and p(loss) is below 0.05, so the nonsignificant-loss waiver does not apply. The pre-registered temporal MRR loss expectation (at most 0.01) is also missed on M. The expectation that other abilities stay flat is contradicted by the S preference losses. Expectations and admission tolerances were not changed after seeing these results.
+
+Floor 0.5 has no failed public guardrail rows. Its small overall MRR losses and per-type changes remain visible in the manifest; private AC4 is still unknown and the arm is not adopted.
+
+### Reproduction
+
+The frozen driver only creates disposable experimental runtimes; the package's normal search behavior is unchanged by this evidence PR. Run all three modes (`baseline`, `recency-tie`, `floor-half`) for both S and M with fresh output filenames, and collect each mode's fixture report with its S run. Full runs verify the pinned dataset hash/size; `--max-questions` is smoke-only and cannot establish eligibility. Use the same driver bytes for every condition.
+
+```sh
+bun scripts/longmemeval-recency.ts --mode baseline --input /data/longmemeval_s_cleaned.json --output /reports/baseline-S.json --variant S --fixtures-output /reports/baseline-fixtures.json
+bun scripts/longmemeval-recency-summary.ts --directory /reports --output /reports/summary.json
+```
+
+The manifest records the frozen measurement driver SHA-256 `9b9bbfb017759a0f74c18ac4523512cfd1b055db862ec410ca50799e5c8d2317` and the exact gate/comparison source hashes. The summary is portable and includes no raw downloaded questions or corpus text. Its report hashes bind this execution; source/data/harness hashes and the fixed transforms support independent reruns.
