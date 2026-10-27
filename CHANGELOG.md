@@ -7,7 +7,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - **Explain ranked search** (#106, #111). `amem search <words> --explain`, MCP `amem_search({ query, explain: true })` and `MemoryStore.search(query, { explain: true })` report, per hit, the source, raw BM25 rank, tier and recency factors, final score and match mode. Default output and ranking are unchanged. One scoring recipe in `src/memory/search-score.ts` drives both the library and the screened SQL path.
 - **Dated eval sets** (#107, #108). An `amem.eval/v1` entry accepts an optional ISO `at`, and a self-contained set an optional `now`. `amem eval` seeds dated entries at their dates and searches one day after the latest one unless `now` is given. Undated sets keep their previous positional days.
 - Import and consolidation boundaries (#40, #112):
-  - Claude Code transcript import matches Claude Code's project directory encoding for spaces, punctuation, Unicode and long paths (200-character prefix plus hash suffix), so those projects are no longer missed.
+  - Claude Code auto-memory import (`amem import claude-auto`) matches Claude Code's project directory encoding for spaces, punctuation, Unicode and long paths (200-character prefix plus hash suffix), so those projects are no longer missed.
   - Import screens relation targets against the accepted rows, and checks every target shard owner before the first append.
   - Consolidation review decisions survive payload pruning through a small machine-local receipt. At 10,000 decisions per project, new proposals are refused with `ConsolidationReviewLimit` instead of evicting a decision.
   - `withGitTimeout` keeps independent deadlines for concurrent and nested operations.
