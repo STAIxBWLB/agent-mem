@@ -1,4 +1,5 @@
 export * from "./memory/store.ts";
+export type { ScoreFactors } from "./memory/search-score.ts";
 export * from "./memory/capture.ts";
 export { fts5Available, ftsTerms, SearchIndex, captureSearch } from "./memory/search-fts.ts";
 export type { CuratedDoc, RankedRef } from "./memory/search-fts.ts";

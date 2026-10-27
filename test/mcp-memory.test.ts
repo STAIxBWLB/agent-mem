@@ -114,3 +114,29 @@ test("work-state read screens materialized views before closed-item filtering", 
     expect(await mcp.tools.amem_work_state_read({ includeClosed: true })).toMatchObject([{ list: "allowed" }]);
   } finally { mcp.close(); }
 });
+
+for (const fallback of [false, true]) test(`search explanation keeps policy screening before selection (${fallback ? "substring" : "FTS"})`, async () => {
+  const { setSystemTime } = await import("bun:test");
+  const { setFts5AvailableForTest } = await import("../src/memory/search-fts.ts");
+  const { MCP_TOOLS } = await import("../src/mcp.ts");
+  setSystemTime(new Date());
+  let mcp: ReturnType<typeof createMemoryMcp> | undefined;
+  try {
+    const f = fixture(), safe = f.note("needle safe curated"), denied = f.note("needle hidden needle needle", f.project, ["path:hidden.ts"]); f.store.close();
+    const capture = new CaptureStore({ home: f.root, project: f.project });
+    try { capture.append({ project: f.project, agent: "test", event: "tool", excerpt: "needle safe capture" }); } finally { capture.close(); }
+    setFts5AvailableForTest(fallback ? false : undefined);
+    mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, policy: { denyPaths: ["hidden.ts"] } });
+    const plain = await mcp.tools.amem_search({ query: "needle", limit: 10 }) as { engine: string; hits: any[] };
+    const explained = await mcp.tools.amem_search({ query: "needle", limit: 10, explain: true }) as typeof plain;
+    expect(plain.hits.every(hit => !("scoreDetails" in hit))).toBe(true);
+    expect(JSON.stringify({ ...explained, hits: explained.hits.map(({ scoreDetails, ...hit }) => hit) })).toBe(JSON.stringify(plain));
+    expect(plain.hits.some(hit => hit.view?.id === safe)).toBe(true);
+    expect(JSON.stringify(explained)).not.toContain(denied);
+    expect(JSON.stringify(explained)).not.toContain("hidden");
+    for (const hit of explained.hits) expect(hit.scoreDetails).toMatchObject({ source: hit.source, finalScore: hit.score, matchMode: fallback ? "substring" : "fts5" });
+    if (fallback) expect(explained.hits.every(hit => hit.scoreDetails.rawBm25Rank === null)).toBe(true);
+    await expect(mcp.tools.amem_search({ query: "needle", explain: "true" })).rejects.toThrow();
+    expect((MCP_TOOLS.find(tool => tool.name === "amem_search")!.inputSchema as any).properties.explain).toEqual({ type: "boolean" });
+  } finally { mcp?.close(); setFts5AvailableForTest(undefined); setSystemTime(); }
+});

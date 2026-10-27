@@ -17,6 +17,8 @@ export interface MemoryCommandOptions {
   person?: boolean;
   /** Standalone person CLI opt-in. Hosts omit this to retain their screened substring recall. */
   rankedSearch?: boolean;
+  /** Standalone person CLI opt-in; requires rankedSearch and person intent. */
+  explainSearch?: boolean;
   /** Defaults to amem's own names. */
   names?: CommandNames;
   /** Startup-bound canonical project supplied by a host; no model-facing selector. */
@@ -70,6 +72,10 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const names = opts.names ?? AMEM_NAMES, usage = memoryUsage(names.memory);
   if (args.some(arg => arg === "--history" || arg === "--as-of" || arg.startsWith("--history=") || arg.startsWith("--as-of=")) && opts.person !== true) fail("historical recall requires authenticated person intent from the host");
   if (opts.rankedSearch && opts.person !== true) fail("ranked CLI search requires person intent");
+  if (opts.explainSearch && (opts.person !== true || opts.rankedSearch !== true)) fail("score explanation requires ranked search and person intent");
+  if (opts.explainSearch && sub !== "search") fail("score explanation applies only to search");
+  if (args.includes("--explain") && (opts.person !== true || opts.rankedSearch !== true || opts.explainSearch !== true)) fail("score explanation requires ranked search and person intent");
+  for (let index = rest.indexOf("--explain"); index >= 0; index = rest.indexOf("--explain")) rest.splice(index, 1);
   const store = opts.store ?? opts.open();
   const actor = "user";
   const project = opts.project ?? memoryProjectKey(cwd);
@@ -93,12 +99,14 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const q = sub === "search" ? rest.join(" ") : undefined;
         const ranked = opts.rankedSearch && q?.trim() && !history && asOf === undefined;
+        if (opts.explainSearch && (!ranked || !q?.trim())) fail("--explain requires a non-empty current-project ranked search without --history or --as-of");
         const state = recallRows(store, project, { person: opts.person, history, asOf, query: ranked ? undefined : q, limit: Number.MAX_SAFE_INTEGER });
         // Retained history has its own snapshot; the current index cannot rank it. Empty queries keep list semantics.
         // ponytail: fetch up to the current curated-view count before display caps, so metadata/readable exclusions consume no slots.
         // Upgrade to paged ranked views if this full-pool person read reaches the R3 ceiling.
-        const candidates = ranked ? store.withDeferredPromotions(() => store.search(q!, { project, includeCapture: false, limit: Math.max(1, state.views.length) }))
-          .hits.flatMap(hit => hit.view ? [hit.view] : []) : state.views;
+        const rankedResult = ranked ? store.withDeferredPromotions(() => store.search(q!, { project, includeCapture: false, limit: Math.max(1, state.views.length), ...(opts.explainSearch ? { explain: true } : {}) })) : undefined;
+        const scoreDetails = opts.explainSearch ? new Map(rankedResult?.hits.flatMap(hit => hit.view && hit.scoreDetails ? [[hit.view.id, hit.scoreDetails] as const] : []) ?? []) : undefined;
+        const candidates = rankedResult ? rankedResult.hits.flatMap(hit => hit.view ? [hit.view] : []) : state.views;
         const all = candidates.filter(view => (!tier || view.tier === tier) && (!kind || view.kind === kind) && (!peer || view.peer === peer) && (!machine || view.machine === machine) && (!since || Date.parse(view.at) >= Date.parse(since)));
         const readable = opts.readable(all), rows = readable.slice(0, limit ? Number(limit) : 50);
         ready(rows);
@@ -108,10 +116,12 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
           return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
-        if (json) return JSON.stringify(rows, null, 2);
+        if (json) return JSON.stringify(opts.explainSearch ? rows.map(view => ({ ...view, ...(scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })) : rows, null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
-        return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}`) : ["(nothing)"]),
+        return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
+          ? rows.flatMap(view => [`${stale(view) ? "(stale?) " : ""}${one(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
+          : rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
       }
       case "show": {

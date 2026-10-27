@@ -9,7 +9,7 @@ const tool = <Name extends string>(name: Name, description: string, inputSchema:
 
 /** Storage scope comes from startup, never tool arguments; candidate proposals remain person-reviewed. */
 export const MCP_TOOLS = [
-  tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
   tool("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
   tool("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object({ id: string(80) }, ["id"])),
   tool("amem_timeline", "Read screened memory near an entry or time in this project.", object({ id: string(80), since: string(40), limit })),
