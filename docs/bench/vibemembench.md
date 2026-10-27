@@ -109,7 +109,7 @@ The complete candidate is checked by the same configured policy and shared priva
 
 Synthetic verification on dgx02: **31 pass, 0 fail** (all 16 existing tests plus 15 compact tests), with the existing Python/Bun network tripwires enabled. Checks cover exact rendering, caps including multibyte paths, template stripping, no-anchor/no-fallback, identical parent hit and rows, source attribution, excluded raw payload, scope isolation, replay/determinism and record-policy refusals. Replay inside the retained checkout: `cd VibeMemBench/scripts && ../../.adapter-venv/bin/python -m unittest -v test_amem_adapter test_amem_compact`.
 
-No real-data `run_memory.py` build, agent run, model call or API key was used for this variant. The reviewer's build and probe run are reported in Results below.
+Implementing and testing this variant used no real-data `run_memory.py` build, agent run, model call or API key. The reviewer's later real-data build and probe run are reported in Results below.
 
 
 ## Results
