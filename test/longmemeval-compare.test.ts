@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { compareLongMemEval, pairedRandomization, PAIRED_RANDOMIZATION_SEED, readBoundedReport } from "../scripts/longmemeval-compare.ts";
+import { compareLongMemEval, BM25_REPORTED_NOTICE, pairedRandomization, PAIRED_RANDOMIZATION_SEED, readBoundedReport } from "../scripts/longmemeval-compare.ts";
 
 import { mkdtempSync, writeFileSync, truncateSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -131,6 +131,35 @@ describe("compareLongMemEval", () => {
     mismatch(r => { r.results[0].rows.stored++; });
     mismatch(r => { r.harnessSha256 = "d".repeat(64); });
     mismatch(r => { r.limit = 20; });
+  });
+
+  test("reported BM25 mode waives only ranking equality and reports recomputed movement", () => {
+    const base = report([true, false]), candidate = structuredClone(base);
+    candidate.results[0].rankings.bm25 = [{ sessionId: "gold-0", turnIndex: 0 }];
+    expect(() => compareLongMemEval(base, candidate)).toThrow("BM25 ranking mismatch");
+    const result = compareLongMemEval(base, candidate, [], { bm25Control: "reported" });
+    expect(result.bm25Control).toBe("reported"); expect(result.notices).toEqual([BM25_REPORTED_NOTICE]);
+    expect(result.bm25Movement).toMatchObject({ eligibleQuestions: 2, changedQuestions: 1, changedRankingLists: 1 });
+    expect(result.bm25Movement!.rows).toHaveLength(12);
+    expect(result.bm25Movement!.rows.find(row => row.type === "overall" && row.metric === "sessionRecallAllAt10")).toMatchObject({ n: 2, baseline: 0, candidate: 0.5, delta: 0.5 });
+    expect(result.bm25Movement!.rows.find(row => row.type === "knowledge-update" && row.metric === "MRR")?.delta).toBe(1);
+  });
+
+  test("reported BM25 mode keeps every non-BM25 control and report validation strict", () => {
+    const mismatch = (change: (r: any) => void) => { const a = report([true, false]), b = report([true, false]); change(b); expect(() => compareLongMemEval(a, b, [], { bm25Control: "reported" })).toThrow(); };
+    mismatch(r => { r.dataset.sha256 = "d".repeat(64); });
+    mismatch(r => { r.results[1].id = "new-id"; });
+    mismatch(r => { r.results[0].gold.sessionIds = ["other"]; });
+    mismatch(r => { r.results[0].rows.stored++; });
+    mismatch(r => { r.definitions.metric = "different"; });
+    mismatch(r => { r.selection.examined++; });
+    mismatch(r => { r.harnessSha256 = "d".repeat(64); });
+    mismatch(r => { r.limit = 20; });
+    const invalid = report([true, false]); invalid.results[0].rankings.bm25[0].turnIndex = 99;
+    expect(() => compareLongMemEval(invalid, report([true, false]), [], { bm25Control: "reported" })).toThrow();
+    const incomplete = report([true, false]); incomplete.complete = false;
+    expect(() => compareLongMemEval(incomplete, report([true, false]), [], { bm25Control: "reported" })).toThrow();
+    expect(() => compareLongMemEval(report([true]), report([true]), [], { bm25Control: "waive" as any })).toThrow("invalid bm25Control");
   });
 
   test("refuses duplicate IDs, invalid rankings, NaN scores, failed paths, and incomplete reports", () => {

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { STOPWORD_FILE, patchStopwordSource, prepareStopwordRuntime } from "../scripts/longmemeval-stopwords.ts";
+import { STOPWORD_FILE, STOPWORD_BASE, patchStopwordSource, prepareStopwordRuntime } from "../scripts/longmemeval-stopwords.ts";
 
 const source = (file: string) => readFileSync(new URL("../" + file, import.meta.url), "utf8");
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -11,18 +11,21 @@ const WORDS = ["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "i
 const quoted = (...terms: string[]) => terms.map((term) => `"${term}" *`).join(" OR ");
 
 test("fixed Lucene33 transform is exact, baseline is identity, and drift or unknown modes fail closed", () => {
-  const original = source(STOPWORD_FILE);
-  expect(patchStopwordSource(original, "baseline")).toBe(original);
-  expect(patchStopwordSource(original, "stopwords")).not.toBe(original);
-  expect(() => patchStopwordSource(original.replace("const KOREAN_PARTICLES =", "const PARTICLES ="), "stopwords")).toThrow("source anchor changed");
-  expect(() => patchStopwordSource(original, "other" as "baseline")).toThrow("unknown stopword mode");
+  const baseline = prepareStopwordRuntime(join(import.meta.dir, ".."), STOPWORD_BASE, "baseline");
+  try {
+    const original = readFileSync(join(baseline.root, STOPWORD_FILE), "utf8");
+    expect(patchStopwordSource(original, "baseline")).toBe(original);
+    expect(patchStopwordSource(original, "stopwords")).not.toBe(original);
+    expect(() => patchStopwordSource(original.replace("const KOREAN_PARTICLES =", "const PARTICLES ="), "stopwords")).toThrow("source anchor changed");
+    expect(() => patchStopwordSource(original, "other" as "baseline")).toThrow("unknown stopword mode");
+  } finally { baseline.cleanup(); }
 });
 
 test("private baseline and fixed candidate runtimes preserve only the exact lowercase whole-word list", async () => {
   const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
   expect(head.exitCode).toBe(0);
-  const baseline = prepareStopwordRuntime(join(import.meta.dir, ".."), head.stdout.toString().trim(), "baseline");
-  const candidate = prepareStopwordRuntime(join(import.meta.dir, ".."), head.stdout.toString().trim(), "stopwords");
+  const baseline = prepareStopwordRuntime(join(import.meta.dir, ".."), STOPWORD_BASE, "baseline");
+  const candidate = prepareStopwordRuntime(join(import.meta.dir, ".."), STOPWORD_BASE, "stopwords");
   try {
     const baseModule = await import(pathToFileURL(join(baseline.root, STOPWORD_FILE)).href);
     const candidateModule = await import(pathToFileURL(join(candidate.root, STOPWORD_FILE)).href);
@@ -43,8 +46,8 @@ test("private baseline and fixed candidate runtimes preserve only the exact lowe
 test("single stopwords, all-stopword fallback, Korean variants, punctuation, and bounded windows retain contract", async () => {
   const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
   expect(head.exitCode).toBe(0);
-  const baseline = prepareStopwordRuntime(join(import.meta.dir, ".."), head.stdout.toString().trim(), "baseline");
-  const candidate = prepareStopwordRuntime(join(import.meta.dir, ".."), head.stdout.toString().trim(), "stopwords");
+  const baseline = prepareStopwordRuntime(join(import.meta.dir, ".."), STOPWORD_BASE, "baseline");
+  const candidate = prepareStopwordRuntime(join(import.meta.dir, ".."), STOPWORD_BASE, "stopwords");
   try {
     const baseModule = await import(pathToFileURL(join(baseline.root, STOPWORD_FILE)).href);
     const candidateModule = await import(pathToFileURL(join(candidate.root, STOPWORD_FILE)).href);
@@ -69,8 +72,8 @@ test("runtime metadata pins source changes to search-fts and leaves baseline byt
   const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
   expect(head.exitCode).toBe(0);
   const root = join(import.meta.dir, "..");
-  const baseline = prepareStopwordRuntime(root, head.stdout.toString().trim(), "baseline");
-  const candidate = prepareStopwordRuntime(root, head.stdout.toString().trim(), "stopwords");
+  const baseline = prepareStopwordRuntime(root, STOPWORD_BASE, "baseline");
+  const candidate = prepareStopwordRuntime(root, STOPWORD_BASE, "stopwords");
   try {
     const original = readFileSync(join(baseline.root, STOPWORD_FILE), "utf8");
     expect(baseline.changes).toEqual([{ file: STOPWORD_FILE, before: sha(original), after: sha(original), changed: false }]);

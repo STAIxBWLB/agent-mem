@@ -126,6 +126,19 @@ test("missing or mismatched evidence cannot establish adoption; private AC4 rema
   expect(adopts(invalid)).toMatchObject({ adopt: false, status: "incomplete" });
 });
 
+test("BM25 movement requires explicit reported mode and never waives other evidence controls", () => {
+  const input = evidence();
+  const candidate = input.longMemEval!.S!.candidate as ReturnType<typeof lme>;
+  candidate.results[0]!.rankings.bm25 = [{ sessionId: candidate.results[0]!.gold.sessionIds[0]!, turnIndex: 0 }];
+  expect(adopts(input)).toMatchObject({ adopt: false, status: "incomplete" });
+  input.bm25Control = "reported";
+  const verdict = adopts(input);
+  expect(verdict.adopt).toBe(true);
+  expect(verdict.reasons.some(reason => reason.includes("BM25") && reason.includes("waiv"))).toBe(true);
+  (candidate as any).dataset.sha256 = "f".repeat(64);
+  expect(adopts(input)).toMatchObject({ adopt: false, status: "incomplete" });
+});
+
 test("the default runner reports all four baselines without retroactively running old candidates", () => {
   const rows = runGate();
   expect(rows.map(row => row.name)).toEqual([CANDIDATES[0]![0]]);
