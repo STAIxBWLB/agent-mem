@@ -34,6 +34,7 @@
 
 ## Releasing
 
+- In `CHANGELOG.md`, use `#N` only for agent-mem issues and PRs, `agent-hub#N` for agent-hub issues and PRs, and `task N` (without `#`) for board tasks.
 - Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow checks it before `npm publish` and its `release-notes` job publishes it as the GitHub Release body. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
 - After the release, read back the published version with a cache-busting registry request (not `npm view`) and read back the Release body.
 
