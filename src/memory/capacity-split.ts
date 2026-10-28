@@ -1,3 +1,4 @@
+import { assertCliPolicy } from "./cli-attribution.ts";
 import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { capacityReport, type ShardSplit } from "./capacity.ts";
@@ -8,7 +9,7 @@ import { machineId } from "./store.ts";
 
 /**
  * #15 T5 / D7: `amem capacity apply --split`. Writes each shard's own capture config (`machine/<id>/config.json`, which overrides the home default) with its
- * share of the global budget. Person-only like the other apply (the CLI refuses an agent marker and a missing terminal before this runs), and in two steps:
+ * share of the global budget. Like the other apply, it uses two steps:
  * a preview that records which shards, which current configs and which target values the person is shown, and a `--confirm` that writes exactly those
  * target values and nothing recomputed. It refuses unless the set of shards and every shard's current config are unchanged, and unless the preview is younger
  * than `PREVIEW_MAX_AGE_MS`: a week-old preview cannot write a cap the person never saw, and free disk drifting a little between the two steps changes nothing
@@ -46,6 +47,7 @@ export function previewSplit(base: string, opts: { diskShare?: number; now?: () 
   if (report.splitRefused) throw new Error(`capacity apply --split: ${report.splitRefused}`);
   const found = targets(base, report.split);
   const preview: SplitPreview = { at: (opts.now ?? Date.now)(), split: found.targets, skipped: found.skipped };
+  assertCliPolicy(preview);
   writeFileSync(previewPath(base), JSON.stringify(preview) + "\n", { mode: 0o600 });
   return { ...preview, confirm: "re-run with --confirm to write each shard's share" };
 }
@@ -66,6 +68,7 @@ export function applySplit(base: string, opts: { diskShare?: number; now?: () =>
   // What was previewed is what is written: the same shards, each with the config the person saw replaced by the target the person saw.
   const identity = (rows: SplitTarget[]) => JSON.stringify(rows.map(({ key, dir, current }) => ({ key, dir, current })));
   if (!Array.isArray(approved.split) || identity(approved.split) !== identity(live)) throw new Error("capacity preview changed (a shard appeared or went, or a shard's config moved); re-run without --confirm");
+  assertCliPolicy({ approved, live });
   const written = approved.split.map(row => {
     const next = writeCaptureConfigFile(join(row.dir, "config.json"), row.target);
     return { key: row.key, cap_mb: next.capMb ?? row.target.capMb, retention_days: next.retentionDays ?? row.target.retentionDays };

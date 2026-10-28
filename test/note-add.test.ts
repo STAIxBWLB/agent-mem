@@ -75,6 +75,25 @@ test("no text opens the editor: an empty file for a plain note, the labelled tem
   expect(notes(r)).toHaveLength(before);
 });
 
+test("editor paths require stdin TTY before calling edit; explicit text, stdin and structured fail work without TTY", async () => {
+  const r = rig(); let edits = 0;
+  for (const env of [{}, { CLAUDECODE: "fixture" }]) {
+    const plain = await message(cli(r, ["note", "add"], { env, stdinTTY: false, edit: () => { edits++; return "must not be used"; } }));
+    expect(plain).toContain("note editor requires a terminal on stdin");
+    const fail = await message(cli(r, ["note", "add", "--kind", "fail"], { env, stdinTTY: false, edit: () => { edits++; return "must not be used"; } }));
+    expect(fail).toContain("note editor requires a terminal on stdin");
+  }
+  expect(edits).toBe(0); expect(notes(r)).toEqual([]);
+
+  await cli(r, ["note", "add", "public argument note", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false });
+  await cli(r, ["note", "add", "-", "--kind", "decision", "--scope", "shared", "--json"], { env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false, stdin: () => "public piped note\n" });
+  await cli(r, ["note", "add", ...FAIL, "--json"], { env: { PI_SESSION_ID: "fixture" }, stdinTTY: false });
+  const rows = Object.fromEntries(notes(r).map(note => [note.text, note]));
+  expect(rows["public argument note"]).toMatchObject({ peer: "claude", source: "person" });
+  expect(rows["public piped note"]).toMatchObject({ peer: "codex", source: "person", scope: "shared" });
+  expect(rows["Approach: retry the import in one transaction\nSymptom: memory used grew past a gigabyte\nCause: the whole manifest was held in memory\nEvidence: log line 4211, PR 17\nRetry when: the importer streams rows"]).toMatchObject({ peer: "pi", source: "person", kind: "fail" });
+});
+
 test("the editor runs without a shell on a private file that is removed, and a missing or failing editor says so", async () => {
   const r = rig();
   expect(await message(cli(r, ["note", "add"], { env: {} }))).toContain("no editor");

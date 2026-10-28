@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
+import { capacityReport } from "../src/memory/capacity.ts";
 import { CaptureStore, captureShardStats, writeCaptureConfigFile } from "../src/memory/capture.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { migrate } from "../src/memory/migrate.ts";
@@ -255,6 +256,30 @@ test("marked GC and capacity split screen private shard keys before eviction or 
   await runCli(["capacity", "apply", "--split", "--confirm", "--json"], agent);
   expect(existsSync(config)).toBe(true);
   expect(existsSync(splitReceipt)).toBe(false);
+});
+
+test("split screens exact directories before preview persistence and approved targets before writes", async () => {
+  const base = world("amem-cli-exact-split-"), w = { ...base, home: join(base.root, "MARKER-memory") };
+  process.env.AMEM_HOME = w.home;
+  const capture = new CaptureStore({ memoryDir: w.home, project: w.project, cwd: w.cwd });
+  try { capture.append({ project: w.project, agent: "fixture", event: "message", excerpt: "public capture control" }); }
+  finally { capture.close(); }
+  const report = capacityReport({ memoryDir: w.home });
+  expect(report.split).toHaveLength(1); expect(JSON.stringify(report)).not.toContain(MARKER);
+  const agent = agentContext(w), receipt = join(w.home, "capacity-split.preview.json"), dir = shardMachineDir(w.home, w.project, machineId(w.home).id), config = join(dir, "config.json");
+  policy(w.home);
+  await expectUnavailable(["capacity", "apply", "--split", "--json"], agent);
+  expect(existsSync(receipt)).toBe(false); expect(existsSync(config)).toBe(false);
+
+  policy(w.home, []);
+  await runCli(["capacity", "apply", "--split", "--json"], agent);
+  const approved = readFileSync(receipt);
+  policy(w.home);
+  await expectUnavailable(["capacity", "apply", "--split", "--confirm", "--json"], agent);
+  expect(readFileSync(receipt).equals(approved)).toBe(true); expect(existsSync(config)).toBe(false);
+  policy(w.home, []);
+  await runCli(["capacity", "apply", "--split", "--confirm", "--json"], agent);
+  expect(existsSync(config)).toBe(true); expect(existsSync(receipt)).toBe(false);
 });
 
 function setupWorld(name: string, withPrivatePattern: boolean) {

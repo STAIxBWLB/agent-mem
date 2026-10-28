@@ -171,14 +171,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const env = context.env ?? process.env, marked = agentMarked(env);
   const peer = !marked ? "person" : env.AGENTHUB_PEER_ID !== undefined ? env.AGENTHUB_PEER_ID || "agent"
     : env.CLAUDECODE !== undefined || env.CLAUDE_CODE_SESSION_ID !== undefined ? "claude" : env.CODEX_THREAD_ID !== undefined ? "codex" : "pi";
-  return withCliAttribution({ actor: marked ? "agent" : "person", peer }, async () => {
+  return withCliAttribution({ actor: marked ? "agent" : "person", peer, policy: () => configuredPolicy(memoryHome(), context.cwd ?? process.cwd()) }, async () => {
     const output = await runCliCommand(argv, context);
     if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
       const parsed = parseCommand(argv);
       if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup") {
         let receipt: unknown = output;
         try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
-        assertAgentAdministrative(receipt, configuredPolicy(memoryHome(env), context.cwd ?? process.cwd()));
+        assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd()));
       }
     }
     return output;
@@ -319,7 +319,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const result = administrative(await migrateShards({ ...common, mode }));
       return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context));
     }
-    if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
+    if (actor === "agent" && mode === "deactivate") administrative({ target: common.memoryDir, selector: readSelector(common.memoryDir), mode });
+    else if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
     const result = administrative(await migrate({ ...common, mode }));
     return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context));
   }
@@ -402,7 +403,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (sub === "note") {
     // F6: the person writes a curated note. Current attribution and configured policy apply to the complete note.
-    const env = context.env ?? process.env, edit = context.edit ?? ((initial: string) => runEditor(env, initial));
+    const env = context.env ?? process.env, edit = (initial: string) => {
+      if (!(context.stdinTTY ?? process.stdin.isTTY)) throw Error("note editor requires a terminal on stdin; provide text or - for non-interactive input");
+      return (context.edit ?? ((value: string) => runEditor(env, value)))(initial);
+    };
     const kind = (options["--kind"] ?? "finding") as Parameters<typeof buildNote>[0]["kind"];
     const fail: Partial<FailFields> = { ...(typeof options["--approach"] === "string" ? { approach: options["--approach"] } : {}), ...(typeof options["--symptom"] === "string" ? { symptom: options["--symptom"] } : {}),
       ...(typeof options["--cause"] === "string" ? { cause: options["--cause"] } : {}), ...(typeof options["--retry-when"] === "string" ? { retryWhen: options["--retry-when"] } : {}) };
@@ -426,6 +430,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (review) {
     const id = parsed.positionals[0];
     if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
+    if (sub === "walk" && !(context.stdinTTY ?? process.stdin.isTTY)) throw Error("review walk requires a terminal on stdin; stdout must be a terminal too");
     if (sub === "walk" && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("review walk prints each candidate and asks about it, so stdout must be a terminal (not redirected to a file or a pipe)");
     if (sub === "walk" && actor === "agent") throw Error("Memory operation unavailable or refused; no partial result is shown.");
     const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});

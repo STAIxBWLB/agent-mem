@@ -197,5 +197,5 @@ export function commandHelp(): string {
   return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => {
     const names = [...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ");
     return `  ${names}${Object.entries(row.options).map(([name, option]) => ` [${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}]`).join("")}`;
-  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Mutating commands require a terminal on stdin. Agents use the `amem mcp` server; the person reviews what agents propose with `amem review`."].join("\n");
+  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Agent-marked reads use the MCP privacy ceiling. Explicit apply/confirm flags do not require a terminal; review walk and the note editor remain interactive."].join("\n");
 }

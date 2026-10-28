@@ -193,6 +193,8 @@ test("C3 marked CLI column equals MCP reads with public controls and complete-fi
       const env = { HOME: f.root, AMEM_HOME: f.store.dir, CLAUDECODE: "1" }, mcp = createMemoryMcp({ cwd: f.root, base: f.store.dir });
       try {
         expect((await mcp.tools.amem_search({ query: "ordinary" }) as any).hits.some((hit: any) => hit.view?.id === visible)).toBe(true);
+        const partialEnv = JSON.parse(await runCli(["search", "ordinary", "--json"], { cwd: f.root, env: { CLAUDECODE: "1" }, stdinTTY: false }));
+        expect(partialEnv.hits.some((hit: any) => hit.view?.id === visible)).toBe(true);
         const cases = [
           { argv: ["list", "--limit", "10", "--json"], tool: "amem_timeline" as const, args: { limit: 10 } },
           { argv: ["search", "ordinary", "--json"], tool: "amem_search" as const, args: { query: "ordinary" } },
@@ -232,6 +234,7 @@ test("marked CLI unsupported reads fail closed before opening a memory home", as
   }
   await expect(runCli(["review", "walk"], context)).rejects.toThrow("stdout must be a terminal");
   await expect(runCli(["review", "walk"], { ...context, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "walk"], { ...context, env: {}, stdoutTTY: true, stdinTTY: false })).rejects.toThrow("terminal on stdin");
   expect(existsSync(home)).toBe(false);
 
 });

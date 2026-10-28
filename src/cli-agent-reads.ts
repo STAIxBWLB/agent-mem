@@ -87,7 +87,7 @@ export async function agentCliRead(
   let memory: ReturnType<typeof createMemoryMcp> | undefined;
   try {
     const env = context.env ?? process.env;
-    memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(env) });
+    memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome({ ...process.env, ...env }) });
     const value = await memory.tools[call.tool](call.args);
     const output = JSON.stringify(value);
     if (output === undefined || Buffer.byteLength(output) > RESULT_BYTES) throw new Error(UNAVAILABLE);
