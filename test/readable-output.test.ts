@@ -7,7 +7,7 @@ import { doctorText, DOCTOR_SCHEMA, type DoctorReport } from "../src/memory/doct
 import { realPath } from "../src/memory/platform.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
 import { colorEnabled, PLAIN, style } from "../src/memory/style.ts";
-import { setupPlanText, type SetupPlan } from "../src/setup.ts";
+import { setupConfirmationText, setupPlanText, type SetupPlan } from "../src/setup.ts";
 
 const ANSI = /\x1b\[/, COLOR = style(true), WIDTH = 160;
 const cleanup: (() => void)[] = [];
@@ -109,7 +109,7 @@ test("setup plan shows targets, files, MCP and hook changes, skipped clients and
   const text = setupPlanText(plan("preview"));
   expect(text.split("\n")[0]).toBe("amem setup preview: 2 targets, 1 with MCP changes, 1 skipped");
   expect(text).toMatch(/^ATTENTION +claude: MCP add \(not installed\)$/m);
-  expect(text).toMatch(/^SKIPPED +codex: CLI not installed; skipped/m);
+  expect(text).toMatch(/^SKIPPED +codex: CLI not installed$/m);
   expect(text).toContain("file     /h/.claude/config.json"); expect(text).toContain("receipt  /h/memory/setup/claude.json");
   expect(text).toContain("hook     PostToolUse: bun amem hook PostToolUse (timeout 5)");
   expect(text).toContain("Skipped clients: codex (not installed)");
@@ -145,4 +145,19 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
 
 test("person/agent refusal text is unchanged for the reformatted commands", async () => {
   for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow(/amem is for the person/);
+});
+
+test("setup confirmation shows the raw plan under --json and the readable plan otherwise", () => {
+  const shown = plan("apply");
+  expect(JSON.parse(setupConfirmationText(shown, true, COLOR))).toEqual(shown);
+  expect(setupConfirmationText(shown, true, COLOR)).not.toMatch(ANSI);
+  expect(setupConfirmationText(shown, false)).toBe(setupPlanText(shown));
+});
+
+test("setup command lines quote paths with spaces and skipped clients take one line", () => {
+  const shown = plan("preview"); shown.actions[0]!.registration = ["claude", "mcp", "add", "amem", "--", "/opt/my bun/bun"];
+  const text = setupPlanText(shown);
+  expect(text).toContain("command  'claude' 'mcp' 'add' 'amem' '--' '/opt/my bun/bun'");
+  expect(text).toMatch(/^SKIPPED +codex: CLI not installed$/m);
+  expect(text).not.toContain("/h/.codex/config.json");
 });

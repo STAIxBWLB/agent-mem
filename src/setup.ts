@@ -455,13 +455,14 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
   const skipped = plan.actions.filter(action => !action.available), changing = plan.actions.filter(action => action.available && action.mcpChange !== "unchanged");
   const lines = [`${s.bold(`amem setup ${verb}:`)} ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}, ${changing.length} with MCP changes${skipped.length ? `, ${skipped.length} skipped` : ""}`, ""];
   for (const action of plan.actions) {
+    if (!action.available) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
     const state = !action.available ? "skipped" : action.mcpChange === "unchanged" ? "ok" : "attention";
-    const what = !action.available ? "CLI not installed; skipped" : action.mcpChange === "unchanged" ? "already set up; no change" : `MCP ${action.mcpChange}`;
+    const what = action.mcpChange === "unchanged" ? "already set up; no change" : `MCP ${action.mcpChange}`;
     lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
     for (const file of action.files) lines.push(`            file     ${file}`);
     if (action.cwd) lines.push(`            cwd      ${action.cwd}`);
     lines.push(`            receipt  ${action.receipt}`);
-    if (action.available && action.registration) lines.push(`            command  ${action.registration.join(" ")}`);
+    if (action.available && action.registration) lines.push(`            command  ${action.registration.map(quote).join(" ")}`);
     for (const hook of action.hooks) lines.push(`            hook     ${hook.event}: ${hook.command} (timeout ${hook.timeout})`);
     if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
     lines.push(`            ${s.dim(action.lifecycle)}`);
@@ -480,12 +481,15 @@ function setupResultText(result: SetupApplyResult | { restored: SetupTarget[] },
     ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`)].join("\n");
 }
 
+/** What the default confirmation prints before its prompt: the raw plan under `--json`, the readable plan otherwise. */
+export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
+
 export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style } = {}): Promise<string> {
   const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;
   if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s);
   if (!(options.stdinTTY ?? process.stdin.isTTY)) throw Error("setup --apply/--undo require a terminal on stdin");
   const confirm = options.confirm ?? (async (shown: SetupPlan) => {
-    process.stdout.write(setupPlanText(shown, s) + "\n\n");
+    process.stdout.write(setupConfirmationText(shown, options.json === true, s) + "\n\n");
     const terminal = createInterface({ input: process.stdin, output: process.stdout });
     try { return (await terminal.question(`Type yes to ${mode} the listed configuration changes: `)).trim() === "yes"; }
     finally { terminal.close(); }
