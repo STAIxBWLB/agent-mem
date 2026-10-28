@@ -143,9 +143,9 @@ test("search --all-projects crosses, says so in text and JSON, and plain search 
 test("vault-candidates lists one project or all, grouped, and never writes the vault", async () => {
   const { dir, base, person } = rig();
   note(dir, A, "Decision: keep the portable format. Rationale: older readers."); note(dir, B, "Contract: ids only in replies.");
-  const all = await json(["vault-candidates", "--all-projects"], person);
+  const all = await json(["vault-candidates", "--all-projects", "--json"], person);
   expect(all.crossedProjects).toBe(true); expect(all.projects.map((p: { project: string }) => p.project)).toEqual([A, B]);
-  const one = await json(["vault-candidates", "--project", B], person);
+  const one = await json(["vault-candidates", "--project", B, "--json"], person);
   expect(one.crossedProjects).toBe(false); expect(one.projects.map((p: { project: string }) => p.project)).toEqual([B]);
   await expect(runCli(["vault-candidates", "--all-projects", "--project", A], person)).rejects.toThrow(/either/);
   expect(existsSync(join(base, "vault"))).toBe(false);
@@ -159,10 +159,10 @@ test("capacity --json carries the split, and capacity apply --split previews the
   expect(report.split.map((r: { key: string }) => r.key)).toEqual([A, B]);
   const configOf = (key: string) => join(shardMachineDir(base, key, machineId(base).id), "config.json");
   await expect(runCli(["capacity", "apply", "--split", "--confirm"], person)).rejects.toThrow("preview first");
-  const preview = await json(["capacity", "apply", "--split"], person);
+  const preview = await json(["capacity", "apply", "--split", "--json"], person);
   expect(preview.split.map((r: { key: string }) => r.key)).toEqual([A, B]); expect(preview.confirm).toMatch(/--confirm/);
   expect(existsSync(configOf(A))).toBe(false);
-  const written = await json(["capacity", "apply", "--split", "--confirm"], person);
+  const written = await json(["capacity", "apply", "--split", "--confirm", "--json"], person);
   expect(written.written.map((r: { key: string }) => r.key)).toEqual([A, B]);
   for (const key of [A, B]) expect(readCaptureConfigFile(configOf(key))).toMatchObject({ capMb: expect.any(Number), retentionDays: expect.any(Number) });
   expect(existsSync(configOf(C))).toBe(false);                      // the forgotten shard is not written

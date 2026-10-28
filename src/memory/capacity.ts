@@ -8,6 +8,7 @@ export { appendMetrics, readMetrics, metricsPath, type MetricSample } from "./me
 import { walkShards } from "./catalog.ts";
 import { lifecycleResolver } from "./lifecycle.ts";
 import { captureShardGrowth, captureShardStats, readCaptureConfigFile, CAPTURE_DEFAULT_CAP_MB, CAPTURE_DEFAULT_RETENTION_DAYS, type CaptureConfig } from "./capture.ts";
+import { facts, label, PLAIN, singleLine, type Style } from "./style.ts";
 
 /**
  * #13 R7: the capacity advisor. `capacityReport()` reads this machine's load and proposes capture bounds; the
@@ -278,5 +279,48 @@ export function capacityText(report: CapacityReport): string {
     `proposal: cap ${report.proposal.capMb} MB, retention ${report.proposal.retentionDays} days (${report.proposal.reason})`,
     ...(report.splitRefused ? [`split: none proposed (${report.splitRefused})`] : []),
     ...(report.split.length ? ["split of the global budget per shard (a proposal: amem capacity apply --split):", ...report.split.map(row => `  ${row.key}: cap ${row.capMb} MB, retention ${row.retentionDays} days (${row.reason})`)] : []),
+  ].join("\n");
+}
+
+/** Human-readable `capacity apply` result. JSON output remains the caller's responsibility. */
+export function capacityApplyText(result: {
+  preview: { file: string; current: Partial<CaptureConfig>; target: CaptureConfig; reason: string };
+  confirm?: string;
+  written?: { cap_mb?: number; retention_days?: number };
+}, s: Style = PLAIN): string {
+  const applied = result.written !== undefined;
+  return [
+    `amem capacity apply: ${applied ? s.ok("complete") : s.attention("preview")}`,
+    `${label(s, applied ? "ok" : "attention")} target: ${singleLine(result.preview.file)}`,
+    `${label(s, "ok")} current: ${facts({ cap_mb: result.preview.current.capMb, retention_days: result.preview.current.retentionDays }) || "defaults"}`,
+    `${label(s, "attention")} proposed: ${facts({ cap_mb: result.preview.target.capMb, retention_days: result.preview.target.retentionDays })}`,
+    `${label(s, "ok")} reason: ${singleLine(result.preview.reason)}`,
+    ...(applied ? [`${label(s, "ok")} written: ${facts(result.written!) || "no settings reported"}`] : []),
+    `Next action: ${applied ? "none" : "re-run the same capacity apply command with --confirm, keeping all other arguments"}`,
+  ].join("\n");
+}
+
+/** Human-readable `capacity apply --split` result, retaining skipped shard identities. */
+export function capacitySplitText(result:
+  | { at: number; split: { key: string; dir: string; current: Partial<CaptureConfig>; target: CaptureConfig; reason: string }[]; skipped: string[]; confirm: string }
+  | { split: { key: string; dir: string; current: Partial<CaptureConfig>; target: CaptureConfig; reason: string }[]; written: { key: string; cap_mb: number; retention_days: number }[] },
+  s: Style = PLAIN,
+): string {
+  const applied = "written" in result;
+  const rows = result.split.map(row => [
+    `${label(s, applied ? "ok" : "attention")} shard: ${singleLine(row.key)}`,
+    `${label(s, applied ? "ok" : "attention")} target: ${singleLine(row.dir)}`,
+    `${label(s, "ok")} current: ${facts({ cap_mb: row.current.capMb, retention_days: row.current.retentionDays }) || "defaults"}`,
+    `${label(s, applied ? "ok" : "attention")} proposed: ${facts({ cap_mb: row.target.capMb, retention_days: row.target.retentionDays })}`,
+    `${label(s, "ok")} reason: ${singleLine(row.reason)}`,
+  ].join("\n"));
+  const skipped = "skipped" in result ? result.skipped : [];
+  return [
+    `amem capacity apply --split: ${applied ? s.ok("complete") : s.attention("preview")}`,
+    ...(result.split.length ? [] : [`${label(s, "skipped")} targets: none`]),
+    ...rows,
+    ...skipped.map(key => `${label(s, "skipped")} skipped shard: ${singleLine(key)} (no local shard config to write)`),
+    ...(applied ? result.written.map(row => `${label(s, "ok")} written ${singleLine(row.key)}: ${facts({ cap_mb: row.cap_mb, retention_days: row.retention_days })}`) : []),
+    `Next action: ${applied || !result.split.length ? "none" : "re-run the same capacity apply --split command with --confirm, keeping all other arguments"}`,
   ].join("\n");
 }

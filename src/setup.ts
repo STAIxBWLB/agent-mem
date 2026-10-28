@@ -163,7 +163,7 @@ function assertJcodeRuntime(c: ReturnType<typeof context>): void {
   assertJcodeHome(c.env);
   if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
 }
-function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(target === "agy" ? [c.workspace!.root] : [])]); }
+function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
 function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
@@ -186,7 +186,7 @@ function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): Plann
   if (target === "jcode" || target === "agy") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
-    : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}`, timeout: target === "pi" ? 2.5 : 3 }];
+    : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}${target === "pi" ? "" : " --json"}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
 const lifecycle = (target: SetupTarget) => target === "jcode" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
@@ -335,7 +335,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       servers.amem = { command: c.bun, args: ["--smol", c.entry, "mcp"] }; document.mcpServers = servers;
       changes[0]!.after = objectImage(document, changes[0]!.before);
     }
-    const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind}`;
+    const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind} --json`;
     if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`);
     if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3);
     // Qwen's user MCP and hooks share settings.json: publish and journal one combined image.
