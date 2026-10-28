@@ -85,7 +85,53 @@ Current standalone policy and the stricter host policy screen candidates before 
 
 Published 0.3.1 is the exact-pinned pre-vault reader used by the compatibility fixture. Ordinary listing can keep working through the shared derived index already advanced by a P2 writer; a full rebuild rejects the unknown operation. An independent unadvanced index also refuses when refresh must parse that suffix. The fixture deliberately excludes the derived index to force that rebuild on open. Published 0.1.1 and 0.2.0 only establish shared-v1 isolation because they predate generation support; they cannot prove unsupported-generation refusal. These are synthetic compatibility receipts, not verification of installed readers or a live rollout.
 
-Do not record vault links on a memory home used by a 0.3.1 host, including agent-hub while its exact pin remains `@staix/agent-mem` 0.3.1. Upgrade the sharing host to a pin that includes P2 vault-link support before authoring the first link. A successful ordinary list through the older host is insufficient: its next rebuild will refuse that generation. This guard does not authorize installation, a restart or a real-home mutation.
+Every host sharing a memory home must exact-pin a P2 vault-link-capable version before the first link is recorded. The first such release is **0.4.0**, as recorded in [CHANGELOG.md](../CHANGELOG.md#040); a current host pin is not a durable compatibility rule. A successful ordinary list through an unsupported reader is insufficient: its next rebuild can refuse the generation. This guard does not authorize installation, a restart or a real-home mutation.
+
+
+The supported host API is imported from `@staix/agent-mem` (the package entry is `src/index.ts`), without deep imports or a new CLI/MCP writer:
+
+| Export | Signature / host use |
+| --- | --- |
+| `recordVaultLink` | `recordVaultLink(store: MemoryStore, id: string, path: string, options: VaultSelection): Promise<string>`; options require `{project, policy}`. Returns the link ID after the host has written its vault note. |
+| `vaultCandidates` | `vaultCandidates(store: MemoryStore, options: VaultSelection): Promise<View[]>`; startup-project candidates under the supplied policy. |
+| `vaultCandidatesAll` | `vaultCandidatesAll(base: string, opts: {policy: MemoryPolicy; project?: string; limit?: number; includeArchived?: boolean}): Promise<VaultCandidatesAll>`; discovery grouped by project. An omitted project crosses projects; it grants no write authority. |
+| `readShardedSelection` | `readShardedSelection(memoryDir: string): ShardedSelection`; validates an existing active curated-shard layout. An invalid or incomplete split refuses; it is not an invitation to fall back to the unsplit home. |
+| `openShardStore` | `openShardStore(opts: StoreOptions & {project?: string; user?: boolean; memoryDir?: string}): MemoryStore`; opens the target project shard with `{memoryDir: base, project, deferPromotions: true}`. Exactly one project or `user: true` is required. |
+| `createStandalonePolicy` | `createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy`; `{host: hostPolicy}` composes the supplied host policy with standalone screening. It does not automatically load the host's configuration. |
+
+`VaultSelection` is `{project: string; policy: MemoryPolicy; limit?: number}`. The host binds the memory home, project, exact entry ID, relative Markdown path and authorization; environment markers are not authentication. Candidate discovery does not authorize recording a link. The host writes the vault note first; amem records path metadata only and never writes the vault.
+
+`recordVaultLink` requires an already active generation-profile store, including a selected project shard. On a shared-v1 store it throws exactly `vault links require a generation profile; shared-v1 is unchanged`. Hosts surface that precondition rather than implicitly migrating the home. The public store method's lower-level active-handle guard is separate; use the exported `recordVaultLink` wrapper to retain its policy and exact-entry validation.
+
+For a host that has already authorized the operation and written the vault note:
+
+```ts
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
+import {
+  MemoryStore, createStandalonePolicy, openShardStore,
+  readShardedSelection, recordVaultLink, type MemoryPolicy,
+} from "@staix/agent-mem";
+
+async function linkWrittenVaultNote(
+  base: string, project: string, id: string, path: string,
+  hostPolicy: MemoryPolicy,
+): Promise<string> {
+  const policy = createStandalonePolicy({ host: hostPolicy });
+  const split = lstatSync(join(base, "shards.json"), { throwIfNoEntry: false }) !== undefined;
+  if (split) readShardedSelection(base); // Refuse an inactive split; no fallback.
+  const store = split
+    ? openShardStore({ memoryDir: base, project, deferPromotions: true })
+    : new MemoryStore({ memoryDir: base, deferPromotions: true });
+  try {
+    return await recordVaultLink(store, id, path, { project, policy });
+  } finally {
+    store.close();
+  }
+}
+```
+
+`test/vault-link-host.test.ts` uses these package-entry imports on isolated generation and split homes. It verifies generation-local placement and candidate suppression while the ordinary note remains evidence, plus the exact shared-v1 refusal. The existing 0.3.1 reader fixture remains the unsupported-reader control.
 
 ## Plans, privacy and recovery
 
