@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { assertCopyHome, QUERIES, recheckMcp, recheckStore } from "../scripts/ac4-recheck.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { appendAlias } from "../src/memory/aliases.ts";
 
 const PROJECT = "github.com/staixbwlb/agent-hub";
 const roots: string[] = [];
@@ -72,3 +73,16 @@ test("AMEM_HOME=A with a default home pointing to B refuses A, B and the origina
   for (const parent of [a, b, hub]) expect(() => assertCopyHome(parent, live)).toThrow(/refusing the live memory home/);
   const copy = copyHome(); expect(assertCopyHome(copy, live)).toBe(join(copy, "memory"));
 });
+
+test("a note under an old key aliased to --project counts in the corpus and matches the hits, library and MCP alike", async () => {
+  const parent = realPath(mkdtempSync(join(tmpdir(), "amem-ac4-alias-"))); roots.push(parent);
+  const OLD = "github.com/staixbwlb/agent-hub-old";
+  const store = new MemoryStore({ home: parent, deferPromotions: true });
+  try { store.note({ op: "note", project: OLD, scope: "project", tier: "long", kind: "decision", peer: "codex", source: "person", text: "Decision: the seatbelt profile denies .git through HFS+ ignorable code points.", about: [] }); } finally { store.close(); }
+  appendAlias(join(parent, "memory"), { alias: OLD, key: PROJECT, actor: "person", machine: "fixture" });
+  const library = recheckStore({ home: parent, project: PROJECT, limit: 10, env: env(parent) });
+  expect(library.corpus).toBe(1); expect(library.queries[0]!.hits[0]!.title).toContain("seatbelt");
+  const cwd = join(parent, "checkout"); spawnSync("git", ["init", "-q", cwd]); spawnSync("git", ["-C", cwd, "remote", "add", "origin", `https://${PROJECT}`]);
+  const mcp = await recheckMcp({ home: parent, project: PROJECT, limit: 10, cwd, env: env(parent) });
+  expect(mcp.corpus).toBe(1); expect(mcp.queries[0]!.hits.some(h => h.source === "curated" && h.title.includes("seatbelt"))).toBe(true);
+}, 30_000);

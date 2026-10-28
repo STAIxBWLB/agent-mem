@@ -19,6 +19,7 @@ import { canonicalPath, realPath } from "../src/memory/platform.ts";
 import { memoryHome } from "../src/memory/home.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
+import { aliasedKeys, resolveAlias } from "../src/memory/aliases.ts";
 
 export const QUERIES = [
   "seatbelt HFS+ ignorable code points .git",
@@ -76,11 +77,13 @@ const title = (text: string | undefined): string => (text ?? "").slice(0, 110);
 /** The library path: `store.search` on the copy, through the project shard when the home is split. */
 export function recheckStore(opts: { home: string; project: string; limit: number; env?: Env }): RecheckReport {
   const dir = assertCopyHome(opts.home, opts.env);
-  const store = split(dir) ? openShardStore({ memoryDir: dir, project: opts.project, screen: () => "skip" }) : new MemoryStore({ home: opts.home, screen: () => "skip" });
+  // The same key reconciliation `amem mcp` uses (createMemoryMcp): the canonical key of --project and every key aliased to it.
+  const project = resolveAlias(dir, opts.project), aliases = aliasedKeys(dir, project), reconcile = aliases.length ? { reconcile: { canonical: project, aliases } } : {};
+  const store = split(dir) ? openShardStore({ memoryDir: dir, project, screen: () => "skip", ...reconcile }) : new MemoryStore({ memoryDir: dir, screen: () => "skip", ...reconcile });
   try {
-    const corpus = store.list({ project: opts.project, limit: Number.MAX_SAFE_INTEGER }).length;
+    const corpus = store.list({ project, limit: Number.MAX_SAFE_INTEGER }).length;
     const queries = QUERIES.map((query, i) => {
-      const result = store.search(query, { project: opts.project, limit: opts.limit });
+      const result = store.search(query, { project, limit: opts.limit });
       return { n: i + 1, query, engine: result.engine,
         hits: result.hits.map(h => ({ source: h.source, score: Number(h.score.toFixed(6)), title: h.view?.title ?? title(h.view?.text ?? h.capture?.excerpt) })) };
     });
