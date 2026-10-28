@@ -233,7 +233,9 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const runtimePath = [...new Set([traps, dirname(bun), dirname(node!), dirname(npm!), "/usr/bin", "/bin"])].join(delimiter), env = allowlistedSmokeEnv(home, runtimePath);
     writeFileSync(env.npm_config_userconfig!, ""); writeFileSync(env.npm_config_globalconfig!, "");
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
+    const versionEnv = { AMEM_HOME: "memory", AGENTHUB_HOME: "hub", CLAUDE_CONFIG_DIR: ".claude", CODEX_HOME: ".codex", KIMI_CODE_HOME: ".kimi-code", PI_CODING_AGENT_DIR: ".pi/agent", QWEN_HOME: ".qwen", QWEN_RUNTIME_DIR: "qwen-runtime", QWEN_CODE_SYSTEM_SETTINGS_PATH: "qwen-system-settings.json", QWEN_CODE_SYSTEM_DEFAULTS_PATH: "qwen-system-defaults.json", JCODE_HOME: ".jcode", XDG_CONFIG_HOME: ".config", XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache", XDG_STATE_HOME: ".local/state", TMP: "tmp", TEMP: "tmp" };
+    const versionShellChecks = Object.entries(versionEnv).map(([key, tail]) => `[ "\$${key}" = "\$stage/${tail}" ] || exit 96`).join("\n");
+    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then stage="\${TMPDIR%/tmp}"; case "$stage" in ${quote(env.TMPDIR! + "/amem-setup-")}*) ;; *) exit 96 ;; esac; [ -d "$stage" ] && [ ! -L "$stage" ] && [ "$(stat -c '%a' "$stage" 2>/dev/null || stat -f '%Lp' "$stage" 2>/dev/null)" = "700" ] && [ "$HOME" = "$stage" ] && [ "$PWD" = "$stage" ] && [ "$TMPDIR" = "$stage/tmp" ] || exit 96\n${versionShellChecks}\nprintf '%s 0.0.0-fixture\\n' ${quote(name)}; exit 0; fi\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
     const packed = JSON.parse(await ownedCommand(bun, [npm!, "pack", checkout, "--offline", "--json", "--ignore-scripts", "--pack-destination", artifacts], artifacts, env));
     requireSmoke(Array.isArray(packed) && packed.length === 1 && typeof packed[0]?.filename === "string" && basename(packed[0].filename) === packed[0].filename, "npm pack did not return one local artifact");
     const tarball = realPath(join(artifacts, packed[0].filename)); requireSmoke(inside(artifacts, tarball), "packed artifact escaped its private directory");
@@ -257,13 +259,15 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     requireSmoke((await cli(["--version"])).trim() === `amem ${metadata.version}`, "installed CLI version output differs"); await cli(["--help"]);
     const beforeSetup = snapshotPrivateHome(home);
     const plan = JSON.parse(await cli(["setup", "all", "--json"])); const afterSetup = snapshotPrivateHome(home); assertHomeUnchanged(beforeSetup, afterSetup);
+    requireSmoke(plan.actions.every((action: any) => action.version?.output === `${action.target} 0.0.0-fixture`), "installed setup version probes did not run in isolated staging homes");
     const plannedFiles = assertSetupPreview(plan, home, entry);
     requireSmoke(plannedFiles.every(file => !existsSync(file)) && !existsSync(nativeCalls), "setup dry run wrote configuration or invoked a native client"); verifyRules();
     // The installed CLI still performs its ordinary person/TTY checks and asks for confirmation.
     // Only native registration is stubbed, matching the setup unit fixtures; no vendor CLI is exercised.
     const nativeStub = join(home, "native-registration.ts");
-    writeFileSync(nativeStub, `import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';
+    writeFileSync(nativeStub, `import {appendFileSync,lstatSync,mkdirSync,writeFileSync} from 'node:fs';import {basename,dirname,join,resolve} from 'node:path';
 const [target,...args]=process.argv.slice(2);
+if(args.length===1&&args[0]==='--version'){const stage=dirname(process.env.TMPDIR||''),root=${JSON.stringify(resolve(env.TMPDIR!))},stat=lstatSync(stage),expected={HOME:stage,AMEM_HOME:join(stage,'memory'),AGENTHUB_HOME:join(stage,'hub'),CLAUDE_CONFIG_DIR:join(stage,'.claude'),CODEX_HOME:join(stage,'.codex'),KIMI_CODE_HOME:join(stage,'.kimi-code'),PI_CODING_AGENT_DIR:join(stage,'.pi','agent'),QWEN_HOME:join(stage,'.qwen'),QWEN_RUNTIME_DIR:join(stage,'qwen-runtime'),QWEN_CODE_SYSTEM_SETTINGS_PATH:join(stage,'qwen-system-settings.json'),QWEN_CODE_SYSTEM_DEFAULTS_PATH:join(stage,'qwen-system-defaults.json'),JCODE_HOME:join(stage,'.jcode'),XDG_CONFIG_HOME:join(stage,'.config'),XDG_DATA_HOME:join(stage,'.local','share'),XDG_CACHE_HOME:join(stage,'.cache'),XDG_STATE_HOME:join(stage,'.local','state'),TMPDIR:join(stage,'tmp'),TMP:join(stage,'tmp'),TEMP:join(stage,'tmp')};if(!basename(stage).startsWith('amem-setup-')||dirname(resolve(stage))!==root||!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||process.cwd()!==stage||Object.entries(expected).some(([key,value])=>process.env[key]!==value))process.exit(96);console.log(target+' 0.0.0-fixture');process.exit(0);}
 if(!['claude','codex','pi','qwen'].includes(target))process.exit(97);
 if(args.length===1&&args[0]==='--help'){console.log('  mcp Manage MCP servers');process.exit(0);}
 const marker=args.indexOf('--'),launch=target==='qwen'?[args[marker-1],...args.slice(marker+1)]:args.slice(marker+1),home=process.env.HOME;

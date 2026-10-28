@@ -130,6 +130,29 @@ test("setup plan shows targets, files, MCP and hook changes, skipped clients and
   expect(strip(large).split("\n")[0]).toBe("amem setup apply: 6 targets, 1 with MCP changes, 1 skipped");
 });
 
+test("setup versions are advisory, explicit in plain and color output, and additive in JSON", () => {
+  const shown = plan("preview", 4);
+  for (const action of shown.actions) action.available = true;
+  shown.actions[0]!.version = { output: "claude 1.2.3", verified: "1.2.3", matches: true };
+  shown.actions[1]!.version = { output: "codex-cli 9.8.7", verified: "9.8.6", matches: false };
+  shown.actions[2]!.version = { output: null, verified: "0.26.1", matches: null };
+  shown.actions[3]!.version = { output: "Pi 0.51.0", verified: null, matches: null };
+  shown.notes.push("WARNING: codex version codex-cli 9.8.7; layout verified on 9.8.6.");
+
+  const plain = setupPlanText(shown, PLAIN), colored = setupPlanText(shown, COLOR);
+  expect(plain).not.toMatch(ANSI);
+  expect(colored).toMatch(ANSI);
+  expect(strip(colored)).toBe(plain);
+  expect(plain).toContain("version claude 1.2.3");
+  expect(plain).toContain("verified 1.2.3");
+  const mismatch = plain.split("\n").find(row => row.includes("WARNING") && row.includes("codex"));
+  expect(mismatch).toContain("codex-cli 9.8.7"); expect(mismatch).toContain("verified on 9.8.6");
+  expect(plain).toContain("version unknown; verified 0.26.1");
+  expect(plain).toContain("version Pi 0.51.0; unverified (no verified version recorded)");
+  expect(JSON.parse(setupConfirmationText(shown, true, COLOR))).toEqual(shown);
+  expect(setupConfirmationText(shown, true, COLOR)).not.toMatch(ANSI);
+});
+
 function home() {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-readable-"))); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const cwd = join(root, "repo"); mkdirSync(cwd); return { root, cwd, memory: join(root, "memory") };
