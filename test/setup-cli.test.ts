@@ -23,7 +23,7 @@ function fixture() {
   for (const rule of rules) put(rule, "original rule bytes\n", 0o640);
   const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_HOME: join(home, "hub"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), XDG_CONFIG_HOME: join(home, ".config"), PATH: `${bin}:/usr/bin:/bin` };
   const fake = join(root, "fake-native.ts"), quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-  put(fake, `import {appendFileSync,existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';const argv=process.argv.slice(2);if(argv.includes('--help')){console.log('  mcp Manage MCP servers');process.exit(0);}appendFileSync(${JSON.stringify(record)},JSON.stringify({argv,home:process.env.HOME,cwd:process.cwd(),claude:process.env.CLAUDE_CONFIG_DIR})+'\\n');if(argv[0]!=='claude')process.exit(77);const file=process.env.CLAUDE_CONFIG_DIR?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):join(process.env.HOME,'.claude.json');const document=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};document.mcpServers??={};if(argv[2]==='remove')delete document.mcpServers.amem;else{const marker=argv.indexOf('--'),launch=argv.slice(marker+1);document.mcpServers.amem={command:launch[0],args:launch.slice(1)};}mkdirSync(dirname(file),{recursive:true});writeFileSync(file,JSON.stringify(document,null,2)+'\\n');`);
+  put(fake, `import {appendFileSync,existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';const argv=process.argv.slice(2);if(argv.includes('--version')){console.log(argv[0]+' 0.0.0-fixture');process.exit(0);}if(argv.includes('--help')){console.log('  mcp Manage MCP servers');process.exit(0);}appendFileSync(${JSON.stringify(record)},JSON.stringify({argv,home:process.env.HOME,cwd:process.cwd(),claude:process.env.CLAUDE_CONFIG_DIR})+'\\n');if(argv[0]!=='claude')process.exit(77);const file=process.env.CLAUDE_CONFIG_DIR?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):join(process.env.HOME,'.claude.json');const document=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};document.mcpServers??={};if(argv[2]==='remove')delete document.mcpServers.amem;else{const marker=argv.indexOf('--'),launch=argv.slice(marker+1);document.mcpServers.amem={command:launch[0],args:launch.slice(1)};}mkdirSync(dirname(file),{recursive:true});writeFileSync(file,JSON.stringify(document,null,2)+'\\n');`);
   for (const target of ["claude", "codex", "pi"]) put(join(bin, target), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fake)} ${quote(target)} "$@"\n`, 0o700);
   const context: CliContext = { cwd, env, stdinTTY: false, setupConfirm: async () => { throw Error("unexpected confirmation"); } };
   const calls = () => existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { argv: string[]; home: string; cwd: string; claude?: string }) : [];
@@ -47,6 +47,7 @@ test("default setup CLI previews every target with no commands, home writes or c
   for (const target of targets) {
     const plan = JSON.parse(await runCli(["setup", target, "--json"], f.context));
     expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.filter(value => value !== "all" && value !== "agy") : [target]);
+    for (const action of plan.actions) if (["claude", "codex", "pi"].includes(action.target)) expect(action.version.output).toBe(`${action.target} 0.0.0-fixture`);
     expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
@@ -92,7 +93,7 @@ test("confirmed actual CLI apply uses only fake native registration in staging a
 
 test("a native CLI without MCP administration is refused before free-form prompt execution", async () => {
   const f = fixture(), called = join(f.root, "unsupported-registration-called"), binary = join(f.root, "bin", "claude");
-  put(binary, `#!/bin/sh\nif [ "$1" = "--help" ]; then printf 'Usage: chat assistant'; exit 0; fi\nprintf called > '${called}'\n`, 0o700);
+  put(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'claude 0.0.0-fixture'; exit 0; fi\nif [ "$1" = "--help" ]; then printf 'Usage: chat assistant'; exit 0; fi\nprintf called > '${called}'\n`, 0o700);
   await expect(runCli(["setup", "claude", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true })).rejects.toThrow("does not expose MCP registration");
   expect(existsSync(called)).toBe(false); expect(f.calls()).toEqual([]);
 });
