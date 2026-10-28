@@ -214,3 +214,11 @@ test("#136: Kimi protocol 1.6 is unsupported_version with the version named, mal
   const bad = await ingestTranscript("kimi",{...f,files:[file]});
   expect(bad.reason).toBe("schema_or_time"); expect(bad.version).toBeUndefined();
 });
+
+test("#136: timestamped Kimi records with no metadata stay schema_or_time with no version", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"no metadata answer"}]}}));
+  const receipt = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(receipt.imported).toBe(0); expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined();
+});
