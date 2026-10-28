@@ -1,6 +1,7 @@
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
-import { importClaudeMem } from "./import.ts";
+import { importClaudeMem, type ImportResult, type WorkStateImportResult, type CaptureImportResult } from "./import.ts";
+import { facts, label, PLAIN, type Style } from "./style.ts";
 import { memoryProjectKey, projectChain } from "./project.ts";
 import { recallForViews, recallGraph, recallRows, recallShow } from "./recall.ts";
 import type { GoalPromotionReport } from "./goal-promotion.ts";
@@ -58,6 +59,33 @@ export const goalUsage = (name: string = AMEM_NAMES.goal): string => `usage: ${n
 export const GOAL_USAGE = goalUsage();
 
 const fail = (message: string): never => { throw new Error(message); };
+
+/** A person-facing aggregate receipt; import results and their JSON representation stay untouched. */
+export function claudeMemImportText(notes: ImportResult, work: WorkStateImportResult, capture?: CaptureImportResult,
+  options: { captureDays?: number; restart?: boolean } = {}, s: Style = PLAIN): string {
+  const more = notes.more || work.more || capture?.more === true;
+  const row = (name: string, result: { read: number; added: number; more: boolean }, skipped: number, spooled?: number) =>
+    `${label(s, result.more || (spooled ?? 0) > 0 ? "attention" : "ok")} ${name}: ${facts({ read: String(result.read), added: String(result.added), skipped: String(skipped), spooled: spooled === undefined ? "n/a" : String(spooled) })}${result.more ? "; more remain" : ""}`;
+  const noteSkipped = notes.read - notes.added, workSkipped = work.read - work.added;
+  const otherNotes = Math.max(0, noteSkipped - notes.skipped.model - notes.skipped.pii - notes.skipped.secret);
+  const duplicateWork = Math.max(0, workSkipped - work.skipped.invalid - work.skipped.policy);
+  const lines = [`amem import claude-mem: ${more ? s.attention("run again") : s.ok("complete")}`,
+    row("notes", notes, noteSkipped),
+    `  skipped reasons: ${facts({ model: notes.skipped.model, PII: notes.skipped.pii, secret: notes.skipped.secret, "empty/malformed/already imported": otherNotes }) || "none"}`,
+    row("work lists", work, workSkipped),
+    `  skipped reasons: ${facts({ invalid: work.skipped.invalid, policy: work.skipped.policy, "already imported": duplicateWork }) || "none"}`];
+  if (capture) {
+    lines.push(row("capture", capture, capture.skipped, capture.spooled));
+    if (capture.skipped) lines.push(`  skipped reasons: combined ${capture.skipped} (empty/invalid, policy or already imported; no breakdown reported)`);
+  } else lines.push(`${label(s, "skipped")} capture: not requested (use --capture-days N for recent capture)`);
+  lines.push(more ? "Next action: run the same import command again until all receipts are complete."
+    : capture?.spooled ? "Next action: check durably spooled capture freshness with amem doctor."
+      : "Next action: none; all requested import receipts are complete.");
+  if (capture && options.captureDays !== undefined) lines.push(`Capture window: last ${options.captureDays} days. Widening --capture-days later requires --restart.`);
+  if (options.restart) lines.push("Restart: selected cursors replayed from the start; existing import receipts prevent duplicates.");
+  return lines.join("\n");
+}
+
 const one = (v: View) => `${v.id.slice(0, 8)}  ${v.at.slice(0, 16).replace("T", " ")}  ${v.tier.padEnd(5)} ${v.kind.padEnd(8)} ${v.peer.padEnd(8)} ${v.scope === "shared" ? "shared " : ""}${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 100)}${v.supersededBy ? `  (superseded by ${v.supersededBy.slice(0, 8)})` : ""}`;
 function detail(v: View): string[] {
   return [`${v.id}  ${v.kind}, ${v.tier}-term${v.expiresAt ? ` until ${v.expiresAt}` : ""}, ${v.scope}`, `by ${v.peer} on machine ${v.machine}, ${v.at}, project ${v.project}${v.task ? `, task ${v.task}` : ""}`,

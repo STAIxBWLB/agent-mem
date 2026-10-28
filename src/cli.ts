@@ -15,7 +15,7 @@ import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/impor
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
-import { rawMemoryCommand, rawGoalCommand } from "./memory/commands.ts";
+import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
@@ -748,10 +748,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const legacySearch = options["--filter"] === true;
   const explainSearch = sub === "search" && options["--explain"] === true;
   const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index) && (!legacySearch || arg !== "--filter") && (!explainSearch || arg !== "--explain"));
+  const memoryArgs = captureImport && !options["--json"] ? [...syncArgs, "--json"] : syncArgs;
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(syncArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) {
@@ -774,7 +775,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const policy = configured, db = options["--db"] ? { db: String(options["--db"]) } : {}, limit = options["--limit"] ? { limit: Number(options["--limit"]) } : {}, restart = options["--restart"] === true;
     const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...db, ...limit, restart });
     const capture = captureDays === undefined ? undefined : await importClaudeMemCapture({ base: memoryHome(), project: boundProject(), cwd, days: captureDays, ...db, ...limit, restart, policy: { host: policy } });
-    return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work, ...(capture ? { capture } : {}) }, null, 2) : `${output}\nwork lists: ${JSON.stringify(work)}${capture ? `\ncapture: ${JSON.stringify(capture)}` : ""}`;
+    return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work, ...(capture ? { capture } : {}) }, null, 2)
+      : claudeMemImportText(JSON.parse(output), work, capture, { captureDays, restart }, outputStyle(context));
   }
   return !options["--json"] && receipt.bridgeStatus
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;

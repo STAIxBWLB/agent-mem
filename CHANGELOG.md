@@ -5,6 +5,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ## Unreleased
 
 - **Doctor covers Qwen, the Codex `/hooks` review and capture drops** (#132). Additive `amem.doctor/v1` fields: `sections.capture.clis.qwen`, `sections.cadence.ingest.qwen` (and qwen in `manual`), and a new `sections.drops` section `{ status, window, total, counts }` with capture drops by reason from the bounded metrics tail (counts only, `attention` when any; `malformedLines` when torn lines were skipped; `unavailable` when an existing file cannot be read or its tail has no decodable record). A registered Codex hook with capture `never` now names Codex's `/hooks` trust review as the next action.
+- Readable `amem import claude-mem` receipts label notes, work-list and capture counts, use every pagination flag for one complete/run-again verdict, and explain capture-window restart requirements; JSON, policy and person-only gates are unchanged (#133).
 
 ## 0.12.0
 
