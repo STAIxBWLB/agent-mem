@@ -55,6 +55,65 @@ function fixture() {
   const receipt = (target: SetupTarget): Receipt => JSON.parse(text(receiptFile(target))) as Receipt;
   return { home, env, calls, entry, bun, options, plan, file, receiptFile, receipt };
 }
+function versionFixture(target: SetupTarget, body: string) {
+  const f = fixture(), bin = join(f.home, "probe-bin"), log = join(f.home, "version-calls.jsonl");
+  mkdirSync(bin);
+  put(join(bin, target), `#!${process.execPath}
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.VERSION_CALLS, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME, marker: process.env.VERSION_MARKER }));
+${body}
+`, 0o700);
+  const { native: _native, ...rest } = f.options;
+  const options: SetupContext = { ...rest, entry: fileURLToPath(new URL("../bin/amem.js", import.meta.url)), env: { ...f.env, PATH: bin, VERSION_CALLS: log, VERSION_MARKER: "isolated-probe-env" } };
+  return { ...f, native: f.options.native!, options, log, binary: join(bin, target), preview: () => planSetup(target, "preview", options) };
+}
+test("setup probes the recorded Codex version only at plan time in the configured environment", () => {
+  const f = versionFixture("codex", 'console.log("codex-cli 0.165.0");');
+  const plan = f.preview();
+  expect(plan.actions[0]!.version).toEqual({ output: "codex-cli 0.165.0", verified: "0.165.0", matches: true });
+  expect(JSON.parse(text(f.log))).toEqual({ args: ["--version"], home: f.home, marker: "isolated-probe-env" });
+  expect(plan.notes.join("\n")).not.toContain("WARNING: codex version");
+  const options = { ...f.options, native: f.native };
+  expect(applySetup(plan, options).applied).toEqual(["codex"]);
+  expect(text(f.log).trim().split("\n")).toHaveLength(1);
+  undoSetup(planSetup("codex", "undo", { ...options }), options);
+});
+test.each(["0.27.0", "0.26.1-beta.1", "0.26.1+build.2", "0.26.1.1"])("Qwen %s warns with both versions and does not block guarded apply", observed => {
+  const f = versionFixture("qwen", `console.log(${JSON.stringify(`qwen ${observed}`)});`), plan = f.preview();
+  expect(plan.actions[0]!.version).toEqual({ output: `qwen ${observed}`, verified: "0.26.1", matches: false });
+  expect(plan.notes.join("\n")).toContain(`WARNING: qwen version qwen ${observed}; layout verified on 0.26.1`);
+  const options = { ...f.options, native: f.native };
+  expect(applySetup(plan, options).applied).toEqual(["qwen"]);
+  expect(text(f.log).trim().split("\n")).toHaveLength(1);
+});
+test.each([
+  ['failed', 'console.log("qwen 0.26.1"); console.error("VERSION_STDERR_SECRET"); process.exit(1);'],
+  ['empty', 'console.error("VERSION_STDERR_SECRET");'],
+  ['oversized', 'console.log("x".repeat(10000));'],
+  ['timeout', 'await Bun.sleep(30000);'],
+])("%s version probe is nonfatal and never discloses native stderr", (_name, body) => {
+  const f = versionFixture("qwen", body!), plan = f.preview();
+  expect(plan.actions[0]!.version).toEqual({ output: null, verified: "0.26.1", matches: null });
+  expect(JSON.stringify(plan)).not.toContain("VERSION_STDERR_SECRET");
+  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version");
+}, 10_000);
+test("successful native version output is bounded and cannot create human rows", () => {
+  const f = versionFixture("qwen", 'console.log("qwen 0.26.1"); console.log("x".repeat(2000));'), plan = f.preview(), output = plan.actions[0]!.version!.output!;
+  expect(Array.from(output)).toHaveLength(256);
+  expect(output).toStartWith("qwen 0.26.1 "); expect(output).not.toContain("\n");
+  expect(plan.actions[0]!.version!.matches).toBe(true);
+});
+test("version table recognizes Jcode's v prefix and leaves undocumented baselines unverified", () => {
+  const jcode = versionFixture("jcode", 'console.log("v0.99.1 (7206efd0c)");');
+  expect(jcode.preview().actions[0]!.version).toEqual({ output: "v0.99.1 (7206efd0c)", verified: "0.99.1", matches: true });
+  const claude = versionFixture("claude", 'console.log("claude 1.2.3");'), plan = claude.preview();
+  expect(plan.actions[0]!.version).toEqual({ output: "claude 1.2.3", verified: null, matches: null });
+  expect(plan.notes.join("\n")).not.toContain("WARNING: claude version");
+});
+test("unavailable clients are not version-probed", () => {
+  const f = versionFixture("qwen", 'throw Error("must not run");'); rmSync(f.binary);
+  const plan = f.preview(); expect(plan.actions[0]!.available).toBe(false); expect(plan.actions[0]!.version).toBeUndefined(); expect(existsSync(f.log)).toBe(false);
+});
 function seedOtherFiles(f: ReturnType<typeof fixture>) {
   put(f.file("claude"), '{ "theme":"original", "mcpServers": {"other":{"command":"other-server","args":["keep"]}} }\n', 0o640);
   put(f.file("claude", 1), JSON.stringify({ enabledPlugins: { "other@catalog": true }, hooks: { SessionStart: [{ hooks: [{ type: "command", command: "existing-start" }] }] } }) + "\n", 0o640);
@@ -471,7 +530,7 @@ test("Qwen alone puts the executable before the server-argument separator", () =
 test.each(["arguments", "generic", "timeout"] as const)("native Qwen %s failure is labelled and publishes no settings or receipt", mode => {
   const f = fixture(); seedOtherFiles(f);
   const bin = join(f.home, "bin"), original = image(f.file("qwen"));
-  put(join(bin, "qwen"), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--help') { console.log('  mcp'); process.exit(0); }\nwriteFileSync(process.env.QWEN_HOME + '/settings.json', '{"mcpServers":{"amem":{"command":"must-not-publish"}}}');\nconsole.error(${JSON.stringify(mode === "arguments" ? "Not enough non-option arguments: got 1, need at least 2\nNATIVE_SECRET_SENTINEL" : "NATIVE_SECRET_SENTINEL")});\n${mode === "timeout" ? "await Bun.sleep(30000);" : "process.exit(1);"}\n`, 0o700);
+  put(join(bin, "qwen"), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--help') { console.log('  mcp'); process.exit(0); }\nif (process.argv[2] === '--version') { console.log('qwen 0.26.1'); process.exit(0); }\nwriteFileSync(process.env.QWEN_HOME + '/settings.json', '{"mcpServers":{"amem":{"command":"must-not-publish"}}}');\nconsole.error(${JSON.stringify(mode === "arguments" ? "Not enough non-option arguments: got 1, need at least 2\nNATIVE_SECRET_SENTINEL" : "NATIVE_SECRET_SENTINEL")});\n${mode === "timeout" ? "await Bun.sleep(30000);" : "process.exit(1);"}\n`, 0o700);
   const options: SetupContext = { env: { ...f.env, PATH: bin }, cwd: f.home, bun: f.bun, entry: fileURLToPath(new URL("../bin/amem.js", import.meta.url)) };
   const plan = planSetup("qwen", "apply", options);
   let message = "";
