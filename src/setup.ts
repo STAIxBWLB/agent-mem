@@ -452,12 +452,14 @@ export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restor
 /** Person-facing setup plan (#125): each target once, with its effective files, MCP and hook changes, then skipped clients and notes. `--json` keeps the raw plan. */
 export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
   const verb = plan.mode === "undo" ? "undo" : plan.mode === "apply" ? "apply" : "preview";
-  const skipped = plan.actions.filter(action => !action.available), changing = plan.actions.filter(action => action.available && action.mcpChange !== "unchanged");
-  const lines = [`${s.bold(`amem setup ${verb}:`)} ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}, ${changing.length} with MCP changes${skipped.length ? `, ${skipped.length} skipped` : ""}`, ""];
+  // Undo restores every target with a receipt whether or not its CLI is still installed (undoUnlocked), so undo never collapses an action.
+  const full = (action: SetupPlan["actions"][number]) => plan.mode === "undo" || action.available;
+  const skipped = plan.actions.filter(action => !full(action)), changing = plan.actions.filter(action => full(action) && action.mcpChange !== "unchanged");
+  const lines = [`${s.bold(`amem setup ${verb}:`)} ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}, ${changing.length} with ${plan.mode === "undo" ? "restores" : "MCP changes"}${skipped.length ? `, ${skipped.length} skipped` : ""}`, ""];
   for (const action of plan.actions) {
-    if (!action.available) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
-    const state = !action.available ? "skipped" : action.mcpChange === "unchanged" ? "ok" : "attention";
-    const what = action.mcpChange === "unchanged" ? "already set up; no change" : `MCP ${action.mcpChange}`;
+    if (!full(action)) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
+    const state = action.mcpChange === "unchanged" ? "ok" : "attention";
+    const what = action.mcpChange === "unchanged" ? "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
     lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
     for (const file of action.files) lines.push(`            file     ${file}`);
     if (action.cwd) lines.push(`            cwd      ${action.cwd}`);

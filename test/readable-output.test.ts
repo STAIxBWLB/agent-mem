@@ -161,3 +161,21 @@ test("setup command lines quote paths with spaces and skipped clients take one l
   expect(text).toMatch(/^SKIPPED +codex: CLI not installed$/m);
   expect(text).not.toContain("/h/.codex/config.json");
 });
+
+test("undo of an uninstalled client with a receipt still shows its files and restore, and counts it", () => {
+  const undo: SetupPlan = { targets: ["codex"], mode: "undo", notes: [], actions: [{ target: "codex", files: ["/h/.codex/config.toml"], receipt: "/h/memory/setup/codex.json", registration: null,
+    lifecycle: "restore original MCP/hook files", available: false, hooks: [], mcpChange: "restore", commands: [], state: "applied" }] };
+  const text = setupPlanText(undo);
+  expect(text.split("\n")[0]).toBe("amem setup undo: 1 target, 1 with restores");
+  expect(text).toMatch(/^ATTENTION +codex: restore original MCP\/hook files \(CLI not installed\)/m);
+  expect(text).toContain("file     /h/.codex/config.toml"); expect(text).toContain("receipt  /h/memory/setup/codex.json");
+  expect(text).not.toContain("SKIPPED");
+});
+
+test("status flags a shard migration stopped after capture with the resume action", () => {
+  const text = statusText(status({ active: false, phase: "captured", generation: "0123456789abcdef" }));
+  expect(text.split("\n")[0]).toBe("amem status: attention");
+  expect(text).toMatch(/^ATTENTION +layout: shard migration captured, not active; no pending old-layout appends$/m);
+  expect(text).toContain("amem migrate --shards --resume");
+  expect(text).not.toContain("Next actions: none");
+});

@@ -23,9 +23,11 @@ export function statusText(status: StatusView, s: Style = PLAIN): string {
     else if (candidates.count) actions.push("review pending candidates: amem review walk");
   }
   const refusals = status.refusals ?? [];
-  const migrationState: "ok" | "attention" = refusals.length || status.pending.rows ? "attention" : "ok";
+  const interrupted = status.phase === "captured" && !status.active;   // authoring refuses until activation (generation-index.ts)
+  const migrationState: "ok" | "attention" = refusals.length || status.pending.rows || interrupted ? "attention" : "ok";
+  if (interrupted) actions.push("a shard migration stopped after capture and authoring is refused until it activates: amem migrate --shards --resume");
   if (refusals.length) warnings.push(...refusals.map(reason => `migration refusal: ${reason}`));
-  if (status.pending.rows) actions.push(`${status.pending.rows} old-layout rows wait for the shard migration: amem migrate --shards --dry-run`);
+  if (status.pending.rows && !interrupted) actions.push(`${status.pending.rows} old-layout rows wait for the shard migration: amem migrate --shards --dry-run`);
   const overall = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" ? "attention" : "ok";
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
   const pendingCounts = facts(Object.fromEntries(Object.entries(status.pending).filter(([key]) => !key.endsWith("Ids"))));
@@ -35,7 +37,7 @@ export function statusText(status: StatusView, s: Style = PLAIN): string {
     "",
     `${label(s, "ok")} policy: machine ${machine ?? "none (defaults)"}, repo ${repo ?? "none"}; ${denyPaths} deny paths, ${piiPatterns} PII patterns${facts(limits) ? `; ${facts(limits)}` : ""}`,
     `${label(s, candidateState)} candidates: ${candidateLine}`,
-    `${label(s, migrationState)} layout: ${status.active ? `shards active${status.generation ? ` (generation ${status.generation.slice(0, 8)})` : ""}` : status.phase ? `shard migration ${status.phase}` : "single home"}; ${pendingCounts ? `pending ${pendingCounts}` : "no pending old-layout appends"}`,
+    `${label(s, migrationState)} layout: ${status.active ? `shards active${status.generation ? ` (generation ${status.generation.slice(0, 8)})` : ""}` : status.phase ? `shard migration ${status.phase}${interrupted ? ", not active" : ""}` : "single home"}; ${pendingCounts ? `pending ${pendingCounts}` : "no pending old-layout appends"}`,
     ...(status.deadLeasesRemoved?.length ? [`            ${s.dim(`${status.deadLeasesRemoved.length} dead reader leases removed`)}`] : []),
     ...(warnings.length ? ["", "Warnings:", ...warnings.map(warning => `  - ${s.attention(warning)}`)] : []),
     "", actions.length ? "Next actions:" : "Next actions: none", ...actions.map(action => `  - ${action}`),
