@@ -238,3 +238,12 @@ test("#136: a policy-declined Kimi metadata record never lends its version to th
   const protocols = kimiCursorProtocols(f).filter(protocol => protocol !== "rotation-v1");   // the discovery tour keeps its own cursor row
   expect(protocols).toEqual(["unknown"]);
 });
+
+test("#136: a declined Kimi metadata record with a supported protocol still lets permitted records import", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.5",marker:"decline-me"}) + line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"permitted answer"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  expect((await ingestTranscript("kimi",{...f,files:[file],policy})).imported).toBe(1);
+  expect(rows(f).map(row => row.excerpt)).toEqual(["permitted answer"]);
+});

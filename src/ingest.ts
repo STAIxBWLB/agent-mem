@@ -401,7 +401,9 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             else if (raw.cwd !== undefined) position.scope = permitted ? scopeOf(raw.cwd) : "unknown";
             if (kind === "kimi" && raw.type === "metadata") {
               // A validated unsupported version is kept (not "unknown") so later records can name it; the gate below still refuses it.
-              position.protocol = permitted ? versionToken(raw.protocol_version) ?? "unknown" : "unknown";   // a declined record never lends its version to the cursor or receipt
+              // Supported literals carry no content and are kept as before; only an unsupported token is gated on the policy, so a declined record never lends it to the cursor or receipt.
+              position.protocol = typeof raw.protocol_version === "string" && KIMI_PROTOCOLS.includes(raw.protocol_version) ? raw.protocol_version
+                : permitted ? versionToken(raw.protocol_version) ?? "unknown" : "unknown";
             }
             const qwenVersion = kind === "qwen" && !known && permitted ? versionToken(raw.version) : undefined;
             if (!known) { if (qwenVersion !== undefined && qwenVersion !== "0.26.1") unsupported(qwenVersion); else fail("schema_or_time"); }
