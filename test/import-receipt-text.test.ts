@@ -31,11 +31,15 @@ test("claude-mem import receipt labels every counter and only reported skip reas
     expect(plain).toContain("invalid 1, policy 1, already imported 2");
     expect(plain).toMatch(/^ATTENTION +capture: read 4, added 1, skipped 2, spooled 1$/m);
     expect(plain).toContain("combined 2 (empty/invalid, policy or already imported; no breakdown reported)");
-    expect(plain).toContain("Next action: check durably spooled capture freshness with amem doctor.");
+    expect(plain).toContain("Next action: re-run this import; the next capture write also replays 1 capture row spooled because the store was busy.");
+    expect(plain).not.toContain("amem doctor");
     expect(plain).not.toContain('{"'); expect(plain).not.toContain("cursor");
     for (const line of plain.split("\n")) expect(line.length).toBeLessThanOrEqual(WIDTH);
   }
   expect(claudeMemImportText(importNotes(), importWork(), importCapture(), {}, COLOR)).toMatch(ANSI);
+  const pending = claudeMemImportText(importNotes(), importWork(), importCapture(true));
+  expect(pending).toContain("Next action: run the same import command again");
+  expect(pending).not.toContain("amem doctor");
 });
 
 test.each(["notes", "work", "capture"] as const)("claude-mem overall verdict includes %s more even with zero added", flag => {
