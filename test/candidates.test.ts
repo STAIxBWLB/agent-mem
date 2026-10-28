@@ -130,18 +130,28 @@ for (const change of ["demote", "supersede", "forget", "promote"] as const) test
   expect(bytes(f.memory)).toEqual(before); expect(f.candidates.get(id, PROJECT)?.status).toBe("pending");
 });
 
-test("person authority, current policy and callback target mutations are checked before any v1 append", () => {
+test("candidate actors are validated; agent acceptance retains policy and stale-target fences", () => {
   const f = fixture(), id = f.candidates.put(correction(f.view), "public"), before = bytes(f.memory);
   let called = false;
-  expect(() => f.candidates.accept(id, { ...acceptance(f), actor: "agent", policy: () => { called = true; return true; } })).toThrow("person");
+  expect(() => f.candidates.accept(id, { ...acceptance(f), actor: "system" as "person", policy: () => { called = true; return true; } })).toThrow("actor must be person or agent");
   expect(called).toBe(false);
-  expect(() => f.candidates.reject(id, { project: PROJECT, actor: "agent", verdict: "public" })).toThrow("person");
-  for (const verdict of ["private", "pii", "unknown"] as CandidateVerdict[]) expect(() => f.candidates.accept(id, { ...acceptance(f), verdict })).toThrow("privacy");
-  expect(() => f.candidates.accept(id, { ...acceptance(f), policy: () => false })).toThrow("policy");
+  expect(() => f.candidates.reject(id, { project: PROJECT, actor: "system" as "person", verdict: "public" })).toThrow("actor must be person or agent");
   expect(bytes(f.memory)).toEqual(before);
+
+  const accepted = f.candidates.accept(id, { ...acceptance(f), actor: "agent", policy: () => { called = true; return true; } });
+  expect(called).toBe(true); expect(f.memory.get(accepted.noteId, PROJECT)).toMatchObject({ peer: "agent", source: "person" });
+  expect(authored(f.memory).find(row => row.op === "supersede" && row.target === f.target)).toMatchObject({ actor: "agent", by: accepted.noteId });
+
+  const memoryId = f.candidates.put({ project: PROJECT, kind: "memory", text: "host screened candidate" }, "public"), beforePolicy = bytes(f.memory);
+  for (const verdict of ["private", "pii", "unknown"] as CandidateVerdict[]) expect(() => f.candidates.accept(memoryId, { ...acceptance(f), actor: "agent", verdict })).toThrow("privacy");
+  expect(() => f.candidates.accept(memoryId, { ...acceptance(f), actor: "agent", policy: () => false })).toThrow("policy");
+  expect(bytes(f.memory)).toEqual(beforePolicy);
+
+  const freshTarget = f.note("fresh public target"), freshView = f.memory.get(freshTarget, PROJECT)!;
+  const staleId = f.candidates.put(correction(freshView), "public");
   let afterMutation: ReturnType<typeof bytes> | undefined;
-  expect(() => f.candidates.accept(id, { ...acceptance(f), policy: () => { f.memory.demote(f.target, "person", PROJECT); afterMutation = bytes(f.memory); return true; } })).toThrow("stale");
-  expect(bytes(f.memory)).toEqual(afterMutation!); expect(f.candidates.get(id, PROJECT)?.status).toBe("pending");
+  expect(() => f.candidates.accept(staleId, { ...acceptance(f), actor: "agent", policy: () => { f.memory.demote(freshTarget, "person", PROJECT); afterMutation = bytes(f.memory); return true; } })).toThrow("stale");
+  expect(bytes(f.memory)).toEqual(afterMutation!); expect(f.candidates.get(staleId, PROJECT)?.status).toBe("pending");
 });
 
 for (const kind of ["correction", "fail"] as const) test(`person accepts a ${kind} through its ordinary v1 note and required correction supersession`, () => {
@@ -201,7 +211,7 @@ test("candidate retention enforces 500 per project and the 30-day age boundary, 
   const lastAt = f.clock.now;
   // The cap is full of unshown candidates: a new one is refused rather than pushing an unseen one out (AC4).
   f.clock.now++;
-  expect(() => f.candidates.put(correction(f.view, "one more"), "public")).toThrow("500 unshown candidates await the person");
+  expect(() => f.candidates.put(correction(f.view, "one more"), "public")).toThrow("500 unshown candidates await review");
   expect(f.candidates.list({ project: PROJECT, status: "all" })).toHaveLength(500); expect(project(ids[0]!)).toBeDefined();
   // Once the person has decided the oldest, there is room, and that decided row is the one the cap takes.
   f.candidates.reject(ids[0]!, { project: PROJECT, actor: "person", verdict: "public" });
@@ -391,15 +401,14 @@ test("an accepted mutation refuses a busy derived index before appending any not
 });
 
 
-test("general memory is a pending candidate until current person policy accepts it (#13 P2)", () => {
+test("general memory is a pending candidate until current policy accepts it (#13 P2)", () => {
   const f = fixture(), before = f.memory.dump();
   const id = f.candidates.put({ project: PROJECT, kind: "memory", text: "Reusable transaction boundary", title: "Boundary", noteKind: "finding" }, "public");
   expect(f.memory.dump()).toBe(before);
   expect(f.candidates.get(id, PROJECT)?.status).toBe("pending");
-  expect(() => f.candidates.accept(id, { ...acceptance(f), actor: "agent" })).toThrow("person");
   expect(() => f.candidates.accept(id, { ...acceptance(f), policy: () => false })).toThrow("policy");
   expect(f.memory.dump()).toBe(before);
-  const accepted = f.candidates.accept(id, acceptance(f));
-  expect(f.memory.get(accepted.noteId, PROJECT)).toMatchObject({ kind: "finding", title: "Boundary", text: expect.stringContaining("Reusable transaction boundary") });
-  expect(f.candidates.accept(id, acceptance(f)).alreadyAccepted).toBe(true);
+  const accepted = f.candidates.accept(id, { ...acceptance(f), actor: "agent" });
+  expect(f.memory.get(accepted.noteId, PROJECT)).toMatchObject({ kind: "finding", title: "Boundary", peer: "agent", source: "person", text: expect.stringContaining("Reusable transaction boundary") });
+  expect(f.candidates.accept(id, { ...acceptance(f), actor: "agent" }).alreadyAccepted).toBe(true);
 });

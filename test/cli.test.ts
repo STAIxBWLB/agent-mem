@@ -102,7 +102,7 @@ test("standalone import counts secret skips and goal links fail explicitly befor
   expect(result.skipped).toEqual({ model: 0, pii: 0, secret: 1 }); expect(result.added).toBe(0);
 });
 
-test("claude-mem capture days runs through the person CLI with alias-scoped capture results", async () => {
+test("claude-mem capture days runs through a marked nonTTY CLI with alias-scoped capture provenance", async () => {
   const root = temp(), base = join(root, "memory"); process.env.AMEM_HOME = base;
   const project = memoryProjectKey(root), source = projectChain(root).at(-1)!, file = join(root, "fixture.db"), db = new Database(file), at = Date.now();
   db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
@@ -111,14 +111,18 @@ test("claude-mem capture days runs through the person CLI with alias-scoped capt
   db.query("INSERT INTO session_summaries (id, project, learned, created_at_epoch) VALUES (1, ?, 'cli capture summary', ?)").run(source, at); db.close();
   appendAlias(base, { alias: source, key: project, actor: "person", machine: "fixture" });
   const before = readFileSync(file), args = ["import", "claude-mem", "--db", file, "--capture-days", "7", "--json"];
-  const result = JSON.parse(await runCli(args, context(root, true)));
+  const result = JSON.parse(await runCli(args, { cwd: root, env: { CODEX_THREAD_ID: "agent", HOME: root, AMEM_HOME: base }, stdinTTY: false, stdoutTTY: false }));
   expect(result.capture).toMatchObject({ read: 2, added: 2, spooled: 0, skipped: 0 }); expect(result.work).toMatchObject({ read: 0 });
   const capture = new CaptureStore({ memoryDir: base, project, cwd: root });
-  try { expect(capture.rows().map(row => row.excerpt).sort()).toEqual(["Learned: cli capture summary", "fixture\ncli capture observation"]); } finally { capture.close(); }
+  try {
+    const rows = capture.rows();
+    expect(rows.map(row => row.excerpt).sort()).toEqual(["Learned: cli capture summary", "fixture\ncli capture observation"]);
+    expect(rows.every(row => row.project === project && row.agent === "claude-mem" && row.at === new Date(at).toISOString())).toBe(true);
+  } finally { capture.close(); }
   expect(readFileSync(file)).toEqual(before);
   await expect(runCli(["import", "claude-mem", "--db", file, "--capture-days", "0"], context(root, true))).rejects.toThrow("--capture-days takes a positive integer");
-  const agent = JSON.parse(await runCli(args, { cwd: root, env: { CODEX_THREAD_ID: "agent", AMEM_HOME: base }, stdinTTY: false }));
-  expect(agent.capture).toMatchObject({ read: 0, added: 0, spooled: 0, skipped: 0 }); expect(readFileSync(file)).toEqual(before);
+  const repeated = JSON.parse(await runCli(args, context(root, false)));
+  expect(repeated.capture).toMatchObject({ read: 0, added: 0, spooled: 0, skipped: 0 }); expect(readFileSync(file)).toEqual(before);
 });
 
 

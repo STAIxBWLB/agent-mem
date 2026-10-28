@@ -5,6 +5,8 @@ import { readMetrics } from "../src/memory/capacity.ts";
 import { hookMain, runHook } from "../src/hooks.ts";
 import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { MemoryStore } from "../src/memory/store.ts";
+import { CONFIG_FILE } from "../src/memory/config.ts";
 import { hookBin, hookEvents, hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -105,16 +107,31 @@ test("private flags and secret-bearing metadata or tool input cannot enter hook 
   expect(JSON.stringify(f.rows())).not.toContain("p3 private marker"); expect(JSON.stringify(f.rows())).not.toContain(secret);
 });
 
-test("hook exception never admits ordinary agent-marked CLI reads or writes; only the text-printing --help and --version are allowed (F1)", () => {
-  const f = fixture();
-  for (const args of [["list", "--json"], ["note", "forbidden"], ["--help", "--json"], ["list", "--help"]]) {
-    const result = Bun.spawnSync([process.execPath, hookBin, ...args], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
-    expect(result.exitCode).toBe(1); expect(result.stderr.toString()).toContain("person");
-  }
-  for (const args of [["--help"], ["--version"]]) {
-    const result = Bun.spawnSync([process.execPath, hookBin, ...args], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
-    expect(result.exitCode, args.join(" ")).toBe(0); expect(result.stdout.toString()).toMatch(/usage: amem|^amem \d/);
-  }
+test("native hook capture stays separate while marked CLI reads are screened and note writers keep peer attribution", async () => {
+  const f = fixture(); await f.seed();
+  const privateMarker = "P3-CLI-PRIVATE-CONTROL";
+  const seed = new MemoryStore({ home: f.root, screen: () => "keep" });
+  seed.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "fixture", text: privateMarker, about: [], source: "person" });
+  seed.close();
+  writeFileSync(join(f.base, CONFIG_FILE), JSON.stringify({ piiPatterns: [privateMarker] }));
+  const run = (args: string[], env: NodeJS.ProcessEnv = f.env) => Bun.spawnSync([process.execPath, hookBin, ...args], { cwd: f.cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000 });
+
+  const read = run(["list", "--json"]);
+  expect(read.exitCode).toBe(0); expect(read.stderr.toString()).toBe("");
+  expect(read.stdout.toString()).toContain("p3 curated public fixture"); expect(read.stdout.toString()).not.toContain(privateMarker);
+  const history = run(["list", "--history"]);
+  expect(history.exitCode).toBe(1); expect(history.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+
+  const unmarkedEnv = { ...f.env }; delete unmarkedEnv.CLAUDECODE;
+  const unmarked = run(["list", "--json"], unmarkedEnv);
+  expect(unmarked.exitCode).toBe(0); expect(unmarked.stdout.toString()).toContain(privateMarker);
+
+  const added = run(["note", "add", "p3 agent attributed note", "--json"]);
+  expect(added.exitCode).toBe(0); expect(added.stderr.toString()).toBe("");
+  const id = (JSON.parse(added.stdout.toString()) as { id: string }).id;
+  const check = new MemoryStore({ home: f.root });
+  try { expect(check.get(id, f.project)).toMatchObject({ peer: "claude", text: "p3 agent attributed note", source: "person" }); }
+  finally { check.close(); }
 });
 
 test("packaged plugin wires exactly the supported hooks through the actual CLI", () => {

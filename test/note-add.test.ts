@@ -79,9 +79,10 @@ test("editor paths require stdin TTY before calling edit; explicit text, stdin a
   const r = rig(); let edits = 0;
   for (const env of [{}, { CLAUDECODE: "fixture" }]) {
     const plain = await message(cli(r, ["note", "add"], { env, stdinTTY: false, edit: () => { edits++; return "must not be used"; } }));
-    expect(plain).toContain("note editor requires a terminal on stdin");
+    const refused = "CLAUDECODE" in env ? "Memory operation unavailable or refused; no partial result is shown." : "note editor requires a terminal on stdin";
+    expect(plain).toContain(refused);
     const fail = await message(cli(r, ["note", "add", "--kind", "fail"], { env, stdinTTY: false, edit: () => { edits++; return "must not be used"; } }));
-    expect(fail).toContain("note editor requires a terminal on stdin");
+    expect(fail).toContain(refused);
   }
   expect(edits).toBe(0); expect(notes(r)).toEqual([]);
 
@@ -167,7 +168,7 @@ test("marked nonTTY note authoring records the invocation peer and retains sourc
 test("configured policy screens the final note peer before append", async () => {
   const r = rig({ piiPatterns: ["private-peer-label"] });
   const result = await message(cli(r, ["note", "add", "ordinary public content"], { env: { AGENTHUB_PEER_ID: "private-peer-label" }, stdinTTY: false }));
-  expect(result).toContain("refused by the configured privacy policy"); expect(notes(r)).toEqual([]);
+  expect(result).toBe("Memory operation unavailable or refused; no partial result is shown."); expect(notes(r)).toEqual([]);
 });
 
 test("note add is in help, completion and the command table, with every fail flag", async () => {

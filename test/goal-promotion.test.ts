@@ -32,12 +32,11 @@ function promotedId(view: View): string {
   const body: Omit<NoteEntry, "id"> = { schema: MEMORY_SCHEMA, op: "note", at: view.at, machine: view.machine, project: view.project, scope: view.scope, tier: "long", kind: view.kind, peer: view.peer, text: view.text, about: [...view.about], promotedFrom: view.id, source: view.source as NoteEntry["source"], ...(view.title ? { title: view.title } : {}), ...(view.task ? { task: view.task } : {}) };
   return entryId(body);
 }
-for (const mode of ["legacy", "generation", "shards"] as const) test(`goal ${mode} offer stays local; person acceptance uses canonical existing promotion identity`, async () => {
+for (const mode of ["legacy", "generation", "shards"] as const) test(`goal ${mode} offer stays local; agent acceptance preserves canonical promotion identity and source provenance`, async () => {
   const f = await fixture(mode), goal = f.goal(), target = f.note({ task: goal.task }), original = f.store.get(target, f.project)!, before = f.bytes();
   const report = await f.offer(goal.id); expect(report).toMatchObject({ offered: 1, alreadyOffered: 0, withheld: 0, truncated: false }); expect(f.bytes()).toEqual(before);
   const id = report.ids[0]!, candidate = f.candidates.get(id, f.project)!; expect(candidate.input).toEqual({ project: f.project, kind: "promotion", goalId: goal.id, target: { id: target, revision: candidateTargetRevision(original) } });
-  expect(() => f.accept(id, "agent")).toThrow("person"); expect(f.bytes()).toEqual(before);
-  const accepted = f.accept(id), expected = promotedId(original); expect(accepted.noteId).toBe(expected);
+  const accepted = f.accept(id, "agent"), expected = promotedId(original); expect(accepted.noteId).toBe(expected);
   expect(f.store.get(expected, f.project)).toMatchObject({ id: expected, tier: "long", at: original.at, machine: original.machine, peer: original.peer, source: original.source, text: original.text, promotedFrom: target });
   expect(f.store.get(expected, f.project)?.text).not.toContain("Accepted candidate:");
   const authored = f.bytes(); const get = f.store.get.bind(f.store); f.store.get = () => { throw Error("accepted replay must not resolve a stale target"); };

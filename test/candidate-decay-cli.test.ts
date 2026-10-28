@@ -64,11 +64,12 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
   });
 }
 test("candidate acceptance keeps stale-target and current-policy fences for a marked nonTTY CLI", async () => {
-  const f = await fixture(), ids = await f.propose(), marked = { env: { CLAUDECODE: "" }, stdinTTY: false };
+  const f = await fixture(), ids = await f.propose(), marked = { env: { CLAUDECODE: "", HOME: f.root, AMEM_HOME: f.base }, stdinTTY: false };
+  const refused = "Memory operation unavailable or refused; no partial result is shown.";
   writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: [structuredFail.cause] }));
   const configured = f.bytes();
-  await expect(f.cli(["review", "accept", ids.fail], marked)).rejects.toThrow("privacy"); expect(f.bytes()).toEqual(configured);
-  f.use(store => store.demote(f.target, "person", f.project)); const changed = f.bytes(); await expect(f.cli(["review", "accept", ids.correction], marked)).rejects.toThrow(); expect(f.bytes()).toEqual(changed);
+  await expect(f.cli(["review", "accept", ids.fail], marked)).rejects.toThrow(refused); expect(f.bytes()).toEqual(configured);
+  f.use(store => store.demote(f.target, "person", f.project)); const changed = f.bytes(); await expect(f.cli(["review", "accept", ids.correction], marked)).rejects.toThrow(refused); expect(f.bytes()).toEqual(changed);
   expect(f.candidates(store => store.get(ids.fail, f.project)?.status)).toBe("pending"); expect(f.candidates(store => store.get(ids.correction, f.project)?.status)).toBe("pending");
 });
 test("rejected MCP proposal identity remains rejected on repeat and does not author notes", async () => {

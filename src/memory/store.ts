@@ -194,7 +194,7 @@ export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: numbe
   lifecycle?: "enforce" | "ignore";
   /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
   reconcile?: { canonical: string; aliases: readonly string[] };
-  /** Person-only project import may initialize configured alias shards; read-only reconciliation still never creates them. */
+  /** Explicit project import may initialize configured alias shards; read-only reconciliation still never creates them. */
   createAliases?: boolean;
 }
 
@@ -1601,7 +1601,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   } catch (error) { for (const store of aliasStores) store.close(); userOverlay?.close(); throw error; }
 }
 
-/** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */
+/** Administrative migration receipt; this inspector reads raw rows without opening a store or writing any index. */
 export function summarizeRawExpiry(rawLines: string[], now: number, tailBytes: number): import("./migrate.ts").MigrationCounts {
   const bytes = Buffer.from(rawLines.filter(Boolean).join("\n") + (rawLines.length ? "\n" : ""));
   let malformed = 0;

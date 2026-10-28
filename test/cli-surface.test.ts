@@ -24,8 +24,13 @@ test("help and usage text names amem and never a host", () => {
   const texts = [commandHelp(), MEMORY_USAGE, GOAL_USAGE, memoryUsage(), goalUsage()];
   for (const text of texts) expect(text, text.slice(0, 60)).not.toMatch(HOST);
   expect(MEMORY_USAGE).toStartWith("usage: amem "); expect(GOAL_USAGE).toStartWith("usage: amem goal ");
-  expect(commandHelp()).toContain("amem mcp"); expect(commandHelp()).toContain("amem review");
-  expect(commandHelp()).toContain("--policy-free: accepted and ignored");
+  const help = commandHelp();
+  expect(help).toContain("  mcp [--help]"); expect(help).toContain("  review list");
+  expect(help).toContain("--policy-free: accepted and ignored");
+  expect(help).toContain("Agent-marked reads use the MCP privacy ceiling.");
+  expect(help).toContain("Explicit apply/confirm flags do not require a terminal");
+  expect(help).not.toContain("Mutating commands require a terminal on stdin");
+  expect(help).toContain("--apply"); expect(help).toContain("--confirm");
 });
 
 test("a host that exposes the same commands under its own name gets its own name in every message", () => {

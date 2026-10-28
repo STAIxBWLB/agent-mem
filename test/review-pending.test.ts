@@ -294,11 +294,12 @@ test("review walk: an accept the policy refuses is reported and leaves the candi
   expect(after.get(bad, r.project)!.status).toBe("pending"); expect(after.get(good, r.project)!.status).toBe("pending");
 });
 
-test("review walk with nothing pending is available to a marked CLI but still needs terminal output; bare review remains the person list", async () => {
+test("review walk needs both terminals when unmarked and remains refused to marked agents; bare review remains the person list", async () => {
   const r = rig();
-  expect(await cli(r, ["review", "walk"], { stdoutTTY: true })).toBe("no candidates pending");
-  expect(await cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: false, stdoutTTY: true })).toBe("no candidates pending");
+  expect(await cli(r, ["review", "walk"], { stdinTTY: true, stdoutTTY: true })).toBe("no candidates pending");
+  await expect(cli(r, ["review", "walk"], { stdinTTY: false, stdoutTTY: true })).rejects.toThrow("review walk requires a terminal on stdin");
   await expect(cli(r, ["review", "walk"], { stdoutTTY: false })).rejects.toThrow("stdout must be a terminal");
+  await expect(cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   const a = r.put("listed not walked"); r.candidates.close();
   expect(await cli(r, ["review"], { stdinTTY: false })).toContain(a);                  // scripts keep the list
   expect(await cli(r, ["review", "--json"])).toContain(a);

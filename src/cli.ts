@@ -177,11 +177,19 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const parsed = parseCommand(argv);
       if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup") {
         let receipt: unknown = output;
-        try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
+        // Import receipts contain fixed counters named `pii`; they are not row privacy flags.
+        // Screen the complete rendered receipt, including every key and value, as text.
+        if (!(parsed.path[0] === "import" && parsed.path[1] === "claude-mem")) {
+          try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
+        }
         assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd()));
       }
     }
     return output;
+  }).catch((error: unknown) => {
+    // Marked administrative failures must not reveal a target's private state or native errors.
+    if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+    throw error;
   });
 }
 async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
@@ -701,7 +709,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   // ponytail: board task links need the host's authenticated task boundary; add a host bridge before supporting them here.
   if (goal && sub === "link") throw new Error("goal link needs a host with a task board; amem alone has none");
-  // #15 T4 / D6: the repo scope. Person-only and a terminal were enforced above (agent markers, `mutates`); amem never runs git.
+  // #15 T4 / D6: repository writes keep their explicit confirmation and visibility fences; amem never runs git.
   const repoCwd = context.cwd ?? process.cwd();
   if (sub === "repo") {
     const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project);

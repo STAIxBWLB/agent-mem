@@ -32,12 +32,15 @@ test("private source rows never reach candidates and late policy changes refuse 
   await expect(f.run({ policyVersion: () => version, policy: () => createStandalonePolicy({ host: { screen: async () => { version = "new"; return true; } } }) })).rejects.toThrow("context changed");
   expect(f.candidates.list({ project: f.project })).toEqual([]);
 });
-test("PII host gate and agent identity refuse before policy or source work", async () => {
-  const f = fixture(); let calls = 0;
+test("host admission refuses before work; agent consolidation follows the same private-source screen", async () => {
+  const f = fixture(); f.note("bounded writer lease avoids transaction contention"); f.note("bounded writer lease avoids transaction contention"); let calls = 0;
   const policy = () => { calls++; return createStandalonePolicy(); };
-  await expect(f.run({ allowed: () => false, policy })).rejects.toThrow();
-  await expect(f.run({ actor: "agent", policy })).rejects.toThrow("person");
+  await expect(f.run({ allowed: () => false, actor: "agent", policy })).rejects.toThrow();
   expect(calls).toBe(0); expect(f.candidates.list({ project: f.project })).toEqual([]);
+  const blocked = await f.run({ actor: "agent", policy: () => createStandalonePolicy({ denyPaths: ["src/writer.ts"] }) });
+  expect(blocked.candidates).toEqual([]); expect(f.candidates.list({ project: f.project })).toEqual([]);
+  const allowed = await f.run({ actor: "agent", policy });
+  expect(allowed.candidates.length).toBeGreaterThan(0); expect(calls).toBeGreaterThan(0);
 });
 test("oversized source quotations are counted instead of silently truncating proposed memory", async () => {
   const f = fixture(); const text = "bounded writer lease contention ".repeat(90); f.note(text); f.note(text);

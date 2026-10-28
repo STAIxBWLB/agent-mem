@@ -154,7 +154,7 @@ test("marked decay screens an explicitly selected private target before demote a
     const agent = agentContext(w);
 
     const privateError = await errorMessage(["decay", privateId, "--days", "1", "--apply", "--confirm", "--json"], agent);
-    expect(privateError).toBe("requested entry is withheld by current policy");
+    expect(privateError).toBe(UNAVAILABLE);
     expect(privateError).not.toContain(MARKER);
     const afterRefusal = openStore(w.home);
     try {
