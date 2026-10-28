@@ -127,7 +127,7 @@ for (const reader of readers) {
     } as Omit<PruneRow, "id">;
     const personRow = { ...body, id: pruneId(body) };
     expect(old.prune.validatePruneRow(personRow)).toEqual(personRow);
-    const agentBody = { ...body, actor: "agent" as const }, agentPrune = { ...agentBody, id: pruneId(agentBody as Omit<PruneRow, "id">) };
+    const agentBody = { ...body, actor: "agent" as const }, agentPrune = { ...agentBody, id: pruneId(agentBody as unknown as Omit<PruneRow, "id">) };
     expect(() => old.prune.validatePruneRow(agentPrune)).toThrow();
 
     const repo = home(`amem-actor-repo-${reader.version}-`), directory = join(repo, ".amem"); mkdirSync(directory, { recursive: true });
@@ -157,8 +157,8 @@ for (const reader of readers) {
     const body = {
       schema: "agent-mem.prune/v1", op: "prune", generation: "9".repeat(32), at, machine, actor: "agent",
       placement: "local", cutoff: at, targets: [{ id: "b".repeat(32), rowHash: "d".repeat(64), expiredAt: at, basis: { kind: "note", id: "e".repeat(32), rowHash: "f".repeat(64) } }],
-    } as Omit<PruneRow, "id">;
-    const bad = { ...body, id: pruneId(body as Omit<PruneRow, "id">) };
+    } as unknown as Omit<PruneRow, "id">;
+    const bad = { ...body, id: pruneId(body as unknown as Omit<PruneRow, "id">) };
     appendFileSync(join(generationDir, "log", `${machine}.jsonl`), JSON.stringify(bad) + "\n");
     expect(() => { const unsupported = new reader.Store({ home: parent, now: () => now }); try { unsupported.list({ project }); } finally { unsupported.close(); } }).toThrow();
   });

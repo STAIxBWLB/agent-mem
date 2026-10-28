@@ -88,7 +88,7 @@ test("correction proposal bounds the exact persisted body including headers and 
   const id = idOf(await mcp.tools.amem_correct({ id: target, proposedText, reason })); expect(f.bytes()).toEqual(before);
   const accepted = f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true });
   const note = f.store.get(accepted.noteId, f.project)!; expect(note.text.length).toBe(4000); expect(note).toMatchObject({ peer: "agent", source: "person" }); expect(note.text).toBe(`Accepted candidate: ${id}\nTarget revision: ${revision}\nTarget entry: ${target}\n\n${proposedText}\n\nReason: ${reason}`);
-  const supersede = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
+  const supersede = f.bytes().flatMap(([, content]) => content!.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
     .find(entry => entry.op === "supersede" && entry.target === target);
   expect(supersede?.actor).toBe("agent");
 });
@@ -106,7 +106,7 @@ test("consolidation accepts an agent actor and stamps both supersessions with it
   const accepted = f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true, policyVersion: () => "fixture-policy-v1" });
   const note = f.store.get(accepted.noteId, f.project)!; expect(note).toMatchObject({ peer: "agent", source: "person", kind: "contract" });
   expect(f.store.get(first, f.project)?.supersededBy).toBe(accepted.noteId); expect(f.store.get(second, f.project)?.supersededBy).toBe(accepted.noteId);
-  const ops = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
+  const ops = f.bytes().flatMap(([, content]) => content!.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
   expect(ops.filter(entry => entry.op === "supersede" && [first, second].includes(entry.target!)).map(entry => entry.actor)).toEqual(["agent", "agent"]);
 });
 test("consolidation fences its bound actor if host policy changes it during review", () => {

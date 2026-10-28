@@ -438,7 +438,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (!targets.length && input.kind !== "promotion") return true;
         const targetStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
         try {
-          if (targets.some(target => { const view = targetStore.get(target.id, project); return !view || view.project !== project || !policy.screenStandalone(view); })) return false;
+          if (targets.some(target => { if (!target) return true; const view = targetStore.get(target.id, project); return !view || view.project !== project || !policy.screenStandalone(view); })) return false;
           if (input.kind === "promotion") { const goal = targetStore.goalOf(input.goalId, project); if (!goal || !policy.screenStandalone(goal)) return false; }
           return true;
         } finally { targetStore.close(); }

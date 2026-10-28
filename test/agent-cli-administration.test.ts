@@ -224,7 +224,7 @@ test("marked migration screens its administrative receipt before apply", async (
   expect(migrated.profile.generation).toBe(generation);
 });
 
-function repositoryWithPrivateKey(): World & { project: string } {
+function repositoryWithPrivateKey(): World & { project: string; dir: string } {
   const w = world("amem-cli-admin-key-"), origin = "https://github.com/private/MARKER.git";
   execFileSync("git", ["init", "-q", w.cwd]);
   execFileSync("git", ["-C", w.cwd, "remote", "add", "origin", origin]);

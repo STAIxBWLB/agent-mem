@@ -44,13 +44,13 @@ test("person and agent actors apply only named previewed ids; bulk and forget re
   expect(() => applyDecay(f.store, plan, { actor: "person", ids: [first], forget: true })).toThrow("confirmation"); expect(f.bytes()).toEqual(before);
   expect(applyDecay(f.store, plan, { actor: "agent", ids: [first], now: f.clock })).toEqual({ action: "demote", ids: [first], expiresAt: plan.demoteExpiresAt });
   expect(f.store.get(first, f.project)?.tier).toBe("short"); expect(f.store.get(second, f.project)?.tier).toBe("long"); expect(f.store.get(third, f.project)?.tier).toBe("long");
-  const demote = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
+  const demote = f.bytes().flatMap(([, content]) => content!.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
     .find(entry => entry.op === "demote" && entry.target === first);
   expect(demote?.actor).toBe("agent");
   const next = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, next, { actor: "person", ids: [second], now: f.clock }).ids).toEqual([second]);
   const final = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, final, { actor: "agent", ids: [third], forget: true, confirmed: true, now: f.clock }).ids).toEqual([third]);
   expect(f.store.get(second, f.project)?.tier).toBe("short"); expect(f.store.get(third, f.project)).toBeUndefined();
-  const ops = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
+  const ops = f.bytes().flatMap(([, content]) => content!.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
   expect(ops.find(entry => entry.op === "demote" && entry.target === second)?.actor).toBe("person");
   expect(ops.find(entry => entry.op === "forget" && entry.target === third)?.actor).toBe("agent");
 });
