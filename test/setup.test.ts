@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,6 +193,38 @@ test("all-target apply stages native commands, records private receipts and is b
   expect(rules.map(image)).toEqual(rulesBefore);
   const beforeSecond = snapshot(f.home), calls = f.calls.length;
   expect(applySetup(f.plan("all", "apply"), f.options)).toEqual({ applied: [], unchanged: [...SETUP_ALL_TARGETS] }); expect(f.calls).toHaveLength(calls); expect(snapshot(f.home)).toEqual(beforeSecond);
+});
+test.each(["codex", "kimi", "qwen"] as const)("legacy %s capture receipt upgrades to JSON output and remains undoable", target => {
+  const f = fixture(); seedOtherFiles(f);
+  const paths = f.plan(target).actions[0]!.files, original = paths.map(image), hookIndex = target === "qwen" ? 0 : 1, hooksFile = paths[hookIndex]!;
+  expect(applySetup(f.plan(target, "apply"), f.options).applied).toEqual([target]);
+
+  // Recreate the managed hook and intent written by an older no-JSON installation.
+  if (target === "kimi") {
+    const doc = Bun.TOML.parse(text(hooksFile)) as Record<string, any>, managed = doc.hooks.find((hook: any) => hook.event === "SessionEnd" && hook.command.includes("ingest kimi"));
+    managed.command = managed.command.replace(" ingest kimi --json", " ingest kimi"); put(hooksFile, Bun.TOML.stringify(doc), 0o640);
+  } else {
+    const doc = JSON.parse(text(hooksFile)), managed = doc.hooks.SessionEnd.find((row: any) => row.hooks?.some((hook: any) => hook.command?.includes(`ingest ${target}`)));
+    const commandHook = managed.hooks.find((hook: any) => hook.command?.includes(`ingest ${target}`));
+    commandHook.command = commandHook.command.replace(` ingest ${target} --json`, ` ingest ${target}`); put(hooksFile, JSON.stringify(doc) + "\n", 0o640);
+  }
+  const receipt = f.receipt(target);
+  receipt.intent = createHash("sha256").update(JSON.stringify([1, target, paths, f.bun, f.entry])).digest("hex");
+  receipt.changes[hookIndex]!.after = image(hooksFile);
+  put(f.receiptFile(target), JSON.stringify(receipt) + "\n");
+
+  expect(f.plan(target, "preview").actions[0]!.state).toBe("runtime changed; managed entries will update");
+  expect(applySetup(f.plan(target, "apply"), f.options).applied).toEqual([target]);
+  if (target === "kimi") {
+    const doc = Bun.TOML.parse(text(hooksFile)) as Record<string, any>;
+    expect(doc.hooks.filter((hook: any) => hook.event === "SessionEnd" && hook.command.includes(`ingest ${target} --json`))).toHaveLength(1);
+  } else {
+    const doc = JSON.parse(text(hooksFile));
+    expect(doc.hooks.SessionEnd.flatMap((row: any) => row.hooks ?? []).filter((hook: any) => hook.command?.includes(`ingest ${target} --json`))).toHaveLength(1);
+  }
+  expect(applySetup(f.plan(target, "apply"), f.options).unchanged).toEqual([target]);
+  undoSetup(f.plan(target, "undo"), f.options);
+  expect(paths.map(image)).toEqual(original);
 });
 test("undo restores original bytes, modes and missing files without touching unrelated rules", () => {
   const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
@@ -408,7 +441,7 @@ test("Qwen has one atomic settings image for native MCP and bounded SessionEnd i
   expect(f.plan("qwen", "preview").actions[0]!.commands).toEqual([expected]);
   expect(action.registration).toEqual(expected); expect(action.commands).toEqual([expected]);
   expect(action.files).toEqual([join(f.env.QWEN_HOME!, "settings.json")]);
-  expect(action.hooks).toEqual([{ event: "SessionEnd", command: `'${f.bun}' --smol '${f.entry}' ingest qwen`, timeout: 3 }]);
+  expect(action.hooks).toEqual([{ event: "SessionEnd", command: `'${f.bun}' --smol '${f.entry}' ingest qwen --json`, timeout: 3 }]);
   const before = image(action.files[0]!);
   expect(applySetup(plan, f.options).applied).toEqual(["qwen"]);
   expect(f.receipt("qwen").changes).toHaveLength(1);

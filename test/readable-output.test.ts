@@ -281,10 +281,11 @@ test("vault text bounds metadata and never emits note bodies or data terminal co
   const h = home(), store = new MemoryStore({ memoryDir: h.memory, deferPromotions: true });
   try {
     const id = store.note({ op: "note", project: "repo", scope: "project", tier: "long", kind: "contract", peer: "person", source: "person",
-      title: COLOR.error("bounded title") + "\nextra", text: "BODY_NOT_FOR_LISTING", about: [] });
+      title: COLOR.error("bounded title") + "\nextra" + " " + "forged" + " " + "row", text: "BODY_NOT_FOR_LISTING", about: [] });
     const row = store.get(id)!, text = vaultCandidatesText([row]);
     expect(text).toStartWith("amem vault-candidates: attention\n"); expect(text).toContain(id); expect(text).toContain("bounded title");
     expect(text).not.toContain("BODY_NOT_FOR_LISTING"); expect(text).not.toMatch(ANSI);
+    expect(text).not.toContain(" "); expect(text).not.toContain(" "); expect(text.split("\n")).toHaveLength(4);
     const cross = vaultCandidatesAllText({ crossedProjects: true, projects: [{ project: "repo", candidates: [row] }] });
     expect(cross).toContain("source repository"); expect(cross).not.toContain("BODY_NOT_FOR_LISTING");
     expect(vaultCandidatesText([])).toContain("Next action:"); expect(vaultCandidatesText([])).toContain("candidates: 0");
@@ -300,13 +301,16 @@ async function readableCommand(h: ReturnType<typeof home>, args: string[], stdou
 test("ingest JSON keeps exact compact bytes and agent capture entry remains allowed", async () => {
   const h = home(), saved = process.env.CODEX_HOME; process.env.CODEX_HOME = join(h.root, "native-codex"); mkdirSync(join(process.env.CODEX_HOME, "sessions"), { recursive: true });
   try {
-    const plain = await readableCommand(h, ["ingest", "codex"]);
+    const nonTTY = await readableCommand(h, ["ingest", "codex"]);
+    expect(nonTTY).toBe(JSON.stringify(emptyIngest)); expect(nonTTY).not.toMatch(ANSI);
+    const plain = await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" });
     expect(plain).toStartWith("amem ingest codex: skipped\n"); expect(plain).not.toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true)).toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toBe(plain);
     expect(await readableCommand(h, ["ingest", "codex"], true, { TERM: "dumb" })).toBe(plain);
     const json = await readableCommand(h, ["ingest", "codex", "--json"], true, { CODEX_THREAD_ID: "agent" }, false);
     expect(json).toBe(JSON.stringify(emptyIngest)); expect(json).not.toMatch(ANSI);
+    expect(await readableCommand(h, ["ingest", "codex", "--json"], false)).toBe(json);
   } finally { if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
 }, 30_000);
 

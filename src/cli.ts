@@ -178,7 +178,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
     });
-    return parsed.options["--json"] === true ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context));
+    return parsed.options["--json"] === true || !(context.stdoutTTY ?? process.stdout.isTTY) ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context));
   }
   // F1: `--help` and `--version` only print text, so they work in an agent shell too. Every other command keeps the honest-session refusal below.
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
