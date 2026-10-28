@@ -3,6 +3,16 @@ import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "../src/setup-t
 const hook = { event: "SessionEnd", command: "bun --smol '/package with spaces/bin/amem.js' ingest kimi", timeout: 3 };
 const parse = (text: string) => Bun.TOML.parse(text) as Record<string, any>;
 
+test.each(["", 'model = "keep"\n'])("removing the last dotted MCP entry retains its implicit parent beside later tables (%s)", original => {
+  const installed = setTomlPath(original, ["mcp_servers", "amem"], { command: "bun", args: ["mcp"] });
+  const later = '\n# later configuration\n[projects."/keep"]\ntrust_level = "trusted"\n';
+  const removed = setTomlPath(installed + later, ["mcp_servers", "amem"], undefined);
+  expect(parse(removed).mcp_servers).toEqual({}); expect(removed).toContain(later);
+  const cleaned = setTomlPath(removed, ["mcp_servers"], undefined);
+  expect(parse(cleaned).mcp_servers).toBeUndefined(); expect(parse(cleaned).projects["/keep"].trust_level).toBe("trusted");
+  expect(cleaned).toContain(original); expect(cleaned).toContain(later);
+});
+
 test("setup TOML updates inline empty hooks without duplicate AOT declarations and keeps other bytes", () => {
   const trust = '[trust]\r\n"/project with spaces" = true # preserve\r\n', source = '# user prefix\r\nhooks = [] # hook comment\r\n' + trust;
   const output = setTomlPath(source, ["hooks"], [hook]);

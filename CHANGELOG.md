@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Codex setup accepts native omission of an unrelated stdio server's empty `args = []` and merges only the validated amem entry into the original TOML, preserving that array and other settings. Undo retains later settings when removing a setup-created dotted entry. Other server/settings changes still refuse before publication, with client-labelled, value-free errors (#123).
+
 ## 0.11.0
 
 - **Explain ranked search** (#106, #111). `amem search <words> --explain`, MCP `amem_search({ query, explain: true })` and `MemoryStore.search(query, { explain: true })` report, per hit, the source, raw BM25 rank, tier and recency factors, final score and match mode. Default output and ranking are unchanged. One scoring recipe in `src/memory/search-score.ts` drives both the library and the screened SQL path.

@@ -162,11 +162,11 @@ function editTomlPath(text: string, path: readonly string[], value: unknown | un
       changes.push({ start: position, end: position, text: `${newline}${key} = ${inline(value)}${eol}` });
     }
     output = replace(text, changes);
-    // Removing the only child of an implicit table must retain its parsed empty parent value.
-    for (let depth = path.length - 1; depth > 0; depth--) {
-      const parent = path.slice(0, depth), wanted = at(expected, parent);
-      if (plain(wanted) && !Object.keys(wanted).length && at(parse(output), parent) === undefined) output += `${output && !output.endsWith("\n") ? eol : ""}[${parent.map(part => JSON.stringify(part)).join(".")}]${eol}`;
-    }
+  }
+  // Removing the only child of an implicit table must retain its parsed empty parent value.
+  for (let depth = path.length - 1; depth > 0; depth--) {
+    const parent = path.slice(0, depth), wanted = at(expected, parent);
+    if (plain(wanted) && !Object.keys(wanted).length && at(parse(output), parent) === undefined) output += `${output && !output.endsWith("\n") ? eol : ""}[${parent.map(part => JSON.stringify(part)).join(".")}]${eol}`;
   }
   if (!isDeepStrictEqual(shape(parse(output)), shape(expected))) return error();
   return output;

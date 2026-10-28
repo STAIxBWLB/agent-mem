@@ -37,10 +37,10 @@ function fixture() {
     const file = target === "claude" ? stagedEnv.CLAUDE_CONFIG_DIR ? join(stagedEnv.CLAUDE_CONFIG_DIR, ".claude.json") : join(cwd, ".claude.json")
       : target === "codex" ? join(stagedEnv.CODEX_HOME!, "config.toml") : target === "qwen" ? join(stagedEnv.QWEN_HOME!, "settings.json") : join(stagedEnv.PI_CODING_AGENT_DIR!, "mcp.json");
     if (target === "codex") {
-      const source = existsSync(file) ? text(file) : "", kept: string[] = []; let skipping = false;
-      for (const line of source.split("\n")) { if (/^\s*\[/.test(line)) skipping = /^\s*\[mcp_servers\.amem\]\s*$/.test(line); if (!skipping) kept.push(line); }
-      const body = kept.join("\n");
-      put(file, remove ? body : `${body}${body.endsWith("\n") || !body ? "" : "\n"}[mcp_servers.amem]\ncommand = ${JSON.stringify(launch[0])}\nargs = ${JSON.stringify(launch.slice(1))}\n`);
+      const document = existsSync(file) ? Bun.TOML.parse(text(file)) as Record<string, any> : {};
+      document.mcp_servers ??= {};
+      if (remove) delete document.mcp_servers.amem; else document.mcp_servers.amem = { command: launch[0], args: launch.slice(1) };
+      put(file, Bun.TOML.stringify(document));
     } else {
       const document = existsSync(file) ? JSON.parse(text(file)) : {}, servers = document.mcpServers ?? {};
       if (remove) delete servers.amem; else servers.amem = { command: launch[0], args: launch.slice(1) };
@@ -69,6 +69,100 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
   return rules;
 }
 const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : target === "jcode" ? JSON.parse(text(file)).servers : JSON.parse(text(file)).mcpServers;
+function rewrittenCodex(f: ReturnType<typeof fixture>, rewrite: (document: Record<string, any>) => string | void): NonNullable<SetupContext["native"]> {
+  return (argv, env, cwd) => {
+    f.options.native!(argv, env, cwd);
+    if (argv[0] !== "codex" || argv[2] !== "add") return;
+    const file = join(env.CODEX_HOME!, "config.toml"), document = Bun.TOML.parse(text(file)) as Record<string, any>;
+    const replacement = rewrite(document);
+    put(file, typeof replacement === "string" ? replacement : Bun.TOML.stringify(document));
+  };
+}
+test.each(["table", "inline"] as const)("Codex %s empty args omission preserves original TOML and runtime-upgrade undo", shape => {
+  const f = fixture(); seedOtherFiles(f);
+  const source = shape === "table" ? '# original comment\nmodel = "fixture" # keep\n[mcp_servers.node_repl]\ncommand = "node"\nargs = [] # keep empty\n[mcp_servers.other]\ncommand = "other-server"\nargs = ["keep"]\n'
+    : '# original comment\nmodel = "fixture" # keep\nmcp_servers = { node_repl = { command = "node", args = [] }, other = { command = "other-server", args = ["keep"] } }\n';
+  put(f.file("codex"), source, 0o640); const original = image(f.file("codex"));
+  const options = { ...f.options, native: rewrittenCodex(f, document => { delete document.mcp_servers.node_repl.args; }) };
+  expect(applySetup(f.plan("codex", "apply"), options).applied).toEqual(["codex"]);
+  expect(mcp(f.file("codex"), "codex").node_repl).toEqual({ command: "node", args: [] });
+  expect(mcp(f.file("codex"), "codex").other).toEqual({ command: "other-server", args: ["keep"] });
+  expect(text(f.file("codex"))).toContain('# original comment\nmodel = "fixture" # keep\n');
+  if (shape === "table") expect(text(f.file("codex"))).toContain('args = [] # keep empty');
+  expect(f.receipt("codex").changes[0]!.before).toEqual(original);
+  const moved = { ...options, entry: join(f.home, "updated runtime", "amem.js") };
+  expect(applySetup(planSetup("codex", "apply", moved), moved).applied).toEqual(["codex"]);
+  expect(mcp(f.file("codex"), "codex").amem.args).toEqual(["--smol", moved.entry, "mcp"]);
+  expect(mcp(f.file("codex"), "codex").node_repl.args).toEqual([]);
+  expect(applySetup(planSetup("codex", "apply", moved), moved).unchanged).toEqual(["codex"]);
+  undoSetup(planSetup("codex", "undo", moved), moved); expect(image(f.file("codex"))).toEqual(original);
+});
+test.each(["command", "removed-server", "nonempty-args", "added-empty-args", "other-field", "top-setting", "invalid-config", "non-stdio"] as const)("Codex rejects %s without publishing any target or values", kind => {
+  const f = fixture(); seedOtherFiles(f);
+  const server: Record<string, unknown> = kind === "non-stdio" ? { url: "https://example.invalid/mcp", args: [] } : { command: "node", args: kind === "nonempty-args" ? ["keep"] : [] };
+  if (kind === "added-empty-args") delete server.args;
+  if (kind === "other-field") server.env = { KEEP: "fixture" };
+  put(f.file("codex"), Bun.TOML.stringify({ model: "fixture", mcp_servers: { node_repl: server } }), 0o640);
+  const plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), before = files.map(image);
+  const options = { ...f.options, native: rewrittenCodex(f, document => {
+    if (kind === "invalid-config") return "SECRET_INVALID_NATIVE = [";
+    const other = document.mcp_servers.node_repl;
+    if (kind === "command") other.command = "SECRET_CHANGED_COMMAND";
+    if (kind === "removed-server") delete document.mcp_servers.node_repl;
+    else if (kind === "added-empty-args") other.args = [];
+    else delete other.args;
+    if (kind === "other-field") delete other.env;
+    if (kind === "top-setting") document.model = "SECRET_CHANGED_SETTING";
+  }) };
+  let message = ""; try { applySetup(plan, options); } catch (error) { message = (error as Error).message; }
+  expect(message).toBe(kind === "top-setting" ? "codex native registration changed unrelated settings; no configuration published"
+    : kind === "invalid-config" ? "codex native registration produced invalid configuration; no configuration published"
+    : "codex native registration changed unrelated MCP servers; no configuration published");
+  expect(message.length).toBeLessThan(150); expect(message).not.toContain("SECRET"); expect(message).not.toContain("node_repl");
+  expect(files.map(image)).toEqual(before);
+  for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false);
+});
+test.each(["claude", "pi", "qwen"] as const)("JSON client %s gets no empty-args omission exemption", target => {
+  const f = fixture(); seedOtherFiles(f);
+  const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.other.args = []; put(file, JSON.stringify(document));
+  const plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), before = files.map(image);
+  const options = { ...f.options, native: (argv: readonly string[], env: Parameters<NonNullable<SetupContext["native"]>>[1], cwd: string) => {
+    f.options.native!(argv, env, cwd);
+    if (argv[0] !== target || argv[2] !== "add") return;
+    const staged = target === "claude" ? join(env.HOME!, ".claude.json") : target === "qwen" ? join(env.QWEN_HOME!, "settings.json") : join(env.PI_CODING_AGENT_DIR!, "mcp.json");
+    const value = JSON.parse(text(staged)); delete value.mcpServers.other.args; put(staged, JSON.stringify(value));
+  } };
+  expect(() => applySetup(plan, options)).toThrow(`${target} native registration changed unrelated MCP servers; no configuration published`);
+  expect(files.map(image)).toEqual(before); for (const action of plan.actions) expect(existsSync(action.receipt)).toBe(false);
+});
+
+test.skipIf(process.env.AMEM_CODEX_NATIVE_SMOKE !== "1")("real Codex isolated empty-args omission keeps original settings and undo", () => {
+  const f = fixture(); seedOtherFiles(f);
+  const source = f.file("codex"), originalText = '# native Codex fixture\nmodel = "gpt-5" # keep\n[mcp_servers.node_repl]\ncommand = "node"\nargs = [] # keep empty\n[mcp_servers.other]\ncommand = "other-server"\nargs = ["keep"]\n';
+  put(source, originalText, 0o640); const original = image(source), codexHome = join(f.home, "copied codex"), file = join(codexHome, "config.toml"), probeHome = join(f.home, "native-probe");
+  restore(file, original); restore(join(probeHome, "config.toml"), original);
+  const temporary = join(f.home, "tmp"); mkdirSync(temporary);
+  const env = { ...f.env, PATH: process.env.PATH, CODEX_HOME: codexHome,
+    XDG_CONFIG_HOME: join(f.home, ".config"), XDG_DATA_HOME: join(f.home, ".local", "share"), XDG_CACHE_HOME: join(f.home, ".cache"), XDG_STATE_HOME: join(f.home, ".local", "state"),
+    TMPDIR: temporary, TMP: temporary, TEMP: temporary };
+  const version = spawnSync("codex", ["--version"], { cwd: f.home, env, encoding: "utf8", timeout: 10_000 });
+  expect(version.status).toBe(0); expect(version.stdout.trim()).toMatch(/^codex-cli [0-9]+\.[0-9]+\.[0-9]+/);
+  console.log(`isolated native Codex version: ${version.stdout.trim()}`);
+  const options: SetupContext = { env, cwd: f.home, bun: f.bun, entry: fileURLToPath(new URL("../bin/amem.js", import.meta.url)) };
+  const nativeProbe = spawnSync("codex", ["mcp", "add", "amem", "--", f.bun, "--smol", options.entry!, "mcp"], { cwd: f.home, env: { ...env, CODEX_HOME: probeHome }, encoding: "utf8", timeout: 10_000 });
+  expect(nativeProbe.status).toBe(0);
+  expect(Object.hasOwn((Bun.TOML.parse(text(join(probeHome, "config.toml"))) as Record<string, any>).mcp_servers.node_repl, "args")).toBe(false);
+  const plan = planSetup("codex", "apply", options);
+  expect(applySetup(plan, options).applied).toEqual(["codex"]);
+  expect(mcp(file, "codex").node_repl).toEqual({ command: "node", args: [] });
+  expect(mcp(file, "codex").other).toEqual({ command: "other-server", args: ["keep"] });
+  expect(mcp(file, "codex").amem).toMatchObject({ command: f.bun, args: ["--smol", options.entry, "mcp"] });
+  expect(text(file)).toContain('# native Codex fixture\nmodel = "gpt-5" # keep\n');
+  expect(text(file)).toContain(originalText.slice(originalText.indexOf("[mcp_servers.node_repl]")));
+  expect(image(source)).toEqual(original);
+  expect(applySetup(planSetup("codex", "apply", options), options).unchanged).toEqual(["codex"]);
+  undoSetup(planSetup("codex", "undo", options), options); expect(image(file)).toEqual(original); expect(image(source)).toEqual(original);
+}, 30_000);
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
   expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(6);
