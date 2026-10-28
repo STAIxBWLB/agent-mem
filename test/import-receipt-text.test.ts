@@ -77,7 +77,7 @@ test("claude-mem capture selection and restart caveats are explicit", () => {
   expect(selected).toContain("Restart: selected cursors replayed from the start");
 });
 
-function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" = "empty") {
+function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" | "public" = "empty") {
   const h = home(), file = join(h.root, "claude-mem.db"), db = new ImportReceiptDatabase(file), source = importReceiptProjectChain(h.cwd).at(-1)!;
   db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
   db.run("CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)");
@@ -85,6 +85,7 @@ function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" = "e
   if (kind === "work") db.query("INSERT INTO work_state_entries VALUES (1, ?, 'synthetic list', ?, ?)").run(source, JSON.stringify({ status: "doing" }), Date.now());
   if (kind === "capture" || kind === "secret") db.query("INSERT INTO observations VALUES (1, ?, 'fixture', ?, NULL, ?, ?)").run(source,
     kind === "secret" ? "password: synthetic-fixture" : "synthetic capture observation", Date.now(), kind === "secret" ? JSON.stringify({ peer: "codex", kind: "finding" }) : null);
+  if (kind === "public") db.query("INSERT INTO observations VALUES (1, ?, 'import title', 'imported public source body', NULL, ?, ?)").run(source, Date.now(), JSON.stringify({ peer: "original-source-peer", kind: "decision" }));
   db.close();
   importReceiptAppendAlias(h.memory, { alias: source, key: importReceiptProjectKey(h.cwd), actor: "person", machine: "fixture" });
   return { ...h, file };
@@ -146,11 +147,13 @@ test("claude-mem agent import preserves original peer, source and timestamp", as
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
 });
 
-test("marked claude-mem receipt screening includes literal administrative keys before any note write", async () => {
-  const h = importReceiptFixture("empty"), before = importReceiptFs.readFileSync(h.file);
+test("marked claude-mem receipt policy withholds details without denying a completed import", async () => {
+  const h = importReceiptFixture("public"), before = importReceiptFs.readFileSync(h.file), marked = { CODEX_THREAD_ID: "agent" };
   writeFileSync(join(h.memory, IMPORT_CONFIG_FILE), JSON.stringify({ piiPatterns: ["added"] }));
-  await expect(runImportReceipt(h, ["--json"], { CODEX_THREAD_ID: "agent" }, false, false)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  expect(JSON.parse(await runImportReceipt(h, ["--json"], marked, false, false))).toEqual({ ok: true, completed: true, receiptWithheld: true });
+  const store = new ImportReceiptMemoryStore({ memoryDir: h.memory });
+  try { expect(store.list({ project: importReceiptProjectKey(h.cwd) })[0]).toMatchObject({ peer: "original-source-peer", source: "claude-mem", title: "import title", text: "imported public source body" }); }
+  finally { store.close(); }
+  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy.");
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
-  const authored = importReceiptFs.existsSync(join(h.memory, "log")) ? importReceiptFs.readdirSync(join(h.memory, "log")).filter(name => name.endsWith(".jsonl")) : [];
-  expect(authored).toEqual([]);
 });

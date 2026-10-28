@@ -12,6 +12,7 @@ import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { pruneId, type PruneRow } from "../src/memory/prune.ts";
 import { repoEntryId, REPO_SCHEMA, repoLogPath, type RepoLine } from "../src/memory/repo-scope.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 // Frozen published tarballs, verified on dgx02. Bun's lockfile also pins each registry SHA-512 integrity.
 const readers = [
@@ -22,7 +23,7 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const at = "2026-10-29T00:00:00.000Z", now = Date.parse(at), project = "github.com/fixture/actor-reader";
 function home(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix)); cleanup.push(() => rmSync(root, { recursive: true, force: true })); return root;
+  const root = realPath(mkdtempSync(join(tmpdir(), prefix))); cleanup.push(() => rmSync(root, { recursive: true, force: true })); return root;
 }
 function note(text: string, extra: Partial<NoteInput> = {}): NoteInput {
   return { op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "fixture-peer", source: "person", text, about: [], ...extra };

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
-import { createIntentBriefSource } from "./memory/recall.ts";
+import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
@@ -165,6 +165,17 @@ function curatedStoreAt(base: string, project: string, opts: StoreOptions): Memo
   return new MemoryStore({ ...withAliases, memoryDir: base });
 }
 
+/** Fixed metadata only: never include the withheld result or its error cause. */
+class CliPartialApplyError extends Error {
+  constructor(readonly appliedCount: number, readonly jsonOutput: boolean) {
+    super(appliedCount > 0 ? "Operation partially applied; receipt withheld by policy. Inspect state before retrying."
+      : "Operation stopped; the failed target may have changed. Receipt withheld by policy. Inspect state before retrying.");
+  }
+  render(): string {
+    return this.jsonOutput ? JSON.stringify({ ok: false, partial: this.appliedCount > 0, appliedCount: this.appliedCount, failedMayHaveChanged: true, receiptWithheld: true }) : this.message;
+  }
+}
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   // Native capture and the MCP server retain their existing surfaces and attribution.
   if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
@@ -182,11 +193,24 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         if (!(parsed.path[0] === "import" && parsed.path[1] === "claude-mem")) {
           try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
         }
-        assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd()));
+        try { assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd())); }
+        catch {
+          // The command returned successfully: withholding its receipt cannot undo its effects.
+          const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
+          return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
+            : failed ? "Operation did not complete; receipt withheld by policy. Inspect state before retrying." : "Operation completed; receipt withheld by policy.";
+        }
       }
     }
     return output;
   }).catch((error: unknown) => {
+    // Preserve the authoritative partial outcome, without exposing a cause or a withheld target.
+    if (marked && error instanceof DecayApplyError) {
+      let readable = false;
+      try { readable = configuredPolicy(memoryHome(), context.cwd ?? process.cwd()).screenStandalone(error.report); } catch { /* Withhold if policy is unavailable. */ }
+      if (!readable) throw new CliPartialApplyError(error.applied.length, error.jsonOutput);
+      const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
+    }
     // Marked administrative failures must not reveal a target's private state or native errors.
     if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");
     throw error;
@@ -324,12 +348,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (shardRequested) {
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
       if (actor === "agent" && mode !== "dry-run") administrative(await migrateShards({ ...common, mode: "dry-run" }));
-      const result = administrative(await migrateShards({ ...common, mode }));
+      const result = await migrateShards({ ...common, mode });
       return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context));
     }
     if (actor === "agent" && mode === "deactivate") administrative({ target: common.memoryDir, selector: readSelector(common.memoryDir), mode });
     else if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
-    const result = administrative(await migrate({ ...common, mode }));
+    const result = await migrate({ ...common, mode });
     return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context));
   }
   if (sub === "status") {
@@ -406,7 +430,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       assertCurrent();
       const result = applyDecay(store, preview, { ...current, actor, confirmed: true, forget: options["--forget"] === true });
       return options["--json"] ? JSON.stringify(result, null, 2) : `${result.action}: ${result.ids.length} entries${result.expiresAt ? `; expires ${result.expiresAt}` : ""}`;
-    } catch (error) { if (error instanceof DecayApplyError) { administrative(error.report); } if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
+    } catch (error) { if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
     finally { store.close(); }
   }
   if (sub === "note") {
@@ -628,10 +652,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     return options["--json"] ? JSON.stringify(report, null, 2) : usageText(report);
   }
   if (sub === "gc") {
-    // A preview reads; only --confirm evicts (and then the terminal and agent-marker refusals above already ran, because `mutates: "confirm"`).
+    // A preview reads; only explicit --confirm evicts, after the administrative preflight.
     const batches = options["--batches"] === undefined ? undefined : Number(options["--batches"]);
     if (actor === "agent") administrative(runGc(memoryHome(), { dryRun: true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) }));
-    const result = administrative(runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) }));
+    const result = runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) });
     return options["--json"] ? JSON.stringify(result, null, 2) : `${result.dryRun ? "preview (nothing evicted; add --confirm):\n" : ""}${gcText(result)}`;
   }
   if (sub === "import" && ["claude-auto", "codex"].includes(parsed.path[1] ?? "")) {
@@ -740,9 +764,23 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (!view) throw new Error(`no memory entry ${idText} in this project (amem list shows the ids)`);
     // `get` also returns shared-scope notes of other projects: only this project's own private notes go into this repository.
     if (resolveAlias(memoryHome(), view.project) !== project) throw new Error(`${view.id.slice(0, 8)} belongs to another project; only this project's notes can be promoted into its repository`);
+    const sourceView = view;
+    if (actor === "agent" && !recallViewIsLive(sourceView, Date.now())) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+    administrative(sourceView); // Screen fields the repository representation deliberately drops, too.
+    const assertSourceReadable = () => {
+      if (actor !== "agent") return;
+      const fresh = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
+      try {
+        const current = fresh.get(sourceView.id, project);
+        if (!current || !recallViewIsLive(current, fresh.readNow()) || resolveAlias(memoryHome(), current.project) !== project) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+        administrative(current);
+      } finally { fresh.close(); }
+    };
     const plan = await planRepoPromotion(root, view, configuredPolicyOptions(memoryHome(), root));
     if (plan.refusals.length) throw new Error(`not promoted to repo scope:\n- ${plan.refusals.join("\n- ")}`);
     const seen = await repoVisibility(root, context.visibility);
+    assertSourceReadable(); // Visibility can await: recheck before either preview or publication.
+    administrative({ path: plan.path, line: plan.line });
     const preview = [`the exact line that would be appended to ${plan.path}:`, plan.text, ...(plan.droppedNodes.length ? [`(left out, private references: ${plan.droppedNodes.join(", ")})`] : []),
       `repository visibility: ${seen.state}${seen.remotes.length ? ` (${[...new Set(seen.remotes.map(r => `${r.name}${r.kind === "push" ? " (push)" : ""} ${r.visibility}`))].join(", ")})` : " (no remote)"}`];
     if (plan.alreadyPresent) return [...preview, "already in the file: nothing to write"].join("\n");
@@ -752,6 +790,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const given = options["--confirm-public"];
       if (typeof given !== "string" || given.length < 8 || !/^[a-f0-9]+$/.test(given) || !plan.line.id.startsWith(given)) throw new Error(`the repository is ${seen.state === "public" ? "public" : "not verified private"}: repo scope needs your confirmation of this entry: --confirm-public ${entryPrefix} (the first 8 characters of the id in the line above)`);
     }
+    assertSourceReadable();
     const written = appendRepoLine(root, plan.line);
     return [...preview, `appended to ${written.path}. amem does not commit or push: review and commit it yourself.`,
       ...(repoLogIgnored(root) ? ["WARNING: git ignores .amem/log.jsonl here, so `git status` will not show it and it cannot be committed until you un-ignore it (a .gitignore or .git/info/exclude rule)."] : [])].join("\n");
@@ -900,7 +939,7 @@ export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = P
     `Next action: ${action}`].join("\n");
 }
 
-export function formatCliError(error: unknown): string { return error instanceof DecayApplyError ? error.render() : `amem: ${(error as Error).message}`; }
+export function formatCliError(error: unknown): string { return error instanceof DecayApplyError || error instanceof CliPartialApplyError ? error.render() : `amem: ${(error as Error).message}`; }
 
 /** A completed write means rendered output, never evidence of host delivery or citation. */
 export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> { await writeConfirmed(output, text); }

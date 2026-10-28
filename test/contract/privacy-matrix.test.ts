@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { realPath } from "../../src/memory/platform.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -56,7 +58,7 @@ const MARKED_READ_INVENTORY: readonly MarkedReadInventoryRow[] = [
   { path: "project archive", mode: "explicit lifecycle write", outcome: "admin-screened", detail: "screen append-only receipt" },
   { path: "project unarchive", mode: "explicit lifecycle write", outcome: "admin-screened", detail: "screen append-only receipt" },
   { path: "dedupe", mode: "default preview; --apply", outcome: "admin-screened", detail: "screen reconciliation report and receipt" },
-  { path: "promote", mode: "--to repo preview; --confirm/--confirm-public", outcome: "admin-screened", detail: "screen exact promotion text and write receipt" },
+  { path: "promote", mode: "--to repo preview; --confirm/--confirm-public", outcome: "admin-screened", detail: "screen complete source view before planning and publication, then exact repo line and receipt" },
   { path: "repo attributes", mode: "preview; --confirm", outcome: "admin-screened", detail: "screen repository path receipt" },
   { path: "machine", mode: "read without --label", outcome: "refused", detail: "machine metadata read is outside MCP" },
   { path: "machine", mode: "--label write", outcome: "admin-screened", detail: "explicit label write receipt is screened" },
@@ -237,4 +239,38 @@ test("marked CLI unsupported reads fail closed before opening a memory home", as
   await expect(runCli(["review", "walk"], { ...context, env: {}, stdoutTTY: true, stdinTTY: false })).rejects.toThrow("terminal on stdin");
   expect(existsSync(home)).toBe(false);
 
+});
+
+
+test("C3 marked repo promotion screens stripped source fields before preview and publication", async () => {
+  const saved = process.env.AMEM_HOME;
+  try {
+    for (const field of ["peer", "task"] as const) {
+      const root = realPath(mkdtempSync(join(tmpdir(), "amem-c3-repo-promotion-"))); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+      execFileSync("git", ["init", "--quiet", root]);
+      execFileSync("git", ["-C", root, "remote", "add", "origin", "https://github.com/fixture/promotion.git"]);
+      const base = join(root, "memory"), project = memoryProjectKey(root), store = new MemoryStore({ memoryDir: base, deferPromotions: true });
+      const input: NoteInput = { op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "public-peer", source: "person", text: "withheld source body", about: [], task: "public-task" };
+      input[field] = MARKER;
+      const hidden = store.note(input), visible = store.note({ ...input, peer: "public-peer", task: "public-task", text: "public promotion control" }); store.close();
+      process.env.AMEM_HOME = base;
+      const config = join(base, CONFIG_FILE), log = join(root, ".amem", "log.jsonl");
+      writeFileSync(config, JSON.stringify({ piiPatterns: [MARKER] }));
+      const context = { cwd: root, env: { AMEM_HOME: base, HOME: root, CLAUDECODE: "1" }, stdinTTY: false, stdoutTTY: false, visibility: async () => "private" as const };
+      expect(JSON.parse(await runCli(["show", hidden, "--json"], context))).toBeNull();
+      for (const flags of [[], ["--confirm"], ["--confirm", "--confirm-public", "a".repeat(32)]]) {
+        await expect(runCli(["promote", hidden, "--to", "repo", ...flags], context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+        expect(existsSync(log)).toBe(false);
+      }
+      expect(await runCli(["promote", visible, "--to", "repo"], context)).toContain("public promotion control");
+      // The visibility callback awaits between planning and publication: a new policy must win.
+      writeFileSync(config, JSON.stringify({ piiPatterns: [] }));
+      const tightened = { ...context, visibility: async () => { writeFileSync(config, JSON.stringify({ piiPatterns: [MARKER] })); return "private" as const; } };
+      await expect(runCli(["promote", hidden, "--to", "repo", "--confirm"], tightened)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+      expect(existsSync(log)).toBe(false);
+      expect(await runCli(["promote", visible, "--to", "repo", "--confirm"], context)).toContain("appended");
+      expect(readFileSync(log, "utf8")).toContain("public promotion control");
+      expect(readFileSync(log, "utf8")).not.toContain("withheld source body");
+    }
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 });
