@@ -137,8 +137,8 @@ test("AC4: the count cap evicts decided and shown rows first, never an unshown p
   for (let i = 0; i < CANDIDATE_RETENTION.count - 1; i++) { r.clock.now++; r.put(`filler ${i}`); }
   expect(rows(r)).toHaveLength(CANDIDATE_RETENTION.count);
   r.clock.now++;
-  expect(() => r.put("one too many")).toThrow("500 unshown candidates await the person");
-  expect(() => r.put("another")).toThrow("Ask the person to review");                 // worded for an agent: it cannot run person-only commands
+  expect(() => r.put("one too many")).toThrow("500 unshown candidates await review");
+  expect(() => r.put("another")).toThrow("Run `amem review`");
   try { r.put("another"); } catch (error) { expect((error as { code?: string }).code).toBe("candidate_queue_full"); expect((error as Error).name).toBe("CandidateQueueFull"); }        // refused, named, not silently dropped
   expect(rows(r).some(candidate => candidate.id === first)).toBe(true);
   // Once the person has seen and decided some, there is room and the oldest unshown is still kept.
@@ -169,6 +169,8 @@ test("AC4: review list stamps nothing, with or without a terminal and with or wi
     await cli(r, [...args], { ...extra });
     expect(shownAt(r, a), args.join(" ")).toBeNull(); expect(shownAt(r, b)).toBeNull();
   }
+  await expect(cli(r, ["review", "list", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  expect(shownAt(r, a)).toBeNull(); expect(shownAt(r, b)).toBeNull();
   // `list </dev/null` as a script or cron runs it: the 7-day clock must not start with nobody reading.
   const real = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "review", "list"], { cwd: r.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: r.memory }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   expect(real.exitCode).toBe(0); expect(real.stdout.toString()).toContain(a); expect(shownAt(r, a)).toBeNull();
@@ -292,11 +294,11 @@ test("review walk: an accept the policy refuses is reported and leaves the candi
   expect(after.get(bad, r.project)!.status).toBe("pending"); expect(after.get(good, r.project)!.status).toBe("pending");
 });
 
-test("review walk with nothing pending says so, is person-only and needs a terminal; a bare review keeps listing, so scripts and the existing default hold", async () => {
+test("review walk with nothing pending is available to a marked CLI but still needs terminal output; bare review remains the person list", async () => {
   const r = rig();
   expect(await cli(r, ["review", "walk"], { stdoutTTY: true })).toBe("no candidates pending");
-  await expect(cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" } })).rejects.toThrow("amem is for the person");
-  await expect(cli(r, ["review", "walk"], { stdinTTY: false })).rejects.toThrow("require a terminal");
+  expect(await cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: false, stdoutTTY: true })).toBe("no candidates pending");
+  await expect(cli(r, ["review", "walk"], { stdoutTTY: false })).rejects.toThrow("stdout must be a terminal");
   const a = r.put("listed not walked"); r.candidates.close();
   expect(await cli(r, ["review"], { stdinTTY: false })).toContain(a);                  // scripts keep the list
   expect(await cli(r, ["review", "--json"])).toContain(a);
@@ -381,12 +383,12 @@ test("finding 3: the cap evicts decided rows before a shown pending one still in
   expect(rows(r)).toHaveLength(CANDIDATE_RETENTION.count);
 });
 
-test("the queue-full error is named, text-free and worded for an agent, and the MCP tool maps it to a fixed reply (review nit)", async () => {
+test("the queue-full error is named, text-free and gives the CLI review path, while the MCP tool maps it to a fixed reply (review nit)", async () => {
   const r = rig();
   for (let i = 0; i < CANDIDATE_RETENTION.count; i++) { r.clock.now++; r.put(`unseen ${i}`); }
   let error: unknown; try { r.put("overflow"); } catch (caught) { error = caught; }
   expect(error).toMatchObject({ name: "CandidateQueueFull", code: "candidate_queue_full", waiting: CANDIDATE_RETENTION.count });
-  expect((error as Error).message).toContain("Ask the person to review");
+  expect((error as Error).message).toContain("Run `amem review`");
   expect((error as Error).message).not.toContain("overflow");
   // Through a real MCP server: the reply is the fixed sentence, not the generic refusal, and it carries no candidate text.
   const { createMemoryMcp } = await import("../src/mcp-memory.ts");

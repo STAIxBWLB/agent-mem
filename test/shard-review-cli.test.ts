@@ -2,13 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { parseCommand } from "../src/commands-table.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
-import { shardDir } from "../src/memory/shard.ts";
+import { shardDir, userShardDir } from "../src/memory/shard.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 
 const cleanup: (() => void)[] = [];
@@ -40,7 +40,7 @@ for (const mode of ["apply", "dry-run", "resume", "deactivate"] as const) test(`
 test("#15 CLI routes explicit shard modes and resumes while refusing ordinary generation selection", async () => {
   const f = fixture();
   expect(JSON.parse(await runCli(["migrate", "--shards", "--dry-run", "--json"], f.context)).mode).toBe("dry-run");
-  expect(JSON.parse(await runCli(["migrate", "--shards", "--json"], f.context)).active).toBe(true);
+  expect(JSON.parse(await runCli(["migrate", "--shards", "--apply", "--json"], f.context)).active).toBe(true);
   for (const args of [["migrate"], ["migrate", "--dry-run"], ["migrate", "--deactivate"]]) {
     const before = bytes(f.memory);
     await expect(runCli(args, f.context)).rejects.toThrow("migrate --shards --resume");
@@ -81,12 +81,24 @@ test("#15 prune --user is explicit, current-project authorized, and preserves th
   try { expect(check.prunePort().snapshot().pruned).toContain(id); } finally { check.close(); }
 });
 
-test("#15 user prune keeps person and TTY guards before any plan or store access", async () => {
-  const f = fixture(), args = ["prune", "--user", "--apply", "--plan", "/not-readable"];
-  const before = bytes(f.memory);
-  for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) await expect(runCli(args, { ...f.context, env: { [key]: "" } })).rejects.toThrow(PERSON_ONLY);
-  await expect(runCli(args, { ...f.context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  expect(bytes(f.memory)).toEqual(before);
+test("#15 marked nonTTY CLI applies an explicit user-prune plan with the compatible row actor", async () => {
+  const f = fixture(); await f.split();
+  const start = Date.now() - 10_000, user = openShardStore({ home: f.dir, user: true, now: () => start, deferPromotions: true });
+  const id = user.note({ op: "note", project: "another-project", scope: "shared", tier: "short", kind: "finding", peer: "person", source: "person", text: "explicitly expired shared note", about: [], expires: new Date(start + 1000).toISOString() });
+  const machine = user.machine.id; user.close();
+  const cutoff = new Date(start + 2000).toISOString();
+  const plan = JSON.parse(await runCli(["prune", "--user", "--cutoff", cutoff, "--dry-run", "--json"], f.context));
+  const planFile = join(f.dir, "agent-user-prune-plan.json"); writeFileSync(planFile, JSON.stringify(plan));
+  const applied = JSON.parse(await runCli(["prune", "--user", "--apply", "--plan", planFile, "--json"], { ...f.context, env: { CLAUDECODE: "fixture" }, stdinTTY: false }));
+  expect(applied.completed).toHaveLength(1);
+  const lines = ["local", "log"].flatMap(folder => {
+    const file = join(userShardDir(f.memory), folder, `${machine}.jsonl`);
+    return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { op: string; actor?: string; targets?: { id: string }[] }) : [];
+  });
+  const prune = lines.find(row => row.op === "prune" && row.targets?.some(target => target.id === id));
+  expect(prune?.actor).toBe("person"); // The v1 prune row actor remains compatible with older readers.
+  const check = openShardStore({ home: f.dir, user: true });
+  try { expect(check.prunePort().snapshot().pruned).toContain(id); } finally { check.close(); }
 });
 
 test("#15 machine label updates the shared home identity and survives reopening a project shard", async () => {

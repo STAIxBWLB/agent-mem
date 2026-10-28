@@ -110,10 +110,10 @@ function rig() {
   return { root, memory, cwd, remote, run, stamp: () => readSyncState(memory) };
 }
 
-test("sync --if-due without a configured remote does nothing, creates nothing and stamps nothing", async () => {
+test("sync --if-due without a configured remote is safe from a nonTTY CLI and stamps nothing", async () => {
   const r = rig();
-  expect(await r.run(["sync", "--if-due"])).toBe("no sync remote configured: nothing to do");
-  expect(JSON.parse(await r.run(["sync", "--if-due", "--json"]))).toEqual({ ok: true, skipped: "no sync remote configured" });
+  expect(await r.run(["sync", "--if-due"], false)).toBe("no sync remote configured: nothing to do");
+  expect(JSON.parse(await r.run(["sync", "--if-due", "--json"], false))).toEqual({ ok: true, skipped: "no sync remote configured" });
   expect(existsSync(join(r.memory, SYNC_STATE_FILE))).toBe(false); expect(existsSync(join(r.memory, ".git"))).toBe(false);
 });
 
@@ -150,10 +150,10 @@ test("a failed sync stamps a failure and backs off; --force overrides the backof
   expect(r.stamp()).toMatchObject({ failures: 0 });
 });
 
-test("--force and --if-due are refused where they do not belong, and a scheduled sync still needs a terminal", async () => {
+test("--force and --if-due remain scoped, while a nonTTY scheduled sync with no remote does nothing", async () => {
   const r = rig();
   await expect(r.run(["sync", "--force"])).rejects.toThrow("--force only applies with sync --if-due");
-  await expect(r.run(["sync", "--if-due"], false)).rejects.toThrow("terminal on stdin");
+  expect(await r.run(["sync", "--if-due"], false)).toBe("no sync remote configured: nothing to do");
   await expect(r.run(["list", "--if-due"])).rejects.toThrow(/unknown option/);
   expect(existsSync(join(r.memory, SYNC_STATE_FILE))).toBe(false);
 });

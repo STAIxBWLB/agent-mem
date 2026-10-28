@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -55,20 +55,21 @@ function writeLog(r: Rig, lines: (string | RepoLine)[]): void {
 }
 const policy = createStandalonePolicy();
 
-// ---- authority: agents and non-terminals are refused before anything is read or written
+// ---- repo scope: preview and explicit-confirm behavior under the current policy
 
-for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`an agent (${key}) can never promote to repo scope: refused, nothing written`, async () => {
+for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`a marked CLI (${key}) receives the screened repo-scope preview without TTY`, async () => {
   const r = rig(); const id = r.note("we chose sqlite");
-  for (const value of ["", "1", "codex"]) await expect(runCli(["promote", id, "--to", "repo", "--policy-free", "--confirm"], { ...r.person, env: { [key]: value } })).rejects.toThrow(PERSON_ONLY);
+  for (const value of ["", "1", "codex"]) expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, env: { [key]: value }, stdinTTY: false })).toContain("the exact line that would be appended");
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
 });
 
-test("promote --to repo needs a terminal on stdin, even for the preview; --policy-free is still accepted but no longer required (F4)", async () => {
+test("promote --to repo previews without TTY and confirmed agent writes retain the released line actor", async () => {
   const r = rig(); const id = r.note("we chose sqlite");
-  await expect(runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, stdinTTY: false })).rejects.toThrow("terminal");
-  await expect(runCli(["promote", id, "--to", "repo", "--policy-free", "--confirm"], { ...r.person, stdinTTY: false })).rejects.toThrow("terminal");
-  expect(await runCli(["promote", id, "--to", "repo"], r.person)).toContain("the exact line that would be appended");   // the configured policy screens it, no flag needed
-  expect(existsSync(join(r.repo, ".amem"))).toBe(false);
+  expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, stdinTTY: false })).toContain("the exact line that would be appended");
+  expect(await runCli(["promote", id, "--to", "repo", "--policy-free", "--confirm"], { ...r.person, env: { CLAUDECODE: "fixture" }, stdinTTY: false })).toContain("appended");
+  const line = readFileSync(r.logPath, "utf8").trim().split("\n").map(value => JSON.parse(value) as RepoLine).at(-1)!;
+  expect(line).toMatchObject({ actor: "person", text: "we chose sqlite" }); // released repo-line actor stays readable by older readers
+  expect(existsSync(join(r.repo, ".amem"))).toBe(true);
 });
 
 test("--confirm and --confirm-public mean nothing without --to repo, and --to takes only repo", async () => {
@@ -499,12 +500,11 @@ test("promotion never writes .gitattributes; amem repo attributes previews, then
   expect(Bun.spawnSync(["git", "-C", r.repo, "log", "--oneline"], { stderr: "pipe" }).exitCode).not.toBe(0);
 });
 
-test("amem repo attributes keeps existing lines, adds a newline when missing, refuses a symlink, and needs a person at a terminal", async () => {
+test("amem repo attributes keeps existing lines, accepts explicit marked nonTTY writes, and refuses a symlink", async () => {
   const r = rig(); writeFileSync(join(r.repo, ".gitattributes"), "*.png binary");
-  await runCli(["repo", "attributes", "--confirm"], r.person);
+  await runCli(["repo", "attributes", "--confirm"], { ...r.person, env: { CLAUDECODE: "fixture" }, stdinTTY: false });
   expect(readFileSync(join(r.repo, ".gitattributes"), "utf8")).toBe("*.png binary\n.amem/log.jsonl merge=union\n");
-  await expect(runCli(["repo", "attributes", "--confirm"], { ...r.person, stdinTTY: false })).rejects.toThrow("terminal");
-  await expect(runCli(["repo", "attributes", "--confirm"], { ...r.person, env: { CLAUDECODE: "1" } })).rejects.toThrow(PERSON_ONLY);
+  expect(await runCli(["repo", "attributes", "--confirm"], { ...r.person, stdinTTY: false })).toContain("already has");
   const s = rig(null, "sym"); const target = join(s.dir, "target-attrs"); writeFileSync(target, "x\n"); symlinkSync(target, join(s.repo, ".gitattributes"));
   await expect(runCli(["repo", "attributes", "--confirm"], s.person)).rejects.toThrow("not a regular file");
   expect(readFileSync(target, "utf8")).toBe("x\n");

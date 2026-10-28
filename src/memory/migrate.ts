@@ -238,7 +238,7 @@ export function migrationText(result: MigrationResult, s: Style = PLAIN): string
   if (operationCounts) countRows.push(`${label(s, "ok")} operations ${operationCounts}`);
   if (tierCounts) countRows.push(`${label(s, "ok")} tiers ${tierCounts}`);
   let action = "none";
-  if (result.mode === "dry-run" && !active) action = "apply migration (remove --dry-run, keep other options): amem migrate";
+  if (result.mode === "dry-run" && !active) action = "apply migration: amem migrate --apply";
   else if (needsResume) action = "resume migration: amem migrate --resume";
   else if (result.mode === "deactivate" && active) action = "deactivate generation: amem migrate --deactivate";
   const lines = [

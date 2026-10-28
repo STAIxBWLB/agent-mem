@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { evalText, MAX_QUESTIONS, parseEvalSet, parseKs, runEval, type EvalSet } from "../src/memory/eval.ts";
 import { evalSeeded, evalStore, FIXTURE_PATH, KO_FIXTURE_PATH, readEvalSet } from "../src/memory/eval-fixture.ts";
 import { MemoryStore } from "../src/memory/store.ts";
@@ -196,15 +196,14 @@ test("amem eval --set scores a person's own set against the bound project's real
   expect(json.answerable.questions).toBe(2);
 });
 
-test("amem eval refuses a bad set, a bad --k and an unknown flag with a message, and is refused to an agent", async () => {
+test("amem eval refuses a bad set, a bad --k and an unknown flag; marked reads fail closed before evaluation", async () => {
   const h = home();
   const file = join(h.root, "bad.json"); writeFileSync(file, JSON.stringify({ schema: "amem.eval/v1", questions: [{ q: "q", expect: ["nope"] }] }));
   await expect(cli(h, ["eval", "--set", file])).rejects.toThrow("invalid eval set");
   await expect(cli(h, ["eval", "--k", "0"])).rejects.toThrow("--k must be");
   await expect(cli(h, ["eval", "--bogus"])).rejects.toThrow("--bogus");
   await expect(cli(h, ["eval", "--set", join(h.root, "missing.json")])).rejects.toThrow("ENOENT");
-  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = h.memory;
-  try { await expect(runCli(["eval"], { cwd: h.cwd, env: { CLAUDECODE: "1" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY); } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+  await expect(runCli(["eval"], { cwd: h.cwd, env: { CLAUDECODE: "1", HOME: h.root, AMEM_HOME: h.memory }, stdinTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
 });
 
 test("amem eval is listed in help and completion, and takes no --policy-free", async () => {

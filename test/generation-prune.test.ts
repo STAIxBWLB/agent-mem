@@ -75,6 +75,15 @@ test("prune planning is read-only and seals explicit expiry hashes before idempo
   expect(port.appendCalls).toBe(2); expect(port.durable.size).toBe(1);
 });
 
+test("an authorized agent can apply but the serialized v1 prune row retains its person actor for old readers", () => {
+  const port = new FakePort(), row = note(); port.add(row);
+  const agent: PruneAuthorization = { project: PROJECT, actor: "agent", authorize: () => true };
+  const plan = planPrune(port, input, agent), wire = plan.rows[0]!.payload;
+  expect(wire.actor).toBe("person"); expect(validatePruneRow(wire).actor).toBe("person");
+  expect(applyPrune(port, plan, agent).completed).toEqual([wire.id]);
+  expect(() => validatePruneRow({ ...wire, actor: "agent" })).toThrow("prune unavailable");
+});
+
 test("resume reconfirms complete parsed prune bytes through the durability hook", () => {
   const port = new FakePort(); port.add(note()); const plan = planPrune(port, input, authorization());
   const row = plan.rows[0]!.payload, line = canonicalJSON(row) + "\n";
@@ -107,7 +116,7 @@ test("prune authoring has uniform refusals for identity scope authorization and 
   const failures = [
     () => planPrune(port, { ...input, targets: [row.id.slice(0, 8)] }, authorization()),
     () => planPrune(port, { ...input, targets: ["f".repeat(32)] }, authorization()),
-    () => planPrune(port, input, { ...authorization(), actor: "agent" }),
+    () => planPrune(port, input, { ...authorization(), actor: "invalid" as "person" }),
     () => planPrune(port, input, { ...authorization(), authorize: () => false }),
     () => planPrune(port, input, { ...authorization(), project: "synthetic/other-project" }),
     () => planPrune(port, { cutoff: new Date(port.clock + 1).toISOString() }, authorization()),

@@ -74,7 +74,7 @@ export function decayPreview(store: MemoryStore, project: string, options: Decay
     return { project, profile: hashJSON(store.profile), days, at: new Date(now).toISOString(), cutoff: new Date(cutoff).toISOString(), demoteExpiresAt: store.shortExpiry(), entries: entries.slice(0, DECAY_PREVIEW_LIMIT), withheld, citedExemptions: counters === undefined ? null : citedExemptions, truncated: entries.length > DECAY_PREVIEW_LIMIT, citationHistory: "unknown" };
   });
 }
-/** Duplicate-group forgetting requires a separate person group review, never an implicit decay expansion. */
+/** Duplicate-group forgetting requires a separate group review, never an implicit decay expansion. */
 export function assertExactDecayForget(store: MemoryStore, ids: readonly string[], project: string): void {
   store.withDeferredPromotions(() => {
     for (const id of ids) {
@@ -104,10 +104,10 @@ export class DecayApplyError extends Error {
 }
 /** The host shows this exact plan; every selected revision/eligibility is rechecked before any append. */
 export function applyDecay(store: MemoryStore, plan: DecayPlan, options: DecayApplyOptions): { action: "demote" | "forget"; ids: string[]; expiresAt?: string } {
-  if (options.actor !== "person") throw Error("decay apply requires person authority");
+  if (options.actor !== "person" && options.actor !== "agent") throw Error("decay apply requires a valid actor");
   options.assertCurrent?.();
   const ids = options.ids === undefined ? plan.entries.map(entry => entry.target.id) : idsOf(options.ids);
-  if ((options.ids === undefined || options.forget) && options.confirmed !== true) throw Error("decay bulk/forget apply requires explicit person confirmation");
+  if ((options.ids === undefined || options.forget) && options.confirmed !== true) throw Error("decay bulk/forget apply requires explicit confirmation");
   if (hashJSON(store.profile) !== plan.profile || ids.some(id => !plan.entries.some(entry => entry.target.id === id))) throw Error("decay preview binding changed or target was not previewed");
   const action = options.forget ? "forget" : "demote";
   if (!ids.length) return { action, ids };
@@ -126,7 +126,7 @@ export function applyDecay(store: MemoryStore, plan: DecayPlan, options: DecayAp
     for (let index = 0; index < ids.length; index++) {
       const id = ids[index]!;
       try {
-        const result = options.forget ? store.forget(id, "person", plan.project, true) : store.demote(id, "person", plan.project, plan.demoteExpiresAt);
+        const result = options.forget ? store.forget(id, options.actor, plan.project, true) : store.demote(id, options.actor, plan.project, plan.demoteExpiresAt);
         if (!result) throw Error("decay target outcome unavailable");
         applied.push(id);
       } catch (error) { throw new DecayApplyError({ action, applied: [...applied], failed: id, remaining: ids.slice(index + 1), ...expiry }, error); }

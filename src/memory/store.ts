@@ -1,3 +1,4 @@
+import { cliAttribution } from "./cli-attribution.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -589,7 +590,7 @@ export class MemoryStore {
     let applied = 0;
     if (apply) for (const group of groups) for (const head of group.heads) {
       if (head === group.target) continue;
-      if (!this.supersede(head, group.target, "user", project)) throw new Error("memory dedupe replacement refused; rerun to inspect current relations");
+      if (!this.supersede(head, group.target, cliAttribution()?.actor ?? "user", project)) throw new Error("memory dedupe replacement refused; rerun to inspect current relations");
       applied++;
     }
     return { groups, applied };
@@ -1587,7 +1588,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });
   const aliasStores: MemoryStore[] = [];
   try {
-    // #27: read-only reconciliation never creates an alias shard. A person-only project import explicitly can.
+    // #27: read-only reconciliation never creates an alias shard. An explicit project import can.
     if (opts.user !== true && reconcile && reconcile.canonical === opts.project) {
       for (const alias of reconcile.aliases) {
         if (alias === opts.project || !opts.createAliases && !existsSync(join(shardDir(home, alias), "generation.json"))) continue;

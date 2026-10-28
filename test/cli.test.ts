@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, agentMarked, runCli } from "../src/cli.ts";
+import { agentMarked, runCli } from "../src/cli.ts";
 import { appendAlias, CaptureStore, MemoryStore, memoryProjectKey, projectChain } from "../src/index.ts";
 
 const dirs: string[] = [];
@@ -16,25 +16,32 @@ afterEach(() => {
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "amem-cli-")); dirs.push(dir); return dir; };
 const context = (cwd: string, stdinTTY = false) => ({ cwd, env: {}, stdinTTY });
 
-for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`every command refuses a present ${key} marker before touching memory`, async () => {
-  const home = join(temp(), "must-not-open"); process.env.AMEM_HOME = home;
+for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`${key} marks attribution; help, version and completion work, unsupported reads use the MCP refusal`, async () => {
+  const home = join(temp(), "isolated-memory"), unavailable = "Memory operation unavailable or refused; no partial result is shown.";
   for (const value of ["", "invalid marker", "1", "codex"]) {
     expect(agentMarked({ [key]: value })).toBe(true);
-    // F1: only the two commands that print text work in an agent shell; every other command keeps the honest-session refusal.
-    for (const args of [["list"], ["forget", "missing"], ["--help", "--json"], ["list", "--help"], ["review", "--help"], ["sync"]]) await expect(runCli(args, { env: { [key]: value }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
-    for (const args of [["--help"], ["help"], ["--version"], ["version"]]) expect(await runCli(args, { env: { [key]: value }, stdinTTY: true })).toMatch(/^usage: amem|^amem \d/);
+    const agent = { env: { [key]: value, AMEM_HOME: home }, stdinTTY: false, stdoutTTY: false };
+    for (const args of [["--help"], ["help"], ["--help", "--json"]]) expect(await runCli(args, agent)).toContain("usage: amem");
+    for (const args of [["--version"], ["version"], ["--version", "--json"]]) expect(await runCli(args, agent)).toMatch(/^amem \d/);
+    expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
+    for (const args of [["list", "--history"], ["search", "fixture", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
+      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(unavailable);
+    }
   }
   expect(existsSync(home)).toBe(false);
 });
 
-test("mutations need stdin TTY and crossing policy needs explicit acknowledgement before store open", async () => {
-  const root = temp(), home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
-  for (const args of [["promote", "missing", "--policy-free"], ["dedupe", "--apply"], ["machine", "--label", "fixture"], ["goal", "new", "fixture"], ["sync", "--policy-free"]]) await expect(runCli(args, context(root))).rejects.toThrow("terminal on stdin");
-  // F4: the configured policy applies, so these no longer demand `--policy-free`; each reaches its own usage check instead, never a hub-worded one.
-  for (const sub of ["promote", "import", "sync"]) {
-    const refusal = await runCli([sub], context(root, true)).then(() => "", error => (error as Error).message);
-    expect(refusal).not.toContain("--policy-free"); expect(refusal).not.toMatch(/\bahub\b|hub_memory/);
-  }
+test("marked writes work without TTY and carry actor/peer attribution", async () => {
+  const root = temp(), home = join(root, "memory"); process.env.AMEM_HOME = home;
+  const agent = { cwd: root, env: { AGENTHUB_PEER_ID: "person" }, stdinTTY: false };
+  const note = JSON.parse(await runCli(["note", "add", "an agent-authored choice", "--json"], agent));
+  expect(await runCli(["goal", "new", "an agent-owned goal"], agent)).toContain("created: an agent-owned goal");
+  const check = new MemoryStore({ memoryDir: home, screen: () => "keep" });
+  try {
+    expect(check.get(note.id, memoryProjectKey(root))).toMatchObject({ peer: "agent", source: "person", text: "an agent-authored choice" });
+    const goals = JSON.parse(check.dump())[3] as { title: string; actor: string }[];
+    expect(goals.find(row => row.title === "an agent-owned goal")?.actor).toBe("agent");
+  } finally { check.close(); }
 });
 
 test("person reads are unscreened and flags keep their list default; promotion remains secret-screened", async () => {
@@ -50,14 +57,17 @@ test("person reads are unscreened and flags keep their list default; promotion r
   expect(JSON.parse(await runCli(["goal", "list", "--json"], context(root)))).toHaveLength(1);
 });
 
-test("bin refuses Node before TS, and an agent-marked CLI prints help and version (F1) but refuses a command", () => {
+test("bin refuses Node before TS and agent unsupported reads use the fixed amem refusal", () => {
   const bin = join(import.meta.dir, "../bin/amem.js");
   const node = Bun.spawnSync(["node", bin, "--help"], { stdout: "pipe", stderr: "pipe" });
   expect(node.exitCode).toBe(1); expect(node.stderr.toString()).toContain("Bun >=1.4.2 is required");
-  const help = Bun.spawnSync([process.execPath, bin, "--help"], { env: { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" }, stdout: "pipe", stderr: "pipe" });
+  const home = temp(), env = { PATH: process.env.PATH, HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_PEER_ID: "codex" };
+  const help = Bun.spawnSync([process.execPath, bin, "--help"], { env, stdout: "pipe", stderr: "pipe" });
   expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem");
-  const child = Bun.spawnSync([process.execPath, bin, "list"], { env: { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" }, stdout: "pipe", stderr: "pipe" });
-  expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain(PERSON_ONLY);
+  const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
+  expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
+  const child = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
 });
 
 test("help and version work without opening a store", async () => {
@@ -107,7 +117,8 @@ test("claude-mem capture days runs through the person CLI with alias-scoped capt
   try { expect(capture.rows().map(row => row.excerpt).sort()).toEqual(["Learned: cli capture summary", "fixture\ncli capture observation"]); } finally { capture.close(); }
   expect(readFileSync(file)).toEqual(before);
   await expect(runCli(["import", "claude-mem", "--db", file, "--capture-days", "0"], context(root, true))).rejects.toThrow("--capture-days takes a positive integer");
-  await expect(runCli(args, { cwd: root, env: { CODEX_THREAD_ID: "agent" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
+  const agent = JSON.parse(await runCli(args, { cwd: root, env: { CODEX_THREAD_ID: "agent", AMEM_HOME: base }, stdinTTY: false }));
+  expect(agent.capture).toMatchObject({ read: 0, added: 0, spooled: 0, skipped: 0 }); expect(readFileSync(file)).toEqual(before);
 });
 
 
@@ -123,6 +134,6 @@ test("completion generation is read-only and unsupported shells exit 2", async (
     const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "completion", ...(shell ? [shell] : [])], { env, stdout: "pipe", stderr: "pipe" });
     expect(child.exitCode).toBe(2); expect(child.stdout.toString()).toBe(""); expect(child.stderr.toString()).toContain(shell ? "shell takes" : "usage:");
   }
-  await expect(runCli(["completion", "bash"], { env: { CODEX_THREAD_ID: "fixture" } })).rejects.toThrow(PERSON_ONLY);
+  expect(await runCli(["completion", "bash"], { env: { CODEX_THREAD_ID: "fixture" }, stdoutTTY: false })).toContain("_amem_candidates");
   expect(existsSync(home)).toBe(false);
 });

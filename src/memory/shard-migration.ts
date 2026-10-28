@@ -583,7 +583,7 @@ export function shardMigrationText(result: ShardMigrationResult, s: Style = PLAI
   const attention = warnings.length > 0 || counts.refusedRows > 0 || counts.danglingRows > 0 || (!result.active && result.mode === "resume");
   const state = attention ? "attention" : result.mode === "dry-run" ? "preview" : result.active ? "complete" : "attention";
   const action = warnings.length || counts.refusedRows > 0 || counts.danglingRows > 0 ? "resolve the listed refusals or flagged rows before retrying"
-    : result.mode === "dry-run" && (!result.active || counts.rows > 0) ? "apply shard migration (remove --dry-run, keep other options): amem migrate --shards"
+    : result.mode === "dry-run" && (!result.active || counts.rows > 0) ? "apply shard migration: amem migrate --shards --apply"
     : result.mode === "resume" && !result.active ? "resume shard migration: amem migrate --shards --resume"
       : "none";
   return [

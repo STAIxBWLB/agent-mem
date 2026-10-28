@@ -1,10 +1,11 @@
+import { cliAttribution } from "./memory/cli-attribution.ts";
+import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { createInterface } from "node:readline/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -30,7 +31,7 @@ interface DirectoryIdentity { dev: number; ino: number }
 interface Receipt { createdDirectory?: DirectoryIdentity; version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
   env?: Env; bun?: string; entry?: string; stdinTTY?: boolean; cwd?: string;
-  /** Trusted confirmation seam; ordinary CLI use always asks the person through stdin. */
+  /** @deprecated Retained for source compatibility; explicit apply/undo modes do not prompt. */
   confirm?: (plan: SetupPlan) => Promise<boolean>;
   /** Host-only race fixture, called after temporary-file fsync and before the final comparison/rename. */
   beforePublish?: (file: string) => void;
@@ -227,7 +228,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
     if (version?.matches === false) pluginNotes.push(`WARNING: ${target} version ${version.output}; layout verified on ${version.verified}. Apply remains guarded by native configuration validation.`);
     return { target, available: installed, ...(version ? { version } : {}), files: c.paths[target], receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
-  }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
+  }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 /** Native probes and registration share one private HOME, cwd and configuration layout. */
 function stagingEnvironment(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext, staging: string) {
@@ -421,7 +422,7 @@ function contextForPlan(plan: SetupPlan, options: SetupContext) {
 function publishGuard(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext) {
   return target === "agy" ? (file: string) => { options.beforePublish?.(file); c.workspace!.assertCurrent(); } : options.beforePublish;
 }
-/** Caller enforces person markers/TTY and confirmation; CLI-owned unrelated fields remain live. */
+/** CLI-owned unrelated fields remain live. */
 function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
   const c = contextForPlan(plan, options), skipped: { target: SetupTarget; reason: string }[] = [];
   const targets = plan.targets.filter(target => { if (available(c, target, options)) return true; if (plan.targets.length === 1) throw Error(`${target} CLI is not installed`); skipped.push({ target, reason: "CLI not installed" }); return false; });
@@ -507,7 +508,7 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
   if (skipped.length) lines.push("", `Skipped clients: ${skipped.map(action => action.target).join(", ")} (not installed)`);
   if (warnings.length) lines.push("", "Warnings:", ...warnings.map(note => `  - ${s.attention(note)}`));
   lines.push("", "Notes:", ...notes.map(note => `  - ${note}`));
-  if (plan.mode === "preview") lines.push("", `Next: amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply (asks before writing); --json prints the full plan`);
+  if (plan.mode === "preview") lines.push("", `Next: amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply writes without a prompt; --json prints the full plan`);
   return lines.join("\n");
 }
 
@@ -517,20 +518,13 @@ function setupResultText(result: SetupApplyResult | { restored: SetupTarget[] },
     ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`)].join("\n");
 }
 
-/** What the default confirmation prints before its prompt: the raw plan under `--json`, the readable plan otherwise. */
+/** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */
 export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
 
 export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style } = {}): Promise<string> {
   const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;
+  if (cliAttribution()?.actor === "agent" && !configuredPolicy(memoryHome(options.env ?? process.env), options.cwd ?? process.cwd()).screenStandalone(JSON.parse(JSON.stringify(plan)))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
   if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s);
-  if (!(options.stdinTTY ?? process.stdin.isTTY)) throw Error("setup --apply/--undo require a terminal on stdin");
-  const confirm = options.confirm ?? (async (shown: SetupPlan) => {
-    process.stdout.write(setupConfirmationText(shown, options.json === true, s) + "\n\n");
-    const terminal = createInterface({ input: process.stdin, output: process.stdout });
-    try { return (await terminal.question(`Type yes to ${mode} the listed configuration changes: `)).trim() === "yes"; }
-    finally { terminal.close(); }
-  });
-  if (!await confirm(plan)) return options.json ? JSON.stringify({ cancelled: true }) : "setup cancelled; nothing changed";
   const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
   return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s);
 }

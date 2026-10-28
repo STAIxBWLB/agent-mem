@@ -63,44 +63,39 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
     expect(JSON.parse(await f.cli(["goal", "done", goal, "--json"])).promotion.offered).toBe(0); expect(f.candidates(store => store.list({ project: f.project, status: "all" }))).toHaveLength(1);
   });
 }
-test("candidate acceptance refuses agents, nonTTY, stale target and current privacy without curated effects", async () => {
-  const f = await fixture(), ids = await f.propose(), before = f.bytes();
-  await expect(f.cli(["review", "accept", ids.fail], { env: { CLAUDECODE: "" } })).rejects.toThrow("person");
-  await expect(f.cli(["review", "accept", ids.fail], { stdinTTY: false })).rejects.toThrow(); expect(f.bytes()).toEqual(before);
-  f.use(store => store.demote(f.target, "person", f.project)); const changed = f.bytes(); await expect(f.cli(["review", "accept", ids.correction])).rejects.toThrow(); expect(f.bytes()).toEqual(changed);
+test("candidate acceptance keeps stale-target and current-policy fences for a marked nonTTY CLI", async () => {
+  const f = await fixture(), ids = await f.propose(), marked = { env: { CLAUDECODE: "" }, stdinTTY: false };
   writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: [structuredFail.cause] }));
-  await expect(f.cli(["review", "accept", ids.fail])).rejects.toThrow("privacy"); expect(f.bytes()).toEqual(changed);
+  const configured = f.bytes();
+  await expect(f.cli(["review", "accept", ids.fail], marked)).rejects.toThrow("privacy"); expect(f.bytes()).toEqual(configured);
+  f.use(store => store.demote(f.target, "person", f.project)); const changed = f.bytes(); await expect(f.cli(["review", "accept", ids.correction], marked)).rejects.toThrow(); expect(f.bytes()).toEqual(changed);
   expect(f.candidates(store => store.get(ids.fail, f.project)?.status)).toBe("pending"); expect(f.candidates(store => store.get(ids.correction, f.project)?.status)).toBe("pending");
 });
 test("rejected MCP proposal identity remains rejected on repeat and does not author notes", async () => {
   const f = await fixture(), ids = await f.propose(), before = f.bytes(); await f.cli(["review", "reject", ids.fail]); const repeated = await f.propose(); expect(repeated).toEqual(ids); expect(f.candidates(store => store.get(ids.fail, f.project)?.status)).toBe("rejected"); expect(f.candidates(store => store.get(ids.correction, f.project)?.status)).toBe("pending"); expect(f.bytes()).toEqual(before);
 });
-test("decay defaults to a read-only revision preview, then named subset demotes only after printed preview and yes", async () => {
+test("decay defaults to a read-only preview; --apply previews and --confirm applies only the named subset", async () => {
   const f = await fixture("legacy", true), before = f.bytes(), preview = JSON.parse(await f.cli(["decay", "--json"])); expect(preview.entries.map((row: any) => row.target.id).sort()).toEqual([f.target, f.second].sort()); expect(preview.citationHistory).toBe("unknown"); expect(f.bytes()).toEqual(before);
-  const printed: string[] = [], questions: string[] = [];
-  const applied = JSON.parse(await f.cli(["decay", `mem:${f.target}`, "--apply", "--json"], { write: text => printed.push(text), prompt: question => { questions.push(question); expect(printed.join("\n")).toContain(preview.entries.find((row: any) => row.target.id === f.target).target.revision); expect(f.bytes()).toEqual(before); return "yes"; } }));
-  expect(applied).toMatchObject({ action: "demote", ids: [f.target] }); expect(applied.expiresAt).toBe(f.use(store => store.get(f.target, f.project)?.expiresAt)); expect(questions).toHaveLength(1); expect(f.use(store => store.get(f.target, f.project)?.tier)).toBe("short"); expect(f.use(store => store.get(f.second!, f.project)?.tier)).toBe("long");
+  let prompts = 0;
+  const applyPreview = JSON.parse(await f.cli(["decay", `mem:${f.target}`, "--apply", "--json"], { stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } }));
+  expect(applyPreview.entries.map((row: any) => row.target.id)).toEqual([f.target]); expect(applyPreview.entries[0].target.revision).toBe(preview.entries.find((row: any) => row.target.id === f.target).target.revision); expect(f.bytes()).toEqual(before);
+  const applied = JSON.parse(await f.cli(["decay", `mem:${f.target}`, "--apply", "--confirm", "--json"], { stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } }));
+  expect(applied).toMatchObject({ action: "demote", ids: [f.target] }); expect(applied.expiresAt).toBe(f.use(store => store.get(f.target, f.project)?.expiresAt)); expect(prompts).toBe(0); expect(f.use(store => store.get(f.target, f.project)?.tier)).toBe("short"); expect(f.use(store => store.get(f.second!, f.project)?.tier)).toBe("long");
 });
-test("bulk decay requires confirmation and forget explicitly names FORGET before removing exact entries", async () => {
-  const f = await fixture(), before = f.bytes(); let question = "";
-  expect(await f.cli(["decay", "--apply"], { write: () => {}, prompt: q => { question = q; return "no"; } })).toContain("cancelled"); expect(question).toContain("demote"); expect(f.bytes()).toEqual(before);
-  const forgotten = JSON.parse(await f.cli(["decay", "--apply", "--forget", "--json"], { write: () => {}, prompt: q => { expect(q).toContain("FORGET"); expect(q).toContain("permanently"); return "yes"; } })); expect(forgotten).toEqual({ action: "forget", ids: [f.target] }); expect(f.use(store => store.get(f.target, f.project))).toBeUndefined();
-});
-test("decay apply refuses redirected output, nonTTY, agent and cancellation without target writes", async () => {
+test("bulk decay and exact forget are previews until both apply and confirm are present", async () => {
   const f = await fixture(), before = f.bytes(); let prompts = 0;
-  for (const extra of [{ stdinTTY: false, write: () => {} }, { stdoutTTY: false }, { env: { CODEX_THREAD_ID: "" }, write: () => {} }]) await expect(f.cli(["decay", "--apply"], { ...extra, prompt: () => { prompts++; return "yes"; } })).rejects.toThrow();
-  expect(prompts).toBe(0); expect(f.bytes()).toEqual(before);
-  expect(await f.cli(["decay", "--apply"], { write: () => {}, prompt: () => null })).toContain("cancelled"); expect(f.bytes()).toEqual(before);
+  const preview = JSON.parse(await f.cli(["decay", "--apply", "--json"], { prompt: () => { prompts++; throw Error("decay does not prompt"); } }));
+  expect(preview.entries.map((row: any) => row.target.id)).toEqual([f.target]); expect(f.bytes()).toEqual(before);
+  const forgetPreview = JSON.parse(await f.cli(["decay", "--apply", "--forget", "--json"])); expect(forgetPreview.entries.map((row: any) => row.target.id)).toEqual([f.target]); expect(f.bytes()).toEqual(before);
+  await expect(f.cli(["decay", "--confirm", "--json"])).rejects.toThrow("decay --confirm requires --apply"); expect(f.bytes()).toEqual(before);
+  const forgotten = JSON.parse(await f.cli(["decay", "--apply", "--confirm", "--forget", "--json"], { stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } }));
+  expect(forgotten).toEqual({ action: "forget", ids: [f.target] }); expect(prompts).toBe(0); expect(f.use(store => store.get(f.target, f.project))).toBeUndefined();
 });
-for (const drift of ["target", "goal", "citation", "policy"] as const) test(`decay ${drift} drift during confirmation refuses the complete batch before effects`, async () => {
-  const f = await fixture("legacy", true); let changed: ReturnType<typeof f.bytes> | undefined;
-  await expect(f.cli(["decay", "--apply"], { write: () => {}, prompt: () => {
-    if (drift === "target") f.use(store => store.demote(f.target, "person", f.project));
-    if (drift === "goal") f.use(store => { const goal = store.goal({ project: f.project, scope: "project", title: "new protection", milestones: [], dependsOn: [], actor: "person" }); store.goalLink(goal, `${f.project}#99@1`, "person"); });
-    if (drift === "citation") f.candidates(store => store.recordCounter({ project: f.project, entryId: f.target, deliveryId: "confirmed-citation" }, { cited: 1 }, "public"));
-    if (drift === "policy") writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["original public writer boundary"] }));
-    changed = f.bytes(); return "yes";
-  } })).rejects.toThrow(); expect(f.bytes()).toEqual(changed!);
-  expect(f.use(store => store.get(f.second!, f.project)?.tier)).toBe("long");
-  if (drift !== "target") expect(f.use(store => store.get(f.target, f.project)?.tier)).toBe("long");
+test("decay confirmed apply records agent/person actor attribution and never prompts", async () => {
+  const f = await fixture("legacy", true); let prompts = 0;
+  expect(JSON.parse(await f.cli(["decay", f.target, "--apply", "--confirm", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } })).ids).toEqual([f.target]);
+  expect(JSON.parse(await f.cli(["decay", f.second!, "--apply", "--confirm", "--json"], { stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } })).ids).toEqual([f.second]);
+  const ops = Object.values(f.bytes()).flatMap(content => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
+  expect(ops.find(entry => entry.op === "demote" && entry.target === f.target)?.actor).toBe("agent");
+  expect(ops.find(entry => entry.op === "demote" && entry.target === f.second)?.actor).toBe("person"); expect(prompts).toBe(0);
 });

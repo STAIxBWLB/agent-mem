@@ -1,3 +1,5 @@
+import { agentCliRead } from "./cli-agent-reads.ts";
+import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
 import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
@@ -54,7 +56,6 @@ import { statusText, type StatusView } from "./memory/status-text.ts";
 import { colorEnabled, style, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
-export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 export interface CliOutputReceipt { project: string; ids: readonly string[]; rendered(): boolean }
 export interface CliContext {
@@ -63,7 +64,7 @@ export interface CliContext {
   cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
   /** Narrow seam for deterministic fixtures standing in for `gh` (#15 T4): the CLI always uses the native remote visibility check. */
   visibility?: (url: string) => Promise<Visibility>;
-  /** Trusted isolated-HOME setup fixture; ordinary CLI use asks through its terminal. */
+  /** Legacy setup fixture seam; explicit apply/undo flags no longer prompt. */
   setupConfirm?: (plan: import("./setup.ts").SetupPlan) => Promise<boolean>;
   /** Narrow seams for `amem note add` and `amem review walk`; each defaults to the real terminal. Fixtures stand in for the person at the keyboard. */
   prompt?: (question: string) => string | null | Promise<string | null>;
@@ -131,6 +132,13 @@ export function agentMarked(env: Readonly<Record<string, string | undefined>>): 
   return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"].some(key => env[key] !== undefined);
 }
 
+/** Administrative metadata is checked as a complete value, never by stripping individual fields. */
+function assertAgentAdministrative(value: unknown, policy: ReturnType<typeof configuredPolicy>): void {
+  if (cliAttribution()?.actor !== "agent") return;
+  let plain: unknown;
+  try { plain = JSON.parse(JSON.stringify(value)); } catch { throw Error("Memory operation unavailable or refused; no partial result is shown."); }
+  if (!policy.screenStandalone(plain)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+}
 function shardStatePresent(): boolean {
   try { lstatSync(join(memoryHome(), "shards.json")); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
@@ -158,6 +166,25 @@ function curatedStoreAt(base: string, project: string, opts: StoreOptions): Memo
 }
 
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
+  // Native capture and the MCP server retain their existing surfaces and attribution.
+  if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
+  const env = context.env ?? process.env, marked = agentMarked(env);
+  const peer = !marked ? "person" : env.AGENTHUB_PEER_ID !== undefined ? env.AGENTHUB_PEER_ID || "agent"
+    : env.CLAUDECODE !== undefined || env.CLAUDE_CODE_SESSION_ID !== undefined ? "claude" : env.CODEX_THREAD_ID !== undefined ? "codex" : "pi";
+  return withCliAttribution({ actor: marked ? "agent" : "person", peer }, async () => {
+    const output = await runCliCommand(argv, context);
+    if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
+      const parsed = parseCommand(argv);
+      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup") {
+        let receipt: unknown = output;
+        try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
+        assertAgentAdministrative(receipt, configuredPolicy(memoryHome(env), context.cwd ?? process.cwd()));
+      }
+    }
+    return output;
+  });
+}
+async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
   if (argv.length === 1 && argv[0] === "mcp") {
     const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
@@ -180,10 +207,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     });
     return parsed.options["--json"] === true || !(context.stdoutTTY ?? process.stdout.isTTY) ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context));
   }
-  // F1: `--help` and `--version` only print text, so they work in an agent shell too. Every other command keeps the honest-session refusal below.
+  // Help and version carry no memory data.
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "help")) return commandHelp();
-  if (agentMarked(context.env ?? process.env)) throw new Error(PERSON_ONLY);
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
   if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp();
   let parsed;
@@ -199,6 +225,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     throw error;
   }
   const { definition, options, rawArgs: args } = parsed;
+  const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
     const { runSetup } = await import("./setup.ts");
@@ -207,15 +234,19 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context),
     });
   }
+  if (identity.actor === "agent") {
+    const read = await agentCliRead(parsed, argv, context);
+    if (read !== undefined) return read;
+  }
   const goal = parsed.path[0] === "goal", review = parsed.path[0] === "review", sub = goal || review ? parsed.path[1]! : parsed.path[0]!;
   const policyFree = options["--policy-free"] === true;
   const mutating = definition.mutates === true || definition.mutates === "apply" && options["--apply"] === true || definition.mutates === "label" && options["--label"] !== undefined
     || definition.mutates === "confirm" && options["--confirm"] === true;
-  if (mutating && !(context.stdinTTY ?? process.stdin.isTTY)) throw new Error("mutating commands require a terminal on stdin");
   // F4: the configured policy (the machine's `amem.config.json`, narrowed by the repository's `.amem/config`) applies to every command that used to need
   // `--policy-free`. The flag is still accepted and means nothing more, so existing scripts keep working.
   const policyCwd = context.cwd ?? process.cwd();
   const policyOf = () => configuredPolicy(memoryHome(), policyCwd);   // the same home every other command here resolves
+  const administrative = <T>(value: T): T => { assertAgentAdministrative(value, policyOf()); return value; };
   let canonicalProject: string | undefined;
   const boundProject = () => canonicalProject ??= resolveAlias(memoryHome(), memoryProjectKey(context.cwd ?? process.cwd()));
   const commandBinding = (home: string, project: string): (() => void) => {
@@ -237,6 +268,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       } catch { return false; } finally { try { candidates?.close(); } catch { /* optional telemetry cannot fail emitted output */ } }
     } });
   };
+  if (["migrate", "prune", "capacity", "gc", "project", "alias", "machine", "sync", "import", "dedupe", "consolidate"].includes(sub)) administrative({ command: parsed.path, arguments: args });
   if (sub === "consolidate") {
     const requested = typeof options["--project"] === "string" ? options["--project"] as string : boundProject();
     if (!requested.trim() || requested.length > 400 || requested.includes("\0")) throw Error("invalid consolidation project");
@@ -250,7 +282,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const binding = commandBinding(store.profile.home, boundProject()), policyKey = () => JSON.stringify(configuredPolicyOptions(base, policyCwd));
       const assertCurrent = () => { binding(); assertProjectActive(base, project); if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")) throw Error("consolidation project binding changed"); };
       candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
-      const report = await proposeConsolidation(store, candidates, { project, actor: "person", policy: policyOf, policyVersion: policyKey, assertCurrent });
+      const report = await proposeConsolidation(store, candidates, { project, actor, policy: policyOf, policyVersion: policyKey, assertCurrent });
       return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.alreadyReviewed ? `; ${report.alreadyReviewed} already reviewed` : ""}${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
     } finally { candidates?.close(); store.close(); }
   }
@@ -276,17 +308,19 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   }
   if ((options["--history"] === true || options["--as-of"] !== undefined) && (options["--all-projects"] === true || options["--tier"] === "repo")) throw Error("historical recall selects this active project's curated store; cross-project/repo history is unavailable");
   if (sub === "migrate") {
-    const modes = ["--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
+    const modes = ["--apply", "--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
-    const mode = options["--dry-run"] ? "dry-run" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "apply";
+    const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     const common = { memoryDir: memoryHome(), ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true };
     const shardRequested = options["--shards"] === true || (mode === "resume" && shardStatePresent());
     if (shardRequested) {
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
-      const result = await migrateShards({ ...common, mode });
+      if (actor === "agent" && mode !== "dry-run") administrative(await migrateShards({ ...common, mode: "dry-run" }));
+      const result = administrative(await migrateShards({ ...common, mode }));
       return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context));
     }
-    const result = await migrate({ ...common, mode });
+    if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
+    const result = administrative(await migrate({ ...common, mode }));
     return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context));
   }
   if (sub === "status") {
@@ -327,14 +361,23 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       ? openShardStore({ memoryDir: memoryHome(), user: true, deferPromotions: true })
       : curatedStore(project, { deferPromotions: true }, false);
     try {
-      const auth = { project, actor: "person" as const, authorize: () => true };
-      const result = applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth);
+      const auth = { project, actor, authorize: () => true };
+      const port = store.prunePort();
+      let plan: ReturnType<typeof planPrune>;
+      if (applying) { try { plan = JSON.parse(input!) as ReturnType<typeof planPrune>; } catch { throw Error("prune plan unavailable or oversized"); } }
+      else plan = planPrune(port, { cutoff: String(options["--cutoff"]) }, auth);
+      administrative(plan);
+      if (actor === "agent") {
+        const ids = new Set(plan.rows?.flatMap(row => row.payload.targets.map(target => target.id)) ?? []);
+        administrative(port.snapshot().rows.filter(source => ids.has(source.row.id)).map(source => source.row));
+      }
+      const result = applying ? applyPrune(port, input, auth) : plan;
       return options["--json"] ? JSON.stringify(result, null, 2) : pruneText(result, outputStyle(context));
     } finally { store.close(); }
   }
   if (sub === "decay") {
-    const applying = options["--apply"] === true;
-    if (applying && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("decay apply shows a revision preview before confirmation, so stdout must be a terminal");
+    const applying = options["--apply"] === true && options["--confirm"] === true;
+    if (options["--confirm"] === true && options["--apply"] !== true) throw new Error("decay --confirm requires --apply");
     const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget } = await import("./memory/decay-review.ts");
     const project = boundProject(), base = memoryHome(), aliases = aliasedKeys(base, project);
     const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
@@ -345,24 +388,20 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const days = options["--days"] === undefined ? DECAY_DEFAULT_DAYS : Number(options["--days"]);
       const settings = { days, ...(selected ? { ids: selected } : {}), aliases, counters: () => readDecayCounters(base, [project, ...aliases]) };
       const current = { ...settings, screen: (note: import("./memory/store.ts").View) => policyOf().screenStandalone(note), assertCurrent };
-      const preview = decayPreview(store, project, current), action = options["--forget"] === true ? "FORGET" : "demote";
+      const preview = administrative(decayPreview(store, project, current)), action = options["--forget"] === true ? "FORGET" : "demote";
       const display = [`${action} preview: ${preview.entries.length} notes older than ${days} days; citation history unknown (${preview.citedExemptions ?? "unknown"} observed retained-positive exemptions)${preview.truncated ? "; truncated" : ""}`,
         ...preview.entries.map(entry => `${entry.target.id}  revision ${entry.target.revision}  ${entry.view.at}  ${entry.view.kind}: ${terminalSafe(entry.view.title ?? entry.view.text)}`)].join("\n");
       if (!applying) return options["--json"] ? JSON.stringify(preview, null, 2) : display;
       if (!preview.entries.length) return options["--json"] ? JSON.stringify({ action, ids: [] }) : "no eligible notes to apply";
       if (options["--forget"] === true) assertExactDecayForget(store, preview.entries.map(entry => entry.target.id), project);
-      const write = context.write ?? ((text: string) => { process.stdout.write(`${text}\n`); }); write(display);
-      const ask = context.prompt ?? ((question: string) => prompt(question));
-      const answer = await ask(`Type yes to ${action} these ${preview.entries.length} exact entries${options["--forget"] ? " permanently (hidden claude-mem-imported copies require separate review; expanded groups are refused)" : ` into the short tier, expires ${preview.demoteExpiresAt}`}: `);
-      if (answer?.trim() !== "yes") return options["--json"] ? JSON.stringify({ cancelled: true }) : "decay apply cancelled";
       assertCurrent();
-      const result = applyDecay(store, preview, { ...current, actor: "person", confirmed: true, forget: options["--forget"] === true });
+      const result = applyDecay(store, preview, { ...current, actor, confirmed: true, forget: options["--forget"] === true });
       return options["--json"] ? JSON.stringify(result, null, 2) : `${result.action}: ${result.ids.length} entries${result.expiresAt ? `; expires ${result.expiresAt}` : ""}`;
-    } catch (error) { if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
+    } catch (error) { if (error instanceof DecayApplyError) { administrative(error.report); } if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
     finally { store.close(); }
   }
   if (sub === "note") {
-    // F6: the person writes a curated note. Person-only (the agent-marker refusal and the terminal requirement above already ran, because `note add` mutates).
+    // F6: the person writes a curated note. Current attribution and configured policy apply to the complete note.
     const env = context.env ?? process.env, edit = context.edit ?? ((initial: string) => runEditor(env, initial));
     const kind = (options["--kind"] ?? "finding") as Parameters<typeof buildNote>[0]["kind"];
     const fail: Partial<FailFields> = { ...(typeof options["--approach"] === "string" ? { approach: options["--approach"] } : {}), ...(typeof options["--symptom"] === "string" ? { symptom: options["--symptom"] } : {}),
@@ -387,8 +426,27 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (review) {
     const id = parsed.positionals[0];
     if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
+    if (sub === "walk" && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("review walk prints each candidate and asks about it, so stdout must be a terminal (not redirected to a file or a pipe)");
+    if (sub === "walk" && actor === "agent") throw Error("Memory operation unavailable or refused; no partial result is shown.");
     const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
     try {
+      const candidatePermitted = (candidate: import("./memory/candidates.ts").Candidate): boolean => {
+        if (actor !== "agent") return true;
+        const policy = policyOf();
+        if (!policy.screenStandalone(candidate)) return false;
+        const input = candidate.input, targets = "targets" in input ? input.targets : "target" in input ? [input.target] : [];
+        if (!targets.length && input.kind !== "promotion") return true;
+        const targetStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
+        try {
+          if (targets.some(target => { const view = targetStore.get(target.id, project); return !view || view.project !== project || !policy.screenStandalone(view); })) return false;
+          if (input.kind === "promotion") { const goal = targetStore.goalOf(input.goalId, project); if (!goal || !policy.screenStandalone(goal)) return false; }
+          return true;
+        } finally { targetStore.close(); }
+      };
+      if (actor === "agent" && sub !== "list" && sub !== "walk") {
+        const selected = candidates.get(id!, project);
+        if (!selected || !candidatePermitted(selected)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+      }
       if (sub === "walk") {
         // F7 / AC4: each candidate is stamped shown as it is put in front of the person, then accepted, edited (written as the person's own note and the candidate closed), rejected or skipped.
         // The candidate is WRITTEN to the terminal before the question, and stamped shown only after that write succeeded: a person who answers a/e/r must have seen what it is, and a Ctrl-C
@@ -399,7 +457,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         const write = context.write ?? ((text: string) => { process.stdout.write(`${text}\n`); });
         const ask = context.prompt ?? ((question: string) => prompt(question)), scope = [project, ...aliases], base = realPath(candidates.dir), assertWalkCurrent = commandBinding(candidates.dir, project);
         // Oldest first: those are the ones nearest their expiry (`list` is newest first).
-        const rows = candidates.list({ project, status: "pending", ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}) }).reverse();
+        const rows = candidates.list({ project, status: "pending", ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}) }).reverse().filter(candidatePermitted);
         if (!rows.length) return "no candidates pending";
         const done = { accepted: 0, edited: 0, rejected: 0, skipped: 0, failed: 0 };
         const lines = { push: (...texts: string[]) => { for (const text of texts) write(text); return 0; } };
@@ -408,6 +466,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
             const viewStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
             try {
               const target = viewStore.get(input.target.id, project);
+              administrative({ candidate, target });
               return target && target.id === input.target.id && candidateTargetRevision(target) === input.target.revision
                 ? `promotion. Goal goal:${input.goalId}, mem:${target.id}. ${target.title ? `${target.title}: ` : ""}${target.text}`
                 : `promotion. Goal goal:${input.goalId}, target mem:${input.target.id} changed or is unavailable; reject or skip`;
@@ -420,6 +479,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         const step = async (args: string[]) => { try { await runCli(args, context); return true; } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; return false; } };
         for (const [index, candidate] of rows.entries()) {
           assertWalkCurrent();
+          if (!candidatePermitted(candidate)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
           lines.push(`${index + 1}/${rows.length}  ${candidate.id.slice(0, 12)}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${terminalSafe(body(candidate))}`);
           assertWalkCurrent();
           markShown(base, scope, Date.now(), [candidate.id]);     // after the write: shown means the person could read it
@@ -441,7 +501,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
               const asFail = input.kind === "fail" || input.noteKind === "fail";
               try { noteAdd(store, project, asFail ? { kind: "fail", tier: "long", scope: "project", fail: parseFailTemplate(edited), ...(input.kind === "memory" && input.title ? { title: input.title } : {}) } : { kind: input.kind === "memory" ? input.noteKind ?? "finding" : "finding", tier: "long", scope: "project", text: edited, ...(input.kind === "memory" && input.title ? { title: input.title } : {}) }, standalone); }
               finally { store.close(); }
-              candidates.reject(candidate.id, { project, actor: "person", verdict: "public" }); done.edited++;
+              candidates.reject(candidate.id, { project, actor, verdict: "public" }); done.edited++;
             } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; }
           } else done.skipped++;
         }
@@ -455,7 +515,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         return options["--json"] ? JSON.stringify(rows, null, 2) : rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
       }
       if (sub === "reject") {
-        candidates.reject(id!, { project, actor: "person", verdict: "public" });
+        candidates.reject(id!, { project, actor, verdict: "public" });
         return options["--json"] ? JSON.stringify({ candidateId: id, status: "rejected" }, null, 2) : `rejected candidate ${id}`;
       }
       const candidate = candidates.get(id!, project);
@@ -467,7 +527,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         const assertCurrent = commandBinding(store.profile.home, project);
         if (!await policyOf().screen(candidate.input)) throw new Error("candidate refused by the current standalone privacy policy (secrets, personal data, deny paths and the patterns in amem.config.json)");
         assertCurrent();
-        const result = candidates.accept(id!, { project, actor: "person", verdict: "public", store,
+        const result = candidates.accept(id!, { project, actor, verdict: "public", store,
           policyVersion: () => JSON.stringify(configuredPolicyOptions(realPath(store.profile.home), policyCwd)),
           policy: (proposal, target, note, goal) => { assertCurrent(); return policyOf().screenStandalone({ ...proposal.input, ...(target ? { targetView: target } : {}), note, ...(goal ? { goalView: goal } : {}) }); },
         });
@@ -504,7 +564,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "capacity") {
     const share = options["--disk-share"];
     if (share !== undefined && (!Number.isFinite(Number(share)) || Number(share) <= 0 || Number(share) > 1)) throw new Error("--disk-share must be a number in (0, 1]");
-    const report = capacityReport({ ...(share !== undefined ? { diskShare: Number(share) } : {}) });
+    const report = administrative(capacityReport({ ...(share !== undefined ? { diskShare: Number(share) } : {}) }));
     if (parsed.path[1] !== "apply") return options["--json"] ? JSON.stringify(report, null, 2) : capacityText(report);
     if (options["--split"] === true) {
       // #15 D7: each shard's own share of the global budget, written to its own config. The same two steps as the home default below, bound to the shards it was made for.
@@ -513,14 +573,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const result = options["--confirm"] === true ? applySplit(memoryHome(), diskShare) : previewSplit(memoryHome(), diskShare);
       return options["--json"] ? JSON.stringify(result, null, 2) : capacitySplitText(result, outputStyle(context));
     }
-    // Person-only (agent marker and TTY are refused above): preview first, --confirm writes the home default config.
+    // Preview first; --confirm writes the bound home default config.
     const file = join(memoryHome(), "capture-config.json");
     const target: CaptureConfig = {
       capMb: options["--cap-mb"] ? Number(options["--cap-mb"]) : report.proposal.capMb,
       retentionDays: options["--retention-days"] ? Number(options["--retention-days"]) : report.proposal.retentionDays,
     };
     if (!Number.isFinite(target.capMb) || target.capMb <= 0 || !Number.isFinite(target.retentionDays) || target.retentionDays <= 0) throw new Error("capacity apply needs positive --cap-mb and --retention-days");
-    const preview = { file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason };
+    const preview = administrative({ file, current: readCaptureConfigFile(file), target, reason: report.proposal.reason });
     const previewFile = join(memoryHome(), "capture-config.preview.json");
     if (options["--confirm"] !== true) {
       writeFileSync(previewFile, JSON.stringify(preview) + "\n", { mode: 0o600 });
@@ -557,7 +617,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "gc") {
     // A preview reads; only --confirm evicts (and then the terminal and agent-marker refusals above already ran, because `mutates: "confirm"`).
     const batches = options["--batches"] === undefined ? undefined : Number(options["--batches"]);
-    const result = runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) });
+    if (actor === "agent") administrative(runGc(memoryHome(), { dryRun: true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) }));
+    const result = administrative(runGc(memoryHome(), { dryRun: options["--confirm"] !== true, ...(batches !== undefined ? { maxBatchesPerShard: batches } : {}) }));
     return options["--json"] ? JSON.stringify(result, null, 2) : `${result.dryRun ? "preview (nothing evicted; add --confirm):\n" : ""}${gcText(result)}`;
   }
   if (sub === "import" && ["claude-auto", "codex"].includes(parsed.path[1] ?? "")) {
@@ -592,12 +653,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
           : `${summary}; ${counts}; skipped ${result.skipped.invalid} invalid, ${result.skipped.policy} policy/secret and ${result.skipped.other} non-curated records. ${result.warnings.join(" ")}`;
       } finally { store.close(); }
     }
-    const key = requireShard(memoryHome(), requested);
+    const key = administrative(requireShard(memoryHome(), requested));
     if (op === "forget" && options["--confirm"] !== true) {
       const state = projectState(memoryHome(), key), shard = readCatalogFresh(memoryHome()).find(p => p.key === key);
       return `preview: forget ${key} (now ${state}; capture ${shard?.captureRows ?? 0} rows, curated ${shardStatePresent() ? shard?.curatedEntries ?? "unavailable" : "unavailable (home not split)"}). Forget is an append-only record that takes the project out of recall and every listing for good; nothing is erased here and it cannot be undone. Re-run with --confirm to record it.`;
     }
-    const written = appendLifecycle(memoryHome(), { op: op as "archive" | "unarchive" | "forget", key, actor: "person", machine: machineId(memoryHome()).id });
+    const written = appendLifecycle(memoryHome(), { op: op as "archive" | "unarchive" | "forget", key, actor, machine: machineId(memoryHome()).id });
     return options["--json"] ? JSON.stringify(written, null, 2) : `${op === "forget" ? "forgot" : op === "archive" ? "archived" : "unarchived"} ${written.key}${requested !== written.key ? ` (alias ${requested})` : ""}`;
   }
   if (sub === "search" && options["--all-projects"] === true) {
@@ -620,14 +681,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (parsed.path[1] === "add") {
       const [from, to] = parsed.positionals;
       if (!from || !to) throw new Error("usage: amem alias add <from-key> <to-key>");
-      const op = appendAlias(memoryHome(), { alias: from, key: to, actor: "person", machine: machineId(memoryHome()).id });
+      const op = appendAlias(memoryHome(), { alias: from, key: to, actor, machine: machineId(memoryHome()).id });
       return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} -> ${op.key}`;
     }
     if (parsed.path[1] === "remove") {
-      // #27 option 2: person only (ordinary CLI refusal of agent markers above, a TTY through `mutates`), append only, the latest op wins.
+      // #27 option 2: append only, the latest op wins; attribution is not authentication.
       const [from] = parsed.positionals;
       if (!from || parsed.positionals.length !== 1) throw new Error("usage: amem alias remove <alias-key>");
-      const op = appendUnalias(memoryHome(), { alias: from, actor: "person", machine: machineId(memoryHome()).id });
+      const op = appendUnalias(memoryHome(), { alias: from, actor, machine: machineId(memoryHome()).id });
       return options["--json"] ? JSON.stringify(op, null, 2) : `alias ${op.alias} removed`;
     }
     const ops = listAliases(memoryHome());
@@ -716,8 +777,16 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   const configured = policyOf(), recallRoot = boundRepoRoot(cwd, memoryHome(), boundProject());
   const rootConfirmed = recallRoot !== undefined || boundProject().startsWith("local:") && resolveAlias(memoryHome(), memoryProjectKey(cwd)) === boundProject();
   // Reads can trigger held-note reconciliation. Defer it unless this command is one that moves notes across the boundary (promote, sync, import, review accept), and then the configured policy decides each note.
-  const open = () => curatedStore(boundProject(), { screen: note => !crosses ? "skip" : configured.screenStandalone(note) ? "promote" : "keep" });
+  const open = () => curatedStore(boundProject(), { ...(identity.actor === "agent" ? { deferPromotions: true } : {}), screen: note => !crosses ? "skip" : configured.screenStandalone(note) ? "promote" : "keep" });
   // A person's reads are unscreened. A write is screened by the configured policy, which includes the built-in secret screen.
+  if (goal && actor === "agent") {
+    const ids = sub === "new" ? repeated(argv, "--depends") : parsed.positionals.slice(0, 1);
+    if (ids.length) {
+      const targetStore = open();
+      try { for (const id of ids) { const target = targetStore.goalOf(id.replace(/^goal:/, ""), boundProject()); if (!target) throw Error("Memory operation unavailable or refused; no partial result is shown."); administrative(target); } }
+      finally { targetStore.close(); }
+    }
+  }
   if (goal) return rawGoalCommand(args, cwd, { project: boundProject(), open, clean: (title, milestones) => !mutating || configured.screenStandalone({ title, milestones }),
     onDone: async (done, store) => {
       const project = boundProject(), base = realPath(store.profile.home), assertCurrent = commandBinding(store.profile.home, project);
@@ -760,7 +829,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   let output: string;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
-    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => notes, stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
   } catch (error) {

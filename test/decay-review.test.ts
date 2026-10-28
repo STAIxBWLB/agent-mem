@@ -36,15 +36,23 @@ test("recent positive citations only exempt; unknown or zero observations never 
   expect(decayPreview(f.store, f.project, { now: f.clock, counters: () => { throw Error("unavailable"); } }).entries.map(row => row.target.id)).toEqual(expect.arrayContaining([cited, unknown]));
   expect(decayPreview(f.store, f.project, { now: f.clock, counters: () => [] }).entries.some(row => row.target.id === recent)).toBe(false);
 });
-test("default apply demotes only named previewed ids; bulk and forget require confirmation/person", () => {
-  const f = fixture(), first = f.note({ text: "first" }), second = f.note({ text: "second" }); f.advance(91);
+test("person and agent actors apply only named previewed ids; bulk and forget require confirmation", () => {
+  const f = fixture(), first = f.note({ text: "first" }), second = f.note({ text: "second" }), third = f.note({ text: "third" }); f.advance(91);
   const plan = decayPreview(f.store, f.project, { now: f.clock }), before = f.bytes();
-  expect(() => applyDecay(f.store, plan, { actor: "agent", confirmed: true })).toThrow("person");
-  expect(() => applyDecay(f.store, plan, { actor: "person" })).toThrow("confirmation");
+  expect(() => applyDecay(f.store, plan, { actor: "invalid" as "person", confirmed: true })).toThrow("valid actor");
+  expect(() => applyDecay(f.store, plan, { actor: "agent" })).toThrow("confirmation");
   expect(() => applyDecay(f.store, plan, { actor: "person", ids: [first], forget: true })).toThrow("confirmation"); expect(f.bytes()).toEqual(before);
-  expect(applyDecay(f.store, plan, { actor: "person", ids: [first], now: f.clock })).toEqual({ action: "demote", ids: [first], expiresAt: plan.demoteExpiresAt });
-  expect(f.store.get(first, f.project)?.tier).toBe("short"); expect(f.store.get(second, f.project)?.tier).toBe("long");
-  const next = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, next, { actor: "person", confirmed: true, forget: true, now: f.clock }).ids).toEqual([second]); expect(f.store.get(second, f.project)).toBeUndefined();
+  expect(applyDecay(f.store, plan, { actor: "agent", ids: [first], now: f.clock })).toEqual({ action: "demote", ids: [first], expiresAt: plan.demoteExpiresAt });
+  expect(f.store.get(first, f.project)?.tier).toBe("short"); expect(f.store.get(second, f.project)?.tier).toBe("long"); expect(f.store.get(third, f.project)?.tier).toBe("long");
+  const demote = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
+    .find(entry => entry.op === "demote" && entry.target === first);
+  expect(demote?.actor).toBe("agent");
+  const next = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, next, { actor: "person", ids: [second], now: f.clock }).ids).toEqual([second]);
+  const final = decayPreview(f.store, f.project, { now: f.clock }); expect(applyDecay(f.store, final, { actor: "agent", ids: [third], forget: true, confirmed: true, now: f.clock }).ids).toEqual([third]);
+  expect(f.store.get(second, f.project)?.tier).toBe("short"); expect(f.store.get(third, f.project)).toBeUndefined();
+  const ops = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
+  expect(ops.find(entry => entry.op === "demote" && entry.target === second)?.actor).toBe("person");
+  expect(ops.find(entry => entry.op === "forget" && entry.target === third)?.actor).toBe("agent");
 });
 test("a changed member refuses the entire selected batch before any earlier target effect", () => {
   const f = fixture(), first = f.note({ text: "first" }), second = f.note({ text: "second" }); f.advance(91);

@@ -13,13 +13,13 @@ import { facts, label, PLAIN, singleLine, type Style } from "./style.ts";
 /**
  * #13 R7: the capacity advisor. `capacityReport()` reads this machine's load and proposes capture bounds; the
  * `amem capacity` CLI renders it and `amem capacity apply` writes the home default config after a preview. An
- * agent may read the proposal through this library function; applying stays person-only at the CLI.
+ * marked CLI calls may read the proposal; the CLI applies only after a matching preview and `--confirm`.
  *
  * Proposal rule (owner decision, 2026-10-17, item 2): the proposed cap and retention are the largest values whose projection stays within the
  * disk-share bound (default 2% of free space, configurable) and whose measured search and hook readings stay within R2/R3, and they may be above
  * the current ones. The cap is the disk-share bound itself; retention is the share over the daily growth, up to a 365-day ceiling. R2 halves the cap
  * and R3 halves the retention. The reason names every binding constraint: `disk-share retention` or `retention ceiling`, `disk-share cap`,
- * `R3 search RSS`, `R2 hook cost`. The advisor never writes: applying stays person-only, preview first.
+ * `R3 search RSS`, `R2 hook cost`. The advisor never writes: the CLI applies only after a preview and matching `--confirm`.
  *
  * Metrics: a small rolling `metrics.jsonl` in the memory home (not a memory log: it is trimmed, never synced).
  * `scripts/measure-budget.ts` writes only to its synthetic home; the P3 hooks will append real samples per invocation.
@@ -61,7 +61,7 @@ export interface CapacityReport {
   current: CaptureConfig;
   diskShare: number;
   proposal: { capMb: number; retentionDays: number; reason: string };
-  /** #15 D7: the per-shard split of the global capture budget (the disk share, less what forgotten shards still hold), one row per non-forgotten shard. A proposal: applying it is person-only. */
+  /** #15 D7: the per-shard split of the global capture budget (the disk share, less what forgotten shards still hold), one row per non-forgotten shard. A proposal; applying it requires a matching preview and `--confirm`. */
   split: ShardSplit[];
   /** Why `split` is empty although shards exist: the budget cannot give each shard its 1 MB minimum. Absent when the split was made. */
   splitRefused?: string;
@@ -223,7 +223,7 @@ export function capacityReport(opts: {
   };
   const diskShare = opts.diskShare ?? 0.02;
   // The single proposal below is one shard's bounds (the home default). #15 T5 (D7): `split` shares the machine-wide budget across the shards, so a
-  // home with N shards no longer holds N x cap once the person applies it (`amem capacity apply --split`).
+  // home with N shards no longer holds N x cap once `amem capacity apply --split --confirm` writes it.
   const budgetBytes = diskShare * disk.freeBytes;
   // Growth (owner decision 2026-10-17, item 2): propose the largest cap and retention that fit the disk share, above the current values when there is room.
   // The cap's ceiling is the disk-share bound itself. A person's own setting above the retention ceiling is never proposed down for the ceiling alone.

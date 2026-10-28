@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { CaptureStore, captureShardStats, writeCaptureConfig } from "../src/memory/capture.ts";
 import { appendAlias, shardMachineDir } from "../src/memory/shard.ts";
 import { lifecyclePath, listLifecycle, projectState } from "../src/memory/lifecycle.ts";
@@ -11,7 +11,7 @@ import { readCaptureConfigFile } from "../src/memory/capture.ts";
 import { ensureShardDescriptor } from "../src/memory/shard.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 
-// #15 T5 through the real `runCli` entry: authority (an agent marker and a non-terminal stdin are refused for every mutation), previews before effects,
+// #15 T5 through the real `runCli` entry: marker-derived attribution, explicit previews before irreversible effects,
 // one project at a time, and the all-projects replies that say they crossed.
 const cleanup: (() => void)[] = [];
 afterEach(() => { delete process.env.AMEM_HOME; for (const close of cleanup.splice(0).reverse()) close(); });
@@ -68,15 +68,15 @@ test("usage totals the shards and names the largest, as text and JSON", async ()
   await expect(runCli(["usage", "--limit", "0"], person)).rejects.toThrow(/1 to 100/);
 });
 
-test("every mutation is refused for an agent marker and a non-terminal stdin, with nothing written", async () => {
+test("marked project lifecycle writes work without TTY, preview forget and preserve actor attribution", async () => {
   const { dir, base, person } = rig();
   capture(dir, A, ["alpha"]);
-  const mutations = [["gc", "--confirm"], ["project", "archive", A], ["project", "unarchive", A], ["project", "forget", A, "--confirm"], ["capacity", "apply", "--split", "--confirm"]];
-  for (const argv of mutations) {
-    await expect(runCli(argv, { ...person, env: { CODEX_THREAD_ID: "x" } })).rejects.toThrow(PERSON_ONLY);
-    await expect(runCli(argv, { ...person, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  }
-  expect(existsSync(lifecyclePath(base))).toBe(false);
+  const agent = { ...person, env: { CODEX_THREAD_ID: "x" }, stdinTTY: false };
+  await runCli(["project", "archive", A], agent); expect(projectState(base, A)).toBe("archived");
+  await runCli(["project", "unarchive", A], agent); expect(projectState(base, A)).toBe("active");
+  const preview = await runCli(["project", "forget", A], agent); expect(preview).toContain("preview"); expect(projectState(base, A)).toBe("active");
+  await runCli(["project", "forget", A, "--confirm"], agent); expect(projectState(base, A)).toBe("forgotten");
+  expect(listLifecycle(base).map(op => op.actor)).toEqual(["agent", "agent", "agent"]);
   expect(captureShardStats(shardMachineDir(base, A, machineId(base).id)).rows).toBe(1);
 });
 
@@ -123,7 +123,7 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   expect(readFileSync(to, "utf8")).not.toContain("beta");
   await expect(runCli(["project", "export", A, "--to", to], person)).rejects.toThrow(/exists/);
   await expect(runCli(["project", "export", A], person)).rejects.toThrow(/--to/);
-  await expect(runCli(["project", "export", A, "--to", to], { ...person, env: { CLAUDECODE: "1" } })).rejects.toThrow(PERSON_ONLY);
+  await expect(runCli(["project", "export", A, "--to", to], { ...person, env: { CLAUDECODE: "1" } })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
 });
 
 test("search --all-projects crosses, says so in text and JSON, and plain search never does; ahub memory's raw command refuses the flag", async () => {
@@ -238,7 +238,7 @@ test("project export and import preview provenance before confirmation and prese
   expect(await json(["project", "import", A, "--from", jsonl, "--confirm", "--json"], person)).toMatchObject({ applied: true, read: 1, added: 1 });
   const restored = new MemoryStore({ memoryDir: process.env.AMEM_HOME, deferPromotions: true });
   expect(restored.list().map(view => view.id)).toEqual(expected); restored.close();
-  await expect(runCli(["project", "import", A, "--from", jsonl, "--confirm"], { ...person, stdinTTY: false })).rejects.toThrow(/terminal/);
+  expect(await json(["project", "import", A, "--from", jsonl, "--confirm", "--json"], { ...person, stdinTTY: false })).toMatchObject({ applied: true, added: 0 });
 });
 
 test("Codex import runs through the person CLI as an idempotent candidate import", async () => {
@@ -249,7 +249,7 @@ test("Codex import runs through the person CLI as an idempotent candidate import
   expect(first).toMatchObject({ source: "codex", files: 1, read: 1, added: 1, pending: { count: 1 } });
   expect((await json(["import", "codex", "--from", dir, "--json"], person)).added).toBe(0);
   expect(readFileSync(source, "utf8")).toBe(bytes);
-  await expect(runCli(["import", "codex", "--from", dir], { ...person, env: { CODEX_THREAD_ID: "agent" } })).rejects.toThrow(PERSON_ONLY);
+  expect(await json(["import", "codex", "--from", dir, "--json"], { ...person, env: { CODEX_THREAD_ID: "agent" }, stdinTTY: false })).toMatchObject({ added: 0 });
   await expect(runCli(["import", "codex", "--from", dir, "--limit", "1"], person)).rejects.toThrow(/--limit only applies to import claude-mem/);
   await expect(runCli(["import", "codex", "--from", dir, "--capture-days", "7"], person)).rejects.toThrow(/--capture-days only applies to import claude-mem/);
 });

@@ -7,7 +7,7 @@ import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendAlias, aliasLogPath, isLocalKey, listAliases, readShardDescriptor, resolveAlias, shardKeyHash } from "../src/memory/shard.ts";
-import { runCli, PERSON_ONLY } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -137,16 +137,14 @@ test("no-remote submodule and bare-worktree keys keep repository labels and root
   expect(memoryProjectKey(worktree)).toBe(`bare.git@${bareHash}`);
 });
 
-test("amem alias add/list is person-only and add needs a terminal", async () => {
+test("amem alias add accepts a marked nonTTY writer and keeps peer actor attribution", async () => {
   const dir = home();
   process.env.AMEM_HOME = join(dir, "memory");
   cleanup.push(() => { delete process.env.AMEM_HOME; });
   const context = { cwd: dir, env: {}, stdinTTY: true };
-  await expect(runCli(["alias", "add", "old-key", "new-key"], { ...context, env: { AGENTHUB_PEER_ID: "kimi" } })).rejects.toThrow(PERSON_ONLY);
-  await expect(runCli(["alias", "add", "old-key", "new-key"], { ...context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  expect(listAliases(join(dir, "memory"))).toHaveLength(0);
-  expect(await runCli(["alias", "add", "old-key", "new-key"], context)).toBe("alias old-key -> new-key");
+  expect(await runCli(["alias", "add", "old-key", "new-key"], { ...context, env: { AGENTHUB_PEER_ID: "kimi" }, stdinTTY: false })).toBe("alias old-key -> new-key");
+  expect(listAliases(join(dir, "memory"))).toMatchObject([{ alias: "old-key", key: "new-key", actor: "agent" }]);
   expect(await runCli(["alias"], context)).toContain("old-key -> new-key");
-  const ops = JSON.parse(await runCli(["alias", "list", "--json"], context)) as { alias: string; key: string }[];
-  expect(ops).toEqual([expect.objectContaining({ alias: "old-key", key: "new-key" })]);
+  const ops = JSON.parse(await runCli(["alias", "list", "--json"], context)) as { alias: string; key: string; actor: string }[];
+  expect(ops).toEqual([expect.objectContaining({ alias: "old-key", key: "new-key", actor: "agent" })]);
 });

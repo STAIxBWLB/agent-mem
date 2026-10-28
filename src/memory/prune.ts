@@ -129,7 +129,7 @@ export function reducePruneRows(rows: readonly { row: unknown; placement: PruneP
 }
 function authenticate(port: PruneStorePort, auth: PruneAuthorization): void {
   guard(validGeneration(port.generation) && /^[a-f0-9]{16}$/.test(port.machine) && revision(port.selectorRevision()));
-  guard(auth.actor === "person" && typeof auth.authorize === "function" && auth.authorize() === true && typeof auth.project === "string" && auth.project.length > 0);
+  guard((auth.actor === "person" || auth.actor === "agent") && typeof auth.authorize === "function" && auth.authorize() === true && typeof auth.project === "string" && auth.project.length > 0);
 }
 function policyRevision(auth: PruneAuthorization): string {
   if (!auth.policy) return "local-only";

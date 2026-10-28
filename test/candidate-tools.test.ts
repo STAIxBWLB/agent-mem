@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
 import { MCP_TOOLS, serveMcp } from "../src/mcp.ts";
-import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
+import { CandidateStore, candidateTargetRevision, type CandidateAcceptance } from "../src/memory/candidates.ts";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import type { StandalonePolicyOptions } from "../src/memory/policy.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -50,6 +50,12 @@ test("malformed structured fails and model-selected authority/scope refuse witho
   ]) await expect(mcp.tools.amem_remember(args)).rejects.toThrow();
   expect(f.sidecar.list({ project: f.project, status: "all" })).toEqual([]); expect(f.bytes()).toEqual(before);
 });
+test("candidate accept and reject validate the supplied actor enum before effects", async () => {
+  const f = fixture(), mcp = f.open(), id = idOf(await mcp.tools.amem_remember(fail)), before = f.bytes();
+  expect(() => f.sidecar.reject(id, { project: f.project, actor: "system" as "person", verdict: "public" })).toThrow("actor must be person or agent");
+  expect(() => f.sidecar.accept(id, { project: f.project, actor: "system" as "person", verdict: "public", store: f.store, policy: () => true })).toThrow("actor must be person or agent");
+  expect(f.sidecar.get(id, f.project)?.status).toBe("pending"); expect(f.bytes()).toEqual(before);
+});
 test("correction binds an exact current public target revision without writing a note or supersession", async () => {
   const f = fixture(), target = f.note(), mcp = f.open(), before = f.bytes();
   const id = idOf(await mcp.tools.amem_correct({ id: `mem:${target}`, proposedText: "use the bounded writer lease", reason: "the regression establishes the corrected boundary", kind: "contract" }));
@@ -80,15 +86,36 @@ test("correction proposal bounds the exact persisted body including headers and 
   await expect(mcp.tools.amem_correct(tooLong)).rejects.toThrow("memory operation unavailable");
   expect(f.sidecar.list({ project: f.project })).toEqual([]); expect(f.bytes()).toEqual(before);
   const id = idOf(await mcp.tools.amem_correct({ id: target, proposedText, reason })); expect(f.bytes()).toEqual(before);
-  expect(() => f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true })).toThrow("person");
-  const accepted = f.sidecar.accept(id, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true });
-  const note = f.store.get(accepted.noteId, f.project)!; expect(note.text.length).toBe(4000); expect(note.text).toBe(`Accepted candidate: ${id}\nTarget revision: ${revision}\nTarget entry: ${target}\n\n${proposedText}\n\nReason: ${reason}`);
+  const accepted = f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true });
+  const note = f.store.get(accepted.noteId, f.project)!; expect(note.text.length).toBe(4000); expect(note).toMatchObject({ peer: "agent", source: "person" }); expect(note.text).toBe(`Accepted candidate: ${id}\nTarget revision: ${revision}\nTarget entry: ${target}\n\n${proposedText}\n\nReason: ${reason}`);
+  const supersede = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }))
+    .find(entry => entry.op === "supersede" && entry.target === target);
+  expect(supersede?.actor).toBe("agent");
 });
-test("structured fail acceptance stays person-only in the existing core", async () => {
+test("structured fail acceptance accepts an agent actor and keeps the source label", async () => {
   const f = fixture(), mcp = f.open(), id = idOf(await mcp.tools.amem_remember(fail)), before = f.bytes();
-  expect(() => f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true })).toThrow("person"); expect(f.bytes()).toEqual(before);
-  const accepted = f.sidecar.accept(id, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true });
-  const note = f.store.get(accepted.noteId, f.project)!; expect(note).toMatchObject({ kind: "fail", project: f.project, peer: "person", source: "person" }); expect(note.text).toContain("Approach: " + fail.approach); expect(note.text).toContain("Retry when: " + fail.retryWhen);
+  expect(f.bytes()).toEqual(before);
+  const accepted = f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true });
+  const note = f.store.get(accepted.noteId, f.project)!; expect(note).toMatchObject({ kind: "fail", project: f.project, peer: "agent", source: "person" }); expect(note.text).toContain("Approach: " + fail.approach); expect(note.text).toContain("Retry when: " + fail.retryWhen);
+});
+
+test("consolidation accepts an agent actor and stamps both supersessions with it", () => {
+  const f = fixture(), first = f.note({ text: "first public source" }), second = f.note({ text: "second public source" });
+  const targets = [first, second].map(id => ({ id, revision: candidateTargetRevision(f.store.get(id, f.project)!) }));
+  const id = f.sidecar.put({ project: f.project, kind: "consolidation", action: "merge", targets, text: "combined public summary", about: [], noteKind: "contract" }, "public");
+  const accepted = f.sidecar.accept(id, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true, policyVersion: () => "fixture-policy-v1" });
+  const note = f.store.get(accepted.noteId, f.project)!; expect(note).toMatchObject({ peer: "agent", source: "person", kind: "contract" });
+  expect(f.store.get(first, f.project)?.supersededBy).toBe(accepted.noteId); expect(f.store.get(second, f.project)?.supersededBy).toBe(accepted.noteId);
+  const ops = f.bytes().flatMap(([, content]) => content.split("\n").filter(Boolean).map(line => JSON.parse(line) as { op?: string; target?: string; actor?: string }));
+  expect(ops.filter(entry => entry.op === "supersede" && [first, second].includes(entry.target!)).map(entry => entry.actor)).toEqual(["agent", "agent"]);
+});
+test("consolidation fences its bound actor if host policy changes it during review", () => {
+  const f = fixture(), first = f.note({ text: "first public source" }), second = f.note({ text: "second public source" });
+  const targets = [first, second].map(id => ({ id, revision: candidateTargetRevision(f.store.get(id, f.project)!) }));
+  const id = f.sidecar.put({ project: f.project, kind: "consolidation", action: "merge", targets, text: "combined public summary", about: [], noteKind: "contract" }, "public"), before = f.bytes();
+  const context: CandidateAcceptance = { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => { context.actor = "person"; return true; }, policyVersion: () => "fixture-policy-v1" };
+  expect(() => f.sidecar.accept(id, context)).toThrow("consolidation acceptance context changed");
+  expect(f.bytes()).toEqual(before); expect(f.sidecar.get(id, f.project)?.status).toBe("pending");
 });
 test("current standalone/host privacy and complete correction target metadata are enforced", async () => {
   const f = fixture(), hidden = f.note({ about: ["path:private/contract.ts"] }), mcp = f.open({ denyPaths: ["private/"], host: { screen: async value => !JSON.stringify(value).includes("HOST_DENIED") } });

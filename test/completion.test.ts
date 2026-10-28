@@ -94,6 +94,16 @@ test("search filter and explain are shared boolean options in parsing, help and 
   expect(() => parseCommand(["list", "--filter"])).toThrow();
 });
 
+test("migration apply is explicit in parser help and completion metadata", () => {
+  const parsed = parseCommand(["migrate", "--apply", "--generation", "a".repeat(32)]);
+  expect(parsed.options).toMatchObject({ "--apply": true, "--generation": "a".repeat(32) });
+  expect(parsed.definition.mutates).toBe("apply");
+  const migrate = completionDefinitions().find(definition => definition.path.join(" ") === "migrate")!;
+  expect(migrate.options["--apply"]?.description).toContain("Apply");
+  expect(migrate.options["--dry-run"]?.description).toContain("default");
+  expect(commandHelp()).toContain("--apply");
+});
+
 test("completion metadata and CLI parser cover the retained raw command cases and flags", () => {
   const definitions = completionDefinitions(), help = commandHelp();
   const raw = readFileSync(join(import.meta.dir, "../src/memory/commands.ts"), "utf8");

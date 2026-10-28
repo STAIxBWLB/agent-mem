@@ -28,14 +28,15 @@ export class ConsolidationProposalError extends Error {
 const modelAnswer = (row: View) => row.peer === "amem-model" || row.text.startsWith("Model answer:");
 /** On-demand candidate writes only. Every source is screened once under one policy and source revision. */
 export async function proposeConsolidation(store: MemoryStore, candidates: CandidateStore, options: ConsolidationOptions): Promise<ConsolidationReport> {
-  if (options.actor !== "person") throw Error("consolidation requires person intent");
+  const actor = options.actor;
+  if (actor !== "person" && actor !== "agent") throw Error("invalid consolidation actor");
   if (options.allowed?.() === false) throw Error("consolidation unavailable");
   if (realPath(candidates.dir) !== realPath(store.profile.home)) throw Error("consolidation requires its own candidate home");
   const project = options.project, version = options.policyVersion(), policy = options.policy();
   if (!project.trim() || typeof version !== "string") throw Error("consolidation context unavailable");
   const sourceCurrent = store.beginRecallRead();
   const check = () => {
-    if (options.actor !== "person" || options.project !== project || options.allowed?.() === false || options.policyVersion() !== version) throw Error("consolidation context changed");
+    if (options.actor !== actor || options.project !== project || options.allowed?.() === false || options.policyVersion() !== version) throw Error("consolidation context changed");
     options.assertCurrent?.(); sourceCurrent();
   };
   check();

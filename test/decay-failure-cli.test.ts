@@ -25,34 +25,35 @@ function fixture() {
 }
 for (const action of ["demote", "forget"] as const) for (const json of [false, true]) test(`${action} second-target I/O failure retains the applied prefix and renders a ${json ? "standalone JSON" : "human"} partial receipt`, async () => {
   const f = fixture(), originalDemote = MemoryStore.prototype.demote, originalForget = MemoryStore.prototype.forget, calls: string[] = [];
-  const before = f.use(store => f.ids.map(id => store.get(id, f.project))), printed: string[] = []; let question = "", caught: unknown;
+  const before = f.use(store => f.ids.map(id => store.get(id, f.project))), printed: string[] = []; let prompts = 0, caught: unknown;
   try {
     if (action === "demote") MemoryStore.prototype.demote = function (...args: Parameters<MemoryStore["demote"]>) { calls.push(args[0]); if (calls.length === 2) throw Error("private raw filesystem failure"); return originalDemote.apply(this, args); };
     else MemoryStore.prototype.forget = function (...args: Parameters<MemoryStore["forget"]>) { calls.push(args[0]); if (calls.length === 2) throw Error("private raw filesystem failure"); return originalForget.apply(this, args); };
-    try { await f.cli(["decay", ...f.ids, "--apply", ...(action === "forget" ? ["--forget"] : []), ...(json ? ["--json"] : [])], { write: line => printed.push(line), prompt: text => { question = text; return "yes"; } }); }
+    try { await f.cli(["decay", ...f.ids, "--apply", "--confirm", ...(action === "forget" ? ["--forget"] : []), ...(json ? ["--json"] : [])], { write: line => printed.push(line), prompt: () => { prompts++; throw Error("decay does not prompt"); } }); }
     catch (error) { caught = error; }
   } finally { MemoryStore.prototype.demote = originalDemote; MemoryStore.prototype.forget = originalForget; }
   expect(caught).toBeInstanceOf(DecayApplyError); const error = caught as DecayApplyError;
   expect(calls).toEqual(f.ids.slice(0, 2)); expect(error.report).toMatchObject({ action, applied: [f.ids[0]], failed: f.ids[1], remaining: [f.ids[2]] });
-  expect(printed.join("\n")).toContain(f.ids[0]!); const rendered = formatCliError(error); expect(rendered).not.toContain("private raw filesystem failure");
+  expect(prompts).toBe(0); const rendered = formatCliError(error); expect(rendered).toContain(f.ids[0]!); expect(rendered).not.toContain("private raw filesystem failure");
   if (json) expect(JSON.parse(rendered)).toEqual({ ok: false, ...error.report, failedMayHaveChanged: true });
   else { expect(rendered).toContain(`applied: ${f.ids[0]}`); expect(rendered).toContain(`failed: ${f.ids[1]}`); expect(rendered).toContain(`remaining: ${f.ids[2]}`); expect(rendered).toContain("failed target may have changed"); }
   f.use(store => {
     const prefix = store.get(f.ids[0]!, f.project);
-    if (action === "forget") { expect(prefix).toBeUndefined(); expect(question).toContain("hidden claude-mem-imported copies"); expect(error.report.expiresAt).toBeUndefined(); }
-    else { expect(prefix?.tier).toBe("short"); expect(prefix?.expiresAt).toBe(error.report.expiresAt); expect(question).toContain(error.report.expiresAt!); }
+    if (action === "forget") { expect(prefix).toBeUndefined(); expect(error.report.expiresAt).toBeUndefined(); }
+    else { expect(prefix?.tier).toBe("short"); expect(prefix?.expiresAt).toBe(error.report.expiresAt); }
     expect(store.get(f.ids[1]!, f.project)).toEqual(before[1]); expect(store.get(f.ids[2]!, f.project)).toEqual(before[2]);
   });
 });
-test("decay days accept only positive decimal syntax before any confirmation or authoritative writes", async () => {
+test("decay days accept only positive decimal syntax before a plan or authoritative writes", async () => {
   const f = fixture(), before = f.bytes(); let prompts = 0;
   for (const days of ["1e2", "0x5a", " 90", "+90", "0"]) await expect(f.cli(["decay", "--days", days, "--apply"], { write: () => {}, prompt: () => { prompts++; return "yes"; } })).rejects.toThrow("positive decimal integer");
   expect(prompts).toBe(0); expect(f.bytes()).toEqual(before);
   const preview = JSON.parse(await f.cli(["decay", "--days", "90", "--json"])); expect(preview.days).toBe(90); expect(preview.entries).toHaveLength(3); expect(f.bytes()).toEqual(before);
 });
-test("successful demotion receipt and confirmation pin the exact expiry written to the note", async () => {
-  const f = fixture(); let question = ""; const printed: string[] = [];
-  const result = JSON.parse(await f.cli(["decay", f.ids[0]!, "--apply", "--json"], { write: text => printed.push(text), prompt: text => { question = text; return "yes"; } }));
-  expect(result).toMatchObject({ action: "demote", ids: [f.ids[0]] }); expect(typeof result.expiresAt).toBe("string"); expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now()); expect(question).toContain(result.expiresAt); expect(printed.join("\n")).toContain("revision");
+test("confirmed demotion pins the exact expiry written to the note without prompting", async () => {
+  const f = fixture(), preview = JSON.parse(await f.cli(["decay", f.ids[0]!, "--apply", "--json"])); let prompts = 0;
+  expect(preview.entries.map((row: { target: { id: string } }) => row.target.id)).toEqual([f.ids[0]]);
+  const result = JSON.parse(await f.cli(["decay", f.ids[0]!, "--apply", "--confirm", "--json"], { stdinTTY: false, stdoutTTY: false, prompt: () => { prompts++; throw Error("decay does not prompt"); } }));
+  expect(result).toMatchObject({ action: "demote", ids: [f.ids[0]] }); expect(typeof result.expiresAt).toBe("string"); expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now()); expect(prompts).toBe(0);
   f.use(store => { expect(store.get(f.ids[0]!, f.project)).toMatchObject({ tier: "short", expiresAt: result.expiresAt }); expect(store.get(f.ids[1]!, f.project)?.tier).toBe("long"); expect(store.get(f.ids[2]!, f.project)?.tier).toBe("long"); });
 });

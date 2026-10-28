@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CANDIDATE_SHOWN_GRACE_MS, hasShownColumn } from "./candidate-pending.ts";
 import { oneLine } from "./note-add.ts";
+import { cliAttribution } from "./cli-attribution.ts";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
@@ -43,7 +44,7 @@ export interface CounterValues { rendered?: number | null; delivered?: number | 
 export interface Counter extends CounterValues { id: string; key: CounterKey; createdAt: string; rendered: number | null; delivered: number | null; cited: number | null }
 export interface CandidateAcceptance {
   project: string;
-  /** The host binds this to authenticated person intent; it is not an authentication token. */
+  /** The host binds this to CLI attribution; it is not an authentication token. */
   actor: "person" | "agent";
   verdict: CandidateVerdict;
   store: MemoryStore;
@@ -63,7 +64,8 @@ const text = (value: unknown, max = 4000): value is string => typeof value === "
 const entryId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
 const candidateId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const publicOnly = (verdict: CandidateVerdict) => { if (verdict !== "public") throw new Error("candidate data refused by host privacy verdict"); };
-const personOnly = (actor: string) => { if (actor !== "person") throw new Error("candidate acceptance and rejection require a person"); };
+const validActor = (actor: string) => { if (actor !== "person" && actor !== "agent") throw new Error("candidate actor must be person or agent"); };
+const attributionPeer = (actor: "person" | "agent") => cliAttribution()?.peer ?? actor;
 const validTarget = (value: CandidateTarget | undefined) => value !== undefined && entryId(value.id) && candidateId(value.revision);
 function validate(input: CandidateInput): void {
   if (!input || !text(input.project, 400)) throw new Error("invalid candidate project");
@@ -126,10 +128,10 @@ function retryLocked(work: () => void): void {
   }
 }
 
-/** The queue holds the cap's worth of candidates nobody has seen. Named so a caller (the MCP tool) can map it; the message is worded for an agent, which cannot run the person-only commands itself. */
+/** The queue holds the cap's worth of candidates nobody has seen. Named so a caller (the MCP tool) can map it. */
 export class CandidateQueueFull extends Error {
   readonly code = "candidate_queue_full";
-  constructor(readonly waiting: number) { super(`${waiting} unshown candidates await the person's review; no more are accepted until they have run \`amem review\`. Ask the person to review them`); this.name = "CandidateQueueFull"; }
+  constructor(readonly waiting: number) { super(`${waiting} unshown candidates await review; no more are accepted until the queue is reviewed. Run \`amem review\``); this.name = "CandidateQueueFull"; }
 }
 export class CandidateStore {
   readonly dir: string;
@@ -253,7 +255,7 @@ export class CandidateStore {
     return rows.map(row => ({ id: row.id, key: JSON.parse(row.payload) as CounterKey, createdAt: new Date(row.at).toISOString(), rendered: row.rendered, delivered: row.delivered, cited: row.cited })).filter(row => !entry || row.key.entryId === entry);
   }
   reject(id: string, context: { project: string; actor: "person" | "agent"; verdict: CandidateVerdict }): void {
-    personOnly(context.actor); publicOnly(context.verdict);
+    validActor(context.actor); publicOnly(context.verdict);
     this.db.transaction(() => {
       const candidate = this.get(id, context.project);
       if (!candidate) throw new Error("candidate unavailable");
@@ -263,7 +265,7 @@ export class CandidateStore {
     }).immediate();
   }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
-    personOnly(context.actor); publicOnly(context.verdict);
+    validActor(context.actor); publicOnly(context.verdict);
     if (realPath(context.store.profile.home) !== realPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");
     return context.store.withDeferredPromotions(() => this.acceptDeferred(id, context));
   }
@@ -292,7 +294,7 @@ export class CandidateStore {
         scope: data.kind === "correction" ? target!.scope : "project",
         // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
         tier: data.kind === "correction" && target!.local ? "short" : "long",
-        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: "person", source: "person", about: [...target?.about ?? []],
+        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person", about: [...target?.about ?? []],
         text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
       if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
       if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
@@ -303,7 +305,7 @@ export class CandidateStore {
         // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
         // automatic replay; add explicit person-audited recovery before offering background acceptance retries.
         const noteId = append();
-        if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, "person", context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
+        if (data.kind === "correction" && !context.store.supersede(target!.id, noteId, context.actor, context.project)) throw new Error("candidate replacement refused; inspect the accepted note before recovery");
         this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(noteId, id, this.scope(context.project));
         return { candidateId: id, noteId, alreadyAccepted: false };
       });
@@ -316,13 +318,13 @@ export class CandidateStore {
   }
   private acceptConsolidation(candidate: Candidate, data: Extract<CandidateInput, { kind: "consolidation" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
     if (typeof context.policyVersion !== "function") throw Error("consolidation requires a policy revision guard");
-    const boundStore = context.store, boundProject = context.project, boundPolicy = context.policy;
+    const boundStore = context.store, boundProject = context.project, boundActor = context.actor, boundPolicy = context.policy;
     const policyVersion = context.policyVersion(); if (typeof policyVersion !== "string") throw Error("consolidation policy revision unavailable");
     return context.store.withCurrentEntries(data.targets.map(target => target.id), context.project, () => {
       const sourcePlacements = context.store.entryPlacements(data.targets.map(target => target.id), context.project);
       if (data.targets.some(target => sourcePlacements.get(target.id) !== "synced")) throw Error("consolidation requires verified synced source placement");
       const policyCurrent = () => {
-        if (context.actor !== "person" || context.store !== boundStore || context.project !== boundProject || context.policy !== boundPolicy) throw Error("consolidation acceptance context changed");
+        if (context.actor !== boundActor || context.store !== boundStore || context.project !== boundProject || context.policy !== boundPolicy) throw Error("consolidation acceptance context changed");
         if (context.policyVersion!() !== policyVersion) throw Error("consolidation policy changed");
       };
       // One placement proof per locked section: `sourcePlacements` (read once inside withCurrentEntries, whose fences stay held) serves every check before the append section;
@@ -341,7 +343,7 @@ export class CandidateStore {
         return current;
       };
       const sources = check(), first = sources[0]!;
-      const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: "person", source: "person", about: [...data.about],
+      const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: attributionPeer(context.actor), source: "person", about: [...data.about],
         text: `${ACCEPTED_CONSOLIDATION_PREFIX}${candidate.id}\nAction: ${data.action}\nSources: ${data.targets.map(target => `mem:${target.id}`).join(", ")}\n\n${data.text}` };
       if (note.text.length > 4000) throw Error("accepted consolidation exceeds the v1 note limit");
       for (const source of sources) if (context.policy(structuredClone(candidate), structuredClone(source), structuredClone(note)) !== true) throw Error("consolidation refused by current host policy");
@@ -352,7 +354,7 @@ export class CandidateStore {
         const noteId = append(), applied: string[] = [];
         try {
           if (data.action !== "recurring-fix") for (const target of data.targets) {
-            if (!context.store.supersede(target.id, noteId, "person", context.project)) throw Error("supersession refused");
+            if (!context.store.supersede(target.id, noteId, context.actor, context.project)) throw Error("supersession refused");
             applied.push(target.id);
           }
         } catch {
@@ -385,7 +387,7 @@ export class CandidateStore {
       resolve();
       const replay = this.beginAcceptance(candidate.id, context.project); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
       // A thrown append remains accepting: its authored-row outcome needs person-audited recovery.
-      const noteId = context.store.promote(target.id, "person", context.project);
+      const noteId = context.store.promote(target.id, context.actor, context.project);
       if (noteId === undefined) {
         this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'accepting'").run(candidate.id, this.scope(context.project));
         throw Error("promotion unavailable or declined; candidate remains pending");

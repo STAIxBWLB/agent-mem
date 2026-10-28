@@ -1,3 +1,4 @@
+import { cliAttribution, noteDisplayActor } from "./cli-attribution.ts";
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem, type ImportResult, type WorkStateImportResult, type CaptureImportResult } from "./import.ts";
@@ -48,8 +49,8 @@ export interface GoalCommandOptions {
 }
 
 /**
- * #258: the memory commands, straight on the machine's store (no host needed; agent-hub exposes the same as `ahub memory`). Reading is anyone's; promote, demote, forget,
- * supersede and rebuild are a person's (the identity gate refuses agent shells).
+ * #258: the memory commands, straight on the machine's store (no host needed; agent-hub exposes the same as `ahub memory`). Callers provide read visibility, retained-history intent and write policy;
+ * ordinary CLI calls carry scoped attribution while library calls keep their existing defaults.
  */
 /** The usage line of the memory commands under `name` (`amem` by default; agent-hub passes `ahub memory`). */
 export const memoryUsage = (name: string = AMEM_NAMES.memory): string => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
@@ -91,7 +92,7 @@ export function claudeMemImportText(notes: ImportResult, work: WorkStateImportRe
 const one = (v: View) => `${v.id.slice(0, 8)}  ${v.at.slice(0, 16).replace("T", " ")}  ${v.tier.padEnd(5)} ${v.kind.padEnd(8)} ${v.peer.padEnd(8)} ${v.scope === "shared" ? "shared " : ""}${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 100)}${v.supersededBy ? `  (superseded by ${v.supersededBy.slice(0, 8)})` : ""}`;
 function detail(v: View): string[] {
   return [`${v.id}  ${v.kind}, ${v.tier}-term${v.expiresAt ? ` until ${v.expiresAt}` : ""}, ${v.scope}`, `by ${v.peer} on machine ${v.machine}, ${v.at}, project ${v.project}${v.task ? `, task ${v.task}` : ""}`,
-    ...(v.promotedFrom ? [`promoted from ${v.promotedFrom}`] : []), ...(v.supersededBy ? [`superseded by ${v.supersededBy}`] : []), ...(v.about.length ? [`about: ${v.about.join(", ")}`] : []), "", ...(v.title ? [v.title] : []), v.text];
+    ...(cliAttribution() ? [`actor: ${noteDisplayActor(v.peer)}, peer: ${v.peer}`] : []), ...(v.promotedFrom ? [`promoted from ${v.promotedFrom}`] : []), ...(v.supersededBy ? [`superseded by ${v.supersededBy}`] : []), ...(v.about.length ? [`about: ${v.about.join(", ")}`] : []), "", ...(v.title ? [v.title] : []), v.text];
 }
 
 export async function rawMemoryCommand(args: string[], cwd: string, opts: MemoryCommandOptions): Promise<string> {
@@ -107,7 +108,11 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   if (args.includes("--explain") && (opts.person !== true || opts.rankedSearch !== true || opts.explainSearch !== true)) fail("score explanation requires ranked search and person intent");
   for (let index = rest.indexOf("--explain"); index >= 0; index = rest.indexOf("--explain")) rest.splice(index, 1);
   const store = opts.store ?? opts.open();
-  const actor = "user";
+  const actor = cliAttribution()?.actor ?? "user";
+  const visibleTarget = (view: View | undefined, id: string): View => {
+    if (cliAttribution()?.actor === "agent" && (!view || !opts.readable([view]).some(row => row.id === view.id))) fail("Memory operation unavailable or refused; no partial result is shown.");
+    return need(view, id);
+  };
   const project = opts.project ?? memoryProjectKey(cwd);
   const need = (v: View | undefined, id: string) => v ?? fail(`no memory entry ${id} (${names.memory} list shows the ids)`);
   // #15 D4: this command is bound to one project. Crossing projects is the person's `amem search --all-projects`; here the flags would otherwise read as query words.
@@ -176,11 +181,14 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         const node = !start.includes(":") || start.startsWith("mem:") ? g.nodes[0]!.id : start;
         return json ? JSON.stringify(g, null, 2) : [`${g.nodes.length} nodes, ${g.edges.length} edges around ${node}`, ...g.edges.map((e) => `${e.from} -${e.rel}-> ${e.to}`)].join("\n");
       }
-      case "promote": { const v = need(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.supersededBy) fail(`${v.id.slice(0, 8)} is replaced by ${v.supersededBy.slice(0, 8)}: promote that one instead`); const id = store.promote(v.id, actor, project) ?? fail(v.project !== project ? `${v.id.slice(0, 8)} is another project's note: promote it from that project` : `${v.id.slice(0, 8)} stays short-term: it holds a secret, matches a PII pattern or is about a private path`); return id === v.id ? `${v.id.slice(0, 8)} is already long-term` : `promoted to long-term as ${id.slice(0, 8)}`; }
-      case "demote": { const v = need(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.tier !== "long") return `${v.id.slice(0, 8)} is already short-term`; store.demote(v.id, actor, project); return `demoted ${v.id.slice(0, 8)}: it expires ${store.get(v.id, project)?.expiresAt ?? "with its short-term lifetime"}`; }
-      case "forget": { const v = need(store.forget(rest[0] ?? fail(usage), actor, project), rest[0]!); return `forgot ${v.id.slice(0, 8)}${v.local ? "" : "; it stays in the sync remote's git history until a person rewrites it (docs/memory.md)"}`; }
+      case "promote": { const v = visibleTarget(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.supersededBy) fail(`${v.id.slice(0, 8)} is replaced by ${v.supersededBy.slice(0, 8)}: promote that one instead`); const id = store.promote(v.id, actor, project) ?? fail(v.project !== project ? `${v.id.slice(0, 8)} is another project's note: promote it from that project` : `${v.id.slice(0, 8)} stays short-term: it holds a secret, matches a PII pattern or is about a private path`); return id === v.id ? `${v.id.slice(0, 8)} is already long-term` : `promoted to long-term as ${id.slice(0, 8)}`; }
+      case "demote": { const v = visibleTarget(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.tier !== "long") return `${v.id.slice(0, 8)} is already short-term`; store.demote(v.id, actor, project); return `demoted ${v.id.slice(0, 8)}: it expires ${store.get(v.id, project)?.expiresAt ?? "with its short-term lifetime"}`; }
+      case "forget": { const target = visibleTarget(store.get(rest[0] ?? fail(usage), project), rest[0]!);
+        if (cliAttribution()?.actor === "agent") for (const member of store.forgetTargets(target.id, project)) visibleTarget(member, member.id);
+        const v = need(store.forget(target.id, actor, project), rest[0]!); return `forgot ${v.id.slice(0, 8)}${v.local ? "" : "; it stays in the sync remote's git history until a person rewrites it (docs/memory.md)"}`; }
       case "supersede": {
         if (rest.length !== 2) fail(`usage: ${names.memory} supersede <old> <new>`);
+        if (cliAttribution()?.actor === "agent") for (const id of rest) visibleTarget(store.get(id, project), id);
         return store.supersede(rest[0]!, rest[1]!, actor, project) ? `${rest[0]} is superseded by ${rest[1]}` : fail(`both ids must name different entries, and the newer one must reach as far: shared for a shared entry, long-term for a long-term one (${names.memory} promote it first)`);
       }
       case "sync": {
@@ -194,6 +202,10 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       case "dedupe": {
         const apply = rest.includes("--apply");
         if (rest.some(arg => arg !== "--apply")) fail(`usage: ${names.memory} dedupe [--apply] [--json]`);
+        if (cliAttribution()?.actor === "agent") {
+          const preview = store.dedupe(project, false);
+          for (const group of preview.groups) { for (const view of group.members) visibleTarget(view, view.id); visibleTarget(store.get(group.target, project), group.target); }
+        }
         const result = store.dedupe(project, apply);
         if (json) return JSON.stringify(result, null, 2);
         return [result.groups.length ? `${result.groups.length} duplicate import group(s)${apply ? `; appended ${result.applied} supersede operation(s)` : "; use --apply to reconcile"}` : "no duplicate import groups to reconcile",
@@ -218,6 +230,11 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         return pending.length ? pending.map((x) => `${x.id.slice(0, 8)}  ${x.from.slice(0, 8)} ${x.rel} ${x.to.slice(0, 8)}  (suggested by a model ${x.at}; not evidence until confirmed)`).join("\n") : "no edge suggestions waiting";
       }
       case "confirm": case "reject": {
+        if (cliAttribution()?.actor === "agent") {
+          const matches = store.suggestions(project).filter(row => row.id === rest[0] || row.id.startsWith(rest[0] ?? ""));
+          if (matches.length !== 1) fail("Memory operation unavailable or refused; no partial result is shown.");
+          for (const id of [matches[0]!.from, matches[0]!.to]) visibleTarget(store.get(id, project), id);
+        }
         const x = store.judge(rest[0] ?? fail(`usage: ${names.memory} ${sub} <suggestion id>`), sub, actor, project) ?? fail(`no suggestion ${rest[0]} (${names.memory} suggestions lists them)`);
         return `${sub === "confirm" ? "confirmed" : "rejected"}: ${x.from.slice(0, 8)} ${x.rel} ${x.to.slice(0, 8)}`;
       }
@@ -247,6 +264,7 @@ function leaseText(g: GoalView, me: string, goal: string): string {
  * person's. A peer links its own board task with hub_task_propose's `goal`.
  */
 export async function rawGoalCommand(args: string[], cwd: string, opts: GoalCommandOptions): Promise<string> {
+  const actor = cliAttribution()?.actor ?? "user";
   const json = args.includes("--json");
   const rest = args.filter((a) => a !== "--json");
   const take = (name: string) => { const out: string[] = []; for (let i = rest.indexOf(name); i >= 0; i = rest.indexOf(name)) { out.push(rest[i + 1] ?? fail(`${name} needs a value`)); rest.splice(i, 2); } return out; };
@@ -281,7 +299,7 @@ export async function rawGoalCommand(args: string[], cwd: string, opts: GoalComm
         const shared = rest.includes("--shared");
         const title = rest.filter((a) => a !== "--shared").join(" ").trim() || fail(usage);
         if (!clean(title, milestones)) fail("a long-term task syncs to every machine: this one holds a secret, a PII pattern or a private path and is not saved");
-        const id = store.goal({ project, scope: shared ? "shared" : "project", title, milestones, dependsOn: depends, actor: "user" });
+        const id = store.goal({ project, scope: shared ? "shared" : "project", title, milestones, dependsOn: depends, actor });
         return `long-term task ${id.slice(0, 8)} created: ${title}`;
       }
       case "link": {
@@ -294,7 +312,7 @@ export async function rawGoalCommand(args: string[], cwd: string, opts: GoalComm
         const g = need(rest[0]);
         const state = (sub === "done" ? "done" : rest[1]) as GoalState;
         if (!GOAL_STATES.includes(state)) fail(`the state is one of ${GOAL_STATES.join(", ")}`);
-        store.goalState(g.id, state, "user");
+        store.goalState(g.id, state, actor);
         if (state === "done" && opts.onDone) {
           const current = store.goalOf(g.id, project);
           if (!current || current.id !== g.id || current.state !== "done") return fail("goal state changed before promotion offering");
@@ -306,7 +324,7 @@ export async function rawGoalCommand(args: string[], cwd: string, opts: GoalComm
       }
       case "take": {
         const g = need(rest[0]);
-        const r = store.take(g.id, "user", { force: rest.includes("--force") });
+        const r = store.take(g.id, actor, { force: rest.includes("--force") });
         if (!r.ok) fail(`held by machine ${r.holder.slice(0, 8)} until ${r.until}; wait for it to expire or take it over with --force`);
         return `this machine holds long-term task ${g.id.slice(0, 8)} until ${r.until}${rest.includes("--force") ? " (earlier claims are void)" : ""}`;
       }

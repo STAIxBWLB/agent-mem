@@ -1,10 +1,9 @@
-import { SETUP_TARGETS } from "../src/setup.ts";
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PERSON_ONLY, runCli, type CliContext } from "../src/cli.ts";
+import { runCli, type CliContext } from "../src/cli.ts";
 import { COMMANDS, parseCommand } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] as const;
@@ -52,36 +51,40 @@ test("default setup CLI previews every target with no commands, home writes or c
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });
-for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) test(`setup apply/undo refuse defined ${marker}, including empty, before confirmation/effects`, async () => {
-  const f = fixture(), before = snapshot(f.root); let confirmations = 0;
-  for (const value of ["", "fixture"]) for (const target of targets) for (const flag of ["--apply", "--undo"]) {
-    await expect(runCli(["setup", target, flag], { ...f.context, env: { ...f.env, [marker]: value }, stdinTTY: true, setupConfirm: async () => { confirmations++; return true; } })).rejects.toThrow(PERSON_ONLY);
+for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) test(`setup explicit modes work with ${marker} set and leave no setup state after undo`, async () => {
+  const f = fixture(), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(join(f.home, ".claude.json"), original); const before = snapshot(f.root);
+  for (const value of ["", "fixture"]) {
+    const context = { ...f.context, env: { ...f.env, [marker]: value } };
+    expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: ["claude"], unchanged: [] });
+    expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toEqual({ restored: ["claude"] });
   }
-  expect(confirmations).toBe(0); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
+  expect(f.calls()).toHaveLength(2); expect(f.calls().every(call => call.argv[0] === "claude")).toBe(true);
+  expect(snapshot(f.root).filter(row => !["home/memory", "home/memory/setup", "native-calls"].includes(row.file))).toEqual(before);
 });
-test("setup apply and undo require stdin TTY before confirmation or writes", async () => {
-  const f = fixture(), before = snapshot(f.root); let confirmations = 0;
-  for (const target of targets) for (const flag of ["--apply", "--undo"]) await expect(runCli(["setup", target, flag], { ...f.context, setupConfirm: async () => { confirmations++; return true; } })).rejects.toThrow("terminal on stdin");
-  expect(confirmations).toBe(0); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
+test("setup apply and undo flags need no stdin TTY or confirmation callback", async () => {
+  const f = fixture(), config = join(f.home, ".claude.json"), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(config, original);
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], f.context))).toEqual({ applied: ["claude"], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toEqual({ restored: ["claude"] });
+  expect(f.calls()).toHaveLength(1); expect(readFileSync(config, "utf8")).toBe(original);
 });
-test("setup CLI refuses invalid targets, unknown flags and conflicting modes before confirmation/effects", async () => {
-  const f = fixture(), before = snapshot(f.root); let confirmations = 0;
+test("setup CLI refuses invalid targets, unknown flags and conflicting modes before effects", async () => {
+  const f = fixture(), before = snapshot(f.root);
   for (const args of [["setup"], ["setup", "unknown", "--apply"], ["setup", "ALL"], ["setup", "claude", "extra"], ["setup", "claude", "--unknown"], ["setup", "all", "--apply", "--undo"], ["setup", "claude", "--apply=true"]]) {
-    await expect(runCli(args, { ...f.context, stdinTTY: true, setupConfirm: async () => { confirmations++; return true; } })).rejects.toThrow();
+    await expect(runCli(args, f.context)).rejects.toThrow();
   }
-  expect(confirmations).toBe(0); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
+  expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
 });
-test("cancelled setup CLI confirmations keep both apply and undo dry", async () => {
-  const f = fixture(), before = snapshot(f.root); let confirmations = 0;
+test("setup CLI apply and undo flags do not invoke the legacy confirmation callback", async () => {
+  const f = fixture(), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(join(f.home, ".claude.json"), original); let confirmations = 0;
   for (const [flag, mode] of [["--apply", "apply"], ["--undo", "undo"]] as const) {
-    const output = await runCli(["setup", "all", flag, "--json"], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual(SETUP_TARGETS.filter(target => target !== "agy")); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
-    expect(JSON.parse(output)).toEqual({ cancelled: true });
+    const output = await runCli(["setup", "claude", flag, "--json"], { ...f.context, setupConfirm: async () => { confirmations++; throw Error("legacy confirmation callback must not run"); } });
+    expect(JSON.parse(output)).toEqual(mode === "apply" ? { applied: ["claude"], unchanged: [] } : { restored: ["claude"] });
   }
-  expect(confirmations).toBe(2); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
+  expect(confirmations).toBe(0); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, ".claude.json"), "utf8")).toBe(original);
 });
-test("confirmed actual CLI apply uses only fake native registration in staging and undo restores the original", async () => {
+test("explicit CLI apply uses only fake native registration in staging and undo restores the original", async () => {
   const f = fixture(), config = join(f.home, ".claude.json"), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(config, original, 0o640);
-  const rules = f.rules.map(file => readFileSync(file)), context = { ...f.context, stdinTTY: true, setupConfirm: async () => true };
+  const rules = f.rules.map(file => readFileSync(file)), context = f.context;
   expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: ["claude"], unchanged: [] });
   const calls = f.calls(); expect(calls).toHaveLength(1); expect(calls[0]?.argv.slice(0, 8)).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem"]); expect(calls[0]?.home).not.toBe(f.home); expect(calls[0]?.cwd).toBe(calls[0]?.home); expect(existsSync(calls[0]!.home)).toBe(false);
   const document = JSON.parse(readFileSync(config, "utf8")); expect(document.mcpServers.other).toEqual({ command: "keep" });
@@ -94,12 +97,12 @@ test("confirmed actual CLI apply uses only fake native registration in staging a
 test("a native CLI without MCP administration is refused before free-form prompt execution", async () => {
   const f = fixture(), called = join(f.root, "unsupported-registration-called"), binary = join(f.root, "bin", "claude");
   put(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'claude 0.0.0-fixture'; exit 0; fi\nif [ "$1" = "--help" ]; then printf 'Usage: chat assistant'; exit 0; fi\nprintf called > '${called}'\n`, 0o700);
-  await expect(runCli(["setup", "claude", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true })).rejects.toThrow("does not expose MCP registration");
+  await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("does not expose MCP registration");
   expect(existsSync(called)).toBe(false); expect(f.calls()).toEqual([]);
 });
 test("all setup skips and reports absent CLIs while configuring the available client", async () => {
   const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
-  const result = JSON.parse(await runCli(["setup", "all", "--apply", "--json"], { ...f.context, stdinTTY: true, setupConfirm: async () => true }));
+  const result = JSON.parse(await runCli(["setup", "all", "--apply", "--json"], f.context));
   expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen", "jcode"]);
   expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
   expect(f.calls()).toHaveLength(1);
