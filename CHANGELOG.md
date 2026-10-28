@@ -4,7 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
-- Codex setup accepts native omission of an unrelated stdio server's empty `args = []` and merges only the validated amem entry into the original TOML, preserving that array and other settings. Other server/settings changes still refuse before publication, with client-labelled, value-free errors (#123).
+- Codex setup accepts native omission of an unrelated stdio server's empty `args = []` and merges only the validated amem entry into the original TOML, preserving that array and other settings. Undo retains later settings when removing a setup-created dotted entry. Other server/settings changes still refuse before publication, with client-labelled, value-free errors (#123).
 
 ## 0.11.0
 
