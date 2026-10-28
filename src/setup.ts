@@ -224,22 +224,43 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const hasAmem = target === "jcode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
-    const installed = available(c, target, options), version = installed ? probeClientVersion(c, target, options) : undefined;
+    const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
     if (version?.matches === false) pluginNotes.push(`WARNING: ${target} version ${version.output}; layout verified on ${version.verified}. Apply remains guarded by native configuration validation.`);
     return { target, available: installed, ...(version ? { version } : {}), files: c.paths[target], receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
   }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is confirmed in a person's terminal.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
+}
+/** Native probes and registration share one private HOME, cwd and configuration layout. */
+function stagingEnvironment(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext, staging: string) {
+  const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent"), QWEN_HOME: join(staging, ".qwen"), JCODE_HOME: join(staging, ".jcode") };
+  Object.assign(env, { XDG_CONFIG_HOME: join(staging, ".config"), XDG_DATA_HOME: join(staging, ".local", "share"), XDG_CACHE_HOME: join(staging, ".cache"), XDG_STATE_HOME: join(staging, ".local", "state"), TMPDIR: join(staging, "tmp"), TMP: join(staging, "tmp"), TEMP: join(staging, "tmp") });
+  env.QWEN_RUNTIME_DIR = join(staging, "qwen-runtime");
+  env.QWEN_CODE_SYSTEM_SETTINGS_PATH = join(staging, "qwen-system-settings.json");
+  env.QWEN_CODE_SYSTEM_DEFAULTS_PATH = join(staging, "qwen-system-defaults.json");
+  mkdirSync(env.TMPDIR!, { mode: 0o700 });
+  if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
+  // The staging workspace is a trusted private binding, not a Git repository or the real caller cwd.
+  const staged = context({ ...options, env, cwd: staging }, target === "agy" ? { root: staging, ignored: true, assertCurrent() {} } : undefined);
+  // Codex refuses an explicit CODEX_HOME that does not exist, even for mcp add.
+  mkdirSync(dirname(staged.paths[target][0]!), { recursive: true, mode: 0o700 });
+  return { env, staged };
 }
 /** Advisory only: never queried by apply/undo or persisted in the ownership receipt. */
 function probeClientVersion(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): ClientVersion {
   const verified = SETUP_VERIFIED_VERSIONS[target];
   let output: string | null = null;
   // Like the help probe, trusted native fixtures do not invoke installed executables.
-  if (!options.native) try {
-    const result = spawnSync(target, ["--version"], { cwd: c.workspace?.root ?? c.home, env: { ...c.env }, encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
-    if (result.status === 0 && !result.error) output = Array.from(singleLine(result.stdout).trim()).slice(0, 256).join("") || null;
-  } catch { /* An absent, failed or timed-out native version never prevents setup. */ }
+  if (!options.native) {
+    let staging: string | undefined;
+    try {
+      staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
+      const { env } = stagingEnvironment(c, target, options, staging);
+      const result = spawnSync(target, ["--version"], { cwd: staging, env: { ...env }, encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+      if (result.status === 0 && !result.error) output = Array.from(singleLine(result.stdout).trim()).slice(0, 256).join("") || null;
+    } catch { /* An absent, failed or timed-out native version never prevents setup. */ }
+    finally { if (staging) try { rmSync(staging, { recursive: true, force: true }); } catch { output = null; } }
+  }
   const observed = output?.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=\s|$)/)?.[1];
-  return { output, verified, matches: output === null || verified === null ? null : observed === verified };
+  return { output, verified, matches: observed === undefined || verified === null ? null : observed === verified };
 }
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
   // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
@@ -287,17 +308,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
-    const env: Record<string, string | undefined> = { ...c.env, HOME: staging, AMEM_HOME: join(staging, "memory"), AGENTHUB_HOME: join(staging, "hub"), CODEX_HOME: join(staging, ".codex"), KIMI_CODE_HOME: join(staging, ".kimi-code"), PI_CODING_AGENT_DIR: join(staging, ".pi", "agent"), QWEN_HOME: join(staging, ".qwen"), JCODE_HOME: join(staging, ".jcode") };
-    Object.assign(env, { XDG_CONFIG_HOME: join(staging, ".config"), XDG_DATA_HOME: join(staging, ".local", "share"), XDG_CACHE_HOME: join(staging, ".cache"), XDG_STATE_HOME: join(staging, ".local", "state"), TMPDIR: join(staging, "tmp"), TMP: join(staging, "tmp"), TEMP: join(staging, "tmp") });
-    env.QWEN_RUNTIME_DIR = join(staging, "qwen-runtime");
-    env.QWEN_CODE_SYSTEM_SETTINGS_PATH = join(staging, "qwen-system-settings.json");
-    env.QWEN_CODE_SYSTEM_DEFAULTS_PATH = join(staging, "qwen-system-defaults.json");
-    mkdirSync(env.TMPDIR!, { mode: 0o700 });
-    if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
-    // The staging workspace is a trusted private binding, not a Git repository or the real caller cwd.
-    const staged = context({ ...options, env, cwd: staging }, target === "agy" ? { root: staging, ignored: true, assertCurrent() {} } : undefined);
-    // Codex refuses an explicit CODEX_HOME that does not exist, even for mcp add.
-    mkdirSync(dirname(staged.paths[target][0]!), { recursive: true, mode: 0o700 });
+    const { env, staged } = stagingEnvironment(c, target, options, staging);
     for (let i = 0; i < changes.length; i++) if (expected[i]!.bytes !== null) write(staged.paths[target][i]!, expected[i]!);
     const argv = command(target, c.bun, c.entry);
     if (argv && prior?.intent === intent(c, target)) {
@@ -480,7 +491,10 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
     const state = action.mcpChange === "unchanged" ? "ok" : "attention";
     const what = action.mcpChange === "unchanged" ? plan.mode === "undo" ? "no setup receipt; nothing to restore" : "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
     lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
-    if (action.version) lines.push(`            version ${action.version.output ?? "unknown"}; ${action.version.verified ? `verified ${action.version.verified}` : "unverified (no verified version recorded)"}`);
+    if (action.version) {
+      const reported = action.version.output === null ? "unknown" : action.version.verified && action.version.matches === null ? `unrecognised (${action.version.output})` : action.version.output;
+      lines.push(`            version ${reported}; ${action.version.verified ? `verified ${action.version.verified}` : "unverified (no verified version recorded)"}`);
+    }
     for (const file of action.files) lines.push(`            file     ${file}`);
     if (action.cwd) lines.push(`            cwd      ${action.cwd}`);
     lines.push(`            receipt  ${action.receipt}`);

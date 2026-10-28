@@ -5,7 +5,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { applySetup, planSetup, runSetup, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { applySetup, planSetup, runSetup, setupPlanText, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
 import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
 import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [];
@@ -56,11 +56,12 @@ function fixture() {
   return { home, env, calls, entry, bun, options, plan, file, receiptFile, receipt };
 }
 function versionFixture(target: SetupTarget, body: string) {
-  const f = fixture(), bin = join(f.home, "probe-bin"), log = join(f.home, "version-calls.jsonl");
+  const f = fixture(), bin = join(f.home, "probe-bin"), evidence = realPath(mkdtempSync(join(tmpdir(), "amem-version-evidence-"))), log = join(evidence, "version-calls.jsonl");
+  cleanup.push(() => rmSync(evidence, { recursive: true, force: true }));
   mkdirSync(bin);
   put(join(bin, target), `#!${process.execPath}
-import { appendFileSync } from 'node:fs';
-appendFileSync(process.env.VERSION_CALLS, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME, marker: process.env.VERSION_MARKER }));
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+appendFileSync(process.env.VERSION_CALLS, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME, cwd: process.cwd(), tmp: process.env.TMPDIR, codexHome: process.env.CODEX_HOME, codexExists: existsSync(process.env.CODEX_HOME), marker: process.env.VERSION_MARKER }));
 ${body}
 `, 0o700);
   const { native: _native, ...rest } = f.options;
@@ -68,17 +69,20 @@ ${body}
   return { ...f, native: f.options.native!, options, log, binary: join(bin, target), preview: () => planSetup(target, "preview", options) };
 }
 test("setup probes the recorded Codex version only at plan time in the configured environment", () => {
-  const f = versionFixture("codex", 'console.log("codex-cli 0.165.0");');
-  const plan = f.preview();
+  const f = versionFixture("codex", 'writeFileSync(process.env.HOME + "/stage-only", "probe wrote here"); console.log("codex-cli 0.165.0");');
+  const before = snapshot(f.home), plan = f.preview();
   expect(plan.actions[0]!.version).toEqual({ output: "codex-cli 0.165.0", verified: "0.165.0", matches: true });
-  expect(JSON.parse(text(f.log))).toEqual({ args: ["--version"], home: f.home, marker: "isolated-probe-env" });
+  const observed = JSON.parse(text(f.log));
+  expect(observed).toMatchObject({ args: ["--version"], cwd: observed.home, tmp: join(observed.home, "tmp"), codexHome: join(observed.home, ".codex"), codexExists: true, marker: "isolated-probe-env" });
+  expect(observed.home).toStartWith(join(realPath(tmpdir()), "amem-setup-")); expect(observed.home).not.toBe(f.home);
+  expect(existsSync(observed.home)).toBe(false); expect(snapshot(f.home)).toEqual(before);
   expect(plan.notes.join("\n")).not.toContain("WARNING: codex version");
   const options = { ...f.options, native: f.native };
   expect(applySetup(plan, options).applied).toEqual(["codex"]);
   expect(text(f.log).trim().split("\n")).toHaveLength(1);
   undoSetup(planSetup("codex", "undo", { ...options }), options);
 });
-test.each(["0.27.0", "0.26.1-beta.1", "0.26.1+build.2", "0.26.1.1"])("Qwen %s warns with both versions and does not block guarded apply", observed => {
+test.each(["0.27.0", "0.26.1-beta.1", "0.26.1+build.2"])("Qwen %s warns with both versions and does not block guarded apply", observed => {
   const f = versionFixture("qwen", `console.log(${JSON.stringify(`qwen ${observed}`)});`), plan = f.preview();
   expect(plan.actions[0]!.version).toEqual({ output: `qwen ${observed}`, verified: "0.26.1", matches: false });
   expect(plan.notes.join("\n")).toContain(`WARNING: qwen version qwen ${observed}; layout verified on 0.26.1`);
@@ -96,6 +100,7 @@ test.each([
   expect(plan.actions[0]!.version).toEqual({ output: null, verified: "0.26.1", matches: null });
   expect(JSON.stringify(plan)).not.toContain("VERSION_STDERR_SECRET");
   expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version");
+  expect(existsSync(JSON.parse(text(f.log)).home)).toBe(false);
 }, 10_000);
 test("successful native version output is bounded and cannot create human rows", () => {
   const f = versionFixture("qwen", 'console.log("qwen 0.26.1"); console.log("x".repeat(2000));'), plan = f.preview(), output = plan.actions[0]!.version!.output!;
@@ -109,6 +114,25 @@ test("version table recognizes Jcode's v prefix and leaves undocumented baseline
   const claude = versionFixture("claude", 'console.log("claude 1.2.3");'), plan = claude.preview();
   expect(plan.actions[0]!.version).toEqual({ output: "claude 1.2.3", verified: null, matches: null });
   expect(plan.notes.join("\n")).not.toContain("WARNING: claude version");
+});
+test.each(["development snapshot", "qwen 0.26.1.1"])("unrecognised version %s is reported without a mismatch warning", output => {
+  const f = versionFixture("qwen", `console.log(${JSON.stringify(output)});`), plan = f.preview();
+  expect(plan.actions[0]!.version).toEqual({ output, verified: "0.26.1", matches: null });
+  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version"); expect(setupPlanText(plan)).toContain(`version unrecognised (${output})`);
+});
+test("Pi's advisory probe runs only in staging and leaves the real fixture home unchanged", () => {
+  const f = versionFixture("pi", 'writeFileSync(process.env.HOME + "/stage-only", "probe wrote here"); console.log("pi 1.2.3");'), before = snapshot(f.home), plan = f.preview();
+  expect(plan.actions[0]!.version!.output).toBe("pi 1.2.3");
+  const observed = JSON.parse(text(f.log)); expect(observed.cwd).toBe(observed.home); expect(observed.home).toStartWith(join(realPath(tmpdir()), "amem-setup-"));
+  expect(existsSync(observed.home)).toBe(false); expect(snapshot(f.home)).toEqual(before);
+});
+test("undo and repository-only Antigravity never invoke a version executable", () => {
+  const f = versionFixture("codex", 'throw Error("must not run");'), before = snapshot(f.home);
+  expect(planSetup("codex", "undo", f.options).actions[0]!.version).toBeUndefined(); expect(existsSync(f.log)).toBe(false); expect(snapshot(f.home)).toEqual(before);
+  const agy = versionFixture("agy", 'throw Error("must not run");'); agyGit(agy.home, "init", "-q");
+  const original = snapshot(agy.home), options = { ...agy.options, cwd: agy.home, env: { ...agy.options.env, PATH: `${join(agy.home, "probe-bin")}:/usr/bin:/bin` } };
+  const plan = planSetup("agy", "preview", options); expect(plan.actions[0]!.available).toBe(true); expect(plan.actions[0]!.version).toBeUndefined();
+  expect(existsSync(agy.log)).toBe(false); expect(snapshot(agy.home)).toEqual(original);
 });
 test("unavailable clients are not version-probed", () => {
   const f = versionFixture("qwen", 'throw Error("must not run");'); rmSync(f.binary);
