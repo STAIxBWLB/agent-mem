@@ -1,6 +1,7 @@
 import { validVaultPath } from "./generation.ts";
 import { createStandalonePolicy, type MemoryPolicy } from "./policy.ts";
 import type { MemoryStore, View, VaultEntry } from "./store.ts";
+import { label, PLAIN, singleLine, type Style } from "./style.ts";
 
 export interface VaultSelection { project: string; policy: MemoryPolicy; limit?: number }
 export type { VaultEntry } from "./store.ts";
@@ -27,6 +28,36 @@ export async function vaultCandidates(store: MemoryStore, options: VaultSelectio
   const linked = new Set(store.vaultLinks(options.project).map(row => `${row.target}:${row.rowHash}`));
   return visible.filter(entry => durable(entry.view) && !linked.has(`${entry.view.id}:${entry.rowHash}`)).map(entry => entry.view)
     .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, options.limit ?? 50);
+}
+
+/** Human-readable list of screened vault candidates; raw note text is intentionally omitted. */
+export function vaultCandidatesText(rows: readonly View[], s: Style = PLAIN): string {
+  return [
+    `amem vault-candidates: ${rows.length ? s.attention("attention") : s.ok("complete")}`,
+    `${label(s, rows.length ? "attention" : "skipped")} candidates: ${rows.length}`,
+    ...rows.map(row => {
+      const title = singleLine(row.title ?? "(untitled)").slice(0, 120);
+      return `  ${label(s, "attention")} ${singleLine(row.project)}: ${row.id}  ${row.kind}  ${title}`;
+    }),
+    `Next action: ${rows.length ? "open the source repository, then review a candidate with amem show <id> before recording it in your vault" : "none; no screened durable candidates are available"}`,
+  ].join("\n");
+}
+
+/** Human-readable cross-project list, preserving project grouping and omitting note bodies. */
+export function vaultCandidatesAllText(result: {
+  crossedProjects: boolean;
+  projects: readonly { project: string; candidates: readonly View[] }[];
+}, s: Style = PLAIN): string {
+  const count = result.projects.reduce((sum, group) => sum + group.candidates.length, 0);
+  return [
+    `amem vault-candidates: ${count ? s.attention("attention") : s.ok("complete")}${result.crossedProjects ? " (across projects)" : ""}`,
+    `${label(s, count ? "attention" : "skipped")} candidates: ${count}`,
+    ...result.projects.flatMap(group => group.candidates.map(row => {
+      const title = singleLine(row.title ?? "(untitled)").slice(0, 120);
+      return `  ${label(s, "attention")} ${singleLine(group.project)}: ${row.id}  ${row.kind}  ${title}`;
+    })),
+    `Next action: ${count ? (result.crossedProjects ? "open the candidate's source repository, then review it with amem show <id> before recording it in your vault" : "open the source repository, then review a candidate with amem show <id> before recording it in your vault") : "none; no screened durable candidates are available"}`,
+  ].join("\n");
 }
 
 /** Person-facing hosts authenticate intent before calling; no MCP vault-link tool is provided. */

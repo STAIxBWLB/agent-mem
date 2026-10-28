@@ -39,15 +39,15 @@ for (const mode of ["apply", "dry-run", "resume", "deactivate"] as const) test(`
 
 test("#15 CLI routes explicit shard modes and resumes while refusing ordinary generation selection", async () => {
   const f = fixture();
-  expect(JSON.parse(await runCli(["migrate", "--shards", "--dry-run"], f.context)).mode).toBe("dry-run");
-  expect(JSON.parse(await runCli(["migrate", "--shards"], f.context)).active).toBe(true);
+  expect(JSON.parse(await runCli(["migrate", "--shards", "--dry-run", "--json"], f.context)).mode).toBe("dry-run");
+  expect(JSON.parse(await runCli(["migrate", "--shards", "--json"], f.context)).active).toBe(true);
   for (const args of [["migrate"], ["migrate", "--dry-run"], ["migrate", "--deactivate"]]) {
     const before = bytes(f.memory);
     await expect(runCli(args, f.context)).rejects.toThrow("migrate --shards --resume");
     expect(bytes(f.memory)).toEqual(before);
   }
-  expect(JSON.parse(await runCli(["migrate", "--resume"], f.context)).alreadyActive).toBe(true);
-  expect(JSON.parse(await runCli(["migrate", "--shards", "--resume"], f.context)).alreadyActive).toBe(true);
+  expect(JSON.parse(await runCli(["migrate", "--resume", "--json"], f.context)).alreadyActive).toBe(true);
+  expect(JSON.parse(await runCli(["migrate", "--shards", "--resume", "--json"], f.context)).alreadyActive).toBe(true);
 });
 
 test("#40 split-home person acceptance writes the bound shard and preserves legacy logs", async () => {
@@ -69,13 +69,13 @@ test("#15 prune --user is explicit, current-project authorized, and preserves th
   const id = user.note({ op: "note", project: "another-project", scope: "shared", tier: "short", kind: "finding", peer: "person", source: "person", text: "explicitly expired shared note", about: [], expires: new Date(start + 1000).toISOString() }); user.close();
   const cutoff = new Date(start + 2000).toISOString();
   expect(parseCommand(["prune", "--user", "--cutoff", cutoff, "--dry-run"]).options["--user"]).toBe(true);
-  const ordinary = JSON.parse(await runCli(["prune", "--cutoff", cutoff, "--dry-run"], f.context));
+  const ordinary = JSON.parse(await runCli(["prune", "--cutoff", cutoff, "--dry-run", "--json"], f.context));
   expect(ordinary.counts.selected).toBe(0);
-  const plan = JSON.parse(await runCli(["prune", "--user", "--cutoff", cutoff, "--dry-run"], f.context));
+  const plan = JSON.parse(await runCli(["prune", "--user", "--cutoff", cutoff, "--dry-run", "--json"], f.context));
   expect(plan.project).toBe(f.project); expect(plan.counts.selected).toBe(1);
   expect(plan.rows.flatMap((row: any) => row.payload.targets.map((target: any) => target.id))).toEqual([id]);
   const file = join(f.dir, "user-prune-plan.json"); writeFileSync(file, JSON.stringify(plan));
-  const applied = JSON.parse(await runCli(["prune", "--user", "--apply", "--plan", file], f.context));
+  const applied = JSON.parse(await runCli(["prune", "--user", "--apply", "--plan", file, "--json"], f.context));
   expect(applied.completed).toHaveLength(1);
   const check = openShardStore({ home: f.dir, user: true });
   try { expect(check.prunePort().snapshot().pruned).toContain(id); } finally { check.close(); }

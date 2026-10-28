@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../src/cli.ts";
+import { runCli, ingestText } from "../src/cli.ts";
+import type { IngestReceipt } from "../src/ingest.ts";
+import { migrationText, type MigrationResult } from "../src/memory/migrate.ts";
+import { shardMigrationText, type ShardMigrationResult } from "../src/memory/shard-migration.ts";
+import { pruneText, type PrunePlan } from "../src/memory/prune.ts";
+import { capacityApplyText, capacitySplitText } from "../src/memory/capacity.ts";
+import { vaultCandidatesText, vaultCandidatesAllText } from "../src/memory/vault.ts";
+import { MemoryStore } from "../src/memory/store.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
 import { doctorText, DOCTOR_SCHEMA, type DoctorReport } from "../src/memory/doctor.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
@@ -192,4 +201,184 @@ test("undo of a target without a receipt says there is nothing to restore", () =
   expect(setupPlanText(undo)).toMatch(/^OK +kimi: no setup receipt; nothing to restore/m);
   expect(setupPlanText(undo)).not.toContain("already set up");
   expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^OK +kimi: already set up; no change/m);
+});
+
+const emptyIngest: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
+const migrationView = (mode: MigrationResult["mode"] = "dry-run", active = false): MigrationResult => ({
+  mode, profile: { kind: active ? "generation" : "shared-v1", home: "/h/memory", dir: active ? "/h/memory/generations/g" : "/h/memory", selectorRevision: "revision", ...(active ? { generation: "a".repeat(32) } : {}) },
+  counts: { validRows: 2, skippedRows: 0, byOp: { note: 2 }, byTier: { long: 2 }, tailBytes: 200, expiredRows: 0, eligibleRows: 2 }, consequence: "History stays available.",
+});
+const shardView = (): ShardMigrationResult => ({ mode: "dry-run", generation: "b".repeat(32), active: false, consequence: "Curated projects are routed to shards.",
+  counts: { rows: 2, skippedRows: 0, byShard: { project: 2 }, userRows: 0, byProject: { repo: 2 }, tailBytes: 100, legacyRows: 2, generationRows: 0, generationLocalRows: 0,
+    pruneRows: 0, translatedPruneRows: 0, refusedRows: 0, sharedSupersededByPrivate: 0, sharedSupersededByPrivateIds: [], crossPrivateReplacement: 0, crossPrivateReplacementIds: [],
+    danglingRows: 0, danglingIds: [], legacyLocalRows: 0, legacyMainRows: 2 } });
+const pruneView = (): PrunePlan => ({ schema: "agent-mem.prune-plan/v1", generation: "a".repeat(32), selectorRevision: "revision", project: "repo", policyRevision: "policy",
+  counts: { eligible: 2, selected: 1, local: 1, synced: 0 }, hasMore: true, seal: "sealed-not-human-output", rows: [{ placement: "local", payload: {
+    schema: "agent-mem.prune/v1", op: "prune", generation: "a".repeat(32), at: "2026-10-28T00:00:00.000Z", machine: "m", actor: "person", placement: "local", cutoff: "2026-10-27T00:00:00.000Z", id: "b".repeat(32),
+    targets: [{ id: "c".repeat(32), rowHash: "d".repeat(64), expiredAt: "2026-10-26T00:00:00.000Z", basis: { kind: "note", id: "c".repeat(32), rowHash: "d".repeat(64) } }] } }] });
+const capacityView = () => ({ preview: { file: "/h/memory/capture-config.json", current: { capMb: 512, retentionDays: 90 }, target: { capMb: 256, retentionDays: 30 }, reason: "observed resource bound" }, confirm: "re-run with --confirm to write" });
+
+test("ingest receipts distinguish complete, remaining, spooled, errors and no source", () => {
+  expect(ingestText("codex", emptyIngest)).toStartWith("amem ingest codex: skipped\n");
+  const complete = { ...emptyIngest, files: 1, read: 3, imported: 2, skipped: 1 };
+  expect(ingestText("kimi", complete)).toStartWith("amem ingest kimi: complete\n");
+  expect(ingestText("pi", { ...complete, remaining: true })).toContain("run the same ingest command again");
+  const spooled = ingestText("qwen", { ...complete, spooled: 1 });
+  expect(spooled).toContain("the next capture write replays"); expect(spooled).not.toContain("amem doctor");
+  for (const reason of ["source_bound", "source_unavailable", "schema_or_time", "cursor_busy", "scope_changed"] as const) {
+    const text = ingestText("codex", { ...emptyIngest, errors: 1, reason });
+    expect(text).toStartWith("amem ingest codex: attention\n"); expect(text).toContain("reason: " + reason); expect(text).toContain("Next action:");
+  }
+});
+
+test("migration text covers preview, already active, deactivation, shard refusals and pending rows", () => {
+  for (const s of [PLAIN, COLOR]) {
+    const preview = strip(migrationText(migrationView(), s));
+    expect(preview).toStartWith("amem migrate: preview\n"); expect(preview).toMatch(/^OK +profile shared-v1/m);
+    expect(preview).toContain("remove --dry-run, keep other options");
+    const active = strip(migrationText({ ...migrationView("apply", true), alreadyActive: true, counts: undefined }, s));
+    expect(active).toContain("already active"); expect(active).toContain("Next action: none");
+    expect(strip(migrationText({ ...migrationView("deactivate"), counts: undefined }, s))).toContain("Next action: none");
+    const shards = shardView(), before = JSON.stringify(shards), routed = strip(shardMigrationText(shards, s));
+    expect(routed).toStartWith("amem migrate --shards: preview\n"); expect(routed).toMatch(/^OK +shard rows project 2/m); expect(JSON.stringify(shards)).toBe(before);
+    expect(strip(shardMigrationText({ ...shards, active: true, counts: { ...shards.counts, rows: 0 } }, s))).toContain("Next action: none");
+    const refused = strip(shardMigrationText({ ...shards, refusals: ["witness not current"] }, s));
+    expect(refused).toContain("Refusals:"); expect(refused).toContain("resolve the listed refusals");
+  }
+});
+
+test("prune text is not a sealed plan and identifies completed prune rows", () => {
+  const plan = pruneView(), before = JSON.stringify(plan);
+  for (const s of [PLAIN, COLOR]) {
+    const text = strip(pruneText(plan, s));
+    expect(text).toStartWith("amem prune: preview\n"); expect(text).toContain("eligible 2, selected 1, local 1, synced 0");
+    expect(text).toContain("--json"); expect(text).toContain("--plan <file>"); expect(text).toContain("keep --user");
+    expect(text).not.toContain(plan.seal); expect(text).toContain("not a sealed JSON plan");
+    const applied = strip(pruneText({ completed: ["row-id"] }, s));
+    expect(applied).toContain("completed prune rows: 1"); expect(applied).toContain("row-id"); expect(applied).toContain("Next action: none");
+    expect(strip(pruneText({ ...plan, rows: [], counts: { eligible: 0, selected: 0, local: 0, synced: 0 }, hasMore: false }, s))).toContain("Next action: none");
+  }
+  expect(JSON.stringify(plan)).toBe(before);
+});
+
+test("capacity text keeps confirmation arguments and visible shard skips", () => {
+  const preview = capacityView(), before = JSON.stringify(preview);
+  const split = { at: 1, split: [{ key: "repo", dir: "/h/shard", current: {}, target: { capMb: 50, retentionDays: 7 }, reason: "share" }], skipped: ["foreign"], confirm: "confirm" };
+  for (const s of [PLAIN, COLOR]) {
+    const text = strip(capacityApplyText(preview, s));
+    expect(text).toStartWith("amem capacity apply: preview\n"); expect(text).toContain("keeping all other arguments");
+    expect(text).toContain("cap_mb 256, retention_days 30"); expect(text).not.toContain('{"');
+    expect(strip(capacityApplyText({ preview: preview.preview, written: { cap_mb: 256, retention_days: 30 } }, s))).toContain("Next action: none");
+    const shares = strip(capacitySplitText(split, s));
+    expect(shares).toStartWith("amem capacity apply --split: preview\n"); expect(shares).toContain("SKIPPED"); expect(shares).toContain("foreign");
+    expect(shares).toContain("--split command with --confirm, keeping all other arguments");
+    expect(strip(capacitySplitText({ split: split.split, written: [{ key: "repo", cap_mb: 50, retention_days: 7 }] }, s))).toContain("Next action: none");
+  }
+  expect(JSON.stringify(preview)).toBe(before);
+});
+
+test("vault text bounds metadata and never emits note bodies or data terminal controls", () => {
+  const h = home(), store = new MemoryStore({ memoryDir: h.memory, deferPromotions: true });
+  try {
+    const id = store.note({ op: "note", project: "repo", scope: "project", tier: "long", kind: "contract", peer: "person", source: "person",
+      title: COLOR.error("bounded title") + "\nextra", text: "BODY_NOT_FOR_LISTING", about: [] });
+    const row = store.get(id)!, text = vaultCandidatesText([row]);
+    expect(text).toStartWith("amem vault-candidates: attention\n"); expect(text).toContain(id); expect(text).toContain("bounded title");
+    expect(text).not.toContain("BODY_NOT_FOR_LISTING"); expect(text).not.toMatch(ANSI);
+    const cross = vaultCandidatesAllText({ crossedProjects: true, projects: [{ project: "repo", candidates: [row] }] });
+    expect(cross).toContain("source repository"); expect(cross).not.toContain("BODY_NOT_FOR_LISTING");
+    expect(vaultCandidatesText([])).toContain("Next action:"); expect(vaultCandidatesText([])).toContain("candidates: 0");
+  } finally { store.close(); }
+});
+
+async function readableCommand(h: ReturnType<typeof home>, args: string[], stdoutTTY = false, extraEnv: Record<string, string | undefined> = {}, stdinTTY = true) {
+  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = h.memory;
+  try { return await runCli(args, { cwd: h.cwd, env: { HOME: h.root, AMEM_HOME: h.memory, ...extraEnv }, stdoutTTY, stdinTTY }); }
+  finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}
+
+test("ingest JSON keeps exact compact bytes and agent capture entry remains allowed", async () => {
+  const h = home(), saved = process.env.CODEX_HOME; process.env.CODEX_HOME = join(h.root, "native-codex"); mkdirSync(join(process.env.CODEX_HOME, "sessions"), { recursive: true });
+  try {
+    const plain = await readableCommand(h, ["ingest", "codex"]);
+    expect(plain).toStartWith("amem ingest codex: skipped\n"); expect(plain).not.toMatch(ANSI);
+    expect(await readableCommand(h, ["ingest", "codex"], true)).toMatch(ANSI);
+    expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toBe(plain);
+    expect(await readableCommand(h, ["ingest", "codex"], true, { TERM: "dumb" })).toBe(plain);
+    const json = await readableCommand(h, ["ingest", "codex", "--json"], true, { CODEX_THREAD_ID: "agent" }, false);
+    expect(json).toBe(JSON.stringify(emptyIngest)); expect(json).not.toMatch(ANSI);
+  } finally { if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
+}, 30_000);
+
+test("capacity apply CLI has readable two-step plans and the previous pretty JSON", async () => {
+  const h = home(), args = ["capacity", "apply", "--cap-mb", "64", "--retention-days", "7"];
+  const human = await readableCommand(h, args);
+  expect(human).toStartWith("amem capacity apply: preview\n"); expect(human).toContain("keeping all other arguments"); expect(human).not.toMatch(ANSI);
+  expect(await readableCommand(h, args, true)).toMatch(ANSI);
+  const json = await readableCommand(h, [...args, "--json"], true), preview = JSON.parse(readFileSync(join(h.memory, "capture-config.preview.json"), "utf8"));
+  expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2));
+  const written = await readableCommand(h, [...args, "--confirm", "--json"], true), result = JSON.parse(written);
+  expect(written).toBe(JSON.stringify({ preview: result.preview, written: { cap_mb: 64, retention_days: 7 } }, null, 2)); expect(written).not.toMatch(ANSI);
+}, 30_000);
+
+test("generation/prune CLI keeps sealed JSON artifacts and a readable apply receipt", async () => {
+  const h = home(), store = new MemoryStore({ memoryDir: h.memory, deferPromotions: true, now: () => Date.now() - 20000 }), project = memoryProjectKey(h.cwd);
+  try { store.note({ op: "note", project, scope: "project", tier: "short", kind: "finding", peer: "person", text: "synthetic expiry fixture", about: [], expires: new Date(Date.now() - 10000).toISOString(), source: "person" }); }
+  finally { store.close(); }
+  expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith("amem migrate: preview\n");
+  const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--json"], true);
+  expect(migrated).toBe(JSON.stringify(JSON.parse(migrated), null, 2)); expect(migrated).not.toMatch(ANSI);
+  expect(await readableCommand(h, ["migrate"])).toContain("already active");
+  const args = ["prune", "--dry-run", "--cutoff", new Date().toISOString()];
+  expect(await readableCommand(h, args)).toStartWith("amem prune: preview\n");
+  const plan = await readableCommand(h, [...args, "--json"], true);
+  expect(plan).toBe(JSON.stringify(JSON.parse(plan), null, 2));
+  const file = join(h.root, "prune.json"); writeFileSync(file, plan, { mode: 0o600 });
+  expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toStartWith("amem prune: complete\n");
+}, 30_000);
+
+test("vault CLI format and ordinary person/TTY gates remain separate", async () => {
+  const h = home();
+  expect(await readableCommand(h, ["vault-candidates"])).toStartWith("amem vault-candidates: complete\n");
+  expect(await readableCommand(h, ["vault-candidates", "--json"], true)).toBe("[]");
+  for (const args of [["migrate", "--dry-run"], ["prune", "--dry-run", "--cutoff", "2026-10-28"], ["capacity", "apply", "--confirm"]]) {
+    await expect(readableCommand(h, args, true, { CODEX_THREAD_ID: "agent" })).rejects.toThrow(/amem is for the person/);
+    await expect(readableCommand(h, args, true, {}, false)).rejects.toThrow(/terminal/);
+  }
+}, 30_000);
+
+
+test("split capacity CLI previews in text and confirms the same JSON plan", async () => {
+  const h = home(), project = memoryProjectKey(h.cwd), capture = new CaptureStore({ memoryDir: h.memory, project, cwd: h.cwd });
+  try { capture.append({ project, agent: "fixture", event: "message", excerpt: "synthetic capture", paths: [] }); } finally { capture.close(); }
+  const args = ["capacity", "apply", "--split"];
+  const human = await readableCommand(h, args);
+  expect(human).toStartWith("amem capacity apply --split: preview\n");
+  expect(human).toContain("--split command with --confirm, keeping all other arguments");
+  const json = await readableCommand(h, [...args, "--json"], true);
+  const saved = JSON.parse(readFileSync(join(h.memory, "capacity-split.preview.json"), "utf8"));
+  expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }, null, 2));
+  expect(json).not.toMatch(ANSI);
+  const confirmed = await readableCommand(h, [...args, "--confirm"]);
+  expect(confirmed).toStartWith("amem capacity apply --split: complete\n"); expect(confirmed).toContain("Next action: none");
+}, 30_000);
+
+test("all new human renderers use the shared color contract without mutating their result objects", () => {
+  const migration = migrationView(), shards = shardView(), plan = pruneView(), capacity = capacityView();
+  const before = JSON.stringify([migration, shards, plan, capacity]);
+  const outputs = [
+    (s: typeof PLAIN) => migrationText(migration, s),
+    (s: typeof PLAIN) => shardMigrationText(shards, s),
+    (s: typeof PLAIN) => pruneText(plan, s),
+    (s: typeof PLAIN) => capacityApplyText(capacity, s),
+    (s: typeof PLAIN) => vaultCandidatesText([], s),
+    (s: typeof PLAIN) => ingestText("codex", { ...emptyIngest, remaining: true }, s),
+  ];
+  for (const render of outputs) {
+    expect(render(PLAIN)).not.toMatch(ANSI);
+    expect(render(COLOR)).toMatch(ANSI);
+    expect(strip(render(COLOR))).toBe(render(PLAIN));
+    expect(render(PLAIN)).toContain("Next action:");
+  }
+  expect(JSON.stringify([migration, shards, plan, capacity])).toBe(before);
 });

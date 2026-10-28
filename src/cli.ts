@@ -10,7 +10,8 @@ import { createMemoryMcp } from "./mcp-memory.ts";
 import { serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
-import { vaultCandidates } from "./memory/vault.ts";
+import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./memory/vault.ts";
+import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
-import { capacityReport, capacityText } from "./memory/capacity.ts";
+import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
 import { commandHelp, parseCommand } from "./commands-table.ts";
@@ -27,9 +28,9 @@ import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
 import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
-import { migrate } from "./memory/migrate.ts";
-import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
-import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
+import { migrate, migrationText } from "./memory/migrate.ts";
+import { migrateShards, shardMigrationStatus, shardMigrationText } from "./memory/shard-migration.ts";
+import { applyPrune, planPrune, pruneText, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
 import { readCatalogFresh } from "./memory/catalog.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "./memory/lifecycle.ts";
 import { gcText, runGc } from "./memory/gc.ts";
@@ -50,7 +51,7 @@ import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, typ
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
-import { colorEnabled, style, type Style } from "./memory/style.ts";
+import { colorEnabled, style, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
@@ -173,10 +174,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const kind = parsed.positionals[0];
     if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi", "qwen"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi|qwen [--since ISO] [--json]");
     const { ingestTranscript } = await import("./ingest.ts");
-    return JSON.stringify(await ingestTranscript(kind as "codex" | "kimi" | "pi" | "qwen", {
+    const result = await ingestTranscript(kind as IngestKind, {
       cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
-    }));
+    });
+    return parsed.options["--json"] === true ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context));
   }
   // F1: `--help` and `--version` only print text, so they work in an agent shell too. Every other command keeps the honest-session refusal below.
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
@@ -281,9 +283,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const shardRequested = options["--shards"] === true || (mode === "resume" && shardStatePresent());
     if (shardRequested) {
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
-      return JSON.stringify(await migrateShards({ ...common, mode }), null, 2);
+      const result = await migrateShards({ ...common, mode });
+      return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context));
     }
-    return JSON.stringify(await migrate({ ...common, mode }), null, 2);
+    const result = await migrate({ ...common, mode });
+    return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context));
   }
   if (sub === "status") {
     // F1: say where the memory lives and which configuration is in effect. The migration fields keep their names and shape; `home` and `config` are added.
@@ -324,7 +328,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       : curatedStore(project, { deferPromotions: true }, false);
     try {
       const auth = { project, actor: "person" as const, authorize: () => true };
-      return JSON.stringify(applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth), null, 2);
+      const result = applying ? applyPrune(store.prunePort(), input, auth) : planPrune(store.prunePort(), { cutoff: String(options["--cutoff"]) }, auth);
+      return options["--json"] ? JSON.stringify(result, null, 2) : pruneText(result, outputStyle(context));
     } finally { store.close(); }
   }
   if (sub === "decay") {
@@ -473,13 +478,13 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
     if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");
     const result = await vaultCandidatesAll(memoryHome(), { policy: policyOf(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-    return JSON.stringify(result, null, 2);
+    return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesAllText(result, outputStyle(context));
   }
   if (sub === "vault-candidates") {
     const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
       const result = await vaultCandidates(store, { project, policy: policyOf(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-      return JSON.stringify(result, null, 2);
+      return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesText(result, outputStyle(context));
     } finally { store.close(); }
   }
   if (sub === "eval") {
@@ -505,7 +510,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       // #15 D7: each shard's own share of the global budget, written to its own config. The same two steps as the home default below, bound to the shards it was made for.
       if (options["--cap-mb"] !== undefined || options["--retention-days"] !== undefined) throw new Error("--split computes each shard's values; do not combine it with --cap-mb or --retention-days");
       const diskShare = share !== undefined ? { diskShare: Number(share) } : {};
-      return JSON.stringify(options["--confirm"] === true ? applySplit(memoryHome(), diskShare) : previewSplit(memoryHome(), diskShare), null, 2);
+      const result = options["--confirm"] === true ? applySplit(memoryHome(), diskShare) : previewSplit(memoryHome(), diskShare);
+      return options["--json"] ? JSON.stringify(result, null, 2) : capacitySplitText(result, outputStyle(context));
     }
     // Person-only (agent marker and TTY are refused above): preview first, --confirm writes the home default config.
     const file = join(memoryHome(), "capture-config.json");
@@ -518,7 +524,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const previewFile = join(memoryHome(), "capture-config.preview.json");
     if (options["--confirm"] !== true) {
       writeFileSync(previewFile, JSON.stringify(preview) + "\n", { mode: 0o600 });
-      return JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2);
+      const result = { preview, confirm: "re-run with --confirm to write" };
+      return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context));
     }
     let approved: { file?: string; current?: unknown; target?: CaptureConfig };
     try { approved = JSON.parse(readFileSync(previewFile, "utf8")) as typeof approved; }
@@ -529,7 +536,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     const written = writeCaptureConfigFile(file, target);
     rmSync(previewFile, { force: true });
-    return JSON.stringify({ preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } }, null, 2);
+    const result = { preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } };
+    return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context));
   }
   if (sub === "projects") {
     // Archived projects stay listed (the person must see what is cold); a forgotten one is out of the default view, and --all brings it back with its state.
@@ -784,6 +792,31 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
 
 /** Color for human output only on an interactive stdout without NO_COLOR or TERM=dumb (#125). */
 function outputStyle(context: CliContext): Style { return style(colorEnabled(context.env ?? process.env, context.stdoutTTY ?? process.stdout.isTTY)); }
+
+/** Native ingest remains capture-only and agent-reachable; this formats only its returned receipt. */
+export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = PLAIN): string {
+  const state = result.errors || result.remaining || result.spooled ? "attention" : result.files || result.read ? "complete" : "skipped";
+  const reason: string | undefined = result.reason;
+  const actions: Record<string, string> = {
+    source_unavailable: "check that this client's native transcript root is available, then ingest again",
+    source_bound: "review the native source size and supported discovery bounds before retrying",
+    cursor_busy: "wait for the active ingest writer, then ingest again",
+    scope_changed: "run ingest again from the same repository after its scope is stable",
+    schema_or_time: "check the native transcript format and timestamps; unreadable records were skipped",
+    unsupported_version: "check the reported writer version against the supported ingest contract before retrying",
+  };
+  const version = "version" in result && typeof result.version === "string" ? result.version : undefined;
+  const action = reason ? actions[reason] ?? "review the receipt before retrying"
+    : result.errors ? "review the ingest errors and supported native source contract before retrying"
+      : result.remaining ? "run the same ingest command again to continue"
+      : result.spooled ? "the next capture write replays rows spooled while the store was busy"
+        : state === "skipped" ? "open a native session in this repository before ingesting its transcript" : "none";
+  return [`amem ingest ${kind}: ${state}`,
+    `${label(s, state === "attention" ? "attention" : state === "skipped" ? "skipped" : "ok")} receipt: ${facts({ files: String(result.files), read: String(result.read), imported: String(result.imported), skipped: String(result.skipped), spooled: String(result.spooled), errors: String(result.errors) })}`,
+    `${label(s, result.remaining ? "attention" : "ok")} remaining: ${result.remaining ? "yes" : "no"}`,
+    ...(reason ? [`${label(s, "attention")} reason: ${reason}${version ? ` (version ${version})` : ""}`] : []),
+    `Next action: ${action}`].join("\n");
+}
 
 export function formatCliError(error: unknown): string { return error instanceof DecayApplyError ? error.render() : `amem: ${(error as Error).message}`; }
 

@@ -23,6 +23,9 @@ export function style(color: boolean): Style {
 }
 export const PLAIN: Style = style(false);
 
+/** Data stays on one human-output row and cannot inject terminal or bidirectional controls. */
+export const singleLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, " ");
+
 /** Status label, padded so the columns line up; the word is always present. */
 export function label(s: Style, state: "ok" | "attention" | "skipped" | "unavailable" | "error"): string {
   const word = { ok: "OK", attention: "ATTENTION", skipped: "SKIPPED", unavailable: "UNAVAILABLE", error: "ERROR" }[state].padEnd(11);

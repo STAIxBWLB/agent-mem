@@ -117,7 +117,7 @@ test("amem migrate --shards and status drive the same resume path and ordinary C
   process.env.AMEM_HOME = join(dir, "memory");
   cleanup.push(() => { delete process.env.AMEM_HOME; });
   const context = { cwd: cwdForProject(dir), env: {}, stdinTTY: true };
-  const applied = JSON.parse(await runCli(["migrate", "--shards"], context)) as { active: boolean };
+  const applied = JSON.parse(await runCli(["migrate", "--shards", "--json"], context)) as { active: boolean };
   expect(applied.active).toBe(true);
   const listed = JSON.parse(await runCli(["list", "--json"], context)) as { project: string; text: string }[];
   expect(listed.some((row) => row.text === "alpha curated")).toBe(true);

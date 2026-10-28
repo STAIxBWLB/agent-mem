@@ -24,7 +24,7 @@ export function assertInstalledModule(modulePath: string, installedRoot: string,
 }
 export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
-  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!)) || ["setup all --json", "setup agy --json", "setup all --apply --json", "setup agy --apply --json"].includes(args.join(" ")), "installed smoke refuses unsupported CLI arguments");
+  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && args[0] === "hook" && args[1] === "PostToolUse" || args.length === 3 && args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!) && args[2] === "--json" || ["setup all --json", "setup agy --json", "setup all --apply --json", "setup agy --apply --json"].includes(args.join(" ")), "installed smoke refuses unsupported CLI arguments");
 }
 export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
   const server = object(value);
@@ -316,7 +316,7 @@ globalThis.fetch=(...args)=>trip('fetch');globalThis.WebSocket=class {constructo
 for(const [name,keys] of Object.entries({'node:http':['request','get'],'node:https':['request','get'],'node:net':['connect','createConnection'],'node:tls':['connect'],'node:dns':['lookup','resolve','resolve4','resolve6'],'node:dns/promises':['lookup','resolve','resolve4','resolve6']})){const module=require(name);for(const key of keys)module[key]=()=>trip(name+'.'+key);}
 require('node:net').Socket.prototype.connect=function(){return trip('Socket.connect');};Bun.connect=()=>trip('Bun.connect');\n`);
     const ingest = (kind: "codex" | "kimi" | "pi" | "qwen") => {
-      const args = ["ingest", kind]; assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
+      const args = ["ingest", kind, "--json"]; assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
       return ownedCommand(bun, [bun, "--smol", "--preload", networkTripwire, entry, ...args], projectDir, installedEnv);
     };
     const at = "2026-10-23T01:00:00.000Z", nativeLine = (value: unknown) => JSON.stringify(value) + "\n";

@@ -147,10 +147,10 @@ test("amem capacity reports, previews, and applies only with --confirm; agents c
   await expect(runCli(["capacity", "apply", "--cap-mb", "64"], { ...context, env: { CODEX_THREAD_ID: "x" } })).rejects.toThrow(PERSON_ONLY);
   await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)).rejects.toThrow("preview first");
   expect(readCaptureConfigFile(file)).toEqual({}); // a first-call --confirm cannot skip the preview
-  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64"], context)) as { preview: { target: { capMb: number } } };
+  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--json"], context)) as { preview: { target: { capMb: number } } };
   expect(preview.preview.target).toMatchObject({ capMb: 64, retentionDays: 365 });   // the unset retention falls to the proposal: no growth is measured here, so the ceiling
   expect(readCaptureConfigFile(file)).toEqual({});
-  const written = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)) as { written: { cap_mb: number; retention_days: number } };
+  const written = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--confirm", "--json"], context)) as { written: { cap_mb: number; retention_days: number } };
   expect(written.written).toEqual({ cap_mb: 64, retention_days: 365 }); // the unset value falls to the proposal
   expect(readCaptureConfigFile(file)).toEqual({ capMb: 64, retentionDays: 365 });
 });
