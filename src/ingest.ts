@@ -414,7 +414,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             const input = known ? extract(kind, raw, project) : undefined;
             if (input) {
               const at = timeOf(raw, kind);
-              if (kind === "kimi" && at && position.scope !== "unknown" && position.protocol !== "unknown" && versionToken(position.protocol) !== undefined && !KIMI_PROTOCOLS.includes(position.protocol)) { await unsupported(position.protocol, value => policy.screen(value)); result.skipped++; }
+              if (kind === "kimi" && permitted && at && position.scope !== "unknown" && position.protocol !== "unknown" && versionToken(position.protocol) !== undefined && !KIMI_PROTOCOLS.includes(position.protocol)) { await unsupported(position.protocol, value => policy.screen(value)); result.skipped++; }
               else if (!at || position.scope === "unknown" || kind === "kimi" && !KIMI_PROTOCOLS.includes(position.protocol)) { fail("schema_or_time"); result.skipped++; }
               else if (!permitted || position.scope !== "own" || since !== undefined && at < since) result.skipped++;
               else {

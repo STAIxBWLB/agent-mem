@@ -260,3 +260,12 @@ test("#136: a Kimi version stored under an older policy is screened again before
   const later = await ingestTranscript("kimi",{...f,files:[file]});
   expect(later.reason).toBe("schema_or_time"); expect(later.version).toBeUndefined(); expect(JSON.stringify(later)).not.toContain("internal");
 });
+
+test("#136: a declined Kimi message under a stored unsupported protocol reports no version", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6"}) + line({type:"context.append_message",time:Date.parse(at),marker:"decline-me",message:{role:"assistant",content:[{type:"text",text:"declined"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  const receipt = await ingestTranscript("kimi",{...f,files:[file],policy});
+  expect(receipt.reason).not.toBe("unsupported_version"); expect(receipt.version).toBeUndefined(); expect(receipt.imported).toBe(0);
+});
