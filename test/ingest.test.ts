@@ -201,3 +201,16 @@ test("ingest help returns guidance before intake, cwd access or any memory write
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 });
+
+test("#136: Kimi protocol 1.6 is unsupported_version with the version named, malformed metadata still schema_or_time", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  const answer = line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"newer kimi answer"}]}});
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6"}) + answer);
+  const newer = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(newer).toMatchObject({ imported: 0, reason: "unsupported_version", version: "1.6" });
+  expect(JSON.stringify(newer)).not.toContain("newer kimi answer");
+  writeFileSync(file,line({type:"metadata",protocol_version:"<b>not a version</b>"}) + answer);
+  const bad = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(bad.reason).toBe("schema_or_time"); expect(bad.version).toBeUndefined();
+});

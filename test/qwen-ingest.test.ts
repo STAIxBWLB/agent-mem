@@ -158,3 +158,22 @@ test("Qwen discovery rotates bounded files, skips directory links and reports mi
   const missing = await ingestTranscript("qwen", { cwd: f.cwd, base: f.base });
   expect(missing.reason).toBe("source_unavailable"); expect(missing.imported).toBe(0);
 });
+
+test("#136: a newer Qwen writer version is reported as unsupported_version, a malformed record still as schema_or_time, and both stay replayable", async () => {
+  const f = fixture();
+  writeFileSync(f.file, line(message(f.cwd, "newer writer answer", { version: "0.27.0" })));
+  const newer = await ingestTranscript("qwen", { ...f, files: [f.file] });
+  expect(newer).toMatchObject({ imported: 0, reason: "unsupported_version", version: "0.27.0" });
+  expect(JSON.stringify(newer)).not.toContain("newer writer answer");
+  const malformed = join(f.root, "bad.jsonl");
+  writeFileSync(malformed, line(message(f.cwd, "x", { version: "0.26.1", uuid: "not-a-uuid" })));
+  const bad = await ingestTranscript("qwen", { cwd: f.cwd, base: f.base, files: [malformed] });
+  expect(bad.reason).toBe("schema_or_time"); expect(bad.version).toBeUndefined();
+  const hostile = join(f.root, "hostile.jsonl");
+  writeFileSync(hostile, line(message(f.cwd, "x", { version: "secret transcript text that is long" })));
+  const refused = await ingestTranscript("qwen", { ...f, files: [hostile] });
+  expect(refused.reason).toBe("schema_or_time"); expect(refused.version).toBeUndefined();
+  // Cursor semantics unchanged: the Qwen cursor is keyed by its decoder contract, so a decoder update replays the skipped versions.
+  writeFileSync(f.file, line(message(f.cwd, "supported answer")));
+  expect((await ingestTranscript("qwen", { ...f, files: [f.file] })).imported).toBe(1);
+});
