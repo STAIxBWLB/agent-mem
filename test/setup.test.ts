@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { applySetup, planSetup, runSetup, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
 import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
 import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -30,7 +31,7 @@ function fixture() {
   const native: NonNullable<SetupContext["native"]> = (argv, stagedEnv, cwd) => {
     calls.push({ argv: [...argv], env: { ...stagedEnv }, cwd });
     expect(stagedEnv.HOME).toBe(cwd); expect(cwd).not.toBe(home); expect(realPath(cwd)).toBe(cwd);
-    const target = argv[0] as SetupTarget, remove = argv[2] === "remove", marker = argv.indexOf("--"), launch = argv.slice(marker + 1);
+    const target = argv[0] as SetupTarget, remove = argv[2] === "remove", marker = argv.indexOf("--"), launch = target === "qwen" ? [argv[marker - 1], ...argv.slice(marker + 1)] : argv.slice(marker + 1);
     expect(["claude", "codex", "pi", "qwen"]).toContain(target);
     expect(argv.slice(1, 3)).toEqual(["mcp", remove ? "remove" : "add"]);
     const file = target === "claude" ? stagedEnv.CLAUDE_CONFIG_DIR ? join(stagedEnv.CLAUDE_CONFIG_DIR, ".claude.json") : join(cwd, ".claude.json")
@@ -81,7 +82,7 @@ test("all-target apply stages native commands, records private receipts and is b
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
   expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
   expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen"]);
-  for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
+  for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(call.argv[0] === "qwen" ? [f.bun, "--", "--smol", f.entry, "mcp"] : ["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
   for (const target of SETUP_ALL_TARGETS) {
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
     expect(receipt).toMatchObject({ version: 1, target, phase: "applied" }); expect(receipt.changes.map(change => change.path)).toEqual(action.files);
@@ -308,12 +309,16 @@ test("Bun path version detection: any version segment warns, a moving symlink do
 test("Qwen has one atomic settings image for native MCP and bounded SessionEnd ingest", () => {
   const f = fixture(); seedOtherFiles(f);
   const plan = f.plan("qwen", "apply"), action = plan.actions[0]!;
+  const expected = ["qwen", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", f.bun, "--", "--smol", f.entry, "mcp"];
+  expect(f.plan("qwen", "preview").actions[0]!.registration).toEqual(expected);
+  expect(f.plan("qwen", "preview").actions[0]!.commands).toEqual([expected]);
+  expect(action.registration).toEqual(expected); expect(action.commands).toEqual([expected]);
   expect(action.files).toEqual([join(f.env.QWEN_HOME!, "settings.json")]);
   expect(action.hooks).toEqual([{ event: "SessionEnd", command: `'${f.bun}' --smol '${f.entry}' ingest qwen`, timeout: 3 }]);
   const before = image(action.files[0]!);
   expect(applySetup(plan, f.options).applied).toEqual(["qwen"]);
   expect(f.receipt("qwen").changes).toHaveLength(1);
-  expect(f.calls[0]!.argv).toEqual(["qwen", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", "--", f.bun, "--smol", f.entry, "mcp"]);
+  expect(f.calls[0]!.argv).toEqual(expected);
   expect(f.calls[0]!.env.QWEN_HOME).toBe(join(f.calls[0]!.cwd, ".qwen"));
   expect(f.calls[0]!.env.QWEN_RUNTIME_DIR).toBe(join(f.calls[0]!.cwd, "qwen-runtime"));
   expect(f.calls[0]!.env.QWEN_CODE_SYSTEM_SETTINGS_PATH).toBe(join(f.calls[0]!.cwd, "qwen-system-settings.json"));
@@ -326,6 +331,57 @@ test("Qwen has one atomic settings image for native MCP and bounded SessionEnd i
   expect(applySetup(f.plan("qwen", "apply"), f.options).unchanged).toEqual(["qwen"]);
   undoSetup(f.plan("qwen", "undo"), f.options); expect(image(action.files[0]!)).toEqual(before);
 });
+
+test("Qwen alone puts the executable before the server-argument separator", () => {
+  const f = fixture();
+  const launch = ["--", f.bun, "--smol", f.entry, "mcp"];
+  expect(f.plan("claude").actions[0]!.registration).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", ...launch]);
+  expect(f.plan("codex").actions[0]!.registration).toEqual(["codex", "mcp", "add", "amem", ...launch]);
+  expect(f.plan("pi").actions[0]!.registration).toEqual(["pi", "mcp", "add", "amem", ...launch]);
+  expect(f.plan("qwen").actions[0]!.registration).toEqual(["qwen", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", f.bun, "--", "--smol", f.entry, "mcp"]);
+});
+
+test.each(["arguments", "generic", "timeout"] as const)("native Qwen %s failure is labelled and publishes no settings or receipt", mode => {
+  const f = fixture(); seedOtherFiles(f);
+  const bin = join(f.home, "bin"), original = image(f.file("qwen"));
+  put(join(bin, "qwen"), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--help') { console.log('  mcp'); process.exit(0); }\nwriteFileSync(process.env.QWEN_HOME + '/settings.json', '{"mcpServers":{"amem":{"command":"must-not-publish"}}}');\nconsole.error(${JSON.stringify(mode === "arguments" ? "Not enough non-option arguments: got 1, need at least 2\nNATIVE_SECRET_SENTINEL" : "NATIVE_SECRET_SENTINEL")});\n${mode === "timeout" ? "await Bun.sleep(30000);" : "process.exit(1);"}\n`, 0o700);
+  const options: SetupContext = { env: { ...f.env, PATH: bin }, cwd: f.home, bun: f.bun, entry: fileURLToPath(new URL("../bin/amem.js", import.meta.url)) };
+  const plan = planSetup("qwen", "apply", options);
+  let message = "";
+  try { applySetup(plan, options); } catch (error) { message = (error as Error).message; }
+  expect(message).toBe(`qwen MCP registration ${mode === "timeout" ? "timed out" : mode === "arguments" ? "rejected command arguments" : "failed"} in staging; no native output disclosed`);
+  expect(message).not.toContain("NATIVE_SECRET_SENTINEL"); expect(message).not.toContain("got 1");
+  expect(image(f.file("qwen"))).toEqual(original); expect(existsSync(plan.actions[0]!.receipt)).toBe(false);
+}, 20_000);
+
+test.skipIf(process.env.AMEM_QWEN_NATIVE_SMOKE !== "1")("real Qwen 0.26.1 isolated native registration reads back the planned server", () => {
+  const f = fixture(); seedOtherFiles(f);
+  const source = f.file("qwen"), original = image(source), qwenHome = join(f.home, "copied qwen"), file = join(qwenHome, "settings.json");
+  restore(file, original);
+  const temporary = join(f.home, "tmp"); mkdirSync(temporary);
+  const env = { ...f.env, PATH: process.env.PATH, QWEN_HOME: qwenHome, QWEN_RUNTIME_DIR: join(f.home, "qwen-runtime"),
+    QWEN_CODE_SYSTEM_SETTINGS_PATH: join(f.home, "system-settings.json"), QWEN_CODE_SYSTEM_DEFAULTS_PATH: join(f.home, "system-defaults.json"),
+    XDG_CONFIG_HOME: join(f.home, ".config"), XDG_DATA_HOME: join(f.home, ".local", "share"), XDG_CACHE_HOME: join(f.home, ".cache"), XDG_STATE_HOME: join(f.home, ".local", "state"),
+    TMPDIR: temporary, TMP: temporary, TEMP: temporary };
+  put(env.QWEN_CODE_SYSTEM_SETTINGS_PATH, "{}\n"); put(env.QWEN_CODE_SYSTEM_DEFAULTS_PATH, "{}\n");
+  const version = spawnSync("qwen", ["--version"], { cwd: f.home, env, encoding: "utf8", timeout: 10_000 });
+  expect(version.status).toBe(0); expect(version.stdout.trim()).toBe("0.26.1");
+  const options: SetupContext = { env, cwd: f.home, bun: f.bun, entry: fileURLToPath(new URL("../bin/amem.js", import.meta.url)) };
+  const preview = planSetup("qwen", "preview", options), plan = planSetup("qwen", "apply", options);
+  expect(preview.actions[0]!.registration).toEqual(plan.actions[0]!.registration);
+  expect(applySetup(plan, options).applied).toEqual(["qwen"]);
+  const document = JSON.parse(text(file));
+  expect(document.mcpServers.amem.command).toBe(f.bun);
+  expect(document.mcpServers.amem.args).toEqual(["--smol", options.entry, "mcp"]);
+  expect(document.mcpServers.other).toEqual({ command: "other-server", args: ["keep"] });
+  expect(document.ui).toEqual({ theme: "keep" });
+  expect(document.hooks.SessionEnd[0].hooks[0].command).toBe("existing-qwen");
+  expect(document.hooks.SessionEnd).toHaveLength(2); expect(image(source)).toEqual(original);
+  expect(JSON.parse(text(plan.actions[0]!.receipt)).changes).toHaveLength(1);
+  expect(applySetup(planSetup("qwen", "apply", options), options).unchanged).toEqual(["qwen"]);
+  undoSetup(planSetup("qwen", "undo", options), options);
+  expect(image(file)).toEqual(original); expect(image(source)).toEqual(original);
+}, 30_000);
 
 test("Qwen undo preserves later unrelated MCP, hook and settings changes in its shared file", () => {
   const f = fixture(); seedOtherFiles(f); const file = f.file("qwen");

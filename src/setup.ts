@@ -152,7 +152,8 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi" || target === "jcode" || target === "agy") return null;
-  return [target, "mcp", "add", ...(target === "claude" || target === "qwen" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
+  if (target === "qwen") return [target, "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", bun, "--", "--smol", entry, "mcp"];
+  return [target, "mcp", "add", ...(target === "claude" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
 function assertJcodeHome(env: Env): void {
   if (env.JCODE_HOME !== undefined && !isAbsolute(env.JCODE_HOME)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
@@ -227,7 +228,12 @@ function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
 }
 function native(argv: readonly string[], env: Env, cwd: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { cwd, env: { ...env }, encoding: "utf8", timeout: 10_000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.status !== 0) throw Error(`${argv[0]} MCP registration failed in staging; no native output disclosed`);
+  if (result.status !== 0) {
+    const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    const argumentsRejected = argv[0] === "qwen" && `${result.stderr ?? ""}\n${result.stdout ?? ""}`.includes("Not enough non-option arguments:");
+    const reason = timedOut ? "timed out" : argumentsRejected ? "rejected command arguments" : "failed";
+    throw Error(`${argv[0]} MCP registration ${reason} in staging; no native output disclosed`);
+  }
 }
 function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
