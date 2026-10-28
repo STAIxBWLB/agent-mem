@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -57,4 +57,18 @@ test("the live home is refused: the one AMEM_HOME names and the default one", ()
   expect(() => recheckStore({ home: parent, project: PROJECT, limit: 10, env: { AMEM_HOME: join(parent, "memory") } })).toThrow(/refusing the live memory home/);
   expect(() => assertCopyHome(join(parent, "missing"), env(parent))).toThrow(/no memory directory/);
   expect(assertCopyHome(parent, env(parent))).toBe(join(parent, "memory"));
+});
+
+test("a copy whose memory directory is a symlink to the live home is refused", () => {
+  const live = copyHome(), parent = realPath(mkdtempSync(join(tmpdir(), "amem-ac4-link-"))); roots.push(parent);
+  symlinkSync(join(live, "memory"), join(parent, "memory"));
+  expect(() => assertCopyHome(parent, { AMEM_HOME: join(live, "memory"), HOME: parent })).toThrow(/refusing the live memory home/);
+});
+
+test("AMEM_HOME=A with a default home pointing to B refuses A, B and the original default directory", () => {
+  const a = copyHome(), b = copyHome(), hub = copyHome();   // hub/memory is the default directory under AGENTHUB_HOME=hub
+  writeFileSync(join(hub, "memory", "amem.config.json"), JSON.stringify({ home: join(b, "memory") }));
+  const live = { AMEM_HOME: join(a, "memory"), AGENTHUB_HOME: hub, HOME: hub };
+  for (const parent of [a, b, hub]) expect(() => assertCopyHome(parent, live)).toThrow(/refusing the live memory home/);
+  const copy = copyHome(); expect(assertCopyHome(copy, live)).toBe(join(copy, "memory"));
 });

@@ -13,9 +13,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalPath } from "../src/memory/platform.ts";
+import { canonicalPath, realPath } from "../src/memory/platform.ts";
 import { memoryHome } from "../src/memory/home.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
@@ -52,10 +52,19 @@ type Env = Readonly<Record<string, string | undefined>>;
 export interface RecheckHit { source: string; score: number; title: string }
 export interface RecheckReport { project: string; corpus: number; engine: string | undefined; path?: "mcp"; queries: { n: number; query: string; engine: string; hits: RecheckHit[] }[] }
 
-/** The copy's memory directory, refused when it is the live home: the one this environment resolves, or the default one without `AMEM_HOME`. */
+/** A path as the store would open it: platform `realPath` (with the Bun backslash workaround) when it exists, `canonicalPath` only when it does not. */
+const resolved = (path: string): string => existsSync(path) ? realPath(path) : canonicalPath(path);
+
+/**
+ * The copy's memory directory, refused when it is a live home: the one this environment resolves, the one it resolves without `AMEM_HOME`,
+ * and the default directory itself before any `amem.config.json` pointer is followed (a store given an explicit home opens it directly).
+ */
 export function assertCopyHome(home: string, env: Env = process.env): string {
-  const dir = canonicalPath(join(home, "memory"));
-  const live = new Set([memoryHome(env as NodeJS.ProcessEnv), memoryHome({ ...env, AMEM_HOME: undefined } as NodeJS.ProcessEnv)].map(path => canonicalPath(path)));
+  const dir = resolved(join(home, "memory"));
+  const bare = { ...env, AMEM_HOME: undefined } as NodeJS.ProcessEnv;
+  // memoryHome's own pre-pointer default (AGENTHUB_HOME, else os.homedir()), plus the HOME-based one in case HOME differs from os.homedir().
+  const defaults = [join(env.AGENTHUB_HOME?.trim() || join(homedir(), ".agenthub"), "memory"), ...(env.HOME?.trim() ? [join(env.HOME.trim(), ".agenthub", "memory")] : [])];
+  const live = new Set([memoryHome(env as NodeJS.ProcessEnv), memoryHome(bare), ...defaults].map(resolved));
   if (live.has(dir)) throw new Error(`refusing the live memory home ${dir}: copy it first (see docs/p5-cutover.md, P6 retrieval re-check) and pass the copy's parent`);
   if (!existsSync(dir)) throw new Error(`no memory directory at ${dir}: --home takes the parent of the copied memory directory`);
   return dir;
