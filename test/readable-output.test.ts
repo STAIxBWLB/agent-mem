@@ -30,14 +30,15 @@ function report(overrides: Partial<DoctorReport["sections"]> = {}, clis = 4): Do
   const sections: DoctorReport["sections"] = { duplicates: { ...ok, notes: 3, identicalGroups: 0, importedGroups: 0 }, stale: { ...ok, checked: 3, missingReferences: 0 },
     candidates: { ...ok, count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 }, capture: { ...ok, clis: cliRows }, brief: { ...ok, tokens: 400, budget: 2000, coverage: {} },
     index: { ...ok, liveIndex: "absent" }, readers: { ...ok, live: 0, stale: 0, unreadable: 0 }, policy: { ...ok, machine: null, repo: null, denyPaths: 0, piiPatterns: 0 },
-    cadence: { ...ok, ingest: { claude: "hooks", codex: "session end", kimi: "session end", pi: "session end" }, sync: { remote: "none", lastAttemptAt: null, lastOkAt: null, failures: 0, nextAttemptAt: null, due: false } }, ...overrides };
+    cadence: { ...ok, ingest: { claude: "hooks", codex: "session end", kimi: "session end", pi: "session end" }, sync: { remote: "none", lastAttemptAt: null, lastOkAt: null, failures: 0, nextAttemptAt: null, due: false } },
+    drops: { ...ok, window: "recent metrics tail", total: 0, counts: {} }, ...overrides };
   const statuses = Object.values(sections).map(section => section.status);
   return { schema: DOCTOR_SCHEMA, status: statuses.includes("attention") ? "attention" : statuses.includes("unavailable") ? "unavailable" : "ok", home: { path: "/h/memory", source: "AMEM_HOME" }, project: "p", sections };
 }
 
 test("doctor healthy: concise overall state, labelled rows, no raw JSON, no next action", () => {
   const text = doctorText(report());
-  expect(text.split("\n")[0]).toBe("amem doctor: ok  (all 9 checks ok)");
+  expect(text.split("\n")[0]).toBe("amem doctor: ok  (all 10 checks ok)");
   expect(text).not.toMatch(ANSI); expect(text).not.toContain("{\"");
   for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toMatch(new RegExp(`^OK +${name}:`, "m"));
   expect(text).toContain("Next actions: none");

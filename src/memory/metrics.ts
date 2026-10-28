@@ -38,26 +38,38 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
 
 export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten";
 const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten"];
-/** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. */
+/** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. Fails open to no counts: hooks never deny over metrics. */
 export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
+  const read = readCaptureDrops(base);
+  return read.readable ? read.counts : {};
+}
+
+/**
+ * The same bounded read, but it says when an existing metrics file could not be read (a person-facing report must not show that as zero, #132).
+ * An absent file is readable with no counts. `reason` is a fixed phrase, never file content.
+ */
+export function readCaptureDrops(base: string): { readable: true; counts: Partial<Record<CaptureDropReason, number>>; lines: number; malformedLines: number } | { readable: false; reason: string } {
   const counts: Partial<Record<CaptureDropReason, number>> = {};
-  let fd: number | undefined;
+  let fd: number | undefined, lines = 0, malformedLines = 0;
   try {
-    fd = openSync(metricsPath(base), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const stat = fstatSync(fd); if (!stat.isFile()) return counts;
+    try { fd = openSync(metricsPath(base), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { readable: true, counts, lines: 0, malformedLines: 0 }; return { readable: false, reason: "metrics.jsonl exists but cannot be opened" }; }
+    const stat = fstatSync(fd); if (!stat.isFile()) return { readable: false, reason: "metrics.jsonl is not a plain file" };
     const start = Math.max(0, stat.size - METRICS_MAX_BYTES), bytes = Buffer.alloc(stat.size - start);
     const length = readSync(fd, bytes, 0, bytes.length, start);
     let text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
     if (start) text = text.slice(text.indexOf("\n") + 1);
-    for (const line of text.split("\n").filter(Boolean).slice(-METRICS_KEEP)) {
+    const tail = text.split("\n").filter(line => line.trim() !== "").slice(-METRICS_KEEP);
+    lines = tail.length;
+    for (const line of tail) {
       try {
         const sample = JSON.parse(line) as MetricSample;
         if (sample.kind !== "hook" || !DROP_REASONS.includes(sample.captureDropReason!) || !Number.isSafeInteger(sample.captureDrops) || sample.captureDrops! <= 0) continue;
         const reason = sample.captureDropReason!;
         counts[reason] = (counts[reason] ?? 0) + sample.captureDrops!;
-      } catch { /* A malformed metric is never a notice. */ }
+      } catch { malformedLines++; /* A malformed metric is never a notice; doctor reports how many were skipped. */ }
     }
-  } catch { /* Metric availability never denies the native call. */ }
+  } catch { return { readable: false, reason: "metrics.jsonl cannot be read or is not UTF-8" }; }
   finally { if (fd !== undefined) closeSync(fd); }
-  return counts;
+  return { readable: true, counts, lines, malformedLines };
 }
