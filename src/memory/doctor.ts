@@ -278,8 +278,10 @@ function policySection(options: DoctorOptions): Section {
 function dropsSection(options: DoctorOptions): Section {
   const read = readCaptureDrops(options.home);
   if (!read.readable) return unavailable(read.reason);   // an existing file doctor cannot read is never a healthy zero
+  // One torn line (an interrupted append) is reported, not fatal; a tail with lines of which none parses is a file doctor cannot decode.
+  if (read.lines > 0 && read.malformedLines === read.lines) return unavailable("metrics.jsonl has no decodable record in its recent tail");
   const counts = read.counts, total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
-  return { status: total ? "attention" : "ok", window: "recent metrics tail", total, counts,
+  return { status: total ? "attention" : "ok", window: "recent metrics tail", total, counts, ...(read.malformedLines ? { malformedLines: read.malformedLines } : {}),
     ...(total ? { hint: "capture rows were dropped recently (see counts by reason); amem doctor --json keeps the numbers" } : {}) };
 }
 
@@ -435,8 +437,9 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
       `sync remote ${sync.remote}${sync.remote === "configured" ? `, last ok ${sync.lastOkAt ?? "never"}, failures ${sync.failures}${sync.due ? ", due" : ""}` : ""}`];
   }
   if (name === "drops") {
+    if (detail.counts === undefined) return [];   // unavailable: only its reason is shown
     const counts = Object.entries((detail.counts ?? {}) as Record<string, number>);
-    return [counts.length ? `${counts.map(([reason, n]) => `${reason.replaceAll("_", " ")} ${n}`).join(", ")} (recent metrics tail)` : "none in the recent metrics tail"];
+    return [counts.length ? `${counts.map(([reason, n]) => `${reason.replaceAll("_", " ")} ${n}`).join(", ")} (recent metrics tail)` : "none in the recent metrics tail"].map(line => detail.malformedLines ? `${line}; ${detail.malformedLines} malformed lines skipped` : line);
   }
   if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
   const { examples, ...rest } = detail;

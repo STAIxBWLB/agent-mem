@@ -472,3 +472,17 @@ test("#132: an existing metrics file doctor cannot read is unavailable, never a 
   rmSync(join(r.memory, "metrics.jsonl")); mkdirSync(join(r.memory, "metrics.jsonl"));
   expect((await doctor(r)).sections.drops.status).toBe("unavailable");
 });
+
+test("#132: a torn metrics line is counted, a tail with no decodable record is unavailable", async () => {
+  const r = rig(); r.note("n"); mkdirSync(r.memory, { recursive: true });
+  const at = new Date().toISOString(), good = JSON.stringify({ at, kind: "hook", captureDrops: 2, captureDropReason: "spool_full" });
+  writeFileSync(join(r.memory, "metrics.jsonl"), `${good}\n${good}\n{"at":"${at}","kind":"ho`);
+  expect((await doctor(r)).sections.drops).toMatchObject({ status: "attention", total: 4, malformedLines: 1 });
+  writeFileSync(join(r.memory, "metrics.jsonl"), "not json\n{also not\n");
+  const garbage = (await doctor(r)).sections.drops;
+  expect(garbage).toMatchObject({ status: "unavailable", reason: "metrics.jsonl has no decodable record in its recent tail" });
+  const text = await doctor(r, ["doctor"]);
+  expect(text).toMatch(/^UNAVAILABLE +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
+  const { captureDropSummary } = await import("../src/memory/metrics.ts");
+  expect(captureDropSummary(r.memory)).toEqual({});
+});
