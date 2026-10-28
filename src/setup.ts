@@ -290,16 +290,33 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"], env, staging);
       (options.native ?? native)(argv, env, staging);
       changes[0]!.after = { ...read(staged.paths[target][0]!), mode: changes[0]!.before.mode };
-      if (changes[0]!.after.bytes === null) throw Error("native registration produced no configuration");
+      if (changes[0]!.after.bytes === null) throw Error(`${target} native registration produced no configuration`);
       const installedText = Buffer.from(changes[0]!.after.bytes!, "base64").toString("utf8");
-      const installed = target === "codex" ? toml(installedText) : json(changes[0]!.after);
-      const installedServer = record(record(installed[target === "codex" ? "mcp_servers" : "mcpServers"]).amem);
-      if (installedServer.command !== c.bun || JSON.stringify(installedServer.args) !== JSON.stringify(["--smol", c.entry, "mcp"]) || installedServer.enabled === false) throw Error("native registration did not produce the planned amem server");
+      let installed: Record<string, unknown>, installedServer: Record<string, unknown>;
+      try {
+        installed = target === "codex" ? toml(installedText) : json(changes[0]!.after);
+        installedServer = record(record(installed[target === "codex" ? "mcp_servers" : "mcpServers"]).amem);
+      } catch { throw Error(`${target} native registration produced invalid configuration; no configuration published`); }
+      if (installedServer.command !== c.bun || JSON.stringify(installedServer.args) !== JSON.stringify(["--smol", c.entry, "mcp"]) || installedServer.enabled === false) throw Error(`${target} native registration did not produce the planned amem server`);
       const serverKey = target === "codex" ? "mcp_servers" : "mcpServers";
       const withoutAmem = (value: Record<string, unknown>) => { const copy = { ...value }, servers = { ...record(value[serverKey] ?? {}) }; delete servers.amem; copy[serverKey] = servers; return copy; };
-      if (!isDeepStrictEqual(withoutAmem(document)[serverKey], withoutAmem(installed)[serverKey])) throw Error("native registration changed unrelated MCP servers; no configuration published");
+      const originalUnrelated = withoutAmem(document), installedUnrelated = withoutAmem(installed);
       if (target === "codex") {
-        if (!isDeepStrictEqual(withoutAmem(document), withoutAmem(installed))) throw Error("native registration changed unrelated settings; no configuration published");
+        // Restore the omitted default only in this detached comparison, never in native output.
+        const originalServers = record(originalUnrelated[serverKey]), installedServers = record(installedUnrelated[serverKey]);
+        for (const [name, value] of Object.entries(originalServers)) {
+          if (!Object.hasOwn(installedServers, name)) continue;
+          const before = record(value), after = installedServers[name];
+          if (typeof before.command === "string" && Object.hasOwn(before, "args") && Array.isArray(before.args) && before.args.length === 0
+              && after && typeof after === "object" && !Array.isArray(after) && !Object.hasOwn(after, "args")) {
+            installedServers[name] = { ...after, args: [] };
+          }
+        }
+      }
+      if (!isDeepStrictEqual(originalUnrelated[serverKey], installedUnrelated[serverKey])) throw Error(`${target} native registration changed unrelated MCP servers; no configuration published`);
+      if (target === "codex") {
+        if (!isDeepStrictEqual(originalUnrelated, installedUnrelated)) throw Error("codex native registration changed unrelated settings; no configuration published");
+        changes[0]!.after = putMcpRecord(target, changes[0]!.before, installedServer);
       } else {
         // Keep all unrelated JSON settings from the original; use only the CLI-generated server record.
         // Qwen's restored image also retires its previous managed hook on a runtime upgrade.
