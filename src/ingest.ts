@@ -33,8 +33,8 @@ const MAX_CURSOR_BYTES = 128 * 1024;
 // Bump after extending the verified Qwen decoder: replay skipped versions with existing capture receipts deduplicating accepted rows.
 const QWEN_CONTRACT = "qwen-0.26.1-v1";
 /** A native writer version as reported in a receipt: a short token only, so no transcript content can pass through it (#136). */
-const VERSION_TOKEN = /^[0-9A-Za-z.\-]{1,32}$/;
-const versionToken = (value: unknown): string | undefined => typeof value === "string" && VERSION_TOKEN.test(value) ? value : undefined;
+const VERSION_TOKEN = /^[0-9]{1,6}(\.[0-9]{1,6}){1,3}([-+][0-9A-Za-z.]{1,16})?$/;   // a dotted version shape: a bare dashed number (000-00-0000) never qualifies
+const versionToken = (value: unknown): string | undefined => typeof value === "string" && value.length <= 32 && VERSION_TOKEN.test(value) ? value : undefined;
 const KIMI_PROTOCOLS = ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"];
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const MAX_RECORD = 256 * 1024, MAX_RECORDS = 4096, MAX_DISCOVERY = 4096, MAX_DEPTH = 8, ANCHOR_BYTES = 1024;
@@ -401,9 +401,9 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             else if (raw.cwd !== undefined) position.scope = permitted ? scopeOf(raw.cwd) : "unknown";
             if (kind === "kimi" && raw.type === "metadata") {
               // A validated unsupported version is kept (not "unknown") so later records can name it; the gate below still refuses it.
-              position.protocol = versionToken(raw.protocol_version) ?? "unknown";
+              position.protocol = permitted ? versionToken(raw.protocol_version) ?? "unknown" : "unknown";   // a declined record never lends its version to the cursor or receipt
             }
-            const qwenVersion = kind === "qwen" && !known ? versionToken(raw.version) : undefined;
+            const qwenVersion = kind === "qwen" && !known && permitted ? versionToken(raw.version) : undefined;
             if (!known) { if (qwenVersion !== undefined && qwenVersion !== "0.26.1") unsupported(qwenVersion); else fail("schema_or_time"); }
             const input = known ? extract(kind, raw, project) : undefined;
             if (input) {

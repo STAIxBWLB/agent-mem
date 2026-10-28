@@ -177,3 +177,18 @@ test("#136: a newer Qwen writer version is reported as unsupported_version, a ma
   writeFileSync(f.file, line(message(f.cwd, "supported answer")));
   expect((await ingestTranscript("qwen", { ...f, files: [f.file] })).imported).toBe(1);
 });
+
+test("#136: a policy-declined Qwen record reports no version, and a bare dashed number is never a version token", async () => {
+  const f = fixture();
+  writeFileSync(f.file, line(message(f.cwd, "declined", { version: "0.27.0", marker: "decline-me" })));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  const declined = await ingestTranscript("qwen", { ...f, files: [f.file], policy });
+  expect(declined.reason).toBe("schema_or_time"); expect(declined.version).toBeUndefined(); expect(JSON.stringify(declined)).not.toContain("0.27.0");
+  const ssn = join(f.root, "ssn.jsonl");
+  writeFileSync(ssn, line(message(f.cwd, "x", { version: "000-00-0000" })));
+  const refused = await ingestTranscript("qwen", { cwd: f.cwd, base: f.base, files: [ssn] });
+  expect(refused.reason).toBe("schema_or_time"); expect(refused.version).toBeUndefined(); expect(JSON.stringify(refused)).not.toContain("000-00-0000");
+  const plus = join(f.root, "plus.jsonl");
+  writeFileSync(plus, line(message(f.cwd, "x", { version: "0.27.0-rc.1" })));
+  expect(await ingestTranscript("qwen", { cwd: f.cwd, base: f.base, files: [plus] })).toMatchObject({ reason: "unsupported_version", version: "0.27.0-rc.1" });
+});

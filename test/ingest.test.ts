@@ -222,3 +222,19 @@ test("#136: timestamped Kimi records with no metadata stay schema_or_time with n
   const receipt = await ingestTranscript("kimi",{...f,files:[file]});
   expect(receipt.imported).toBe(0); expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined();
 });
+
+function kimiCursorProtocols(f: ReturnType<typeof fixture>): string[] {
+  const store = new CaptureStore({ memoryDir: f.base, project: memoryProjectKey(f.cwd) }), dir = join(store.dir, "ingest"); store.close();
+  return readdirSync(dir).filter(name => name.endsWith(".db")).map(name => { const db = new Database(join(dir, name), { readonly: true }); try { return (db.query("SELECT protocol FROM cursor").get() as { protocol: string }).protocol; } finally { db.close(); } });
+}
+
+test("#136: a policy-declined Kimi metadata record never lends its version to the cursor or the receipt", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6",marker:"decline-me"}) + line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"answer"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  const receipt = await ingestTranscript("kimi",{...f,files:[file],policy});
+  expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined(); expect(JSON.stringify(receipt)).not.toContain("1.6");
+  const protocols = kimiCursorProtocols(f).filter(protocol => protocol !== "rotation-v1");   // the discovery tour keeps its own cursor row
+  expect(protocols).toEqual(["unknown"]);
+});
