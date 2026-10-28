@@ -232,7 +232,7 @@ test("marked CLI unsupported reads fail closed before opening a memory home", as
   ]) {
     await expect(runCli(argv, context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   }
-  await expect(runCli(["review", "walk"], context)).rejects.toThrow("stdout must be a terminal");
+  await expect(runCli(["review", "walk"], context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   await expect(runCli(["review", "walk"], { ...context, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   await expect(runCli(["review", "walk"], { ...context, env: {}, stdoutTTY: true, stdinTTY: false })).rejects.toThrow("terminal on stdin");
   expect(existsSync(home)).toBe(false);
