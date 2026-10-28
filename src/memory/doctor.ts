@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { sessionStartBrief } from "../session-brief.ts";
 import { pendingSummary } from "./candidate-pending.ts";
-import { captureDropSummary } from "./metrics.ts";
+import { readCaptureDrops } from "./metrics.ts";
 import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
 import { readSelector } from "./generation.ts";
@@ -276,7 +276,9 @@ function policySection(options: DoctorOptions): Section {
 
 /** #132: capture rows hooks dropped, by reason, from the bounded rolling metrics tail (counts only; no row text is ever recorded there). */
 function dropsSection(options: DoctorOptions): Section {
-  const counts = captureDropSummary(options.home), total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
+  const read = readCaptureDrops(options.home);
+  if (!read.readable) return unavailable(read.reason);   // an existing file doctor cannot read is never a healthy zero
+  const counts = read.counts, total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
   return { status: total ? "attention" : "ok", window: "recent metrics tail", total, counts,
     ...(total ? { hint: "capture rows were dropped recently (see counts by reason); amem doctor --json keeps the numbers" } : {}) };
 }

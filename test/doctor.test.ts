@@ -461,3 +461,14 @@ test("#132: recent capture drops by reason are an attention item with counts onl
   const text = await doctor(r, ["doctor"]);
   expect(text).toMatch(/^ATTENTION +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
 });
+
+test("#132: an existing metrics file doctor cannot read is unavailable, never a healthy zero", async () => {
+  const r = rig(); r.note("n"); mkdirSync(r.memory, { recursive: true });
+  writeFileSync(join(r.memory, "metrics.jsonl"), Buffer.from([0xff, 0xfe, 0x0a]));   // invalid UTF-8
+  const bad = (await doctor(r)).sections.drops;
+  expect(bad).toMatchObject({ status: "unavailable", reason: "metrics.jsonl cannot be read or is not UTF-8" });
+  const { captureDropSummary } = await import("../src/memory/metrics.ts");
+  expect(captureDropSummary(r.memory)).toEqual({});   // hooks still fail open
+  rmSync(join(r.memory, "metrics.jsonl")); mkdirSync(join(r.memory, "metrics.jsonl"));
+  expect((await doctor(r)).sections.drops.status).toBe("unavailable");
+});

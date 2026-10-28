@@ -49,7 +49,7 @@ amem setup pi --apply
 amem setup all --undo
 ```
 
-`--apply` and `--undo` require a person's terminal and an explicit `yes`; agent markers refuse them. The default is a read-only plan. Native Claude, Codex and Pi MCP registration commands run in a private temporary HOME before the listed files are published; current Kimi Code uses its MCP JSON file. No AGENTS.md, CLAUDE.md or rule files are edited. Repeated apply is a no-op even after routine CLI metadata writes. Registrations use the absolute Bun path found on PATH, preserving its stable symlink rather than a versioned Cellar target; temporary package entries (such as bunx caches) are refused; reapply refreshes moved package/runtime locations automatically. Private receipts restore original bytes, permissions and absent-file state when files are untouched. When a CLI updates its own metadata, undo restores only the managed MCP entry and hook rows while preserving those updates; edits to those managed entries refuse rather than overwrite. Config files have an 8 MiB bound and generated TOML is validated before publication.
+`--apply` and `--undo` require a person's terminal and an explicit `yes`; agent markers refuse them. The default is a read-only plan. Native Claude, Codex, Pi and Qwen MCP registration commands run in a private temporary HOME before the listed files are published; current Kimi Code uses its MCP JSON file. No AGENTS.md, CLAUDE.md or rule files are edited. Repeated apply is a no-op even after routine CLI metadata writes. Registrations use the absolute Bun path found on PATH, preserving its stable symlink rather than a versioned Cellar target; temporary package entries (such as bunx caches) are refused; reapply refreshes moved package/runtime locations automatically. Private receipts restore original bytes, permissions and absent-file state when files are untouched. When a CLI updates its own metadata, undo restores only the managed MCP entry and hook rows while preserving those updates; edits to those managed entries refuse rather than overwrite. Config files have an 8 MiB bound and generated TOML is validated before publication.
 
 Claude receives its seven bounded hooks. Codex and Kimi receive SessionEnd incremental ingest; Pi receives a session_shutdown extension. [Codex's native `/hooks` review](https://learn.chatgpt.com/docs/hooks) remains a pending person step: setup never grants or bypasses hook trust. Native registration requires a CLI exposing `mcp` administration (Claude, Codex, Pi and Qwen are checked through their help before any registration command); current Kimi Code uses its documented config files. `setup all` skips and reports missing CLIs; an individual missing target refuses. Setup does not download tools or start a resident worker.
 
@@ -300,12 +300,13 @@ Split-home sync durably holds verified foreign-generation prunes with a "held, n
 
 ## Native transcript intake
 
-`amem ingest` reads existing Codex, Kimi or Pi transcripts and writes screened deterministic capture rows, never curated notes. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:
+`amem ingest` reads existing Codex, Kimi, Pi or Qwen transcripts and writes screened deterministic capture rows, never curated notes. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:
 
 ```sh
 amem ingest codex --since 2026-10-01T00:00:00Z --json
 amem ingest kimi --json
 amem ingest pi --since 2026-10-01T00:00:00Z --json
+amem ingest qwen --json
 ```
 
 Discovery uses `CODEX_HOME` or `~/.codex` (`sessions/` and `archived_sessions/`), `KIMI_CODE_HOME` or `~/.kimi-code` (`sessions/**/wire.jsonl`), and `PI_CODING_AGENT_DIR` or `~/.pi/agent` (`sessions/`). It does not follow directory symlinks. A native record must carry a recognized schema/time and an observed absolute working-directory binding that resolves to this canonical project, including reviewed aliases. Unknown working directories, unsupported Kimi wire versions, missing timestamps and unavailable source roots are reported rather than guessed as an empty successful history. Foreign/private/secret rows are not imported. Full native envelopes and extracted capture inputs both pass current policy.
