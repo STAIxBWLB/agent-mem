@@ -180,8 +180,9 @@ test("capture freshness is reported per CLI, from the hook receipts and the capt
   expect(clis.pi).toMatchObject({ hook: "manual", capture: "never" });
   expect(clis.codex.hint).toContain("amem ingest codex");
   expect(report.sections.capture.status).toBe("attention");                                    // a registered hook whose capture went stale
-  expect(report.sections.cadence.ingest).toMatchObject({ codex: "session end", claude: "manual", kimi: "manual", pi: "manual" });
-  expect(report.sections.cadence.manual).toEqual(["claude", "kimi", "pi"]);
+  expect(report.sections.cadence.ingest).toMatchObject({ codex: "session end", claude: "manual", kimi: "manual", pi: "manual", qwen: "manual" });
+  expect(report.sections.cadence.manual).toEqual(["claude", "kimi", "pi", "qwen"]);
+  expect(clis.qwen).toMatchObject({ hook: "manual", capture: "never" });
   expect(calls.length).toBeGreaterThan(0);
 });
 
@@ -226,7 +227,7 @@ test("the policy section names what is in effect and the brief reports its budge
 test("the human report names every section, marks attention and shows the hint", async () => {
   const r = rig(); r.note("n");
   const text = await doctor(r, ["doctor"]);
-  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toContain(`${name}:`);
+  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops"]) expect(text).toContain(`${name}:`);
   expect(text).toMatch(/^amem doctor: (ok|attention|unavailable)/);
 });
 
@@ -424,4 +425,39 @@ test("an ordinary doctor run leaves no scratch directory and no process handler 
   expect((["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const).map(name => process.listenerCount(name))).toEqual(before);
   expect(process.listenerCount("exit")).toBe(exits);
   expect(scratchDirs(tmp).filter(name => !had.includes(name))).toEqual([]);
+});
+
+test("#132: qwen capture and cadence come from its setup receipt and its capture rows", async () => {
+  const r = rig(); r.note("n"); mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "qwen.json"), JSON.stringify({ target: "qwen", phase: "applied" }));
+  r.capture("qwen", new Date().toISOString());
+  const report = await doctor(r);
+  expect(report.schema).toBe("amem.doctor/v1");
+  expect(report.sections.capture.clis.qwen).toMatchObject({ hook: "registered", hookEvidence: "setup receipt", capture: "fresh", rows: 1 });
+  expect(report.sections.cadence.ingest.qwen).toBe("session end");
+  expect(report.sections.cadence.manual ?? []).not.toContain("qwen");
+});
+
+test("#132: a registered codex hook that never captured names the /hooks trust review", async () => {
+  const r = rig(); r.note("n"); mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "codex.json"), JSON.stringify({ target: "codex", phase: "applied" }));
+  const report = await doctor(r);
+  expect(report.sections.capture.clis.codex).toMatchObject({ hook: "registered", capture: "never" });
+  expect(report.sections.capture.clis.codex.hint).toContain("/hooks trust review");
+  expect(report.sections.capture.status).toBe("attention");
+  expect(await doctor(r, ["doctor"])).toContain("/hooks trust review");
+});
+
+test("#132: recent capture drops by reason are an attention item with counts only", async () => {
+  const r = rig(); r.note("n");
+  expect((await doctor(r)).sections.drops).toMatchObject({ status: "ok", total: 0, counts: {} });
+  const { appendMetrics } = await import("../src/memory/metrics.ts");
+  const at = new Date().toISOString();
+  appendMetrics(r.memory, [{ at, kind: "hook", captureDrops: 2, captureDropReason: "spool_full" }, { at, kind: "hook", captureDrops: 1, captureDropReason: "cwd_removed" }, { at, kind: "search", wallMs: 3 }]);
+  const report = await doctor(r);
+  expect(report.sections.drops).toMatchObject({ status: "attention", total: 3, counts: { spool_full: 2, cwd_removed: 1 }, window: "recent metrics tail" });
+  expect(report.status).toBe("attention");
+  expect(Object.keys(report.sections.drops).sort()).toEqual(["counts", "hint", "status", "total", "window"]);
+  const text = await doctor(r, ["doctor"]);
+  expect(text).toMatch(/^ATTENTION +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
 });

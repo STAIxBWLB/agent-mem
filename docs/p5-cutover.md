@@ -49,7 +49,7 @@ Runbook for #13 P5 and P6. The person runs every command below in a terminal out
   - `dot ai agents apply`, then read back: the SSOT and each rendered target name amem and no longer tell agents to query claude-mem (`grep -c claude-mem <file>`).
 - **Read back**
   - `dot ai memory status` and the retirement's own read-back report no claude-mem process, port, hook or LaunchAgent.
-  - `amem doctor` reports capture freshness for every CLI you use; a CLI without hooks shows as manual, so add `amem ingest <codex|kimi|pi>` to your session-end routine.
+  - `amem doctor` reports capture freshness for every CLI you use; a CLI without hooks shows as manual, so add `amem ingest <codex|kimi|pi|qwen>` to your session-end routine.
 
 ## Rollback
 

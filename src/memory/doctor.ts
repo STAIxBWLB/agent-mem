@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { sessionStartBrief } from "../session-brief.ts";
 import { pendingSummary } from "./candidate-pending.ts";
+import { captureDropSummary } from "./metrics.ts";
 import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
 import { readSelector } from "./generation.ts";
@@ -26,7 +27,7 @@ import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } fro
 export type SectionStatus = "ok" | "attention" | "skipped" | "unavailable";
 export type Section<T extends object = Record<string, unknown>> = { status: SectionStatus } & T;
 export const DOCTOR_SCHEMA = "amem.doctor/v1";
-export const CLIS = ["claude", "codex", "kimi", "pi"] as const;
+export const CLIS = ["claude", "codex", "kimi", "pi", "qwen"] as const;
 export type Cli = typeof CLIS[number];
 /** A CLI whose last capture is older than this is called stale. */
 export const CAPTURE_STALE_MS = 7 * 86400_000;
@@ -54,6 +55,8 @@ export interface DoctorReport {
   project: string;
   sections: {
     duplicates: Section; stale: Section; candidates: Section; capture: Section; brief: Section; index: Section; readers: Section; policy: Section; cadence: Section;
+    /** Added after v1 shipped (#132); additive, so the schema stays amem.doctor/v1. */
+    drops: Section;
   };
 }
 
@@ -219,7 +222,7 @@ function captureSection(options: DoctorOptions): Section {
     const needs = registered ? state !== "fresh" : state === "stale";
     if (needs) attention.push(cli);
     clis[cli] = { hook: registered ? "registered" : "manual", ...(registered ? { hookEvidence: "setup receipt" } : {}), ...(phase === "prepared" ? { setup: "prepared, not applied" } : {}), capture: state, lastCaptureAt: last, rows: entry?.rows ?? 0,
-      ...(needs || (!registered && state === "never") ? { hint: registered ? `the ${cli} hook is registered but its capture is ${state}: open a session${cli === "claude" ? "" : `, or run amem ingest ${cli}`}` : cli === "claude" ? "run amem setup claude --apply to register the capture hooks" : `run amem setup ${cli} --apply, or amem ingest ${cli} by hand` } : {}) };
+      ...(needs || (!registered && state === "never") ? { hint: registered ? cli === "codex" && state === "never" ? "the codex hook is registered but has never captured: approve it in Codex's /hooks trust review (setup never grants hook trust), then open a session" : `the ${cli} hook is registered but its capture is ${state}: open a session${cli === "claude" ? "" : `, or run amem ingest ${cli}`}` : cli === "claude" ? "run amem setup claude --apply to register the capture hooks" : `run amem setup ${cli} --apply, or amem ingest ${cli} by hand` } : {}) };
   }
   return { status: !readable ? "unavailable" : attention.length ? "attention" : "ok", ...(readable ? {} : { reason: "a capture database could not be read" }), clis };
 }
@@ -269,6 +272,13 @@ function policySection(options: DoctorOptions): Section {
       ...(config.briefBytes !== undefined ? { briefBytes: config.briefBytes } : {}), ...(config.excerptBytes !== undefined ? { excerptBytes: config.excerptBytes } : {}),
       ...(config.capturePaths !== undefined ? { capturePaths: config.capturePaths } : {}) };
   } catch (error) { return unavailable(message(error)); }
+}
+
+/** #132: capture rows hooks dropped, by reason, from the bounded rolling metrics tail (counts only; no row text is ever recorded there). */
+function dropsSection(options: DoctorOptions): Section {
+  const counts = captureDropSummary(options.home), total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
+  return { status: total ? "attention" : "ok", window: "recent metrics tail", total, counts,
+    ...(total ? { hint: "capture rows were dropped recently (see counts by reason); amem doctor --json keeps the numbers" } : {}) };
 }
 
 /** F16: which CLIs ingest at SessionEnd (setup receipts), and the person-owned sync cadence. amem registers no sync hook (a hook may not do network work). */
@@ -398,7 +408,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let sections: DoctorReport["sections"];
   try {
     await tick();
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options) };
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
@@ -407,7 +417,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 /** Section order and one-line descriptions for the person-facing report (#125). */
 const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
-  index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence",
+  index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence", drops: "recent capture drops",
 };
 
 function sectionDetail(name: string, detail: Record<string, unknown>, s: Style): string[] {
@@ -421,6 +431,10 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
     const sync = (detail.sync ?? {}) as Record<string, unknown>, ingest = (detail.ingest ?? {}) as Record<string, string>;
     return [`ingest ${Object.entries(ingest).map(([cli, how]) => `${cli} ${how}`).join(", ")}`,
       `sync remote ${sync.remote}${sync.remote === "configured" ? `, last ok ${sync.lastOkAt ?? "never"}, failures ${sync.failures}${sync.due ? ", due" : ""}` : ""}`];
+  }
+  if (name === "drops") {
+    const counts = Object.entries((detail.counts ?? {}) as Record<string, number>);
+    return [counts.length ? `${counts.map(([reason, n]) => `${reason.replaceAll("_", " ")} ${n}`).join(", ")} (recent metrics tail)` : "none in the recent metrics tail"];
   }
   if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
   const { examples, ...rest } = detail;

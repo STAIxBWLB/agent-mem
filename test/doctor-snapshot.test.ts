@@ -16,7 +16,7 @@ import { applySetup, planSetup } from "../src/setup.ts";
  * `UPDATE_DOCTOR_SNAPSHOT=1 bun test test/doctor-snapshot.test.ts` rewrites the fixture; a reviewer reads the diff of the fixture.
  */
 const FIXTURE = new URL("./fixtures/doctor-snapshot.json", import.meta.url);
-const VOCABULARY = new Set(["ok", "attention", "skipped", "unavailable", "amem.doctor/v1", "setup receipt", "snapshotted", "absent", "registered", "manual", "fresh", "stale", "never", "configured", "none", "hooks", "session end", "AMEM_HOME"]);
+const VOCABULARY = new Set(["ok", "attention", "skipped", "unavailable", "amem.doctor/v1", "setup receipt", "snapshotted", "absent", "registered", "manual", "fresh", "stale", "never", "configured", "none", "hooks", "session end", "AMEM_HOME", "recent metrics tail"]);
 export function shape(value: unknown): unknown {
   if (value === null) return "null";
   if (Array.isArray(value)) return value.length ? [shape(value[0])] : [];
@@ -62,7 +62,7 @@ test("doctor --json keeps its documented shape (snapshot of keys, types and voca
 test("every section a consumer reads is present with a status, in a fixed order", async () => {
   const body = await report(rich()) as { schema: string; status: string; sections: Record<string, { status: string }> };
   expect(body.schema).toBe("amem.doctor/v1");
-  expect(Object.keys(body.sections)).toEqual(["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]);
+  expect(Object.keys(body.sections)).toEqual(["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops"]);
   for (const section of Object.values(body.sections)) expect(["ok", "attention", "unavailable"]).toContain(section.status);
   expect(body.status).toBe("attention");
 });
