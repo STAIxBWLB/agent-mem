@@ -233,7 +233,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const runtimePath = [...new Set([traps, dirname(bun), dirname(node!), dirname(npm!), "/usr/bin", "/bin"])].join(delimiter), env = allowlistedSmokeEnv(home, runtimePath);
     writeFileSync(env.npm_config_userconfig!, ""); writeFileSync(env.npm_config_globalconfig!, "");
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
+    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf '0.0.0-fixture\\n'; exit 0; fi\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
     const packed = JSON.parse(await ownedCommand(bun, [npm!, "pack", checkout, "--offline", "--json", "--ignore-scripts", "--pack-destination", artifacts], artifacts, env));
     requireSmoke(Array.isArray(packed) && packed.length === 1 && typeof packed[0]?.filename === "string" && basename(packed[0].filename) === packed[0].filename, "npm pack did not return one local artifact");
     const tarball = realPath(join(artifacts, packed[0].filename)); requireSmoke(inside(artifacts, tarball), "packed artifact escaped its private directory");
@@ -265,6 +265,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     writeFileSync(nativeStub, `import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';import {join,dirname} from 'node:path';
 const [target,...args]=process.argv.slice(2);
 if(!['claude','codex','pi','qwen'].includes(target))process.exit(97);
+if(args.length===1&&args[0]==='--version'){console.log(target+' 0.0.0-fixture');process.exit(0);}
 if(args.length===1&&args[0]==='--help'){console.log('  mcp Manage MCP servers');process.exit(0);}
 const marker=args.indexOf('--'),launch=target==='qwen'?[args[marker-1],...args.slice(marker+1)]:args.slice(marker+1),home=process.env.HOME;
 if(args[0]!=='mcp'||args[1]!=='add'||marker<0||process.cwd()!==home||!home.startsWith(${JSON.stringify(env.TMPDIR! + "/amem-setup-")}))process.exit(97);
