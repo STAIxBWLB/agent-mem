@@ -20,7 +20,9 @@ export interface IngestOptions {
 }
 export interface IngestReceipt {
   files: number; read: number; imported: number; skipped: number; spooled: number; remaining: boolean; errors: number;
-  reason?: "source_bound" | "source_unavailable" | "schema_or_time" | "cursor_busy" | "scope_changed";
+  reason?: "source_bound" | "source_unavailable" | "schema_or_time" | "cursor_busy" | "scope_changed" | "unsupported_version";
+  /** With `unsupported_version` (#136): the first native writer version seen that this decoder does not support. A validated version token, never transcript text. */
+  version?: string;
 }
 
 type Scope = "own" | "foreign" | "unknown";
@@ -30,6 +32,10 @@ const MAX_BYTES = 16 * 1024 * 1024, DEFAULT_BYTES = 4 * 1024 * 1024, MAX_FILES =
 const MAX_CURSOR_BYTES = 128 * 1024;
 // Bump after extending the verified Qwen decoder: replay skipped versions with existing capture receipts deduplicating accepted rows.
 const QWEN_CONTRACT = "qwen-0.26.1-v1";
+/** A native writer version as reported in a receipt: a short token only, so no transcript content can pass through it (#136). */
+const VERSION_TOKEN = /^[0-9]{1,6}(\.[0-9]{1,6}){1,3}([-+][0-9A-Za-z.]{1,16})?$/;   // a dotted version shape: a bare dashed number (000-00-0000) never qualifies
+const versionToken = (value: unknown): string | undefined => typeof value === "string" && value.length <= 32 && VERSION_TOKEN.test(value) ? value : undefined;
+const KIMI_PROTOCOLS = ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"];
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const MAX_RECORD = 256 * 1024, MAX_RECORDS = 4096, MAX_DISCOVERY = 4096, MAX_DEPTH = 8, ANCHOR_BYTES = 1024;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -270,6 +276,12 @@ function extract(kind: IngestKind, raw: Record<string, any>, project: string): C
 export async function ingestTranscript(kind: IngestKind, options: IngestOptions): Promise<IngestReceipt> {
   const result: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
   const fail = (reason: NonNullable<IngestReceipt["reason"]>, remaining = false) => { result.errors++; result.reason ??= reason; result.remaining ||= remaining; };
+  // An unsupported writer version explains its records better than the generic schema reason, so it replaces only that one; cursors and replay are untouched.
+  // The version is screened by the current policy every time it would be reported, including one restored from a cursor written under an older policy.
+  const unsupported = async (version: string, screen: (value: unknown) => Promise<boolean>) => {
+    if (!await screen({ version })) { fail("schema_or_time"); return; }
+    result.errors++; if (result.reason === undefined || result.reason === "schema_or_time") { result.reason = "unsupported_version"; result.version = version; }
+  };
   const bytes = options.maxBytes ?? DEFAULT_BYTES, count = options.maxFiles ?? DEFAULT_FILES;
   if (!["codex", "kimi", "pi", "qwen"].includes(kind) || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_BYTES || !Number.isSafeInteger(count) || count < 1 || count > MAX_FILES
     || options.files !== undefined && (!Array.isArray(options.files) || options.files.length > MAX_FILES || options.files.some(file => typeof file !== "string" || !isAbsolute(file) || file.includes("\0")))
@@ -392,13 +404,18 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             else if (context !== undefined) position.scope = permitted && object(context) ? scopeOf(context.cwd) : "unknown";
             else if (raw.cwd !== undefined) position.scope = permitted ? scopeOf(raw.cwd) : "unknown";
             if (kind === "kimi" && raw.type === "metadata") {
-              position.protocol = typeof raw.protocol_version === "string" && ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"].includes(raw.protocol_version) ? raw.protocol_version : "unknown";
+              // A validated unsupported version is kept (not "unknown") so later records can name it; the gate below still refuses it.
+              // Supported literals carry no content and are kept as before; only an unsupported token is gated on the policy, so a declined record never lends it to the cursor or receipt.
+              position.protocol = typeof raw.protocol_version === "string" && KIMI_PROTOCOLS.includes(raw.protocol_version) ? raw.protocol_version
+                : permitted ? versionToken(raw.protocol_version) ?? "unknown" : "unknown";
             }
-            if (!known) fail("schema_or_time");
+            const qwenVersion = kind === "qwen" && !known && permitted ? versionToken(raw.version) : undefined;
+            if (!known) { if (qwenVersion !== undefined && qwenVersion !== "0.26.1") await unsupported(qwenVersion, value => policy.screen(value)); else fail("schema_or_time"); }
             const input = known ? extract(kind, raw, project) : undefined;
             if (input) {
               const at = timeOf(raw, kind);
-              if (!at || position.scope === "unknown" || kind === "kimi" && !/^1\.[0-5]$/.test(position.protocol)) { fail("schema_or_time"); result.skipped++; }
+              if (kind === "kimi" && permitted && at && position.scope !== "unknown" && position.protocol !== "unknown" && versionToken(position.protocol) !== undefined && !KIMI_PROTOCOLS.includes(position.protocol)) { await unsupported(position.protocol, value => policy.screen(value)); result.skipped++; }
+              else if (!at || position.scope === "unknown" || kind === "kimi" && !KIMI_PROTOCOLS.includes(position.protocol)) { fail("schema_or_time"); result.skipped++; }
               else if (!permitted || position.scope !== "own" || since !== undefined && at < since) result.skipped++;
               else {
                 input.at = at;

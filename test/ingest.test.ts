@@ -201,3 +201,71 @@ test("ingest help returns guidance before intake, cwd access or any memory write
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 });
+
+test("#136: Kimi protocol 1.6 is unsupported_version with the version named, malformed metadata still schema_or_time", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  const answer = line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"newer kimi answer"}]}});
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6"}) + answer);
+  const newer = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(newer).toMatchObject({ imported: 0, reason: "unsupported_version", version: "1.6" });
+  expect(JSON.stringify(newer)).not.toContain("newer kimi answer");
+  writeFileSync(file,line({type:"metadata",protocol_version:"<b>not a version</b>"}) + answer);
+  const bad = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(bad.reason).toBe("schema_or_time"); expect(bad.version).toBeUndefined();
+});
+
+test("#136: timestamped Kimi records with no metadata stay schema_or_time with no version", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"no metadata answer"}]}}));
+  const receipt = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(receipt.imported).toBe(0); expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined();
+});
+
+function kimiCursorProtocols(f: ReturnType<typeof fixture>): string[] {
+  const store = new CaptureStore({ memoryDir: f.base, project: memoryProjectKey(f.cwd) }), dir = join(store.dir, "ingest"); store.close();
+  return readdirSync(dir).filter(name => name.endsWith(".db")).map(name => { const db = new Database(join(dir, name), { readonly: true }); try { return (db.query("SELECT protocol FROM cursor").get() as { protocol: string }).protocol; } finally { db.close(); } });
+}
+
+test("#136: a policy-declined Kimi metadata record never lends its version to the cursor or the receipt", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6",marker:"decline-me"}) + line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"answer"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  const receipt = await ingestTranscript("kimi",{...f,files:[file],policy});
+  expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined(); expect(JSON.stringify(receipt)).not.toContain("1.6");
+  const protocols = kimiCursorProtocols(f).filter(protocol => protocol !== "rotation-v1");   // the discovery tour keeps its own cursor row
+  expect(protocols).toEqual(["unknown"]);
+});
+
+test("#136: a declined Kimi metadata record with a supported protocol still lets permitted records import", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.5",marker:"decline-me"}) + line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text:"permitted answer"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  expect((await ingestTranscript("kimi",{...f,files:[file],policy})).imported).toBe(1);
+  expect(rows(f).map(row => row.excerpt)).toEqual(["permitted answer"]);
+});
+
+test("#136: a Kimi version stored under an older policy is screened again before it is reported", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  const answer = (text: string) => line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text}]}});
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6-internal"}) + answer("first"));
+  expect(await ingestTranscript("kimi",{...f,files:[file]})).toMatchObject({ reason: "unsupported_version", version: "1.6-internal" });
+  // The person tightens the policy; the cursor still holds 1.6-internal and the next run reads only the appended record.
+  mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["internal"] }));
+  appendFileSync(file, answer("second"));
+  const later = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(later.reason).toBe("schema_or_time"); expect(later.version).toBeUndefined(); expect(JSON.stringify(later)).not.toContain("internal");
+});
+
+test("#136: a declined Kimi message under a stored unsupported protocol reports no version", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6"}) + line({type:"context.append_message",time:Date.parse(at),marker:"decline-me",message:{role:"assistant",content:[{type:"text",text:"declined"}]}}));
+  const policy = { host: { async screen(value: unknown) { return !JSON.stringify(value).includes("decline-me"); } } };
+  const receipt = await ingestTranscript("kimi",{...f,files:[file],policy});
+  expect(receipt.reason).not.toBe("unsupported_version"); expect(receipt.version).toBeUndefined(); expect(receipt.imported).toBe(0);
+});
