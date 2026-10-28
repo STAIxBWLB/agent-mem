@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendMetrics, capacityReport, readMetrics, metricsPath, type MetricSample } from "../src/memory/capacity.ts";
 import { readCaptureConfigFile } from "../src/memory/capture.ts";
-import { runCli, PERSON_ONLY } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -131,26 +131,26 @@ test("the rolling metrics file keeps the newest samples within its bound", () =>
   expect(report.metrics.samples).toBe(read.length);
 });
 
-test("amem capacity reports, previews, and applies only with --confirm; agents can never apply", async () => {
+test("amem capacity reports, previews, and applies only with --confirm from a marked nonTTY CLI", async () => {
   const dir = home();
   process.env.AMEM_HOME = join(dir, "memory");
   cleanup.push(() => { delete process.env.AMEM_HOME; });
   const file = join(dir, "memory", "capture-config.json");
   const context = { cwd: dir, env: {}, stdinTTY: true };
+  const agent = { cwd: dir, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false };
   const text = await runCli(["capacity"], context);
   expect(text).toContain("capture:"); expect(text).toContain("proposal:");
   const report = JSON.parse(await runCli(["capacity", "--json"], context)) as { proposal: { capMb: number } };
   // Reanchored for agent-mem#152: the proposal grows with the real disk this test reads, so it is above the 512 MB default, not equal to it.
   expect(report.proposal.capMb).toBeGreaterThan(0);
   // apply previews first and writes nothing without --confirm.
-  await expect(runCli(["capacity", "apply"], { ...context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  await expect(runCli(["capacity", "apply", "--cap-mb", "64"], { ...context, env: { CODEX_THREAD_ID: "x" } })).rejects.toThrow(PERSON_ONLY);
+  await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)).rejects.toThrow("preview first");
   expect(readCaptureConfigFile(file)).toEqual({}); // a first-call --confirm cannot skip the preview
-  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--json"], context)) as { preview: { target: { capMb: number } } };
+  const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--json"], agent)) as { preview: { target: { capMb: number } } };
   expect(preview.preview.target).toMatchObject({ capMb: 64, retentionDays: 365 });   // the unset retention falls to the proposal: no growth is measured here, so the ceiling
   expect(readCaptureConfigFile(file)).toEqual({});
-  const written = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--confirm", "--json"], context)) as { written: { cap_mb: number; retention_days: number } };
+  const written = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--confirm", "--json"], agent)) as { written: { cap_mb: number; retention_days: number } };
   expect(written.written).toEqual({ cap_mb: 64, retention_days: 365 }); // the unset value falls to the proposal
   expect(readCaptureConfigFile(file)).toEqual({ capMb: 64, retentionDays: 365 });
 });

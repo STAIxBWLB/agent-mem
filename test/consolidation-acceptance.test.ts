@@ -20,13 +20,13 @@ function fixture() {
   const accept = (id: string, actor: "person" | "agent" = "person", policy = () => true) => candidates.accept(id, { project, actor, verdict: "public", store, policy, policyVersion: () => "fixed" });
   return { root, store, candidates, project, note, proposal, accept };
 }
-test("consolidation proposals write no curated data; person acceptance replaces the exact sources once", () => {
+test("consolidation proposals write no curated data; agent acceptance replaces exact sources once with actor attribution", () => {
   const f = fixture(), a = f.note("writer boundary A"), b = f.note("writer boundary B"), id = f.candidates.put(f.proposal([a, b]), "public");
   expect(f.store.list({ project: f.project })).toHaveLength(2);
-  expect(() => f.accept(id, "agent")).toThrow("person");
-  const accepted = f.accept(id);
+  const accepted = f.accept(id, "agent");
+  expect(f.store.get(accepted.noteId, f.project)).toMatchObject({ peer: "agent", source: "person" });
   expect(f.store.get(a, f.project)?.supersededBy).toBe(accepted.noteId); expect(f.store.get(b, f.project)?.supersededBy).toBe(accepted.noteId);
-  expect(f.accept(id)).toMatchObject({ noteId: accepted.noteId, alreadyAccepted: true });
+  expect(f.accept(id, "agent")).toMatchObject({ noteId: accepted.noteId, alreadyAccepted: true });
 });
 test("stale and foreign sources or host-policy refusal make no replacement", () => {
   for (const mode of ["stale", "foreign", "policy"] as const) {

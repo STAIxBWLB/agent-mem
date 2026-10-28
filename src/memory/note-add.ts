@@ -1,9 +1,9 @@
 import { KINDS, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "./store.ts";
+import { cliAttribution } from "./cli-attribution.ts";
 import type { StandalonePolicy } from "./policy.ts";
 
 /**
- * F6 (agent-mem#40): person note authoring. `amem note add` writes one curated note the person typed, through the configured policy. The note is authored by the
- * person (`peer: "person"`, `source: "person"`), which is why the command is person-only like every ordinary command (an agent marker is refused before it runs).
+ * F6 (agent-mem#40): note authoring writes one curated note through the configured policy. The invocation peer is recorded for attribution; source remains `person`.
  *
  * A `fail` note carries structured fields. Its body uses the same labelled lines an accepted `fail` candidate produces, so a note written here and one accepted
  * from `amem_remember` read alike and `fail` search and the plan guard see one shape.
@@ -59,7 +59,7 @@ export function buildNote(input: NoteAddInput, project: string): NoteInput {
     if (text.includes("\0")) refuse("the note text holds a NUL byte");
   }
   if (text.length > NOTE_MAX_CHARS) refuse(`the note is ${text.length} characters; the limit is ${NOTE_MAX_CHARS}`);
-  return { op: "note", project, scope: input.scope, tier: input.tier, kind: input.kind, peer: "person", source: "person", ...(title ? { title } : {}), text, about: [] };
+  return { op: "note", project, scope: input.scope, tier: input.tier, kind: input.kind, peer: cliAttribution()?.peer ?? "person", source: "person", ...(title ? { title } : {}), text, about: [] };
 }
 
 /**
@@ -68,7 +68,7 @@ export function buildNote(input: NoteAddInput, project: string): NoteInput {
  */
 export function noteAdd(store: MemoryStore, project: string, input: NoteAddInput, policy: StandalonePolicy): NoteAddResult {
   const note = buildNote(input, project);
-  if (!policy.screenStandalone({ ...(note.title ? { title: note.title } : {}), text: note.text, about: note.about })   /* no undefined field: the screen refuses one */) refuse("the note is refused by the configured privacy policy (secrets, personal data, deny paths and the patterns in amem.config.json); edit it or the policy and try again");
+  if (!policy.screenStandalone({ ...(note.title ? { title: note.title } : {}), text: note.text, about: note.about, peer: note.peer })) refuse("the note is refused by the configured privacy policy (secrets, personal data, deny paths and the patterns in amem.config.json); edit it or the policy and try again");
   return { id: store.note(note, input.tier === "short") };
 }
 

@@ -33,6 +33,9 @@ function seed(dir: string): { a: string; b: string } {
 }
 const options = (dir: string, mode: "dry-run" | "apply" | "resume") => ({ memoryDir: join(dir, "memory"), mode, authorizedPerson: true, tty: true });
 const segmentBytes = (dir: string) => Object.fromEntries(["log", "local"].flatMap((folder) => readdirSync(join(dir, "memory", folder)).filter((name) => name.endsWith(".jsonl")).map((name) => [`${folder}/${name}`, readFileSync(join(dir, "memory", folder, name), "utf8")])));
+const homeBytes = (path: string) => Object.fromEntries(readdirSync(path, { recursive: true, withFileTypes: true }).filter(row => row.isFile()).map(row => {
+  const file = join(row.parentPath, row.name); return [file.slice(path.length), readFileSync(file).toString("base64")];
+}));
 function cwdForProject(dir: string): string {
   const repo = join(dir, "repo");
   mkdirSync(repo, { recursive: true });
@@ -112,12 +115,15 @@ test("a live reader blocks apply and an interrupted build resumes without duplic
   a.close();
 });
 
-test("amem migrate --shards and status drive the same resume path and ordinary CLI opens a shard", async () => {
+test("bare amem migrate --shards previews without writes; --apply and status drive the same resume path", async () => {
   const dir = home(); seed(dir);
   process.env.AMEM_HOME = join(dir, "memory");
   cleanup.push(() => { delete process.env.AMEM_HOME; });
   const context = { cwd: cwdForProject(dir), env: {}, stdinTTY: true };
-  const applied = JSON.parse(await runCli(["migrate", "--shards", "--json"], context)) as { active: boolean };
+  const before = homeBytes(join(dir, "memory"));
+  const preview = JSON.parse(await runCli(["migrate", "--shards", "--json"], context)) as { mode: string; active: boolean };
+  expect(preview.mode).toBe("dry-run"); expect(preview.active).toBe(false); expect(homeBytes(join(dir, "memory"))).toEqual(before);
+  const applied = JSON.parse(await runCli(["migrate", "--shards", "--apply", "--json"], context)) as { active: boolean };
   expect(applied.active).toBe(true);
   const listed = JSON.parse(await runCli(["list", "--json"], context)) as { project: string; text: string }[];
   expect(listed.some((row) => row.text === "alpha curated")).toBe(true);

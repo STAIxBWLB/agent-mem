@@ -231,9 +231,9 @@ test("the human report names every section, marks attention and shows the hint",
   expect(text).toMatch(/^amem doctor: (ok|attention|unavailable)/);
 });
 
-test("doctor is person-only like every other command: an agent marker is refused before the home is opened", async () => {
+test("doctor is outside the marked CLI read ceiling and is refused before the home is opened", async () => {
   const r = rig();
-  await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x" }, stdinTTY: false })).rejects.toThrow(/amem is for the person/);
+  await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x", HOME: r.root, AMEM_HOME: r.memory }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   expect(existsSync(r.memory)).toBe(false);
 });
 

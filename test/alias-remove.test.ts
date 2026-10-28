@@ -91,20 +91,15 @@ async function cliFixture() {
   return { root, base, raw, canonical, oldNote, canonicalNote, person: { cwd: root, env: {}, stdinTTY: true } };
 }
 
-test("amem alias remove is person only, needs a TTY, and shows the old key's rows again under the old key (#27 option 2)", async () => {
+test("amem alias remove works for a marked nonTTY CLI, records its actor and shows the old key's rows again (#27 option 2)", async () => {
   const f = await cliFixture();
   const listed = async () => (JSON.parse(await runCli(["list", "--json"], f.person)) as { id: string }[]).map(row => row.id);
   expect(await listed()).toEqual([f.oldNote]);                                                          // no alias yet: the checkout binds to its raw key
   await runCli(["alias", "add", f.raw, f.canonical], f.person);
   expect((await listed()).sort()).toEqual([f.oldNote, f.canonicalNote].sort());                         // aliased: the canonical project covers both keys
-  // an agent-marked session is refused, like every ordinary command
-  await expect(runCli(["alias", "remove", f.raw], { ...f.person, env: { CLAUDECODE: "1" } })).rejects.toThrow(/person|terminal/i);
-  // no terminal on stdin: refused before anything is appended
-  const before = readFileSync(aliasLogPath(f.base), "utf8");
-  await expect(runCli(["alias", "remove", f.raw], { ...f.person, stdinTTY: false })).rejects.toThrow("mutating commands require a terminal on stdin");
-  expect(readFileSync(aliasLogPath(f.base), "utf8")).toBe(before);
-  const removed = await runCli(["alias", "remove", f.raw], f.person);
-  expect(removed).toContain(`alias ${f.raw} removed`);
+  const removed = JSON.parse(await runCli(["alias", "remove", f.raw, "--json"], { ...f.person, env: { CLAUDECODE: "1" }, stdinTTY: false }));
+  expect(removed).toMatchObject({ op: "unalias", alias: f.raw, actor: "agent" });
+  const log = readFileSync(aliasLogPath(f.base), "utf8"); expect(JSON.parse(log.trim().split("\n").at(-1)!)).toMatchObject({ op: "unalias", actor: "agent" });
   expect(resolveAlias(f.base, f.raw)).toBe(f.raw);
   // the key is restored: the checkout binds to its raw key again, so the canonical key's note is no longer part of its project
   expect(await listed()).toEqual([f.oldNote]);

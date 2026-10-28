@@ -7,7 +7,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 const tool = <Name extends string>(name: Name, description: string, inputSchema: ReturnType<typeof object>, readOnlyHint = true) => ({ name, description, inputSchema,
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false } });
 
-/** Storage scope comes from startup, never tool arguments; candidate proposals remain person-reviewed. */
+/** Storage scope comes from startup, never tool arguments. MCP proposes candidates only; the CLI accepts or rejects them under the current policy and records actor/peer. */
 export const MCP_TOOLS = [
   tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
   tool("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
@@ -18,11 +18,11 @@ export const MCP_TOOLS = [
   tool("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object({ list: string(200), includeClosed: { type: "boolean" } })),
   tool("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object({ list: string(200), fields: { type: "object", minProperties: 1, maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 } } }, ["list", "fields"]), false),
-  tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Person acceptance only; never writes curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
+  tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
     approach: string(4000), symptom: string(4000), cause: string(4000), evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) }, retryWhen: string(4000) }), false),
-  tool("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. A person must accept before any note or supersession is written.", object({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
-  tool("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object({ limit })),
-  tool("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object({})),
+  tool("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
+  tool("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object({ limit })),
+  tool("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object({})),
 ] as const;
 export type McpToolName = typeof MCP_TOOLS[number]["name"];
 export type McpHandlers = Record<McpToolName, (args: Record<string, unknown>) => unknown | Promise<unknown>>;
@@ -123,10 +123,10 @@ export async function serveMcp(options: McpOptions): Promise<void> {
       if (text === undefined || Buffer.byteLength(text) > RESULT_BYTES) throw new Error("result unavailable");
       result = { content: [{ type: "text", text }] }; observedValue = value; succeeded = true;
     } catch (failure) {
-      // Every failure is opaque to the model except one named, fixed, text-free condition: the person's review queue is full. It carries no stored content, so it is safe to say, and it
-      // tells the agent what to do (stop proposing, ask the person) instead of leaving it to retry blindly.
+      // Every failure is opaque to the model except one named, fixed, text-free condition: the candidate queue is full. It carries no stored content, so it is safe to say, and it
+      // tells the caller to stop proposing and use `amem review` instead of retrying blindly.
       const full = typeof failure === "object" && failure !== null && (failure as { code?: unknown }).code === "candidate_queue_full";
-      result = { isError: true, content: [{ type: "text", text: full ? "The person's review queue is full: no more candidates are accepted until the person runs `amem review`. Do not retry; ask the person to review the pending candidates." : "Memory operation unavailable or refused; no partial result is shown." }] };
+      result = { isError: true, content: [{ type: "text", text: full ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI." : "Memory operation unavailable or refused; no partial result is shown." }] };
     }
     if (succeeded && options.onEmitted) {
       await writeConfirmed(output, JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");

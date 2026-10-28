@@ -56,7 +56,7 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
     const history = JSON.parse(await f.cli(["search", "recallboundary", "--history", "--json"])); expect(history.entries.map((row: any) => row.id).sort()).toEqual([old, replacement, expired].sort());
     const chain = JSON.parse(await f.cli(["show", old, "--history", "--json"])); expect(chain.views.map((row: any) => row.id).sort()).toEqual([old, replacement].sort());
     const asOf = JSON.parse(await f.cli(["search", "recallboundary", "--as-of", past, "--json"])); expect(asOf.entries.map((row: any) => row.id)).toEqual([old]);
-    await expect(f.cli(["search", "recallboundary", "--history"], { env: { CLAUDECODE: "" } })).rejects.toThrow("person");
+    await expect(f.cli(["search", "recallboundary", "--history"], { env: { CLAUDECODE: "", HOME: f.root, AMEM_HOME: f.base } })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
     for (const args of [{ id: old, history: true }, { id: old, asOf: past }]) await expect(session.tools.amem_show(args)).rejects.toThrow("unavailable");
     f.advance(); f.use(store => store.forget(replacement, "person", f.project));
     expect(JSON.parse(await f.cli(["search", "recallboundary", "--json"])).map((row: any) => row.id)).toEqual([old]); expect(JSON.parse(await f.cli(["show", old, "--json"])).id).toBe(old);
@@ -95,10 +95,13 @@ test("actual stdio transport wires session emission observer and closes once at 
   input.end([{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "brief-integration", version: "1" } } }, { jsonrpc: "2.0", method: "notifications/initialized" }, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "amem_brief", arguments: { intent: "boundary", paths: ["public.ts"] } } }].map(row => JSON.stringify(row)).join("\n") + "\n");
   await done; expect(closes).toBe(1); const replies = encoded.trim().split("\n").map(line => JSON.parse(line)); expect(replies.map(row => row.id)).toEqual([1, 2]); expect(replies[1].result.isError).toBeUndefined(); expect(f.counters()).toHaveLength(3); expect(f.counters().every(row => row.delivered === null && row.cited === null)).toBe(true);
 });
-test("host PII blocks startup before base creation and late calls/observations; brief cannot choose authority or history", async () => {
+test("MCP host admission and late-call fences remain; marked CLI brief uses its configured PII screen", async () => {
   const f = await fixture(), missing = join(f.root, "never-created"); expect(() => createMemoryMcp({ cwd: f.root, base: missing, project: f.project, allowed: () => false })).toThrow("unavailable"); expect(existsSync(missing)).toBe(false);
-  await expect(f.cli(["brief", "--for", "fixture", "--paths", "public.ts"], { env: { CODEX_THREAD_ID: "" } })).rejects.toThrow("person");
-  f.note("public PII fence fixture", { kind: "fail" }); let allowed = true;
+  f.note("public PII fence fixture", { kind: "fail" });
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["public PII fence fixture"] }));
+  const cli = JSON.parse(await f.cli(["brief", "--for", "fixture", "--paths", "public.ts", "--json"], { env: { CODEX_THREAD_ID: "", HOME: f.root, AMEM_HOME: f.base } }));
+  expect(cli.brief).not.toContain("public PII fence fixture");
+  let allowed = true;
   const session = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, allowed: () => allowed }); cleanup.push(() => session.close());
   for (const extra of [{ project: "other" }, { home: missing }, { history: true }, { asOf: "2020-01-01" }]) await expect(session.tools.amem_brief({ intent: "fixture", ...extra })).rejects.toThrow("unavailable");
   const result = await session.tools.amem_brief({ intent: "fixture", paths: ["public.ts"] }); allowed = false;

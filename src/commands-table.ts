@@ -24,8 +24,8 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
-  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
-  setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs; apply and undo are person-only", options: { ...json, "--apply": flag("Apply after terminal confirmation"), "--undo": flag("Restore original configuration after confirmation") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] }] },
+  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after explicit acceptance", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
+  setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs; apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi", "qwen"] }] },
@@ -64,7 +64,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   } },
   demote: { description: "Demote a note", options: json, args: [{ name: "id" }], mutates: true },
   forget: { description: "Forget a note", options: json, args: [{ name: "id" }], mutates: true },
-  note: { description: "Write notes as the person (F6)", options: json, commands: {
+  note: { description: "Write curated notes through the configured policy (F6)", options: json, commands: {
     add: { description: "Add one curated note: text as arguments, `-` to type it on the terminal until end of input, or no text to open $EDITOR. A fail note takes --approach, --symptom, --cause, --evidence (repeatable) and --retry-when", mutates: true, options: {
       "--kind": { description: "Note kind (default finding)", value: KINDS }, "--tier": { description: "Memory tier (default long)", value: ["short", "long"] },
       "--scope": { description: "Scope (default project)", value: ["project", "shared"] }, "--title": text("One-line title"),
@@ -101,10 +101,10 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
     walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } } },
   } },
-  decay: { description: "Preview old live long-term notes unprotected by open goals; apply only after person review", mutates: "apply", options: {
-    ...json, "--days": text("Age in whole days (default 90)"), "--apply": flag("Show the exact revision preview and ask before applying"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
-  migrate: { description: "Select a person-approved generation or deactivate it", mutates: true, options: {
-    ...json, "--dry-run": flag("Read-only migration receipt"), "--generation": text("Explicit 32-hex generation ID"),
+  decay: { description: "Preview old live long-term notes unprotected by open goals; apply only with --apply --confirm", mutates: "apply", options: {
+    ...json, "--days": text("Age in whole days (default 90)"), "--apply": flag("Preview exact revisions; combine with --confirm to apply"), "--confirm": flag("Apply the exact revision preview with --apply"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
+  migrate: { description: "Preview a generation migration; apply only with --apply, or deactivate it explicitly", mutates: "apply", options: {
+    ...json, "--apply": flag("Apply the previewed migration"), "--dry-run": flag("Read-only migration receipt (default; kept as an alias)"), "--generation": text("Explicit 32-hex generation ID"),
     "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),
     "--shards": flag("Migrate the curated home into project and user shards"),
   } },
@@ -120,7 +120,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview"),
       "--split": flag("Write the per-shard split of the global budget to each shard's own config") } },
   } },
-  alias: { description: "Person-reviewed project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
+  alias: { description: "Explicit project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
     list: { description: "List alias ops" },
     add: { description: "Map one key onto its canonical key (append-only op)", args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
     remove: { description: "Remove an alias so the key resolves to itself again (append-only op, the latest wins)", args: [{ name: "alias-key" }], mutates: true },
@@ -197,5 +197,5 @@ export function commandHelp(): string {
   return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => {
     const names = [...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ");
     return `  ${names}${Object.entries(row.options).map(([name, option]) => ` [${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}]`).join("")}`;
-  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Mutating commands require a terminal on stdin. Agents use the `amem mcp` server; the person reviews what agents propose with `amem review`."].join("\n");
+  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Agent-marked reads use the MCP privacy ceiling. Explicit apply/confirm flags do not require a terminal; review walk and the note editor remain interactive."].join("\n");
 }

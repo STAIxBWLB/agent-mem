@@ -1,3 +1,4 @@
+import { cliAttribution } from "./cli-attribution.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -193,7 +194,7 @@ export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: numbe
   lifecycle?: "enforce" | "ignore";
   /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
   reconcile?: { canonical: string; aliases: readonly string[] };
-  /** Person-only project import may initialize configured alias shards; read-only reconciliation still never creates them. */
+  /** Explicit project import may initialize configured alias shards; read-only reconciliation still never creates them. */
   createAliases?: boolean;
 }
 
@@ -589,7 +590,7 @@ export class MemoryStore {
     let applied = 0;
     if (apply) for (const group of groups) for (const head of group.heads) {
       if (head === group.target) continue;
-      if (!this.supersede(head, group.target, "user", project)) throw new Error("memory dedupe replacement refused; rerun to inspect current relations");
+      if (!this.supersede(head, group.target, cliAttribution()?.actor ?? "user", project)) throw new Error("memory dedupe replacement refused; rerun to inspect current relations");
       applied++;
     }
     return { groups, applied };
@@ -1587,7 +1588,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });
   const aliasStores: MemoryStore[] = [];
   try {
-    // #27: read-only reconciliation never creates an alias shard. A person-only project import explicitly can.
+    // #27: read-only reconciliation never creates an alias shard. An explicit project import can.
     if (opts.user !== true && reconcile && reconcile.canonical === opts.project) {
       for (const alias of reconcile.aliases) {
         if (alias === opts.project || !opts.createAliases && !existsSync(join(shardDir(home, alias), "generation.json"))) continue;
@@ -1600,7 +1601,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   } catch (error) { for (const store of aliasStores) store.close(); userOverlay?.close(); throw error; }
 }
 
-/** Person-only migration receipt; this inspector reads raw rows without opening a store or writing any index. */
+/** Administrative migration receipt; this inspector reads raw rows without opening a store or writing any index. */
 export function summarizeRawExpiry(rawLines: string[], now: number, tailBytes: number): import("./migrate.ts").MigrationCounts {
   const bytes = Buffer.from(rawLines.filter(Boolean).join("\n") + (rawLines.length ? "\n" : ""));
   let malformed = 0;

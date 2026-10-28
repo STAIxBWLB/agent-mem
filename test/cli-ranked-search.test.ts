@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -121,17 +122,39 @@ test("host raw recall stays screened/newest-first and ranked opt-in requires per
   } finally { f.store.close(); }
 });
 
-test("search modes retain agent refusal before store access, read TTY rules, and cross-project validation", async () => {
+test("marked current-project reads match MCP DTOs; retained history and cross-project reads fail closed", async () => {
+  const f = fixture();
+  try {
+    const id = f.note("needle current row");
+    const env = { CODEX_THREAD_ID: "fixture", HOME: f.root, AMEM_HOME: join(f.root, "memory") };
+    const context = { cwd: f.root, env, stdinTTY: false };
+    const mcp = createMemoryMcp({ cwd: f.root, base: join(f.root, "memory") });
+    try {
+      for (const [argv, toolArgs] of [
+        [["search", "needle", "--json"], { query: "needle" }],
+        [["search", "needle", "--explain", "--json"], { query: "needle", explain: true }],
+      ] as const) {
+        const actual = JSON.parse(await runCli(argv, context)), expected = await mcp.tools.amem_search(toolArgs);
+        const stable = (value: typeof actual) => ({ ...value, hits: value.hits.map(({ score: _score, scoreDetails: _details, ...hit }: Record<string, unknown>) => hit) });
+        expect(stable(actual)).toEqual(stable(expected));
+        if (toolArgs.explain) expect(actual.hits.every((hit: { scoreDetails?: unknown }) => hit.scoreDetails !== undefined)).toBe(true);
+      }
+      expect(JSON.parse(await runCli(["show", id, "--json"], context))).toEqual(await mcp.tools.amem_show({ id }));
+      for (const argv of [
+        ["search", "needle", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00Z"],
+        ["search", "needle", "--all-projects"], ["show", id, "--history"],
+      ]) {
+        await expect(runCli(argv, context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+      }
+    } finally { mcp.close(); }
+  } finally { f.store.close(); }
+});
+
+test("person search keeps cross-project validation and ranked-explanation restrictions", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-ranked-gate-")); roots.push(root);
-  const home = join(root, "must-not-open"); process.env.AMEM_HOME = home;
-  for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) for (const args of [["search", "needle"], ["search", "needle", "--filter"], ["search", "needle", "--explain"]]) {
-    await expect(runCli(args, { cwd: root, env: { [marker]: "fixture" }, stdinTTY: true })).rejects.toThrow(PERSON_ONLY);
-    expect(existsSync(home)).toBe(false);
-  }
   await expect(runCli(["search", "needle", "--filter", "--all-projects"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--filter applies to project-local search");
   for (const args of [["--filter"], ["--history"], ["--as-of", "2026-01-01T00:00:00Z"], ["--all-projects"], []] as string[][]) {
     await expect(runCli(["search", ...(args.length ? ["needle"] : []), "--explain", ...args], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
   }
   await expect(runCli(["search", "--explain"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
-  await expect(runCli(["forget", "missing"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow(/terminal|TTY/);
 });

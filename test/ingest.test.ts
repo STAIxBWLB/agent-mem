@@ -186,7 +186,7 @@ test("pre-discard cursor schema migrates without replaying an already imported n
 test("ingest help returns guidance before intake, cwd access or any memory write, including agent shells", async () => {
   const f=fixture(),native=join(f.root,"native"),sessions=join(native,"sessions"),previous=process.env.CODEX_HOME;
   mkdirSync(sessions,{recursive:true});writeFileSync(join(sessions,"fixture.jsonl"),line(codexHeader(f.cwd))+line(codexMessage("help must not import")));process.env.CODEX_HOME=native;
-  const { runCli, PERSON_ONLY }=await import("../src/cli.ts");
+  const { runCli }=await import("../src/cli.ts");
   try {
     for(const kind of ["codex","kimi","pi"]){
       const help=await runCli(["ingest",kind,"--help"],{
@@ -195,9 +195,9 @@ test("ingest help returns guidance before intake, cwd access or any memory write
       });
       expect(help).toContain("usage: amem");expect(help).toContain("ingest");expect(existsSync(f.base)).toBe(false);
     }
-    // F1: plain `--help` works in an agent shell too, and opens nothing; a command is still refused.
+    // Static help remains safe; an unsupported historical read uses the same fixed refusal as MCP.
     expect(await runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("usage: amem");
-    await expect(runCli(["list"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow(PERSON_ONLY);
+    await expect(runCli(["list","--history"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 });

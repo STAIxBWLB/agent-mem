@@ -176,8 +176,8 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
   expect(Object.keys(JSON.parse(await run(["status", "--json"], {}, true)))).toEqual(["home", "config", "candidates", "active", "pending"]);
 }, 30_000);
 
-test("person/agent refusal text is unchanged for the reformatted commands", async () => {
-  for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow(/amem is for the person/);
+test("status and doctor keep their bounded refusal for agent reads", async () => {
+  for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
 });
 
 test("setup confirmation shows the raw plan under --json and the readable plan otherwise", () => {
@@ -258,12 +258,13 @@ test("migration text covers preview, already active, deactivation, shard refusal
   for (const s of [PLAIN, COLOR]) {
     const preview = strip(migrationText(migrationView(), s));
     expect(preview).toStartWith("amem migrate: preview\n"); expect(preview).toMatch(/^OK +profile shared-v1/m);
-    expect(preview).toContain("remove --dry-run, keep other options");
+    expect(preview).toContain("Next action: apply migration: amem migrate --apply");
     const active = strip(migrationText({ ...migrationView("apply", true), alreadyActive: true, counts: undefined }, s));
     expect(active).toContain("already active"); expect(active).toContain("Next action: none");
     expect(strip(migrationText({ ...migrationView("deactivate"), counts: undefined }, s))).toContain("Next action: none");
     const shards = shardView(), before = JSON.stringify(shards), routed = strip(shardMigrationText(shards, s));
     expect(routed).toStartWith("amem migrate --shards: preview\n"); expect(routed).toMatch(/^OK +shard rows project 2/m); expect(JSON.stringify(shards)).toBe(before);
+    expect(routed).toContain("Next action: apply shard migration: amem migrate --shards --apply");
     expect(strip(shardMigrationText({ ...shards, active: true, counts: { ...shards.counts, rows: 0 } }, s))).toContain("Next action: none");
     const refused = strip(shardMigrationText({ ...shards, refusals: ["witness not current"] }, s));
     expect(refused).toContain("Refusals:"); expect(refused).toContain("resolve the listed refusals");
@@ -353,9 +354,10 @@ test("generation/prune CLI keeps sealed JSON artifacts and a readable apply rece
   try { store.note({ op: "note", project, scope: "project", tier: "short", kind: "finding", peer: "person", text: "synthetic expiry fixture", about: [], expires: new Date(Date.now() - 10000).toISOString(), source: "person" }); }
   finally { store.close(); }
   expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith("amem migrate: preview\n");
-  const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--json"], true);
+  const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--apply", "--json"], true);
   expect(migrated).toBe(JSON.stringify(JSON.parse(migrated), null, 2)); expect(migrated).not.toMatch(ANSI);
-  expect(await readableCommand(h, ["migrate"])).toContain("already active");
+  const selectedPreview = await readableCommand(h, ["migrate"]);
+  expect(selectedPreview).toContain("profile generation"); expect(selectedPreview).toContain("Next action: none");
   const args = ["prune", "--dry-run", "--cutoff", new Date().toISOString()];
   expect(await readableCommand(h, args)).toStartWith("amem prune: preview\n");
   const plan = await readableCommand(h, [...args, "--json"], true);
@@ -364,13 +366,18 @@ test("generation/prune CLI keeps sealed JSON artifacts and a readable apply rece
   expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toStartWith("amem prune: complete\n");
 }, 30_000);
 
-test("vault CLI format and ordinary person/TTY gates remain separate", async () => {
+test("vault and migration previews remain available without person/TTY gates", async () => {
   const h = home();
   expect(await readableCommand(h, ["vault-candidates"])).toStartWith("amem vault-candidates: complete\n");
   expect(await readableCommand(h, ["vault-candidates", "--json"], true)).toBe("[]");
-  for (const args of [["migrate", "--dry-run"], ["prune", "--dry-run", "--cutoff", "2026-10-28"], ["capacity", "apply", "--confirm"]]) {
-    await expect(readableCommand(h, args, true, { CODEX_THREAD_ID: "agent" })).rejects.toThrow(/amem is for the person/);
-    await expect(readableCommand(h, args, true, {}, false)).rejects.toThrow(/terminal/);
+  await readableCommand(h, ["migrate", "--apply"], false);
+  const previews: [string[], string][] = [
+    [["migrate", "--dry-run"], "amem migrate: preview\n"],
+    [["prune", "--dry-run", "--cutoff", "2026-10-28T00:00:00.000Z"], "amem prune: preview\n"],
+  ];
+  for (const [args, prefix] of previews) {
+    expect(await readableCommand(h, args, false, { CODEX_THREAD_ID: "agent" })).toStartWith(prefix);
+    expect(await readableCommand(h, args, false, {}, false)).toStartWith(prefix);
   }
 }, 30_000);
 

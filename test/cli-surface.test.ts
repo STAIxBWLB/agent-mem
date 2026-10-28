@@ -2,13 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PERSON_ONLY, agentMarked, runCli } from "../src/cli.ts";
+import { agentMarked, runCli } from "../src/cli.ts";
 import { AMEM_NAMES, GOAL_USAGE, MEMORY_USAGE, goalUsage, memoryUsage } from "../src/memory/commands.ts";
 import { commandHelp } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
 
-// agent-mem#40 F1: refusals, help and usage name amem's own paths and never a host; --help and --version work in an agent shell and every other
-// agent-marker refusal stays (AGENTS.md: the refusal is honest-session, not authentication).
+// agent-mem#40 F1: help and usage name amem's own paths and never a host; unsupported marked-agent reads use the fixed MCP refusal.
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"] as const;
 const HOST = /\bahub\b|hub_memory|hub_task|the hub's|agent-hub/i;
 const roots: string[] = [];
@@ -21,17 +20,17 @@ function rig() {
 }
 const message = (promise: Promise<unknown>) => promise.then(() => "", error => (error as Error).message);
 
-test("the person-only refusal points an agent at `amem mcp` and the person at `amem review`, and names no host", () => {
-  expect(PERSON_ONLY).toContain("amem mcp"); expect(PERSON_ONLY).toContain("amem review");
-  expect(PERSON_ONLY).not.toMatch(HOST);
-});
-
 test("help and usage text names amem and never a host", () => {
   const texts = [commandHelp(), MEMORY_USAGE, GOAL_USAGE, memoryUsage(), goalUsage()];
   for (const text of texts) expect(text, text.slice(0, 60)).not.toMatch(HOST);
   expect(MEMORY_USAGE).toStartWith("usage: amem "); expect(GOAL_USAGE).toStartWith("usage: amem goal ");
-  expect(commandHelp()).toContain("amem mcp"); expect(commandHelp()).toContain("amem review");
-  expect(commandHelp()).toContain("--policy-free: accepted and ignored");
+  const help = commandHelp();
+  expect(help).toContain("  mcp [--help]"); expect(help).toContain("  review list");
+  expect(help).toContain("--policy-free: accepted and ignored");
+  expect(help).toContain("Agent-marked reads use the MCP privacy ceiling.");
+  expect(help).toContain("Explicit apply/confirm flags do not require a terminal");
+  expect(help).not.toContain("Mutating commands require a terminal on stdin");
+  expect(help).toContain("--apply"); expect(help).toContain("--confirm");
 });
 
 test("a host that exposes the same commands under its own name gets its own name in every message", () => {
@@ -64,38 +63,44 @@ for (const marker of MARKERS) test(`${marker}: --help, help, --version and versi
       expect(agentMarked(agent.env)).toBe(true);
       for (const args of [["--help"], ["help"]]) expect(await runCli(args, agent)).toContain("usage: amem");
       for (const args of [["--version"], ["version"]]) expect(await runCli(args, agent)).toMatch(/^amem \d+\.\d+\.\d+/);
+      expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
     }
   } finally { r.restore(); }
 });
 
-for (const marker of MARKERS) test(`${marker}: every other command stays refused in an agent shell, help flags beside a command included`, async () => {
+for (const marker of MARKERS) test(`${marker}: unsupported historical reads use the generic MCP refusal; help flags stay static`, async () => {
   const r = rig();
   try {
-    const agent = { cwd: r.cwd, env: { [marker]: "x" }, stdinTTY: true };
-    const commands = [["list"], ["search", "x"], ["show", "a"], ["status"], ["forget", "a"], ["promote", "a"], ["sync"], ["review"], ["review", "--help"], ["list", "--help"],
-      ["--help", "--json"], ["--version", "--json"], ["capacity"], ["projects"], ["goal", "list"], ["completion", "zsh"], ["alias", "list"]];
-    for (const args of commands) await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(PERSON_ONLY);
+    const agent = { cwd: r.cwd, env: { [marker]: "x", AMEM_HOME: join(r.root, "agent-memory") }, stdinTTY: false, stdoutTTY: false };
+    const unavailable = "Memory operation unavailable or refused; no partial result is shown.";
+    for (const args of [["list", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
+      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(unavailable);
+    }
+    for (const args of [["--help", "--json"], ["list", "--help"], ["review", "--help"], ["--version", "--json"]]) {
+      const output = await runCli(args, agent); expect(output).not.toMatch(HOST);
+    }
   } finally { r.restore(); }
 });
 
-test("`amem mcp`, `amem hook` and `amem ingest` keep their own agent-facing paths, unchanged by the refusal text", async () => {
+test("ingest keeps its capture-only agent-facing path", async () => {
   const r = rig();
   try {
     const agent = { cwd: r.cwd, env: { AGENTHUB_PEER_ID: "codex" }, stdinTTY: false };
     expect(await runCli(["ingest", "codex", "--help"], agent)).toContain("usage: amem");
-    // `ingest` with a bad kind is the argument parser's own error, not the person-only refusal: it is an agent-reachable command.
+    // Ingest retains its command-specific validation.
     const bad = await message(runCli(["ingest", "nonsense"], agent));
-    expect(bad).toContain("kind takes codex or kimi or pi or qwen"); expect(bad).not.toBe(PERSON_ONLY); expect(bad).not.toMatch(HOST);
+    expect(bad).toContain("kind takes codex or kimi or pi or qwen"); expect(bad).not.toMatch(HOST);
   } finally { r.restore(); }
 });
 
-test("the bin prints help and version in an agent shell and refuses a command with the amem-worded message", () => {
+test("the bin prints help and version in an agent shell and uses the generic error for an unsupported read", () => {
   const bin = resolve(import.meta.dir, "../bin/amem.js");
-  const env = { PATH: process.env.PATH, AGENTHUB_PEER_ID: "codex" };
+  const home = mkdtempSync(join(tmpdir(), "amem-surface-bin-")); roots.push(home);
+  const env = { PATH: process.env.PATH, HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_PEER_ID: "codex" };
   const help = Bun.spawnSync([process.execPath, bin, "--help"], { env, stdout: "pipe", stderr: "pipe" });
   expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem"); expect(help.stdout.toString()).not.toMatch(HOST);
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
-  const refused = Bun.spawnSync([process.execPath, bin, "list"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(refused.exitCode).toBe(1); expect(refused.stderr.toString()).toContain("amem mcp"); expect(refused.stderr.toString()).not.toMatch(HOST);
+  const refused = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
+  expect(refused.exitCode).toBe(1); expect(refused.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown."); expect(refused.stderr.toString()).not.toMatch(HOST);
 });

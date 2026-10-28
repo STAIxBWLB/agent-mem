@@ -1,6 +1,6 @@
 # P5 cutover from claude-mem to amem, and the P6 live week
 
-Runbook for #13 P5 and P6. The person runs every command below in a terminal outside any agent session: the amem CLI refuses agent-marked shells, and the dotfiles retirement changes this machine's agent configuration.
+Runbook for #13 P5 and P6. The amem CLI uses session markers for identity, screens agent-marked memory reads, and has no general marker refusal or TTY gate. The dotfiles retirement steps change this machine's agent configuration, so follow workspace authorization for those operations.
 
 ## Before you start
 
@@ -78,7 +78,7 @@ Seven days of ordinary work with claude-mem retired. Record the start date on #1
   - Copy only the memory home into a new parent, for example `mkdir /tmp/amem-p6 && cp -R ~/.agenthub/memory /tmp/amem-p6/memory` when the home is `~/.agenthub/memory`. The script's `--home` takes that parent (`/tmp/amem-p6`), not the `memory` directory itself.
   - Run `bun scripts/ac4-recheck.ts --home /tmp/amem-p6 --project <repository key>` from this repository (the default key is agent-hub's; `amem projects` lists the keys).
   - Check the printed `corpus`: it must be the number of curated entries you expect for that project. A `corpus` of 0 means a wrong `--home` or `--project`; fix them rather than record a result.
-  - A home split into project shards (`amem migrate --shards`) is read through that project's shard; a single-layout home is read as before (#137).
+  - A home split into project shards with `amem migrate --shards --apply` is read through that project's shard; a single-layout home is read as before (#137).
   - Run it again with `--mcp` to measure the path that counted for P5: the script starts `amem mcp` with `AMEM_HOME` pointing at the copy and sends `tools/call amem_search { query, limit: 10 }` for each query, printing the same per-query shape plus `"path": "mcp"`. `amem mcp` takes its project from its working directory: the script uses a scratch git directory whose origin yields `--project`, or pass `--cwd <a checkout of that repository>` when it does not.
   - Copy only: the script refuses the live home (the one `AMEM_HOME` names, or the default `~/.agenthub/memory`) and a `--home` without a `memory` directory. Never point `--home` at the live parent.
   - Embeddings are revisited only if a match-mode gap remains after coverage improved.

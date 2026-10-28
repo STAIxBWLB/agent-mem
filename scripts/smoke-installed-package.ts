@@ -251,7 +251,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
     options.afterInstall?.(installed);
     await ownedCommand(bun, ["git", "init", "-q", projectDir], projectDir, installedEnv);
-    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, args.includes("--apply")); };
+    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, false); };
     const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(projectDir, "QWEN.md"), join(env.QWEN_HOME!, "QWEN.md"), join(env.QWEN_HOME!, "rules", "keep.md"), join(projectDir, "AGY.md"), join(projectDir, "JCODE.md"), join(env.JCODE_HOME!, "AGENTS.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
     for (const file of ruleFiles) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "installed smoke instruction/rule sentinel, keep exact bytes\n", { mode: 0o600 }); }
     const rules = ruleFiles.map(file => ({ file, bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }));
@@ -262,7 +262,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     requireSmoke(plan.actions.every((action: any) => action.version?.output === `${action.target} 0.0.0-fixture`), "installed setup version probes did not run in isolated staging homes");
     const plannedFiles = assertSetupPreview(plan, home, entry);
     requireSmoke(plannedFiles.every(file => !existsSync(file)) && !existsSync(nativeCalls), "setup dry run wrote configuration or invoked a native client"); verifyRules();
-    // The installed CLI still performs its ordinary person/TTY checks and asks for confirmation.
+    // Explicit apply flags run without a terminal or prompt; the default setup call above remains a preview.
     // Only native registration is stubbed, matching the setup unit fixtures; no vendor CLI is exercised.
     const nativeStub = join(home, "native-registration.ts");
     writeFileSync(nativeStub, `import {appendFileSync,lstatSync,mkdirSync,writeFileSync} from 'node:fs';import {basename,dirname,join,resolve} from 'node:path';

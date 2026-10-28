@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli, PERSON_ONLY } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { parseCommand, completionDefinitions } from "../src/commands-table.ts";
@@ -27,21 +27,24 @@ function bytes(path: string): Record<string, string> {
   }));
 }
 
-test("generation CLI authority and TTY refuse before migration or plan file access", async () => {
+test("bare generation migration previews without writes from agent or non-TTY contexts", async () => {
   const f = fixture(), before = bytes(f.memory);
   for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CODEX_THREAD_ID"]) {
-    await expect(runCli(["migrate", "--dry-run"], { ...f.context, env: { [key]: "agent" } })).rejects.toThrow(PERSON_ONLY);
-    await expect(runCli(["prune", "--apply", "--plan", "/missing-plan"], { ...f.context, env: { [key]: "agent" } })).rejects.toThrow(PERSON_ONLY);
+    const preview = JSON.parse(await runCli(["migrate", "--json"], { ...f.context, env: { [key]: "agent" } }));
+    expect(preview.profile.kind).toBe("shared-v1"); expect(bytes(f.memory)).toEqual(before);
   }
-  for (const args of [["migrate", "--dry-run"], ["prune", "--cutoff", new Date().toISOString(), "--dry-run"]]) await expect(runCli(args, { ...f.context, stdinTTY: false })).rejects.toThrow("terminal");
+  const preview = JSON.parse(await runCli(["migrate", "--json"], { ...f.context, stdinTTY: false }));
+  expect(preview.profile.kind).toBe("shared-v1");
   expect(bytes(f.memory)).toEqual(before);
 });
 
-test("generation CLI dry-run is readonly; migrate/prune apply/resume/deactivate select one profile", async () => {
+test("bare migration and --dry-run are readonly; --apply/resume/deactivate select one profile", async () => {
   const f = fixture(), before = bytes(f.memory), g = "a".repeat(32);
-  const dry = JSON.parse(await f.command(["migrate", "--dry-run", "--json"]));
+  const dry = JSON.parse(await f.command(["migrate", "--json"]));
   expect(dry.profile.kind).toBe("shared-v1"); expect(dry.counts.validRows).toBe(1); expect(bytes(f.memory)).toEqual(before);
-  const migrated = JSON.parse(await f.command(["migrate", "--generation", g, "--json"])); expect(migrated.profile.generation).toBe(g);
+  const dryAlias = JSON.parse(await f.command(["migrate", "--dry-run", "--json"]));
+  expect(dryAlias.profile.kind).toBe("shared-v1"); expect(bytes(f.memory)).toEqual(before);
+  const migrated = JSON.parse(await f.command(["migrate", "--generation", g, "--apply", "--json"])); expect(migrated.profile.generation).toBe(g);
   const afterMigration = bytes(f.memory);
   const planText = await f.command(["prune", "--cutoff", new Date().toISOString(), "--dry-run", "--json"]);
   expect(JSON.parse(planText).counts.local).toBe(1); expect(JSON.parse(planText).counts.synced).toBe(0);
@@ -55,12 +58,12 @@ test("generation CLI dry-run is readonly; migrate/prune apply/resume/deactivate 
   expect(JSON.parse(await f.command(["review", "--json"]))).toEqual([]);
   for (const [file, value] of Object.entries(beforeReview).filter(([name]) => name.endsWith(".jsonl"))) expect(bytes(f.memory)[file]).toBe(value);
   const deactivated = JSON.parse(await f.command(["migrate", "--deactivate", "--json"])); expect(deactivated.profile.kind).toBe("shared-v1");
-  expect(JSON.parse(await f.command(["migrate", "--generation", g, "--json"])).profile.generation).toBe(g);
+  expect(JSON.parse(await f.command(["migrate", "--generation", g, "--apply", "--json"])).profile.generation).toBe(g);
 });
 
 test("generation command definitions drive parser/help/completion and refuse ambiguous modes", async () => {
   const f = fixture();
-  expect(parseCommand(["migrate", "--generation", "a".repeat(32)]).definition.mutates).toBe(true);
+  expect(parseCommand(["migrate", "--generation", "a".repeat(32)]).definition.mutates).toBe("apply");
   const prune = completionDefinitions().find(row => row.path.join(" ") === "prune")!;
   expect(prune.options["--plan"]?.value).toBe("path");
   expect((await f.command(["--help"]))).toContain("migrate");

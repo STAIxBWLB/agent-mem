@@ -1,7 +1,7 @@
 import {afterEach,expect,test} from "bun:test";
 import {Database as ImportReceiptDatabase} from "bun:sqlite";
 import * as importReceiptFs from "node:fs";
-import {mkdirSync,mkdtempSync,rmSync} from "node:fs";
+import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {runCli} from "../src/cli.ts";
@@ -10,6 +10,8 @@ import {PLAIN,style} from "../src/memory/style.ts";
 import {realPath} from "../src/memory/platform.ts";
 import {memoryProjectKey as importReceiptProjectKey,projectChain as importReceiptProjectChain} from "../src/memory/project.ts";
 import {appendAlias as importReceiptAppendAlias} from "../src/memory/shard.ts";
+import {MemoryStore as ImportReceiptMemoryStore} from "../src/memory/store.ts";
+import {CONFIG_FILE as IMPORT_CONFIG_FILE} from "../src/memory/config.ts";
 const ANSI=/\x1b\[/,COLOR=style(true),WIDTH=160;
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const fn of cleanup.splice(0))fn();});
@@ -75,7 +77,7 @@ test("claude-mem capture selection and restart caveats are explicit", () => {
   expect(selected).toContain("Restart: selected cursors replayed from the start");
 });
 
-function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" = "empty") {
+function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" | "public" = "empty") {
   const h = home(), file = join(h.root, "claude-mem.db"), db = new ImportReceiptDatabase(file), source = importReceiptProjectChain(h.cwd).at(-1)!;
   db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
   db.run("CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)");
@@ -83,6 +85,7 @@ function importReceiptFixture(kind: "empty" | "work" | "capture" | "secret" = "e
   if (kind === "work") db.query("INSERT INTO work_state_entries VALUES (1, ?, 'synthetic list', ?, ?)").run(source, JSON.stringify({ status: "doing" }), Date.now());
   if (kind === "capture" || kind === "secret") db.query("INSERT INTO observations VALUES (1, ?, 'fixture', ?, NULL, ?, ?)").run(source,
     kind === "secret" ? "password: synthetic-fixture" : "synthetic capture observation", Date.now(), kind === "secret" ? JSON.stringify({ peer: "codex", kind: "finding" }) : null);
+  if (kind === "public") db.query("INSERT INTO observations VALUES (1, ?, 'import title', 'imported public source body', NULL, ?, ?)").run(source, Date.now(), JSON.stringify({ peer: "original-source-peer", kind: "decision" }));
   db.close();
   importReceiptAppendAlias(h.memory, { alias: source, key: importReceiptProjectKey(h.cwd), actor: "person", machine: "fixture" });
   return { ...h, file };
@@ -124,13 +127,33 @@ test("claude-mem CLI styles honor TTY and suppression while JSON keeps exact byt
   }
 });
 
-test("claude-mem human receipt keeps policy screening and person/TTY gates", async () => {
-  const h = importReceiptFixture("secret"), output = await runImportReceipt(h, ["--capture-days", "7"]);
-  expect(output).toStartWith("amem import claude-mem: complete\n");
-  expect(output).toContain("secret 1"); expect(output).toContain("combined 1");
-  expect(output).not.toContain("synthetic-fixture");
-  const blank = { ...home(), file: "/must-not-read.db" };
-  await expect(runImportReceipt(blank, [], { CODEX_THREAD_ID: "agent" }, true)).rejects.toThrow(/amem is for the person/);
-  await expect(runImportReceipt(blank, [], {}, false, false)).rejects.toThrow(/terminal/);
-  expect(importReceiptFs.existsSync(blank.memory)).toBe(false);
+test("claude-mem marked nonTTY import keeps policy screening and exact skip counts", async () => {
+  const h = importReceiptFixture("secret"), before = importReceiptFs.readFileSync(h.file);
+  const output = await runImportReceipt(h, ["--capture-days", "7", "--json"], { CODEX_THREAD_ID: "agent" }, false, false), receipt = JSON.parse(output);
+  expect(receipt.skipped).toEqual({ model: 0, pii: 0, secret: 1 });
+  expect(receipt.capture).toMatchObject({ read: 1, added: 0, spooled: 0, skipped: 1 });
+  expect(output).not.toContain("synthetic-fixture"); expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
+});
+
+test("claude-mem agent import preserves original peer, source and timestamp", async () => {
+  const h = importReceiptFixture(), db = new ImportReceiptDatabase(h.file), sourceAt = Date.now();
+  db.query("INSERT INTO observations VALUES (1, ?, 'source title', 'source body', NULL, ?, ?)").run(importReceiptProjectChain(h.cwd).at(-1)!, sourceAt, JSON.stringify({ peer: "original-source-peer", kind: "decision" })); db.close();
+  const before = importReceiptFs.readFileSync(h.file);
+  const receipt = JSON.parse(await runImportReceipt(h, ["--json"], { CODEX_THREAD_ID: "agent" }, false, false));
+  expect(receipt).toMatchObject({ read: 1, added: 1, skipped: { model: 0, pii: 0, secret: 0 } });
+  const store = new ImportReceiptMemoryStore({ memoryDir: h.memory });
+  try { expect(store.list({ project: importReceiptProjectKey(h.cwd) })[0]).toMatchObject({ peer: "original-source-peer", source: "claude-mem", at: new Date(sourceAt).toISOString(), title: "source title", text: "source body" }); }
+  finally { store.close(); }
+  expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
+});
+
+test("marked claude-mem receipt policy withholds details without denying a completed import", async () => {
+  const h = importReceiptFixture("public"), before = importReceiptFs.readFileSync(h.file), marked = { CODEX_THREAD_ID: "agent" };
+  writeFileSync(join(h.memory, IMPORT_CONFIG_FILE), JSON.stringify({ piiPatterns: ["added"] }));
+  expect(JSON.parse(await runImportReceipt(h, ["--json"], marked, false, false))).toEqual({ ok: true, completed: true, receiptWithheld: true });
+  const store = new ImportReceiptMemoryStore({ memoryDir: h.memory });
+  try { expect(store.list({ project: importReceiptProjectKey(h.cwd) })[0]).toMatchObject({ peer: "original-source-peer", source: "claude-mem", title: "import title", text: "imported public source body" }); }
+  finally { store.close(); }
+  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy.");
+  expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
 });

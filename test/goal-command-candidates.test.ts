@@ -59,6 +59,15 @@ test("a failed offer leaves the saved goal done and retry reuses its already-cre
   const retry = JSON.parse(await rawGoalCommand(["done", f.goal, "--json"], f.cwd, { ...f.options, onDone: f.onDone }));
   expect(retry.promotion).toMatchObject({ ids: [], offered: 0, alreadyOffered: 1 }); expect(f.candidates.list({ project: f.project })).toHaveLength(1); expect(f.candidates.get(offered[0]!, f.project)?.status).toBe("pending"); expect(f.authored().filter(row => row.op === "note")).toEqual(before); expect(f.closes()).toBe(0);
 });
+test("an agent can accept an offered promotion while the copy preserves its original peer and source", async () => {
+  const f = fixture(); f.tick();
+  const report = JSON.parse(await rawGoalCommand(["done", f.goal, "--json"], f.cwd, { ...f.options, onDone: f.onDone })) as { promotion: GoalPromotionReport };
+  const candidateId = report.promotion.ids[0]!;
+  const result = f.candidates.accept(candidateId, { project: f.project, actor: "agent", verdict: "public", store: f.store, policy: () => true });
+  const promoted = f.store.get(result.noteId, f.project)!;
+  expect(promoted).toMatchObject({ promotedFrom: f.note, peer: "original-agent", source: "person", tier: "long" });
+  expect(f.candidates.get(candidateId, f.project)?.status).toBe("accepted");
+});
 test("owned store closes after a rejected callback while preserving the authored done state", async () => {
   const f = fixture(), { store: _borrowed, ...owned } = f.options;
   await expect(rawGoalCommand(["done", f.goal], f.cwd, { ...owned, onDone: async (_goal, store) => { expect(store.goalOf(f.goal, f.project)?.state).toBe("done"); throw Error("fixture offer refused"); } })).rejects.toThrow("offer refused");

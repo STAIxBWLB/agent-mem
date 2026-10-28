@@ -108,12 +108,13 @@ test("C4 rebuild leaves proposals and counters outside all derived v1 tables", (
   expect(f.sidecar.counters(PROJECT)).toHaveLength(1);
 });
 
-test("C4 only an explicit person acceptance can append a candidate-derived ordinary note", () => {
+test("C4 only explicit acceptance under the current policy can append a candidate-derived ordinary note", () => {
   const f = fixture(), before = f.memory.dump();
-  const context = { project: PROJECT, actor: "agent" as const, verdict: "public" as const, store: f.memory, policy: () => true };
-  expect(() => f.sidecar.accept(f.candidate, context)).toThrow("person"); expect(f.memory.dump()).toBe(before);
-  const accepted = f.sidecar.accept(f.candidate, { ...context, actor: "person" });
-  expect(f.memory.get(accepted.noteId, PROJECT)?.text).toContain(MARKER);
+  let screened = false;
+  const context = { project: PROJECT, actor: "agent" as const, verdict: "public" as const, store: f.memory, policy: () => { screened = true; return true; } };
+  expect(f.memory.get(f.a, PROJECT)?.supersededBy).toBeNull(); expect(f.sidecar.get(f.candidate, PROJECT)?.status).toBe("pending"); expect(f.memory.dump()).toBe(before);
+  const accepted = f.sidecar.accept(f.candidate, context);
+  expect(screened).toBe(true); expect(f.memory.get(accepted.noteId, PROJECT)).toMatchObject({ peer: "agent", source: "person" }); expect(f.memory.get(accepted.noteId, PROJECT)?.text).toContain(MARKER);
   expect(f.memory.get(f.a, PROJECT)?.supersededBy).toBe(accepted.noteId);
   expect(f.sidecar.get(f.candidate, PROJECT)?.status).toBe("accepted");
   expect(f.memory.get(f.counter, PROJECT)).toBeUndefined();

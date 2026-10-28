@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERSON_ONLY, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { commandHelp, completionDefinitions, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
 import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
@@ -28,14 +28,16 @@ function put(project: string, cause = "a reproducible synthetic cause"): string 
   finally { candidates.close(); }
 }
 
-test("review refuses all agent markers before opening either memory store", async () => {
-  const f = fixture();
-  for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) {
-    for (const args of [["review"], ["review", "--help"], ["review", "accept", "a".repeat(64), "--policy-free"], ["review", "reject", "a".repeat(64)]]) {
-      await expect(runCli(args, { ...f.context, env: { [marker]: "" } })).rejects.toThrow(PERSON_ONLY);
-    }
-  }
-  expect(existsSync(f.home)).toBe(false);
+test("a marked nonTTY CLI accepts a fail candidate with peer attribution and source person", async () => {
+  const f = fixture(), id = put(f.project), rejectId = put(f.project, "another public approach");
+  const accepted = JSON.parse(await runCli(["review", "accept", id, "--policy-free", "--json"], { ...f.context, env: { CLAUDECODE: "fixture" }, stdinTTY: false }));
+  const rejected = JSON.parse(await runCli(["review", "reject", rejectId, "--json"], { ...f.context, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false }));
+  expect(accepted).toMatchObject({ candidateId: id, alreadyAccepted: false });
+  expect(rejected).toEqual({ candidateId: rejectId, status: "rejected" });
+  const store = new MemoryStore({ memoryDir: f.home, screen: () => "skip" });
+  try { expect(store.get(accepted.noteId, f.project)).toMatchObject({ kind: "fail", peer: "claude", source: "person" }); } finally { store.close(); }
+  const candidates = new CandidateStore();
+  try { expect(candidates.get(id, f.project)?.status).toBe("accepted"); expect(candidates.get(rejectId, f.project)?.status).toBe("rejected"); } finally { candidates.close(); }
 });
 
 test("review defaults to list, supports filters and JSON, and opens no ordinary index or log", async () => {
@@ -48,11 +50,12 @@ test("review defaults to list, supports filters and JSON, and opens no ordinary 
   for (const path of ["index.db", "log", "local", "machine.json"]) expect(existsSync(join(f.home, path))).toBe(false);
 });
 
-test("review acceptance and rejection require a TTY and a full id before store access", async () => {
+test("review requires a full candidate id before store access, without a TTY", async () => {
   const f = fixture(), id = "a".repeat(64);
-  await expect(runCli(["review", "accept", id, "--policy-free"], { ...f.context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  await expect(runCli(["review", "reject", id], { ...f.context, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  await expect(runCli(["review", "reject", "a".repeat(8)], f.context)).rejects.toThrow("full 64-character");
+  await expect(runCli(["review", "accept", id.slice(0, 8), "--policy-free"], { ...f.context, env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "reject", id.slice(0, 8)], { ...f.context, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "accept", id.slice(0, 8), "--policy-free"], { ...f.context, stdinTTY: false })).rejects.toThrow("full 64-character");
+  await expect(runCli(["review", "reject", id.slice(0, 8)], { ...f.context, stdinTTY: false })).rejects.toThrow("full 64-character");
   expect(existsSync(f.home)).toBe(false);
 });
 
@@ -98,6 +101,25 @@ test("review accept refuses secret-looking candidate input and leaves it pending
   try { expect(store.list({ project: f.project })).toEqual([]); } finally { store.close(); }
   const candidates = new CandidateStore();
   try { expect(candidates.get(id, f.project)?.status).toBe("pending"); } finally { candidates.close(); }
+});
+
+test("current policy refuses private proposal, target and peer even with policy-free", async () => {
+  const f = fixture(), targetStore = new MemoryStore({ memoryDir: f.home, screen: () => "skip" });
+  const target = targetStore.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "person", source: "person", text: "private-target-token", about: [] });
+  const revision = candidateTargetRevision(targetStore.get(target, f.project)!); targetStore.close();
+  const sidecar = new CandidateStore();
+  const proposal = sidecar.put({ project: f.project, kind: "fail", approach: "private-proposal-token", symptom: "symptom", cause: "cause", evidenceRefs: ["test:private"], retryWhen: "retry" }, "public");
+  const targetCandidate = sidecar.put({ project: f.project, kind: "correction", target: { id: target, revision }, proposedText: "safe replacement", reason: "safe reason" }, "public");
+  const peerCandidate = sidecar.put({ project: f.project, kind: "memory", text: "safe proposed body", noteKind: "finding" }, "public"); sidecar.close();
+  writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private-proposal-token", "private-target-token", "private-peer-token"] }));
+  const before = new MemoryStore({ memoryDir: f.home, screen: () => "skip" }); const authored = before.dump(); before.close();
+  for (const [id, env] of [[proposal, { CLAUDECODE: "fixture" }], [targetCandidate, { CLAUDECODE: "fixture" }], [peerCandidate, { CLAUDECODE: "fixture", AGENTHUB_PEER_ID: "private-peer-token" }]] as const) {
+    await expect(runCli(["review", "accept", id, "--policy-free"], { ...f.context, env, stdinTTY: false })).rejects.toThrow();
+  }
+  const after = new MemoryStore({ memoryDir: f.home, screen: () => "skip" });
+  try { expect(after.dump()).toBe(authored); } finally { after.close(); }
+  const remaining = new CandidateStore();
+  try { for (const id of [proposal, targetCandidate, peerCandidate]) expect(remaining.get(id, f.project)?.status).toBe("pending"); } finally { remaining.close(); }
 });
 
 test("review reject changes only the sidecar and accepts no prefix, while decay stays listing-only", async () => {
