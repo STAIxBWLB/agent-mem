@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, realpathSync, rmSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importClaudeMem, importClaudeMemCapture } from "../src/memory/import.ts";
@@ -31,7 +32,10 @@ test("claude-mem import copies the hub's notes of this project once, never model
   add("work", "superproject", "the superproject's note, under its own policy", { peer: "codex", kind: "decision" });
   add("app", "native observation", "captured by a hook, not a hub note", null);
   db.close();
-  const before = Bun.file(file).size;
+  // #138, AC9: the import is read-only. The source's bytes (and their SHA-256) must not change, and no -wal/-shm side file may appear.
+  const before = readFileSync(file), beforeHash = createHash("sha256").update(before).digest("hex");
+  const sideFiles = () => [`${file}-wal`, `${file}-shm`, `${file}-journal`].filter(path => existsSync(path));
+  expect(sideFiles()).toEqual([]);
   const s = open();
   const isPii = (t: string) => /\d{6}-\d{7}/.test(t);
   const nodes = (text: string) => text.includes("parser") ? ["symbol:parse@src/csv.ts"] : [];
@@ -47,7 +51,10 @@ test("claude-mem import copies the hub's notes of this project once, never model
   expect(other.list().map((v) => v.id).sort()).toEqual(got.map((v) => v.id).sort());
   // A second import adds nothing, and claude-mem's file is unchanged.
   expect(importClaudeMem(s, { project: "github.com/o/app", chain: ["work", "app"], isPii, db: file }).added).toBe(0);
-  expect(Bun.file(file).size).toBe(before);
+  const after = readFileSync(file);
+  expect(after.equals(before)).toBe(true);
+  expect(createHash("sha256").update(after).digest("hex")).toBe(beforeHash);
+  expect(sideFiles()).toEqual([]);
   expect(() => importClaudeMem(s, { project: "github.com/o/app", chain: ["app"], isPii, db: join(temp("none"), "missing.db") })).toThrow("no claude-mem store");
 });
 
