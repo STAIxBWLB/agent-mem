@@ -43,7 +43,7 @@ test("MCP surface stays stable while marked CLI reads are screened and writes re
     const history = Bun.spawnSync([process.execPath, bin, "list", "--history"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     expect(history.exitCode).toBe(1); expect(history.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
 
-    const unmarkedEnv = { ...env };
+    const unmarkedEnv: NodeJS.ProcessEnv = { ...env };
     for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) delete unmarkedEnv[key];
     const unmarked = Bun.spawnSync([process.execPath, bin, "list", "--json"], { cwd: root, env: unmarkedEnv, stdout: "pipe", stderr: "pipe" });
     expect(unmarked.exitCode).toBe(0); expect(unmarked.stdout.toString()).toContain("MCP-CLI private marker");
