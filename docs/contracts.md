@@ -87,19 +87,22 @@ Published 0.3.1 is the exact-pinned pre-vault reader used by the compatibility f
 
 Every host sharing a memory home must exact-pin a P2 vault-link-capable version before the first link is recorded. The first such release is **0.4.0**, as recorded in [CHANGELOG.md](../CHANGELOG.md#040); a current host pin is not a durable compatibility rule. A successful ordinary list through an unsupported reader is insufficient: its next rebuild can refuse the generation. This guard does not authorize installation, a restart or a real-home mutation.
 
-
 The supported host API is imported from `@staix/agent-mem` (the package entry is `src/index.ts`), without deep imports or a new CLI/MCP writer:
 
 | Export | Signature / host use |
 | --- | --- |
 | `recordVaultLink` | `recordVaultLink(store: MemoryStore, id: string, path: string, options: VaultSelection): Promise<string>`; options require `{project, policy}`. Returns the link ID after the host has written its vault note. |
 | `vaultCandidates` | `vaultCandidates(store: MemoryStore, options: VaultSelection): Promise<View[]>`; startup-project candidates under the supplied policy. |
-| `vaultCandidatesAll` | `vaultCandidatesAll(base: string, opts: {policy: MemoryPolicy; project?: string; limit?: number; includeArchived?: boolean}): Promise<VaultCandidatesAll>`; discovery grouped by project. An omitted project crosses projects; it grants no write authority. |
+| `vaultCandidatesAll` | `vaultCandidatesAll(base: string, opts: {policy: MemoryPolicy; project?: string; limit?: number; includeArchived?: boolean}): Promise<VaultCandidatesAll>`; discovery walks readable project shards and groups candidates by project; it does not enumerate the projects in an unsplit curated log. A requested project missing from that walk throws `no readable project shard for <project>`. An omitted project crosses the discovered projects; it grants no write authority. |
 | `readShardedSelection` | `readShardedSelection(memoryDir: string): ShardedSelection`; validates an existing active curated-shard layout. An invalid or incomplete split refuses; it is not an invitation to fall back to the unsplit home. |
 | `openShardStore` | `openShardStore(opts: StoreOptions & {project?: string; user?: boolean; memoryDir?: string}): MemoryStore`; opens the target project shard with `{memoryDir: base, project, deferPromotions: true}`. Exactly one project or `user: true` is required. |
-| `createStandalonePolicy` | `createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy`; `{host: hostPolicy}` composes the supplied host policy with standalone screening. It does not automatically load the host's configuration. |
+| `createStandalonePolicy` | `createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy`; `{host: hostPolicy}` composes only the supplied host policy and built-in defaults. It does not load amem's own `amem.config.json` deny paths or PII patterns; pass them as `denyPaths` and `piiPatterns`. |
 
 `VaultSelection` is `{project: string; policy: MemoryPolicy; limit?: number}`. The host binds the memory home, project, exact entry ID, relative Markdown path and authorization; environment markers are not authentication. Candidate discovery does not authorize recording a link. The host writes the vault note first; amem records path metadata only and never writes the vault.
+
+The host must pass the exact canonical project key; this example does not resolve aliases. On an active split, opening an unknown project creates its descriptor/directories and user overlay before the link's entry check, so `openShardStore` is not a read-only existence probe.
+
+The CLI and MCP apply the person's configured amem screen. The library policy in this example does not discover those settings: `{host: hostPolicy}` alone can list and link notes that the CLI and MCP withhold. A host that must honour the same screen must supply `denyPaths` and `piiPatterns` from the selected memory home's `amem.config.json`, including any applicable repository `.amem/config` narrowing, as well as its host policy. `configuredPolicyOptions` and `configuredPolicy` are not exported by `src/index.ts`; there is no exported amem configuration loader today. The host must resolve and validate those configured rules itself or decline the operation; the example takes the already resolved rules explicitly, and empty arrays mean that the host has verified there are no configured rules.
 
 `recordVaultLink` requires an already active generation-profile store, including a selected project shard. On a shared-v1 store it throws exactly `vault links require a generation profile; shared-v1 is unchanged`. Hosts surface that precondition rather than implicitly migrating the home. The public store method's lower-level active-handle guard is separate; use the exported `recordVaultLink` wrapper to retain its policy and exact-entry validation.
 
@@ -116,10 +119,12 @@ import {
 async function linkWrittenVaultNote(
   base: string, project: string, id: string, path: string,
   hostPolicy: MemoryPolicy,
+  amemRules: { denyPaths: readonly string[]; piiPatterns: readonly string[] },
 ): Promise<string> {
-  const policy = createStandalonePolicy({ host: hostPolicy });
+  const policy = createStandalonePolicy({ ...amemRules, host: hostPolicy });
   const split = lstatSync(join(base, "shards.json"), { throwIfNoEntry: false }) !== undefined;
   if (split) readShardedSelection(base); // Refuse an inactive split; no fallback.
+  // project is an exact canonical key; an unknown key creates a shard.
   const store = split
     ? openShardStore({ memoryDir: base, project, deferPromotions: true })
     : new MemoryStore({ memoryDir: base, deferPromotions: true });
