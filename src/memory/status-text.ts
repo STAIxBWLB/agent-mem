@@ -27,7 +27,7 @@ export function statusText(status: StatusView, s: Style = PLAIN): string {
   const migrationState: "ok" | "attention" = refusals.length || status.pending.rows || interrupted ? "attention" : "ok";
   if (interrupted) actions.push("a shard migration stopped after capture and authoring is refused until it activates: amem migrate --shards --resume");
   if (refusals.length) warnings.push(...refusals.map(reason => `migration refusal: ${reason}`));
-  if (status.pending.rows && !interrupted) actions.push(`${status.pending.rows} old-layout rows wait for the shard migration: amem migrate --shards --dry-run`);
+  if (status.pending.rows && !interrupted) actions.push(`${status.pending.rows} old-layout rows wait for the shard migration: amem migrate --shards --resume carries them (amem migrate --shards --dry-run previews first)`);
   const overall = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" ? "attention" : "ok";
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
   const pendingCounts = facts(Object.fromEntries(Object.entries(status.pending).filter(([key]) => !key.endsWith("Ids"))));

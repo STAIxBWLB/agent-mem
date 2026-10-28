@@ -179,3 +179,16 @@ test("status flags a shard migration stopped after capture with the resume actio
   expect(text).toContain("amem migrate --shards --resume");
   expect(text).not.toContain("Next actions: none");
 });
+
+test("pending old-layout rows point to the resume that carries them", () => {
+  const text = statusText(status({ pending: { rows: 4, byShard: { p: 4 } } }));
+  expect(text).toContain("4 old-layout rows wait for the shard migration: amem migrate --shards --resume carries them");
+});
+
+test("undo of a target without a receipt says there is nothing to restore", () => {
+  const undo: SetupPlan = { targets: ["kimi"], mode: "undo", notes: [], actions: [{ target: "kimi", files: ["/h/.kimi/config.json"], receipt: "/h/memory/setup/kimi.json", registration: null,
+    lifecycle: "restore original MCP/hook files", available: true, hooks: [], mcpChange: "unchanged", commands: [], state: "not installed" }] };
+  expect(setupPlanText(undo)).toMatch(/^OK +kimi: no setup receipt; nothing to restore/m);
+  expect(setupPlanText(undo)).not.toContain("already set up");
+  expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^OK +kimi: already set up; no change/m);
+});

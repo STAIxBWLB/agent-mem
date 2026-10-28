@@ -459,7 +459,7 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
   for (const action of plan.actions) {
     if (!full(action)) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
     const state = action.mcpChange === "unchanged" ? "ok" : "attention";
-    const what = action.mcpChange === "unchanged" ? "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
+    const what = action.mcpChange === "unchanged" ? plan.mode === "undo" ? "no setup receipt; nothing to restore" : "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
     lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
     for (const file of action.files) lines.push(`            file     ${file}`);
     if (action.cwd) lines.push(`            cwd      ${action.cwd}`);
