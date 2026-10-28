@@ -24,7 +24,7 @@ const filters = { ...json, "--tier": { description: "Memory tier", value: ["shor
 export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
-  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after person review", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
+  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after explicit acceptance", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
   setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs; apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
@@ -120,7 +120,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview"),
       "--split": flag("Write the per-shard split of the global budget to each shard's own config") } },
   } },
-  alias: { description: "Person-reviewed project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
+  alias: { description: "Explicit project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
     list: { description: "List alias ops" },
     add: { description: "Map one key onto its canonical key (append-only op)", args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
     remove: { description: "Remove an alias so the key resolves to itself again (append-only op, the latest wins)", args: [{ name: "alias-key" }], mutates: true },

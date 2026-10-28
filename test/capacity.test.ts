@@ -144,7 +144,8 @@ test("amem capacity reports, previews, and applies only with --confirm from a ma
   // Reanchored for agent-mem#152: the proposal grows with the real disk this test reads, so it is above the 512 MB default, not equal to it.
   expect(report.proposal.capMb).toBeGreaterThan(0);
   // apply previews first and writes nothing without --confirm.
-  await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], agent)).rejects.toThrow("preview first");
+  await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["capacity", "apply", "--cap-mb", "64", "--confirm"], context)).rejects.toThrow("preview first");
   expect(readCaptureConfigFile(file)).toEqual({}); // a first-call --confirm cannot skip the preview
   const preview = JSON.parse(await runCli(["capacity", "apply", "--cap-mb", "64", "--json"], agent)) as { preview: { target: { capMb: number } } };
   expect(preview.preview.target).toMatchObject({ capMb: 64, retentionDays: 365 });   // the unset retention falls to the proposal: no growth is measured here, so the ceiling

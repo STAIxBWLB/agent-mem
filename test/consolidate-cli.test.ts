@@ -20,7 +20,8 @@ test("a marked nonTTY CLI can queue consolidation candidates and accept through 
     const result = JSON.parse(await cli(["consolidate", "--json"], agent));
     expect(result.candidates).toHaveLength(1); expect(result.candidates[0].action).toBe("supersession");
     const check = new MemoryStore({ memoryDir: base, screen: () => "keep" }); expect(check.list({ project }).length).toBe(2); check.close();
-    await expect(cli(["consolidate", "--project", "local:somewhere-else"], agent)).rejects.toThrow("must name the current project");
+    await expect(cli(["consolidate", "--project", "local:somewhere-else"], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+    await expect(cli(["consolidate", "--project", "local:somewhere-else"])).rejects.toThrow("must name the current project");
     const accepted = JSON.parse(await cli(["review", "accept", result.candidates[0].id, "--kind", "consolidation", "--json"], agent));
     expect(accepted.noteId).toMatch(/^[a-f0-9]{32}$/);
     const after = new MemoryStore({ memoryDir: base, screen: () => "keep" });

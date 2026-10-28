@@ -52,8 +52,10 @@ test("review defaults to list, supports filters and JSON, and opens no ordinary 
 
 test("review requires a full candidate id before store access, without a TTY", async () => {
   const f = fixture(), id = "a".repeat(64);
-  await expect(runCli(["review", "accept", id.slice(0, 8), "--policy-free"], { ...f.context, env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow("full 64-character");
-  await expect(runCli(["review", "reject", id.slice(0, 8)], { ...f.context, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false })).rejects.toThrow("full 64-character");
+  await expect(runCli(["review", "accept", id.slice(0, 8), "--policy-free"], { ...f.context, env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "reject", id.slice(0, 8)], { ...f.context, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "accept", id.slice(0, 8), "--policy-free"], { ...f.context, stdinTTY: false })).rejects.toThrow("full 64-character");
+  await expect(runCli(["review", "reject", id.slice(0, 8)], { ...f.context, stdinTTY: false })).rejects.toThrow("full 64-character");
   expect(existsSync(f.home)).toBe(false);
 });
 
