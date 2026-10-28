@@ -267,7 +267,7 @@ test("the home: AMEM_HOME wins, then the pointer file in the default home, then 
   writeFileSync(join(parent, "memory", CONFIG_FILE), JSON.stringify({ home: moved }));
   writeFileSync(join(moved, CONFIG_FILE), JSON.stringify({ piiPatterns: [SECRET_WORD] }));
   expect(loadAmemConfig(moved).config.piiPatterns).toEqual([SECRET_WORD]);
-  const out = JSON.parse(await runCli(["status"], { cwd: root, env: {}, stdinTTY: false, ...{} } as never).catch(() => "{}")) as { home?: unknown };
+  const out = JSON.parse(await runCli(["status", "--json"], { cwd: root, env: {}, stdinTTY: false, ...{} } as never).catch(() => "{}")) as { home?: unknown };
   expect(typeof out).toBe("object");
 });
 
@@ -275,7 +275,7 @@ test("amem status prints the memory home, where it came from and the configurati
   const r = rig({ denyPaths: ["a"], piiPatterns: ["b", "c"], briefBytes: 500 });
   const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = r.base;
   try {
-    const status = JSON.parse(await runCli(["status"], { cwd: r.cwd, env: {}, stdinTTY: false })) as { home: { path: string; source: string }; config: Record<string, unknown>; active: boolean };
+    const status = JSON.parse(await runCli(["status", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false })) as { home: { path: string; source: string }; config: Record<string, unknown>; active: boolean };
     expect(status.home).toEqual({ path: r.base, source: "AMEM_HOME" });
     expect(status.config).toMatchObject({ machine: join(r.base, CONFIG_FILE), repo: null, denyPaths: 1, piiPatterns: 2, briefBytes: 500 });
     expect(status.active).toBe(false);                      // the existing migration fields keep their names

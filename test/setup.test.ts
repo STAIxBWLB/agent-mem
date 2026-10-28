@@ -169,7 +169,7 @@ test("setup preview inventories every target without commands, files or confirma
   for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
-  const output = await runSetup("all", "preview", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
+  const output = await runSetup("all", "preview", { ...f.options, json: true, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
   expect(JSON.parse(output).targets).toEqual([...SETUP_ALL_TARGETS]); expect(confirmations).toBe(0); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
 });
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
@@ -213,9 +213,9 @@ test("existing amem registration is removed before add while other MCP entries s
 test("runSetup cancellation and missing terminal cause no registration or file changes", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home); let confirmations = 0;
   await expect(runSetup("all", "apply", { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; return true; } })).rejects.toThrow("terminal on stdin");
-  expect(confirmations).toBe(0); expect(JSON.parse(await runSetup("all", "apply", { ...f.options, stdinTTY: true, confirm: async plan => { confirmations++; expect(plan.mode).toBe("apply"); expect(plan.targets).toEqual([...SETUP_ALL_TARGETS]); return false; } }))).toEqual({ cancelled: true });
+  expect(confirmations).toBe(0); expect(JSON.parse(await runSetup("all", "apply", { ...f.options, json: true, stdinTTY: true, confirm: async plan => { confirmations++; expect(plan.mode).toBe("apply"); expect(plan.targets).toEqual([...SETUP_ALL_TARGETS]); return false; } }))).toEqual({ cancelled: true });
   expect(confirmations).toBe(1); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
-  expect(JSON.parse(await runSetup("kimi", "apply", { ...f.options, stdinTTY: true, confirm: async plan => plan.targets.join() === "kimi" }))).toEqual({ applied: ["kimi"], unchanged: [] });
+  expect(JSON.parse(await runSetup("kimi", "apply", { ...f.options, json: true, stdinTTY: true, confirm: async plan => plan.targets.join() === "kimi" }))).toEqual({ applied: ["kimi"], unchanged: [] });
 });
 test("edits to the owned MCP entry refuse apply and undo without overwriting any target", () => {
   const f = fixture(); seedOtherFiles(f); applySetup(f.plan("all", "apply"), f.options);

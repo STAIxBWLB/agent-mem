@@ -125,10 +125,10 @@ test("amem migrate --shards and status drive the same resume path and ordinary C
   const old = new LegacyMemoryStore({ home: dir });
   old.note(note(A, "late through CLI status"));
   old.close();
-  const pending = JSON.parse(await runCli(["status"], context)) as { pending: { byShard: Record<string, number> } };
+  const pending = JSON.parse(await runCli(["status", "--json"], context)) as { pending: { byShard: Record<string, number> } };
   expect(pending.pending.byShard[A]).toBe(1);
   await runCli(["migrate", "--resume"], context);
-  const settled = JSON.parse(await runCli(["status"], context)) as { pending: { rows: number } };
+  const settled = JSON.parse(await runCli(["status", "--json"], context)) as { pending: { rows: number } };
   expect(settled.pending.rows).toBe(0);
 });
 

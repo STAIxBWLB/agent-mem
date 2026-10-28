@@ -4,6 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- **Readable `doctor`, `status` and `setup` output** (#125). On a terminal these now lead with an overall state, then one labelled row per check (`OK`, `ATTENTION`, `SKIPPED`, `UNAVAILABLE`), then concrete next actions. Color is added only on an interactive stdout and never with `NO_COLOR` or `TERM=dumb`; labels carry the meaning without it. `amem setup` shows the plan once before its confirmation (targets, effective files, receipts, MCP and hook changes, skipped clients, warnings). **Changed default:** `amem status` and `amem setup` no longer print JSON by default; pass the new `--json` (status already accepted it, setup gains it) for the unchanged objects. `amem doctor --json` is unchanged. Exit codes, person/agent refusal, confirmation and privacy screening are unchanged.
 - Codex setup accepts native omission of an unrelated stdio server's empty `args = []` and merges only the validated amem entry into the original TOML, preserving that array and other settings. Undo retains later settings when removing a setup-created dotted entry. Other server/settings changes still refuse before publication, with client-labelled, value-free errors (#123).
 
 ## 0.11.0

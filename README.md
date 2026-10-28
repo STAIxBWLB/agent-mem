@@ -290,6 +290,8 @@ Successful native project identities have a private, bounded derived cache (128 
 
 ## Doctor and the sync cadence
 
+`amem doctor`, `amem status` and `amem setup` print a readable report: an overall state, one labelled row per check (`OK`, `ATTENTION`, `SKIPPED`, `UNAVAILABLE`) and the next actions. Color appears only on an interactive terminal and is turned off by `NO_COLOR` or `TERM=dumb`. Add `--json` for the machine-readable object (for `status` and `setup` this was the default before #125).
+
 `amem doctor` prints one read-only report of this project's memory: duplicate and stale notes, pending candidates, capture freshness and hook registration for each CLI (a CLI with no hook is `manual`), the SessionStart brief's token cost, whether the index equals a rebuild of the logs, reader leases and the policy in effect. `amem doctor --json` is a stable machine-readable form (`amem.doctor/v1`). It writes nothing into the memory home (every check runs on a temporary copy of the logs) and creates nothing in a home you never used.
 
 Intake runs at the end of each Codex, Kimi, Pi and Qwen session once `amem setup <cli> --apply` has registered it. Sync is off unless you ask for it: amem registers no sync hook and runs nothing between sessions. To sync on your own schedule, call `amem sync --if-due` from your shell (for example an EXIT trap in `~/.zshrc`; it needs a terminal). It syncs at most hourly, backs off 15 minutes doubling to a day after failures, stops after 30 seconds, and does nothing without a remote set by `amem sync --remote <private git url>`. `--force` skips the schedule and the backoff.
