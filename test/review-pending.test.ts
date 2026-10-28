@@ -199,11 +199,11 @@ test("the brief reader is read-only: it opens no write handle, so it cannot stam
 test("amem status reports the pending candidates and warns within 7 days of expiry", async () => {
   const r = rig(); r.clock.now = Date.now();                                          // status reads the real clock
   const a = r.put("will be due");
-  const quiet = JSON.parse(await cli(r, ["status"])) as { candidates: { count: number; dueWithin7Days: number; warning?: string } };
+  const quiet = JSON.parse(await cli(r, ["status", "--json"])) as { candidates: { count: number; dueWithin7Days: number; warning?: string } };
   expect(quiet.candidates).toMatchObject({ count: 1, dueWithin7Days: 0 }); expect(quiet.candidates.warning).toBeUndefined();
   r.candidates.close(); markShown(r.memory, [r.project], START, [a]);
   const db = new Database(join(r.memory, "candidates.db")); db.query("UPDATE candidates SET at = ?").run(Date.now() - 25 * DAY); db.close();   // 5 days left
-  const due = JSON.parse(await cli(r, ["status"])) as { candidates: { count: number; dueWithin7Days: number; warning?: string } };
+  const due = JSON.parse(await cli(r, ["status", "--json"])) as { candidates: { count: number; dueWithin7Days: number; warning?: string } };
   expect(due.candidates).toMatchObject({ count: 1, dueWithin7Days: 1 }); expect(due.candidates.warning).toContain("within 7 days of expiry");
 });
 
@@ -405,11 +405,11 @@ test("a read-only open that cannot attach to missing -wal/-shm falls back to an 
   for (const name of readdirSync(r.memory)) if (/^candidates\.db-(wal|shm)$/.test(name)) rmSync(join(r.memory, name));
   expect(readdirSync(r.memory).filter(name => name.startsWith("candidates.db"))).toEqual(["candidates.db"]);
   expect(pendingSummary(r.memory, [r.project], r.clock.now)).toMatchObject({ count: 1, unshown: 1 });       // before: 0 and the brief line vanished
-  expect(JSON.parse(await cli(r, ["status"])).candidates).toMatchObject({ count: 1 });
+  expect(JSON.parse(await cli(r, ["status", "--json"])).candidates).toMatchObject({ count: 1 });
   // A file that exists but is not a database is "unavailable", never zero.
   writeFileSync(join(r.memory, "candidates.db"), "this is not sqlite");
   expect(pendingSummary(r.memory, [r.project], r.clock.now, true)).toBeNull();
-  expect(JSON.parse(await cli(r, ["status"])).candidates).toEqual({ unavailable: "candidates.db exists but cannot be read" });
+  expect(JSON.parse(await cli(r, ["status", "--json"])).candidates).toEqual({ unavailable: "candidates.db exists but cannot be read" });
 });
 
 // ---- claude's round 2 nits on #418 ----

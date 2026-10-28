@@ -49,6 +49,8 @@ import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
+import { statusText, type StatusView } from "./memory/status-text.ts";
+import { colorEnabled, style, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 export const PERSON_ONLY = "amem is for the person: an agent reads memory through its `amem mcp` server (see `amem --help`); the person reviews what agents propose with `amem review`";
@@ -200,7 +202,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const { runSetup } = await import("./setup.ts");
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
-      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}),
+      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context),
     });
   }
   const goal = parsed.path[0] === "goal", review = parsed.path[0] === "review", sub = goal || review ? parsed.path[1]! : parsed.path[0]!;
@@ -287,7 +289,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // F1: say where the memory lives and which configuration is in effect. The migration fields keep their names and shape; `home` and `config` are added.
     const where = resolveMemoryHome(), loaded = loadAmemConfig(where.home, repoConfigRoot(policyCwd));
     const { config, source } = loaded;
-    return JSON.stringify({ home: { path: where.home, source: where.source },
+    const status = { home: { path: where.home, source: where.source },
       config: { machine: source.machine, repo: source.repo, denyPaths: config.denyPaths.length, piiPatterns: config.piiPatterns.length,
         ...(config.briefBytes !== undefined ? { briefBytes: config.briefBytes } : {}), ...(config.excerptBytes !== undefined ? { excerptBytes: config.excerptBytes } : {}),
         ...(config.capturePaths !== undefined ? { capturePaths: config.capturePaths } : {}), ...(Object.keys(config.capture).length ? { capture: config.capture } : {}) },
@@ -295,14 +297,15 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       candidates: (() => { const bound = boundProject(), summary = pendingSummary(where.home, [bound, ...aliasedKeys(where.home, bound)], Date.now(), true);
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
-      ...shardMigrationStatus(where.home) }, null, 2);
+      ...shardMigrationStatus(where.home) };
+    return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context));
   }
   if (sub === "doctor") {
     // F15: one read-only report; see src/memory/doctor.ts for exactly what "read-only" covers.
     const where = resolveMemoryHome(), project = boundProject();
     const report = await doctorReport({ home: where.home, homeSource: where.source, cwd: policyCwd, project, aliases: aliasedKeys(where.home, project), now: Date.now(),
       openCurated: base => curatedStoreAt(base, project, { deferPromotions: true }) });
-    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report);
+    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report, outputStyle(context));
   }
   if (sub === "prune") {
     const applying = options["--apply"] === true;
@@ -776,6 +779,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
   return !options["--json"] && receipt.bridgeStatus
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
 }
+
+/** Color for human output only on an interactive stdout without NO_COLOR or TERM=dumb (#125). */
+function outputStyle(context: CliContext): Style { return style(colorEnabled(context.env ?? process.env, context.stdoutTTY ?? process.stdout.isTTY)); }
 
 export function formatCliError(error: unknown): string { return error instanceof DecayApplyError ? error.render() : `amem: ${(error as Error).message}`; }
 

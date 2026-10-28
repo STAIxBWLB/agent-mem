@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
+import { label, PLAIN, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
 export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"] as const;
@@ -448,16 +449,54 @@ export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restor
   return withSetupLock(options, () => undoUnlocked(plan, options));
 }
 
-export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext = {}): Promise<string> {
-  const plan = planSetup(target, mode, options);
-  if (mode === "preview") return JSON.stringify(plan, null, 2);
+/** Person-facing setup plan (#125): each target once, with its effective files, MCP and hook changes, then skipped clients and notes. `--json` keeps the raw plan. */
+export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
+  const verb = plan.mode === "undo" ? "undo" : plan.mode === "apply" ? "apply" : "preview";
+  // Undo restores every target with a receipt whether or not its CLI is still installed (undoUnlocked), so undo never collapses an action.
+  const full = (action: SetupPlan["actions"][number]) => plan.mode === "undo" || action.available;
+  const skipped = plan.actions.filter(action => !full(action)), changing = plan.actions.filter(action => full(action) && action.mcpChange !== "unchanged");
+  const lines = [`${s.bold(`amem setup ${verb}:`)} ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}, ${changing.length} with ${plan.mode === "undo" ? "restores" : "MCP changes"}${skipped.length ? `, ${skipped.length} skipped` : ""}`, ""];
+  for (const action of plan.actions) {
+    if (!full(action)) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
+    const state = action.mcpChange === "unchanged" ? "ok" : "attention";
+    const what = action.mcpChange === "unchanged" ? "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
+    lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
+    for (const file of action.files) lines.push(`            file     ${file}`);
+    if (action.cwd) lines.push(`            cwd      ${action.cwd}`);
+    lines.push(`            receipt  ${action.receipt}`);
+    if (action.available && action.registration) lines.push(`            command  ${action.registration.map(quote).join(" ")}`);
+    for (const hook of action.hooks) lines.push(`            hook     ${hook.event}: ${hook.command} (timeout ${hook.timeout})`);
+    if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
+    lines.push(`            ${s.dim(action.lifecycle)}`);
+  }
+  const warnings = plan.notes.filter(note => /^WARNING|detected|version-specific/.test(note)), notes = plan.notes.filter(note => !warnings.includes(note));
+  if (skipped.length) lines.push("", `Skipped clients: ${skipped.map(action => action.target).join(", ")} (not installed)`);
+  if (warnings.length) lines.push("", "Warnings:", ...warnings.map(note => `  - ${s.attention(note)}`));
+  lines.push("", "Notes:", ...notes.map(note => `  - ${note}`));
+  if (plan.mode === "preview") lines.push("", `Next: amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply (asks before writing); --json prints the full plan`);
+  return lines.join("\n");
+}
+
+function setupResultText(result: SetupApplyResult | { restored: SetupTarget[] }, s: Style): string {
+  if ("restored" in result) return `${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`;
+  return [`${label(s, "ok")} applied: ${result.applied.join(", ") || "none"}`, `${label(s, "ok")} unchanged: ${result.unchanged.join(", ") || "none"}`,
+    ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`)].join("\n");
+}
+
+/** What the default confirmation prints before its prompt: the raw plan under `--json`, the readable plan otherwise. */
+export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
+
+export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style } = {}): Promise<string> {
+  const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;
+  if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s);
   if (!(options.stdinTTY ?? process.stdin.isTTY)) throw Error("setup --apply/--undo require a terminal on stdin");
   const confirm = options.confirm ?? (async (shown: SetupPlan) => {
-    process.stdout.write(JSON.stringify(shown, null, 2) + "\n");
+    process.stdout.write(setupConfirmationText(shown, options.json === true, s) + "\n\n");
     const terminal = createInterface({ input: process.stdin, output: process.stdout });
     try { return (await terminal.question(`Type yes to ${mode} the listed configuration changes: `)).trim() === "yes"; }
     finally { terminal.close(); }
   });
-  if (!await confirm(plan)) return JSON.stringify({ cancelled: true });
-  return JSON.stringify(mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options), null, 2);
+  if (!await confirm(plan)) return options.json ? JSON.stringify({ cancelled: true }) : "setup cancelled; nothing changed";
+  const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
+  return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s);
 }

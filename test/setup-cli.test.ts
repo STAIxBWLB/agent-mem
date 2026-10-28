@@ -32,7 +32,7 @@ function fixture() {
 test("setup command table, parser and actual help expose the same targets and apply/undo options", async () => {
   const f = fixture(), before = snapshot(f.root), help = await runCli(["--help"], f.context);
   expect(help).toContain("setup <target>"); expect(help).toContain("[--apply]"); expect(help).toContain("[--undo]");
-  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--apply", "--undo"]);
+  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--apply", "--json", "--undo"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
 });
@@ -45,7 +45,7 @@ test("Jcode setup-only support does not expose ingest or create capture state", 
 test("default setup CLI previews every target with no commands, home writes or changed rules", async () => {
   const f = fixture(), before = snapshot(f.root);
   for (const target of targets) {
-    const plan = JSON.parse(await runCli(["setup", target], f.context));
+    const plan = JSON.parse(await runCli(["setup", target, "--json"], f.context));
     expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.filter(value => value !== "all" && value !== "agy") : [target]);
     expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
@@ -73,7 +73,7 @@ test("setup CLI refuses invalid targets, unknown flags and conflicting modes bef
 test("cancelled setup CLI confirmations keep both apply and undo dry", async () => {
   const f = fixture(), before = snapshot(f.root); let confirmations = 0;
   for (const [flag, mode] of [["--apply", "apply"], ["--undo", "undo"]] as const) {
-    const output = await runCli(["setup", "all", flag], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual(SETUP_TARGETS.filter(target => target !== "agy")); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
+    const output = await runCli(["setup", "all", flag, "--json"], { ...f.context, stdinTTY: true, setupConfirm: async plan => { confirmations++; expect(plan.targets).toEqual(SETUP_TARGETS.filter(target => target !== "agy")); expect(plan.mode).toBe(mode); expect(plan.actions).toHaveLength(6); return false; } });
     expect(JSON.parse(output)).toEqual({ cancelled: true });
   }
   expect(confirmations).toBe(2); expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
@@ -81,13 +81,13 @@ test("cancelled setup CLI confirmations keep both apply and undo dry", async () 
 test("confirmed actual CLI apply uses only fake native registration in staging and undo restores the original", async () => {
   const f = fixture(), config = join(f.home, ".claude.json"), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(config, original, 0o640);
   const rules = f.rules.map(file => readFileSync(file)), context = { ...f.context, stdinTTY: true, setupConfirm: async () => true };
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: ["claude"], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: ["claude"], unchanged: [] });
   const calls = f.calls(); expect(calls).toHaveLength(1); expect(calls[0]?.argv.slice(0, 8)).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem"]); expect(calls[0]?.home).not.toBe(f.home); expect(calls[0]?.cwd).toBe(calls[0]?.home); expect(existsSync(calls[0]!.home)).toBe(false);
   const document = JSON.parse(readFileSync(config, "utf8")); expect(document.mcpServers.other).toEqual({ command: "keep" });
   expect(document.mcpServers.amem).toEqual({ command: Bun.which("bun", { PATH: f.env.PATH }), args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
   const receipt = readFileSync(join(f.home, "memory", "setup", "claude.json"));
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply"], context))).toEqual({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
-  expect(JSON.parse(await runCli(["setup", "claude", "--undo"], context))).toEqual({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toEqual({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);
 });
 
 test("a native CLI without MCP administration is refused before free-form prompt execution", async () => {
@@ -98,7 +98,7 @@ test("a native CLI without MCP administration is refused before free-form prompt
 });
 test("all setup skips and reports absent CLIs while configuring the available client", async () => {
   const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
-  const result = JSON.parse(await runCli(["setup", "all", "--apply"], { ...f.context, stdinTTY: true, setupConfirm: async () => true }));
+  const result = JSON.parse(await runCli(["setup", "all", "--apply", "--json"], { ...f.context, stdinTTY: true, setupConfirm: async () => true }));
   expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen", "jcode"]);
   expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
   expect(f.calls()).toHaveLength(1);

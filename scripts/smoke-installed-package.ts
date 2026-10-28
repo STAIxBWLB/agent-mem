@@ -24,7 +24,7 @@ export function assertInstalledModule(modulePath: string, installedRoot: string,
 }
 export function assertNoHubBranding(output: string): void { requireSmoke(!/(?<![a-z0-9])ahub(?![a-z0-9])/i.test(output), "legacy host command appeared in installed output"); }
 export function assertSmokeCliArgs(args: readonly string[]): void {
-  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "setup" && ["all", "agy"].includes(args[1]!) || args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!)) || args.length === 3 && ["setup all --apply", "setup agy --apply"].includes(args.join(" ")), "installed smoke refuses unsupported CLI arguments");
+  requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && (args[0] === "hook" && args[1] === "PostToolUse" || args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!)) || ["setup all --json", "setup agy --json", "setup all --apply --json", "setup agy --apply --json"].includes(args.join(" ")), "installed smoke refuses unsupported CLI arguments");
 }
 export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
   const server = object(value);
@@ -249,14 +249,14 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
     options.afterInstall?.(installed);
     await ownedCommand(bun, ["git", "init", "-q", projectDir], projectDir, installedEnv);
-    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, args.length === 3); };
+    const cli = (args: string[], input?: string) => { assertSmokeCliArgs(args); assertInstalledEntry(realPath(entry), realPath(installed), checkout, env.TMPDIR!); assertInstalledAlias(executable!, realPath(executable!), entry, appBin); return ownedCommand(bun, [executable!, ...args], projectDir, installedEnv, input, 60000, args.includes("--apply")); };
     const ruleFiles = [join(home, "AGENTS.md"), join(home, "CLAUDE.md"), join(projectDir, "AGENTS.md"), join(projectDir, "CLAUDE.md"), join(projectDir, "QWEN.md"), join(env.QWEN_HOME!, "QWEN.md"), join(env.QWEN_HOME!, "rules", "keep.md"), join(projectDir, "AGY.md"), join(projectDir, "JCODE.md"), join(env.JCODE_HOME!, "AGENTS.md"), join(env.CLAUDE_CONFIG_DIR!, "rules", "keep.md"), join(env.CODEX_HOME!, "rules", "keep.rules")];
     for (const file of ruleFiles) { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "installed smoke instruction/rule sentinel, keep exact bytes\n", { mode: 0o600 }); }
     const rules = ruleFiles.map(file => ({ file, bytes: readFileSync(file), mode: lstatSync(file).mode & 0o777 }));
     const verifyRules = () => { for (const rule of rules) requireSmoke(readFileSync(rule.file).equals(rule.bytes) && (lstatSync(rule.file).mode & 0o777) === rule.mode, "setup or runtime changed an instruction/rule sentinel"); };
     requireSmoke((await cli(["--version"])).trim() === `amem ${metadata.version}`, "installed CLI version output differs"); await cli(["--help"]);
     const beforeSetup = snapshotPrivateHome(home);
-    const plan = JSON.parse(await cli(["setup", "all"])); const afterSetup = snapshotPrivateHome(home); assertHomeUnchanged(beforeSetup, afterSetup);
+    const plan = JSON.parse(await cli(["setup", "all", "--json"])); const afterSetup = snapshotPrivateHome(home); assertHomeUnchanged(beforeSetup, afterSetup);
     const plannedFiles = assertSetupPreview(plan, home, entry);
     requireSmoke(plannedFiles.every(file => !existsSync(file)) && !existsSync(nativeCalls), "setup dry run wrote configuration or invoked a native client"); verifyRules();
     // The installed CLI still performs its ordinary person/TTY checks and asks for confirmation.
@@ -272,7 +272,7 @@ appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({target,args,home})
 const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):target==='qwen'?join(process.env.QWEN_HOME,'settings.json'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');
 mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bun.TOML.stringify({mcp_servers:{amem:server}}):JSON.stringify({mcpServers:{amem:server}}));\n`);
     for (const target of ["claude", "codex", "pi", "qwen"]) writeFileSync(join(traps, target), `#!/bin/sh\nexec ${quote(bun)} --smol ${quote(nativeStub)} ${quote(target)} "$@"\n`, { mode: 0o700 });
-    assertSetupApplied(await cli(["setup", "all", "--apply"])); verifyRules();
+    assertSetupApplied(await cli(["setup", "all", "--apply", "--json"])); verifyRules();
     const registrations = readFileSync(nativeCalls, "utf8"), calls = registrations.trim().split("\n").map(line => object(JSON.parse(line)));
     requireSmoke(JSON.stringify(calls.map(call => call.target)) === JSON.stringify(["claude", "codex", "pi", "qwen"]) && calls.every(call => !existsSync(call.home)), "setup did not use and remove only its private native staging homes");
     const seedFile = join(app, "seed-installed.ts");
@@ -281,11 +281,11 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     const frame = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
     const mcpInput = frame(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "installed-smoke", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n" + frame(3, "tools/list", {}) + frame(2, "tools/call", { name: "amem_search", arguments: { query: MARKER, includeCapture: false, limit: 5 } });
     assertMcpResult(await cli(["mcp"], mcpInput), metadata.version, seed.id, seed.project);
-    const beforeAgy = snapshotPrivateHome(home), agyPlan = JSON.parse(await cli(["setup", "agy"]));
+    const beforeAgy = snapshotPrivateHome(home), agyPlan = JSON.parse(await cli(["setup", "agy", "--json"]));
     assertHomeUnchanged(beforeAgy, snapshotPrivateHome(home));
     const agyFiles = assertAgySetupPreview(agyPlan, home, projectDir);
     requireSmoke(agyFiles.every(file => !existsSync(file)), "agy preview wrote configuration or a receipt");
-    assertSetupApplied(await cli(["setup", "agy", "--apply"]), ["agy"]); verifyRules();
+    assertSetupApplied(await cli(["setup", "agy", "--apply", "--json"]), ["agy"]); verifyRules();
     requireSmoke(!existsSync(join(home, ".gemini", "config", "mcp_config.json")) && !existsSync(join(projectDir, ".agents", "hooks.json")), "agy setup wrote global configuration or hooks");
     const registeredMcp: string[] = [];
     for (const action of [...plan.actions, ...agyPlan.actions]) {

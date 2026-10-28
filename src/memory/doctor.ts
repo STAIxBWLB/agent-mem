@@ -10,6 +10,7 @@ import { readSelector } from "./generation.ts";
 import { processLiveness, withGitTimeout } from "./platform.ts";
 import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
+import { facts, label, PLAIN, type Style } from "./style.ts";
 import { shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
@@ -403,13 +404,46 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
 }
 
-export function doctorText(report: DoctorReport): string {
-  const mark = (status: SectionStatus) => status === "ok" ? "ok         " : status === "attention" ? "ATTENTION  " : status === "skipped" ? "skipped    " : "unavailable";
-  const lines = [`amem doctor: ${report.status}`, `home ${report.home.path} (${report.home.source}), project ${report.project}`];
-  for (const [name, section] of Object.entries(report.sections)) {
-    const { status, hint, reason, ...detail } = section as Section & { hint?: string; reason?: string };
-    lines.push(`${mark(status)} ${name}: ${JSON.stringify(detail)}${reason ? `  (${reason})` : ""}`);
-    if (hint) lines.push(`            -> ${hint}`);
+/** Section order and one-line descriptions for the person-facing report (#125). */
+const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
+  duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
+  index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence",
+};
+
+function sectionDetail(name: string, detail: Record<string, unknown>, s: Style): string[] {
+  if (name === "capture" && detail.clis && typeof detail.clis === "object") {
+    return Object.entries(detail.clis as Record<string, Record<string, unknown>>).map(([cli, row]) => {
+      const capture = String(row.capture), mark = capture === "fresh" ? s.ok(capture) : capture === "stale" ? s.attention(capture) : s.dim(capture);
+      return `${cli.padEnd(7)} hook ${row.hook}${row.setup ? ` (${row.setup})` : ""}, capture ${mark}${row.lastCaptureAt ? ` (last ${row.lastCaptureAt})` : ""}, ${row.rows} rows`;
+    });
   }
+  if (name === "cadence") {
+    const sync = (detail.sync ?? {}) as Record<string, unknown>, ingest = (detail.ingest ?? {}) as Record<string, string>;
+    return [`ingest ${Object.entries(ingest).map(([cli, how]) => `${cli} ${how}`).join(", ")}`,
+      `sync remote ${sync.remote}${sync.remote === "configured" ? `, last ok ${sync.lastOkAt ?? "never"}, failures ${sync.failures}${sync.due ? ", due" : ""}` : ""}`];
+  }
+  if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
+  const { examples, ...rest } = detail;
+  const line = facts(rest);
+  return [...(line ? [line] : []), ...(Array.isArray(examples) && examples.length ? [`examples ${examples.map(item => Array.isArray(item) ? item.join("=") : String(item)).join(", ")}`] : [])];
+}
+
+/** The person-facing report: overall state, one labelled row per section, then the next actions. `amem doctor --json` keeps the full report. */
+export function doctorText(report: DoctorReport, s: Style = PLAIN): string {
+  const entries = Object.entries(report.sections) as [keyof DoctorReport["sections"], Section & { hint?: string; reason?: string }][];
+  const count = (status: SectionStatus) => entries.filter(([, section]) => section.status === status).length;
+  const summary = facts({ attention: count("attention"), unavailable: count("unavailable"), skipped: count("skipped") });
+  const lines = [`${s.bold("amem doctor:")} ${report.status === "ok" ? s.ok(report.status) : report.status === "attention" ? s.attention(report.status) : s.error(report.status)}${summary ? `  (${summary})` : `  (all ${entries.length} checks ok)`}`,
+    `home     ${report.home.path} ${s.dim(`(${report.home.source})`)}`, `project  ${report.project}`, ""];
+  const actions: string[] = [];
+  for (const [name, section] of entries) {
+    const { status, hint, reason, ...detail } = section;
+    lines.push(`${label(s, status)} ${name}: ${s.dim(SECTION_TITLE[name])}`);
+    for (const line of sectionDetail(name, detail, s)) lines.push(`            ${line}`);
+    if (reason) lines.push(`            ${s.dim(`reason: ${reason}`)}`);
+    if (hint) actions.push(`${name}: ${hint}`);
+    if (name === "capture" && detail.clis) for (const [cli, row] of Object.entries(detail.clis as Record<string, { hint?: string }>)) if (row.hint) actions.push(`capture ${cli}: ${row.hint}`);
+  }
+  lines.push("", actions.length ? "Next actions:" : "Next actions: none", ...actions.map(action => `  - ${action}`));
   return lines.join("\n");
 }

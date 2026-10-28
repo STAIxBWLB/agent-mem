@@ -28,8 +28,8 @@ test("installed smoke child environment is an allowlist with isolated config/cac
   expect(join(HOME, "app").startsWith(env.TMPDIR! + "/")).toBe(false);
 });
 test("installed smoke permits only all-target setup apply and native ingest in addition to its fixed read/hook commands", () => {
-  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all"], ["setup", "all", "--apply"], ["setup", "agy"], ["setup", "agy", "--apply"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"], ["ingest", "qwen"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
-  for (const args of [["setup", "all", "--undo"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["ingest"], ["ingest", "claude"], ["ingest", "jcode"], ["ingest", "codex", "extra"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
+  for (const args of [["--help"], ["--version"], ["mcp"], ["setup", "all", "--json"], ["setup", "all", "--apply", "--json"], ["setup", "agy", "--json"], ["setup", "agy", "--apply", "--json"], ["hook", "PostToolUse"], ["ingest", "codex"], ["ingest", "kimi"], ["ingest", "pi"], ["ingest", "qwen"]]) expect(() => assertSmokeCliArgs(args)).not.toThrow();
+  for (const args of [["setup", "all", "--undo"], ["setup", "all"], ["setup", "all", "--apply"], ["setup", "claude"], ["setup", "claude", "--apply"], ["setup", "all", "--apply", "extra"], ["note", "add"], ["hook", "SessionStart"], ["ingest"], ["ingest", "claude"], ["ingest", "jcode"], ["ingest", "codex", "extra"], ["claude", "mcp", "add"], []]) expect(() => assertSmokeCliArgs(args)).toThrow();
 });
 test("installed agy preview binds one workspace and a private receipt without hooks", () => {
   const project = join(HOME, "project"), value = { mode: "preview", targets: ["agy"], actions: [{ target: "agy", cwd: project,
