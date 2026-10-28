@@ -266,7 +266,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
 const [target,...args]=process.argv.slice(2);
 if(!['claude','codex','pi','qwen'].includes(target))process.exit(97);
 if(args.length===1&&args[0]==='--help'){console.log('  mcp Manage MCP servers');process.exit(0);}
-const marker=args.indexOf('--'),launch=args.slice(marker+1),home=process.env.HOME;
+const marker=args.indexOf('--'),launch=target==='qwen'?[args[marker-1],...args.slice(marker+1)]:args.slice(marker+1),home=process.env.HOME;
 if(args[0]!=='mcp'||args[1]!=='add'||marker<0||process.cwd()!==home||!home.startsWith(${JSON.stringify(env.TMPDIR! + "/amem-setup-")}))process.exit(97);
 appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({target,args,home})+'\\n');
 const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):target==='qwen'?join(process.env.QWEN_HOME,'settings.json'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');

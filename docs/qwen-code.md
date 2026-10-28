@@ -6,14 +6,15 @@ Qwen Code user settings and transcript runtime storage have separate resolution 
 
 - Checked official `QwenLM/qwen-code` main on 2026-10-26 at [`1ce173117196ab9a9f77b5d19ac148cbabe25dfd`](https://github.com/QwenLM/qwen-code/commit/1ce173117196ab9a9f77b5d19ac148cbabe25dfd).
 - The checked [`package.json`](https://github.com/QwenLM/qwen-code/blob/1ce173117196ab9a9f77b5d19ac148cbabe25dfd/package.json#L4) declares `0.26.1`. Earlier research pinned `338f13366c1d86e586f7e0785942740da3503887`, also reported as `0.26.1`; a version string alone does not pin source behavior.
-- Evidence is official source/API inspection and synthetic fixtures. No native Qwen command, real Qwen home, credentials, or private transcript was accessed. Installed-client behavior remains unverified.
+- Initial evidence on 2026-10-26 was official source/API inspection and synthetic fixtures; installed-client behavior was then unverified.
+- On 2026-10-28, an isolated native Qwen 0.26.1 smoke passed with `AMEM_QWEN_NATIVE_SMOKE=1 bun test test/setup.test.ts --test-name-pattern 'real Qwen 0.26.1 isolated native registration'`. It used a temporary HOME/cwd and a synthetic `QWEN_HOME` settings copy with isolated runtime, XDG and system settings paths. It read back the exact server command/args, preserved another MCP server and existing hooks/settings, verified idempotence, and restored original bytes and mode on undo. The person's Qwen home, credentials and private transcripts were not accessed; this is registration evidence, not a model/session test.
 
 # Settings and native MCP registration
 
 - User MCP entries (`mcpServers`) and command hooks (`hooks`) share `<QWEN_HOME>/settings.json`; absent `QWEN_HOME`, use `~/.qwen/settings.json`. Project settings use `<cwd>/.qwen/settings.json`.
 - Path expansion recognizes exact `~`, `~/` and `~\`; other relative paths resolve against the calling process cwd. Values are not trimmed.
 - MCP registration only configures the amem stdio server; capture hooks are separate entries in the same settings file. Preserve unrelated MCP and hook entries; registration does not require model authentication.
-- Native syntax is `qwen mcp add --scope user --transport stdio <name> <command> [args...]` and `qwen mcp remove --scope user <name>`. Scope choices are `user` and `project`, defaulting to `user`.
+- Native syntax is `qwen mcp add --scope user --transport stdio <name> <command> -- [args...]` and `qwen mcp remove --scope user <name>`. The executable must precede `--`: amem uses `... amem <bun> -- --smol <amem.js> mcp`. Putting the executable after the separator leaves Qwen 0.26.1 without its required `commandOrUrl` positional. Scope choices are `user` and `project`, defaulting to `user`. Claude, Codex and Pi retain their own argument layouts.
 - System overrides are `QWEN_CODE_SYSTEM_SETTINGS_PATH` and `QWEN_CODE_SYSTEM_DEFAULTS_PATH`.
 - Semantic hook ownership follows the existing command-key contract. Removing a command or replacing it with a different command is treated as a user hook; undo leaves the replacement alone. Metadata edits on the same owned command conflict instead of being overwritten. Global hook control fields are preserved, including disabled hooks.
 
