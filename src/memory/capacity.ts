@@ -286,7 +286,7 @@ export function capacityText(report: CapacityReport): string {
 export function capacityApplyText(result: {
   preview: { file: string; current: Partial<CaptureConfig>; target: CaptureConfig; reason: string };
   confirm?: string;
-  written?: { cap_mb: number; retention_days: number };
+  written?: { cap_mb?: number; retention_days?: number };
 }, s: Style = PLAIN): string {
   const applied = result.written !== undefined;
   return [
@@ -295,7 +295,7 @@ export function capacityApplyText(result: {
     `${label(s, "ok")} current: ${facts({ cap_mb: result.preview.current.capMb, retention_days: result.preview.current.retentionDays }) || "defaults"}`,
     `${label(s, "attention")} proposed: ${facts({ cap_mb: result.preview.target.capMb, retention_days: result.preview.target.retentionDays })}`,
     `${label(s, "ok")} reason: ${singleLine(result.preview.reason)}`,
-    ...(applied ? [`${label(s, "ok")} written: ${facts(result.written!)}`] : []),
+    ...(applied ? [`${label(s, "ok")} written: ${facts(result.written!) || "no settings reported"}`] : []),
     `Next action: ${applied ? "none" : "re-run the same capacity apply command with --confirm, keeping all other arguments"}`,
   ].join("\n");
 }
