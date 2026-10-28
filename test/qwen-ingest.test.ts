@@ -192,3 +192,11 @@ test("#136: a policy-declined Qwen record reports no version, and a bare dashed 
   writeFileSync(plus, line(message(f.cwd, "x", { version: "0.27.0-rc.1" })));
   expect(await ingestTranscript("qwen", { cwd: f.cwd, base: f.base, files: [plus] })).toMatchObject({ reason: "unsupported_version", version: "0.27.0-rc.1" });
 });
+
+test("#136: a Qwen version the current policy declines is never reported", async () => {
+  const f = fixture();
+  mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["internal"] }));
+  writeFileSync(f.file, line(message(f.cwd, "x", { version: "0.27.0-internal" })));
+  const receipt = await ingestTranscript("qwen", { ...f, files: [f.file] });
+  expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined(); expect(JSON.stringify(receipt)).not.toContain("internal");
+});

@@ -247,3 +247,16 @@ test("#136: a declined Kimi metadata record with a supported protocol still lets
   expect((await ingestTranscript("kimi",{...f,files:[file],policy})).imported).toBe(1);
   expect(rows(f).map(row => row.excerpt)).toEqual(["permitted answer"]);
 });
+
+test("#136: a Kimi version stored under an older policy is screened again before it is reported", async () => {
+  const f = fixture(), session = join(f.root,"kimi-session"), main = join(session,"agents","main"); mkdirSync(main,{recursive:true});
+  writeFileSync(join(session,"state.json"),JSON.stringify({ cwd: f.cwd })); const file=join(main,"wire.jsonl");
+  const answer = (text: string) => line({type:"context.append_message",time:Date.parse(at),message:{role:"assistant",content:[{type:"text",text}]}});
+  writeFileSync(file,line({type:"metadata",protocol_version:"1.6-internal"}) + answer("first"));
+  expect(await ingestTranscript("kimi",{...f,files:[file]})).toMatchObject({ reason: "unsupported_version", version: "1.6-internal" });
+  // The person tightens the policy; the cursor still holds 1.6-internal and the next run reads only the appended record.
+  mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["internal"] }));
+  appendFileSync(file, answer("second"));
+  const later = await ingestTranscript("kimi",{...f,files:[file]});
+  expect(later.reason).toBe("schema_or_time"); expect(later.version).toBeUndefined(); expect(JSON.stringify(later)).not.toContain("internal");
+});

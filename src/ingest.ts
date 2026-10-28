@@ -277,7 +277,11 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
   const result: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
   const fail = (reason: NonNullable<IngestReceipt["reason"]>, remaining = false) => { result.errors++; result.reason ??= reason; result.remaining ||= remaining; };
   // An unsupported writer version explains its records better than the generic schema reason, so it replaces only that one; cursors and replay are untouched.
-  const unsupported = (version: string) => { result.errors++; if (result.reason === undefined || result.reason === "schema_or_time") { result.reason = "unsupported_version"; result.version = version; } };
+  // The version is screened by the current policy every time it would be reported, including one restored from a cursor written under an older policy.
+  const unsupported = async (version: string, screen: (value: unknown) => Promise<boolean>) => {
+    if (!await screen({ version })) { fail("schema_or_time"); return; }
+    result.errors++; if (result.reason === undefined || result.reason === "schema_or_time") { result.reason = "unsupported_version"; result.version = version; }
+  };
   const bytes = options.maxBytes ?? DEFAULT_BYTES, count = options.maxFiles ?? DEFAULT_FILES;
   if (!["codex", "kimi", "pi", "qwen"].includes(kind) || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_BYTES || !Number.isSafeInteger(count) || count < 1 || count > MAX_FILES
     || options.files !== undefined && (!Array.isArray(options.files) || options.files.length > MAX_FILES || options.files.some(file => typeof file !== "string" || !isAbsolute(file) || file.includes("\0")))
@@ -406,11 +410,11 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
                 : permitted ? versionToken(raw.protocol_version) ?? "unknown" : "unknown";
             }
             const qwenVersion = kind === "qwen" && !known && permitted ? versionToken(raw.version) : undefined;
-            if (!known) { if (qwenVersion !== undefined && qwenVersion !== "0.26.1") unsupported(qwenVersion); else fail("schema_or_time"); }
+            if (!known) { if (qwenVersion !== undefined && qwenVersion !== "0.26.1") await unsupported(qwenVersion, value => policy.screen(value)); else fail("schema_or_time"); }
             const input = known ? extract(kind, raw, project) : undefined;
             if (input) {
               const at = timeOf(raw, kind);
-              if (kind === "kimi" && at && position.scope !== "unknown" && position.protocol !== "unknown" && versionToken(position.protocol) !== undefined && !KIMI_PROTOCOLS.includes(position.protocol)) { unsupported(position.protocol); result.skipped++; }
+              if (kind === "kimi" && at && position.scope !== "unknown" && position.protocol !== "unknown" && versionToken(position.protocol) !== undefined && !KIMI_PROTOCOLS.includes(position.protocol)) { await unsupported(position.protocol, value => policy.screen(value)); result.skipped++; }
               else if (!at || position.scope === "unknown" || kind === "kimi" && !KIMI_PROTOCOLS.includes(position.protocol)) { fail("schema_or_time"); result.skipped++; }
               else if (!permitted || position.scope !== "own" || since !== undefined && at < since) result.skipped++;
               else {
