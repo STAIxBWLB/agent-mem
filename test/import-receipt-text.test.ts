@@ -54,6 +54,16 @@ test.each(["notes", "work", "capture"] as const)("claude-mem overall verdict inc
   expect(output.match(/amem import claude-mem:/g)).toHaveLength(1);
 });
 
+test.each(["notes", "work", "capture"] as const)("claude-mem %s restart pagination tells the person to remove only restart", flag => {
+  const notes = importNotes(flag === "notes"), work = importWork(flag === "work"), capture = importCapture(flag === "capture");
+  const output = claudeMemImportText(notes, work, capture, { restart: true, captureDays: 7 });
+  expect(output).toStartWith("amem import claude-mem: run again\n");
+  expect(output).toContain("Next action: run the same import command again without --restart, keeping all other arguments, until all receipts are complete.");
+  const ordinary = claudeMemImportText(notes, work, capture, { captureDays: 7 });
+  expect(ordinary).toContain("Next action: run the same import command again until all receipts are complete.");
+  expect(ordinary).not.toContain("without --restart");
+});
+
 test("claude-mem capture selection and restart caveats are explicit", () => {
   const notes = { ...importNotes(), read: 0, added: 0, skipped: { model: 0, pii: 0, secret: 0 } };
   const work = { ...importWork(), read: 0, added: 0, skipped: { invalid: 0, policy: 0 } };
@@ -86,10 +96,11 @@ async function runImportReceipt(h: { cwd: string; memory: string; file: string }
 
 test.each(["work", "capture"] as const)("claude-mem CLI follows %s-only pagination and then completes", async kind => {
   const h = importReceiptFixture(kind), before = importReceiptFs.readFileSync(h.file), args = ["--limit", "1", ...(kind === "capture" ? ["--capture-days", "7"] : [])];
-  const first = await runImportReceipt(h, args);
+  const first = await runImportReceipt(h, [...args, "--restart"]);
   expect(first).toStartWith("amem import claude-mem: run again\n");
   expect(first).toMatch(kind === "work" ? /^ATTENTION +work lists: read 1, added 1/m : /^ATTENTION +capture: read 1, added 1/m);
   expect(first).toMatch(/^OK +notes: read 0, added 0/m);
+  expect(first).toContain("without --restart, keeping all other arguments");
   if (kind === "capture") expect(first).toContain("Widening --capture-days later requires --restart.");
   expect(await runImportReceipt(h, args)).toStartWith("amem import claude-mem: complete\n");
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
