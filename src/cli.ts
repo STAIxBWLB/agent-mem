@@ -764,7 +764,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (!view) throw new Error(`no memory entry ${idText} in this project (amem list shows the ids)`);
     // `get` also returns shared-scope notes of other projects: only this project's own private notes go into this repository.
     if (resolveAlias(memoryHome(), view.project) !== project) throw new Error(`${view.id.slice(0, 8)} belongs to another project; only this project's notes can be promoted into its repository`);
-    const sourceView = view;
+    const sourceView = view, sourceRevision = candidateTargetRevision(view);
     if (actor === "agent" && !recallViewIsLive(sourceView, Date.now())) throw Error("Memory operation unavailable or refused; no partial result is shown.");
     administrative(sourceView); // Screen fields the repository representation deliberately drops, too.
     const assertSourceReadable = () => {
@@ -772,7 +772,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const fresh = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
       try {
         const current = fresh.get(sourceView.id, project);
-        if (!current || !recallViewIsLive(current, fresh.readNow()) || resolveAlias(memoryHome(), current.project) !== project) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+        if (!current || candidateTargetRevision(current) !== sourceRevision || !recallViewIsLive(current, fresh.readNow()) || resolveAlias(memoryHome(), current.project) !== project) throw Error("Memory operation unavailable or refused; no partial result is shown.");
         administrative(current);
       } finally { fresh.close(); }
     };

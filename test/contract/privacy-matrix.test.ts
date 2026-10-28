@@ -252,7 +252,8 @@ test("C3 marked repo promotion screens stripped source fields before preview and
       const base = join(root, "memory"), project = memoryProjectKey(root), store = new MemoryStore({ memoryDir: base, deferPromotions: true });
       const input: NoteInput = { op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "public-peer", source: "person", text: "withheld source body", about: [], task: "public-task" };
       input[field] = MARKER;
-      const hidden = store.note(input), visible = store.note({ ...input, peer: "public-peer", task: "public-task", text: "public promotion control" }); store.close();
+      const hidden = store.note(input), visible = store.note({ ...input, peer: "public-peer", task: "public-task", text: "public promotion control" });
+      const drifted = store.note({ ...input, peer: "public-peer", task: "public-task", text: "source whose tier changes" }); store.close();
       process.env.AMEM_HOME = base;
       const config = join(base, CONFIG_FILE), log = join(root, ".amem", "log.jsonl");
       writeFileSync(config, JSON.stringify({ piiPatterns: [MARKER] }));
@@ -268,6 +269,14 @@ test("C3 marked repo promotion screens stripped source fields before preview and
       const tightened = { ...context, visibility: async () => { writeFileSync(config, JSON.stringify({ piiPatterns: [MARKER] })); return "private" as const; } };
       await expect(runCli(["promote", hidden, "--to", "repo", "--confirm"], tightened)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
       expect(existsSync(log)).toBe(false);
+      const demoted = { ...context, visibility: async () => {
+        const other = new MemoryStore({ memoryDir: base, deferPromotions: true });
+        try { other.demote(drifted, "person", project); } finally { other.close(); }
+        return "private" as const;
+      } };
+      await expect(runCli(["promote", drifted, "--to", "repo", "--confirm"], demoted)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+      expect(existsSync(log)).toBe(false);
+      expect(JSON.parse(await runCli(["show", drifted, "--json"], context)).tier).toBe("short");
       expect(await runCli(["promote", visible, "--to", "repo", "--confirm"], context)).toContain("appended");
       expect(readFileSync(log, "utf8")).toContain("public promotion control");
       expect(readFileSync(log, "utf8")).not.toContain("withheld source body");
