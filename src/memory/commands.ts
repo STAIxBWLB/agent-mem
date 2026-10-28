@@ -79,7 +79,7 @@ export function claudeMemImportText(notes: ImportResult, work: WorkStateImportRe
     if (capture.skipped) lines.push(`  skipped reasons: combined ${capture.skipped} (empty/invalid, policy or already imported; no breakdown reported)`);
   } else lines.push(`${label(s, "skipped")} capture: not requested (use --capture-days N for recent capture)`);
   lines.push(more ? "Next action: run the same import command again until all receipts are complete."
-    : capture?.spooled ? `Next action: re-run this import; the next capture write also replays ${capture.spooled} capture ${capture.spooled === 1 ? "row" : "rows"} spooled because the store was busy.`
+    : capture?.spooled ? `Next action: ${capture.spooled} capture ${capture.spooled === 1 ? "row was" : "rows were"} spooled while busy; the next capture write (hook event or import adding capture rows) replays them.`
       : "Next action: none; all requested import receipts are complete.");
   if (capture && options.captureDays !== undefined) lines.push(`Capture window: last ${options.captureDays} days. Widening --capture-days later requires --restart.`);
   if (options.restart) lines.push("Restart: selected cursors replayed from the start; existing import receipts prevent duplicates.");

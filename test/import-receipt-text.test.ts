@@ -31,7 +31,9 @@ test("claude-mem import receipt labels every counter and only reported skip reas
     expect(plain).toContain("invalid 1, policy 1, already imported 2");
     expect(plain).toMatch(/^ATTENTION +capture: read 4, added 1, skipped 2, spooled 1$/m);
     expect(plain).toContain("combined 2 (empty/invalid, policy or already imported; no breakdown reported)");
-    expect(plain).toContain("Next action: re-run this import; the next capture write also replays 1 capture row spooled because the store was busy.");
+    expect(plain).toContain("Next action: 1 capture row was spooled while busy; the next capture write (hook event or import adding capture rows) replays them.");
+    const action = plain.split("\n").find(line => line.startsWith("Next action:"))!;
+    expect(action).not.toContain("re-run"); expect(action).not.toContain("run this import");
     expect(plain).not.toContain("amem doctor");
     expect(plain).not.toContain('{"'); expect(plain).not.toContain("cursor");
     for (const line of plain.split("\n")) expect(line.length).toBeLessThanOrEqual(WIDTH);
