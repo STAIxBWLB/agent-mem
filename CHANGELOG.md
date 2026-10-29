@@ -2,16 +2,18 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.13.0
 
 - Add the public `configuredPolicy(base, cwd?, options?)` library export so hosts apply amem home/repository deny paths and PII patterns together with their host policy; other configuration helpers remain internal (#151).
 - **Behaviour change (#143):** ordinary CLI commands run in agent-marked and non-TTY sessions with scoped actor/peer attribution, configured privacy screening and explicit confirmation flags. Marked reads reuse MCP responses or fail closed; `review walk` stays interactive. Bare `migrate` (including `--shards`) now previews; `--apply` writes. Note fields, source values, bodies and hashes are unchanged; display actor is derived from peer. For agent CLI workflows, every amem sharing a memory home must run 0.13.0 or later. Published 0.11/0.12 reader fixtures still open the existing wire formats; prune and repo rows retain legacy `actor: person` because those readers reject agent values.
 - Setup plans show advisory client version output beside the recorded verified version, warn when they differ, and mark unavailable or unverified version evidence explicitly. Version checks do not gate setup operations (#135).
 - **Changed default:** ingest, migrate, prune, capacity apply (including split) and vault-candidates now use readable labelled output and next actions; ingest stays JSON when stdout is not a terminal, because native hooks read it, and new Codex/Kimi/Qwen SessionEnd registrations explicitly request `--json`; `--json` retains the previous bytes without ANSI. Existing gates, exit codes and confirmation flow are unchanged (#134).
 - **Doctor covers Qwen, the Codex `/hooks` review and capture drops** (#132). Additive `amem.doctor/v1` fields: `sections.capture.clis.qwen`, `sections.cadence.ingest.qwen` (and qwen in `manual`), and a new `sections.drops` section `{ status, window, total, counts }` with capture drops by reason from the bounded metrics tail (counts only, `attention` when any; `malformedLines` when torn lines were skipped; `unavailable` when an existing file cannot be read or its tail has no decodable record). A registered Codex hook with capture `never` now names Codex's `/hooks` trust review as the next action.
-- Readable `amem import claude-mem` receipts label notes, work-list and capture counts, use every pagination flag for one complete/run-again verdict, and explain capture-window restart requirements; JSON, policy and person-only gates are unchanged (#133).
+- Readable `amem import claude-mem` receipts label notes, work-list and capture counts, use every pagination flag for one complete/run-again verdict, and explain capture-window restart requirements; JSON and policy gates are unchanged (#133).
 - **Ingest names an unsupported native writer version** (#136). An additive receipt reason `unsupported_version` with `version` (a dotted version token of at most 32 characters, taken only from a policy-permitted record, never transcript text) replaces `schema_or_time` for a Qwen `version` other than 0.26.1 and a Kimi `protocol_version` outside 1.0-1.5. Malformed records still report `schema_or_time`; cursors and replay are unchanged.
 - `scripts/ac4-recheck.ts` reads a home split into shards through its project shard, adds `--mcp` to measure `amem mcp` `amem_search` on the copy with the same per-query output, and refuses the live home (#137). Development script only; the package contents are unchanged.
+- Documentation and tests only, no code change: the supported library host path for vault links, with every sharing host pinned to 0.4.0 or later (#130, PR #150); native failure-context support per CLI (#139, PR #148); a byte-identical source assertion in the claude-mem notes import test (#138, PR #146).
+
 
 ## 0.12.0
 

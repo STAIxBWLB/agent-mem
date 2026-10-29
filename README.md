@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.12.0. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.13.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Quick start
 
@@ -368,7 +368,7 @@ AMEM_HOME=/path/to/synthetic-memory amem migrate --apply
 # If interrupted, resume the recorded generation rather than creating another:
 AMEM_HOME=/path/to/synthetic-memory amem migrate --resume
 umask 077
-AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run > prune-plan.json
+AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run --json > prune-plan.json
 AMEM_HOME=/path/to/synthetic-memory amem prune --apply --plan prune-plan.json
 # Explicitly select shared v1 again while preserving both histories:
 AMEM_HOME=/path/to/synthetic-memory amem migrate --deactivate
