@@ -56,7 +56,7 @@
 ## Things agents get wrong
 
 - For the extraction contract (2026-10-16, recheck when changing storage or host integration), preserve schema/hash/path compatibility with existing agent-hub stores; do not rename the schema to match this package.
-- For vault-link authoring (2026-10-18, recheck before authoring or a host-pin change), require every host sharing that memory home to include P2 vault-link support. Do not record links while a sharing agent-hub still pins agent-mem 0.3.1; compatibility details: `docs/contracts.md` §Generation-only vault links.
+- Before recording vault links, require every host sharing the memory home to exact-pin a P2 vault-link-capable version (0.4.0 or later); recheck support when changing a host pin. See `docs/contracts.md` §Generation-only vault links for the host import path and compatibility checks.
 - Never write `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` or `resolved` directly before an issue reference (`#N`, `owner/repo#N`) in a PR title, body or commit message unless that PR should close the issue, negations included: GitHub reads `close #15` inside "Does not close #15" as a closing keyword. Write "stays open" or "Refs #N". Observed 2026-10-24: PR #36 closed the shard design issue (#15) while T3 was open. agent-hub's `closing-refs` workflow checks its own PRs; this repository relies on the rule.
 
 <!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->
