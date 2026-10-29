@@ -368,7 +368,7 @@ AMEM_HOME=/path/to/synthetic-memory amem migrate --apply
 # If interrupted, resume the recorded generation rather than creating another:
 AMEM_HOME=/path/to/synthetic-memory amem migrate --resume
 umask 077
-AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run > prune-plan.json
+AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run --json > prune-plan.json
 AMEM_HOME=/path/to/synthetic-memory amem prune --apply --plan prune-plan.json
 # Explicitly select shared v1 again while preserving both histories:
 AMEM_HOME=/path/to/synthetic-memory amem migrate --deactivate
