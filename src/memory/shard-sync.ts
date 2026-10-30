@@ -5,7 +5,7 @@ import { advancePublicPruneView } from "./public-prune-advance.ts";
 import { collectPublicPruneGitGraph } from "./shard-sync-graph.ts";
 import { PublicPruneInputError, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, preparePublicPruneInputBatch, persistPublicPruneInputBatch, readPublicPruneInputDescriptor, reducePublicPruneInputs, type PublicPruneInputBatch, type PublicPruneInputV1 } from "./public-prune-inputs.ts";
 import { randomBytes, createHash } from "node:crypto";
-import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
+import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON, readSelector, rebindPublicPruneProfile } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
@@ -137,7 +137,7 @@ function selectorRetention(target: Target, advancing: boolean, install = false):
       ||canonicalJSON(plan)!==canonicalJSON(importPrunePlan(target.store,target.realm,row,plan.selectorRevision))
       ||!prior||Object.keys(prior).length!==5||prior.schema!=="agent-mem.profile/v2"||prior.kind!=="generation"
       ||prior.generation!==target.generation||prior.foreignPruneFormat!==target.store.profile.foreignPruneFormat
-      ||hashJSON(prior)!==plan.selectorRevision)refuse("selector recovery plan binding unavailable");
+      ||typeof prior.pruneInputSetHash!=="string"||!/^[a-f0-9]{64}$/.test(prior.pruneInputSetHash)||hashJSON(prior)!==plan.selectorRevision)refuse("selector recovery plan binding unavailable");
   };
   for(const [seal,record] of records){
     const active=pending.get(seal),plan=active?.plan??validatePrunePlan(readProfileJSON(join(plans,seal+".json")));
