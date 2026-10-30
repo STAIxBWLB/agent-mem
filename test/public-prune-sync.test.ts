@@ -283,7 +283,7 @@ test("R18 replacement remote missing a registered manifest's original commit ref
 
 test("R20/R21 active proof replay and capture stay offline without the transport cache",async()=>{
   const f=await appliedForeign();rmSync(join(f.receiver.memory,"shard-sync","objects.git"),{recursive:true,force:true});
-  const network=spyOn(globalThis,"fetch").mockImplementation(()=>{throw new Error("unexpected network");}),spawn=spyOn(Bun,"spawn").mockImplementation(()=>{throw new Error("unexpected resident helper");});
+  const network=spyOn(globalThis,"fetch").mockRejectedValue(new Error("unexpected network")),spawn=spyOn(Bun,"spawn").mockImplementation(()=>{throw new Error("unexpected resident helper");});
   try{
     assertForeign(f.receiver.a,f.target,f.row);
     const capture=new CaptureStore({home:f.receiver.home,project:A});
