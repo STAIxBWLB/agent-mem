@@ -96,17 +96,26 @@ test("R04/R06 selected rows, placement, person/public flags and old receipts nev
   expect(verifyPublicPruneWitness(f.manifest, { realm: f.manifest.realm, packs: [f.evidence.packs[0]!] })).toEqual({ status: "invalid" });
 });
 
-test("R06 private/local/machine/short/settle occurrences and a local prune are ineligible", () => {
-  for (const edit of [{ tier: "short" }, { private: true }, { scope: "machine" }, { placement: "local" }]) {
-    const f = golden(), row = reId({ ...originalNote(), ...edit } as NoteEntry);
+test("R06 fully matching short/machine occurrences, public settle basis and local prune remain ineligible", () => {
+  for (const edit of [{ tier: "short" }, { scope: "machine" }]) {
+    const f = golden(), row = reId({ ...originalNote(), ...edit } as NoteEntry), rowHash = pruneRowHash(row);
+    f.manifest.prune = rePrune({ ...f.manifest.prune, targets: [{ id: row.id, rowHash, expiredAt: row.expires!, basis: { kind: "note", id: row.id, rowHash } }] });
+    replacesPack(f, 0, Buffer.from(canonicalJSON(f.manifest.prune) + "\n"));
     replacesPack(f, 1, Buffer.from(canonicalJSON(row) + "\n"));
+    Object.assign(f.manifest.witnesses[0]!, { id: row.id, rowHash });
     expect(verifyPublicPruneWitness(f.manifest, f.evidence)).toEqual({ status: "invalid" });
   }
   const f = golden(), local = rePrune({ ...f.manifest.prune, placement: "local" });
   expect(verifyPublicPruneWitness({ ...f.manifest, prune: local }, f.evidence)).toEqual({ status: "invalid" });
-  const settle = reId({ schema: "agent-hub.memory/v1", op: "settle", at: originalNote().at, machine: "legacy", target: "task", by: originalNote().expires!, actor: "person", id: "" } as OpEntry);
-  replacesPack(f, 1, Buffer.from(canonicalJSON(settle) + "\n"), settle.machine);
-  expect(verifyPublicPruneWitness(f.manifest, f.evidence)).toEqual({ status: "invalid" });
+  const note = reId({ ...originalNote(), task: "fixture-task" });
+  const settle = reId({ schema: "agent-hub.memory/v1", op: "settle", at: note.at, machine: "legacy", target: note.task!, by: note.expires!, actor: "person", id: "" } as OpEntry);
+  const prune = rePrune({ ...f.manifest.prune, targets: [{ id: note.id, rowHash: pruneRowHash(note), expiredAt: settle.by!, basis: { kind: "settle", id: settle.id, rowHash: pruneRowHash(settle) } }] });
+  const packs = [note, settle, prune].map(row => {
+    const bytes = Buffer.from(canonicalJSON(row) + "\n"); return { pack: `rows/${sha(row.machine)}/${sha(bytes)}.jsonl`, blob: blob(bytes), bytes };
+  });
+  const manifest = { ...f.manifest, prune, pruneOccurrence: { pack: packs[2]!.pack, blob: packs[2]!.blob },
+    witnesses: [note, settle].map((row, i) => ({ pack: packs[i]!.pack, blob: packs[i]!.blob, id: row.id, rowHash: pruneRowHash(row) })).sort((a,b) => a.id < b.id ? -1 : 1) };
+  expect(verifyPublicPruneWitness(manifest, { realm: manifest.realm, packs })).toEqual({ status: "invalid" });
 });
 
 test("R07 complete original/author bucket/blob/path/UTF8/newline proof is mandatory, with fixed private-safe errors", () => {
