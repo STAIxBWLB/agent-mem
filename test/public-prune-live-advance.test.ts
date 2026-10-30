@@ -1,13 +1,14 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as raceFs from "node:fs";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { advancePublicPruneView } from "../src/memory/public-prune-advance.ts";
 import { canonicalJSON, hashJSON, PROFILE_LOCK_TIMEOUT_MS, readSelector, withProfileLock, writeProfileJSON } from "../src/memory/generation.ts";
-import { resolveShardProfile } from "../src/memory/shard.ts";
+import { readShardedSelection, resolveShardProfile } from "../src/memory/shard.ts";
 import { acquireMutation, type MutationHandle } from "../src/memory/mutation.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { persistPublicPruneInput, preparePublicPruneInput } from "../src/memory/public-prune-inputs.ts";
@@ -122,4 +123,75 @@ test("synchronous profile callbacks release before a queued reader, while v1 adm
   expect(finished).toBe(true); expect(existsSync(join(f.memoryDir, "profile.lock"))).toBe(false); expect(await operation).toBe(7);
   const v1 = mkdtempSync(join(tmpdir(), "amem-v1-wait-control-")); cleanup.push(() => rmSync(v1, { recursive: true, force: true }));
   await withProfileLock(v1, () => { expect(readSelector(v1)).toEqual({ revision: "absent" }); });
+});
+
+
+for (const operation of ["selection", "resolve", "open", "resolve-late"] as const) test(`paired shard ${operation} retries a completed same-generation v2 advance across marker reads`, async () => {
+  const f = await fixture(), installed = f.prepare(), view = f.view({ [`project:${f.project}`]: installed.inputSetHash });
+  const old = readSelector(f.memoryDir).selector!;
+  const profile = { ...old, pruneInputSetHash: publicPruneViewHash(view) }, revision = hashJSON(profile);
+  const journal = JSON.parse(readFileSync(join(f.memoryDir, "shards.json"), "utf8"));
+  writeProfileJSON(join(f.memoryDir, "public-prune-input-sets", publicPruneViewHash(view) + ".json"), view);
+  const original = raceFs.readFileSync; let fired = false, armed = operation !== "resolve-late";
+  const reader = spyOn(raceFs, "readFileSync").mockImplementation(((...args: Parameters<typeof original>) => {
+    const bytes = Reflect.apply(original, raceFs, args), file = args[0];
+    if (typeof file === "string" && file.endsWith("/generation-seal.json")) armed = true;
+    if (!fired && armed && file === join(f.memoryDir, "shards.json")) {
+      fired = true;
+      // The completed writer publishes a fully proved map and coherent markers while this reader holds old bytes.
+      writeProfileJSON(join(f.memoryDir, "shards.json"), { ...journal, selectorRevision: revision });
+      writeProfileJSON(join(f.memoryDir, "profile.json"), profile);
+    }
+    return bytes;
+  }) as typeof original);
+  try {
+    if (operation === "selection") expect(readShardedSelection(f.memoryDir).selectorRevision).toBe(revision);
+    else if (operation === "open") {
+      const store = openShardStore({ memoryDir: f.memoryDir, project: f.project, now });
+      try { expect(store.profile.selectorRevision).toBe(revision); expect(store.get(f.graph.note.id, f.project)).toBeUndefined(); } finally { store.close(); }
+    } else expect(resolveShardProfile(f.memoryDir, { project: f.project })).toMatchObject({ selectorRevision: revision, pruneInputSetHash: publicPruneViewHash(view) });
+    expect(fired).toBe(true);
+  } finally { reader.mockRestore(); }
+});
+
+test("paired shard snapshots refuse v1-to-v2 and incompatible journal changes across reads", async () => {
+  for (const transition of ["v1", "journal"] as const) {
+    const f = await fixture(), selected = readSelector(f.memoryDir).selector!, journal = JSON.parse(readFileSync(join(f.memoryDir, "shards.json"), "utf8"));
+    if (transition === "v1") {
+      const old = { schema: "agent-mem.profile/v1", kind: "generation", generation: f.profile.generation };
+      writeProfileJSON(join(f.memoryDir, "profile.json"), old);
+      writeProfileJSON(join(f.memoryDir, "shards.json"), { ...journal, schema: "agent-mem.shards/v1", selectorRevision: hashJSON(old) });
+    }
+    const original = raceFs.readFileSync; let fired = false;
+    const reader = spyOn(raceFs, "readFileSync").mockImplementation(((...args: Parameters<typeof original>) => {
+      const bytes = Reflect.apply(original, raceFs, args);
+      if (!fired && args[0] === join(f.memoryDir, "shards.json")) {
+        fired = true;
+        writeProfileJSON(join(f.memoryDir, "shards.json"), transition === "v1" ? journal : { ...journal, machine: "different-journal-machine" });
+        writeProfileJSON(join(f.memoryDir, "profile.json"), selected);
+      }
+      return bytes;
+    }) as typeof original);
+    try { expect(() => readShardedSelection(f.memoryDir)).toThrow(); expect(fired).toBe(true); } finally { reader.mockRestore(); }
+  }
+});
+
+test("paired marker retries share the original writer deadline rather than renewing its wait", async () => {
+  const f = await fixture(), selected = readSelector(f.memoryDir).selector!, journal = JSON.parse(readFileSync(join(f.memoryDir, "shards.json"), "utf8"));
+  const installed = f.prepare(), view = f.view({ [`project:${f.project}`]: installed.inputSetHash }), profile = { ...selected, pruneInputSetHash: publicPruneViewHash(view) };
+  writeProfileJSON(join(f.memoryDir, "public-prune-input-sets", publicPruneViewHash(view) + ".json"), view);
+  const original = raceFs.readFileSync; let clock = 0, fired = false, slept = 0;
+  const date = spyOn(Date, "now").mockImplementation(() => clock), sleep = spyOn(Bun, "sleepSync").mockImplementation(ms => { clock += Number(ms); slept += Number(ms); });
+  const reader = spyOn(raceFs, "readFileSync").mockImplementation(((...args: Parameters<typeof original>) => {
+    const bytes = Reflect.apply(original, raceFs, args);
+    if (!fired && args[0] === join(f.memoryDir, "shards.json")) {
+      fired = true; clock = PROFILE_LOCK_TIMEOUT_MS - 20;
+      writeProfileJSON(join(f.memoryDir, "shards.json"), { ...journal, selectorRevision: hashJSON(profile) });
+      writeProfileJSON(join(f.memoryDir, "profile.json"), profile);
+      writeProfileJSON(join(f.memoryDir, PUBLIC_PRUNE_INTENT), { schema: "agent-mem.public-prune-advance/v1", home: f.memoryDir, generation: f.profile.generation });
+    }
+    return bytes;
+  }) as typeof original);
+  try { expect(() => readShardedSelection(f.memoryDir)).toThrow(); expect(fired).toBe(true); expect(slept).toBe(20); expect(clock).toBe(PROFILE_LOCK_TIMEOUT_MS); }
+  finally { reader.mockRestore(); sleep.mockRestore(); date.mockRestore(); }
 });

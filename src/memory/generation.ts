@@ -51,8 +51,8 @@ export function readProfileJSON(path: string, limit = LOCAL_METADATA_MAX_BYTES):
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; return unavailable(); }
 }
 function keys(value: object, allowed: string[]): boolean { return Object.keys(value).every(key => allowed.includes(key)); }
-function selectorSnapshot(memoryDir: string): { selector?: ProfileSelector; revision: string } {
-  assertNoPublicPruneIntent(memoryDir);
+function selectorSnapshot(memoryDir: string, deadline: number): { selector?: ProfileSelector; revision: string } {
+  assertNoPublicPruneIntent(memoryDir, deadline);
   const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
   if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable();
@@ -64,7 +64,7 @@ function selectorSnapshot(memoryDir: string): { selector?: ProfileSelector; revi
       || selector.pruneInputSetHash.length !== 64 || !/^[a-f0-9]+$/.test(selector.pruneInputSetHash)) return unavailable();
     const shard = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
     if (!shard || shard.schema !== "agent-mem.shards/v2" || shard.phase !== "active" || shard.generation !== selector.generation || shard.selectorRevision !== hashJSON(selector)) return unavailable();
-    readPublicPruneView(memoryDir, selector.pruneInputSetHash, selector.generation);
+    readPublicPruneView(memoryDir, selector.pruneInputSetHash, selector.generation, deadline);
   } else if (selector.schema !== "agent-mem.profile/v1" || !keys(selector, ["schema", "kind", "generation"])
     || !["shared-v1", "generation"].includes(selector.kind) || (selector.kind === "generation" ? !validGeneration(selector.generation) : selector.generation !== undefined)) return unavailable();
   else if ((readProfileJSON(join(memoryDir, "shards.json")) as {schema?:unknown}|undefined)?.schema === "agent-mem.shards/v2") return unavailable();
@@ -73,16 +73,17 @@ function selectorSnapshot(memoryDir: string): { selector?: ProfileSelector; revi
 
 /** A v2 writer can replace its two markers between individual reads. Retry its
  * bounded completed publication rather than exposing a transient mixed pair. */
-export function readSelector(memoryDir: string): { selector?: ProfileSelector; revision: string } {
-  for (let attempt = 0; attempt < 6; attempt++) {
+export function readSelector(memoryDir: string, absoluteDeadline?: number): { selector?: ProfileSelector; revision: string } {
+  const deadline = Math.min(absoluteDeadline ?? Infinity, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
+  for (let attempt = 0; attempt < 6 && Date.now() <= deadline; attempt++) {
     try {
-      const result = selectorSnapshot(memoryDir); assertNoPublicPruneIntent(memoryDir);
+      const result = selectorSnapshot(memoryDir, deadline); assertNoPublicPruneIntent(memoryDir, deadline);
       const current = readProfileJSON(join(memoryDir, "profile.json"));
       if (result.revision === (current === undefined ? "absent" : hashJSON(current))) return result;
     } catch (error) {
       if (error instanceof Error && error.message === "public prune view unavailable") throw error; // A spent wait budget is never restarted.
       if (!lstatSync(join(memoryDir, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }) && !lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw error;
-      waitForPublicPruneWriter(memoryDir);
+      waitForPublicPruneWriter(memoryDir, deadline);
     }
   }
   return unavailable();

@@ -44,9 +44,9 @@ export function validatePublicPruneView(input: unknown): PublicPruneViewV1 {
 export function publicPruneViewHash(view: PublicPruneViewV1): string { return hashJSON(validatePublicPruneView(view)); }
 /** A v2 reader may wait for a short cooperating writer, never authorize or repair one.
  * No liveness helper, network call, PID exemption or mutation occurs on this path. */
-export function waitForPublicPruneWriter(home: string): void {
+export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number): void {
   protectedCall(() => {
-    const deadline = Date.now() + PROFILE_LOCK_TIMEOUT_MS;
+    const deadline = Math.min(absoluteDeadline ?? Infinity, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
     const intentFile = join(home, PUBLIC_PRUNE_INTENT), lockFile = join(home, "profile.lock");
     if (!lstatSync(intentFile, { throwIfNoEntry: false }) && !lstatSync(lockFile, { throwIfNoEntry: false })) return;
     const small = (file: string, limit: number): Record<string, unknown> => {
@@ -87,8 +87,8 @@ export function waitForPublicPruneWriter(home: string): void {
   });
 }
 /** Any unresolved intent blocks reads. Never remove it, including malformed bytes. */
-export function assertNoPublicPruneIntent(home: string): void {
-  protectedCall(() => { waitForPublicPruneWriter(home); guard(!lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false })); });
+export function assertNoPublicPruneIntent(home: string, absoluteDeadline?: number): void {
+  protectedCall(() => { waitForPublicPruneWriter(home, absoluteDeadline); guard(!lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false })); });
 }
 function privateStat(stat: Stats, directory = false): void {
   guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1));
@@ -125,8 +125,8 @@ export function readPublicPruneViewForActivation(home: string, hash: string, gen
   });
 }
 
-export function readPublicPruneView(home: string, hash: string, generation: string): PublicPruneViewV1 {
-  assertNoPublicPruneIntent(home);
+export function readPublicPruneView(home: string, hash: string, generation: string, absoluteDeadline?: number): PublicPruneViewV1 {
+  assertNoPublicPruneIntent(home, absoluteDeadline);
   const result = readPublicPruneViewForActivation(home, hash, generation);
-  assertNoPublicPruneIntent(home); return result;
+  assertNoPublicPruneIntent(home, absoluteDeadline); return result;
 }
