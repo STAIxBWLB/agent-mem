@@ -1,3 +1,4 @@
+import { readPublicPruneView } from "./public-prune-view.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import { cliAttribution } from "./cli-attribution.ts";
 import { Database } from "bun:sqlite";
@@ -1607,7 +1608,14 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
   const missing = !existsSync(join(dir, "generation.json"));
-  if (missing) initializeShard(home, opts);
+  if (missing) {
+    const selected = readSelector(home).selector;
+    if (selected?.schema === "agent-mem.profile/v2") {
+      const view = readPublicPruneView(home, selected.pruneInputSetHash, selected.generation), key = opts.user ? "user" : `project:${opts.project}`;
+      if (view.realms[key] || ["generation-seal.json", "migration-sources.json", "machine.json"].some(name => existsSync(join(dir, name)))) throw new Error("v2 generation input unavailable; reader cannot repair committed inputs");
+    }
+    initializeShard(home, opts);
+  }
   const profile = resolveShardProfile(home, opts);
   const { reconcile, ...plain } = opts;
   const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });

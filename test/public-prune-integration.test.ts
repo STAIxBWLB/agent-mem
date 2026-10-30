@@ -1,3 +1,4 @@
+import { runCli } from "../src/cli.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, linkSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
@@ -122,4 +123,20 @@ test("R19 the v2 index cannot alias the historical index through a hardlink", as
   unlinkSync(projected); linkSync(historical, projected);
   expect(() => { const next = openShardStore({memoryDir:f.memoryDir,project:f.project,now}); next.close(); }).toThrow("v2 index path unavailable");
   expect(readFileSync(historical)).toEqual(bytes);
+});
+
+test("R19 CLI previews without writes, explicitly enables an empty view and resumes forward", async () => {
+  const f = await fixture(), previous = process.env.AMEM_HOME; process.env.AMEM_HOME = f.memoryDir;
+  try {
+    const profile = readSelector(f.memoryDir), context = {env:{},cwd:f.home,stdinTTY:true};
+    const preview = JSON.parse(await runCli(["migrate","--public-prune-view","--dry-run","--json"],context));
+    expect(preview.maskBuildCheck).toBe("deferred"); expect(readSelector(f.memoryDir)).toEqual(profile);
+    const result = JSON.parse(await runCli(["migrate","--public-prune-view","--apply","--json"],context));
+    expect(result.active).toBe(true); expect(result.maskBuildCheck).toBe("verified");
+    expect(JSON.parse(await runCli(["migrate","--public-prune-view","--resume","--json"],context)).alreadyActive).toBe(true);
+    await expect(runCli(["migrate","--public-prune-view","--deactivate"],context)).rejects.toThrow(/forward-only/);
+    // Durable unregistered inputs are not inferred into the CLI's explicit empty map.
+    const store = openShardStore({memoryDir:f.memoryDir,project:f.project,now});
+    try {expect(store.get(f.graph.note.id,f.project)?.id).toBe(f.graph.note.id);} finally {store.close();}
+  } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
 });
