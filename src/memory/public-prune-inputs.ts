@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON } from "./generation.ts";
-import { acquireMutation } from "./mutation.ts";
+import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
 import { entryId, type Entry } from "./store.ts";
 import { prunePayloadHash } from "./prune.ts";
@@ -295,7 +295,7 @@ function write(dir: string, kind: Kind, id: string, bytes: Buffer, observe?: (ph
   } finally { closeSync(fd); unlinkSync(temp); fsyncDirectory(base); }
 }
 /** Persist evidence under the existing writer fence. A returned hash is still only a candidate commitment. */
-export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { observe?: (phase: PublicPrunePersistPhase) => void } = {}): PublicPruneInputRegistration {
+export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { observe?: (phase: PublicPrunePersistPhase) => void; mutation?: MutationHandle } = {}): PublicPruneInputRegistration {
   return protectedCall(() => {
     const prepared = plans.get(plan); guard(prepared); const expected = prepared.binding;
     const dir = rootDir(prepared.dir);
@@ -305,8 +305,8 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
     }; current();
     // The shared SQLite lock is an ownership fence, never an archive or membership source.
     for (const suffix of ["", "-wal", "-shm", "-journal"]) { const stat = lstatSync(join(dir, "mutation-lock.db" + suffix), { throwIfNoEntry: false }); if (stat) privateStat(stat); }
-    const release = acquireMutation(dir); guard(release); try {
-      current(); recoverLinkedTemps(dir); current(); const previous = expected.inputSetHash;
+    const release = options.mutation ?? acquireMutation(dir); guard(release); assertMutationHandle(release, dir); try {
+      current(); assertMutationHandle(release, dir); recoverLinkedTemps(dir); current(); const previous = expected.inputSetHash;
       const members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, (kind, id) => read(dir, kind, id)).inputs : [];
       const inputHash = prepared.input && hashJSON(prepared.input), includes = inputHash !== undefined && members.includes(inputHash);
       const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration,
@@ -320,9 +320,9 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
       // Preflight the complete future committed view and byte budget before the first archive write.
       replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash }, (kind, id) => writes.get(`${kind}:${id}`)?.bytes ?? read(dir, kind, id));
       capacity(dir, writes); current();
-      for (const value of writes.values()) { write(dir, value.kind, value.id, value.bytes, options.observe); current(); }
+      for (const value of writes.values()) { assertMutationHandle(release, dir); write(dir, value.kind, value.id, value.bytes, options.observe); current(); assertMutationHandle(release, dir); }
       return { ...(inputHash ? { inputHash } : {}), inputSetHash, previous };
-    } finally { release(); }
+    } finally { if (!options.mutation) release(); }
   });
 }
 
@@ -343,5 +343,123 @@ export function createPublicPruneReplayCache(input: Omit<PublicPruneReplayInput,
       guard(current());
     }
     return { targets: new Set(cached.targets), rowHashes: new Map(cached.rowHashes), authoredPrunes: cached.authoredPrunes, inputs: [...cached.inputs], commitments: [...cached.commitments] };
+  });
+}
+
+/** Metadata ancestry only: never opens descriptors, Git bodies or the network. */
+export function readPublicPruneInputSetChain(input: { dir: string; receivingGeneration: string; inputSetHash: string }): { commitments: string[]; inputs: string[] } {
+  return protectedCall(() => {
+    guard(hex(input.receivingGeneration, 32) && hex(input.inputSetHash, 64));
+    const dir = rootDir(input.dir), commitments: string[] = [], seen = new Set<string>();
+    let id: string | null = input.inputSetHash, later: Set<string> | undefined, inputs: string[] = [], total = 0;
+    while (id !== null) {
+      guard(!seen.has(id)); guard(seen.size < PUBLIC_PRUNE_MAX_SETS, "resource"); seen.add(id); commitments.push(id);
+      const bytes = read(dir, "set", id); total += bytes.length; guard(total <= PUBLIC_PRUNE_REPLAY_MAX_BYTES, "resource");
+      const set = validatePublicPruneInputSet(json(bytes)); guard(hashJSON(set) === id && set.receivingGeneration === input.receivingGeneration);
+      if (later) guard(set.inputs.every(member => later!.has(member))); else inputs = set.inputs;
+      later = new Set(set.inputs); id = set.previous;
+    }
+    return { commitments, inputs: [...inputs] };
+  });
+}
+
+/** Reads only the declared immutable descriptor, never discovers membership by scanning. */
+export function readPublicPruneInputDescriptor(input: { dir: string; hash: string }): PublicPruneInputV1 {
+  return protectedCall(() => {
+    guard(hex(input.hash, 64)); const dir = rootDir(input.dir);
+    const value = validatePublicPruneInput(json(read(dir, "input", input.hash))); guard(hashJSON(value) === input.hash); return value;
+  });
+}
+
+declare const batchBrand: unique symbol;
+export interface PublicPruneInputBatch { readonly [batchBrand]: true }
+interface PreparedBatch {
+  dir: string; dev: number; ino: number; binding: PublicPruneBinding; current: () => PublicPruneBinding;
+  inputs: Prepared[]; mutation: MutationHandle;
+}
+type ArchiveWrite = { kind: Kind; id: string; bytes: Buffer };
+const batches = new WeakMap<PublicPruneInputBatch, PreparedBatch>();
+function batchCurrent(batch: PreparedBatch, mutation: MutationHandle): void {
+  assertMutationHandle(mutation, batch.dir);
+  const dir = rootDir(batch.dir), stat = lstatSync(dir);
+  guard(stat.dev === batch.dev && stat.ino === batch.ino && canonicalJSON(binding(batch.current())) === canonicalJSON(batch.binding), "binding");
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    const lock = lstatSync(join(dir, "mutation-lock.db" + suffix), { throwIfNoEntry: false }); if (lock) privateStat(lock);
+  }
+}
+/** Reconstruct the entire future view, with one aggregate archive budget. No effects. */
+function batchOverlay(batch: PreparedBatch): { writes: Map<string, ArchiveWrite>; result: PublicPruneInputRegistration } {
+  const expected = batch.binding, writes = new Map<string, ArchiveWrite>(); let pendingBytes = 0;
+  const add = (kind: Kind, id: string, bytes: Buffer) => {
+    const key = `${kind}:${id}`, existing = writes.get(key);
+    if (existing) { guard(existing.bytes.equals(bytes)); return; }
+    pendingBytes += bytes.length; guard(pendingBytes <= PUBLIC_PRUNE_REPLAY_MAX_BYTES && writes.size < ARCHIVE_FILES_MAX, "resource");
+    writes.set(key, { kind, id, bytes });
+  };
+  const load: Loader = (kind, id) => writes.get(`${kind}:${id}`)?.bytes ?? read(batch.dir, kind, id);
+  let previous = expected.inputSetHash, lastInputHash: string | undefined;
+  let members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, load).inputs : [];
+  for (const prepared of batch.inputs) {
+    guard(prepared.input); const input = prepared.input, inputHash = hashJSON(input); lastInputHash = inputHash;
+    // Every descriptor stays bound to the actual initial selector revision, never a simulated callback.
+    guard(canonicalJSON(prepared.binding) === canonicalJSON(expected));
+    const checked = graph(input, oid => { const bytes = prepared.objects.get(oid); guard(bytes); return bytes; });
+    guard(checked.used.size === prepared.objects.size);
+    for (const [oid, bytes] of prepared.objects) add("object", oid, bytes);
+    add("input", inputHash, Buffer.from(canonicalJSON(input) + "\n"));
+    if (!members.includes(inputHash)) {
+      members = [...members, inputHash].sort();
+      const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration, previous, inputs: members };
+      validatePublicPruneInputSet(set); previous = hashJSON(set); add("set", previous, Buffer.from(canonicalJSON(set) + "\n"));
+    }
+  }
+  if (previous === null) {
+    const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration, previous: null, inputs: [] };
+    previous = hashJSON(set); add("set", previous, Buffer.from(canonicalJSON(set) + "\n"));
+  }
+  replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, load);
+  // capacity removes already-complete candidates only from its private working copy.
+  capacity(batch.dir, writes);
+  return { writes, result: { inputSetHash: previous, previous: expected.inputSetHash, ...(lastInputHash ? { inputHash: lastInputHash } : {}) } };
+}
+/** Preflight all future candidates before transport publication; this call writes no evidence. */
+export function preparePublicPruneInputBatch(options: {
+  dir: string; binding: PublicPruneBinding; current: () => PublicPruneBinding; inputs: NonNullable<PublicPruneInputOptions["input"]>[];
+}, mutation: MutationHandle): PublicPruneInputBatch {
+  return protectedCall(() => {
+    const expected = binding(options.binding), dir = rootDir(options.dir), stat = lstatSync(dir);
+    const batch: PreparedBatch = { dir, dev: stat.dev, ino: stat.ino, binding: expected, current: options.current, inputs: [], mutation };
+    batchCurrent(batch, mutation); guard(Array.isArray(options.inputs));
+    // Bound before graph snapshots accumulate; no lifetime selected member is silently omitted.
+    guard(options.inputs.length <= PUBLIC_PRUNE_MAX_SETS, "resource");
+    let graphBytes = 0; const shared = new Map<string, Buffer>();
+    for (const input of options.inputs) {
+      const plan = preparePublicPruneInput({ dir, binding: expected, current: options.current, input }), prepared = plans.get(plan)!;
+      // Keep one byte copy of identical object bodies across every prepared graph.
+      for (const [oid, bytes] of prepared.objects) {
+        const existing = shared.get(oid);
+        if (existing) { guard(existing.equals(bytes)); prepared.objects.set(oid, existing); }
+        else { graphBytes += bytes.length; guard(graphBytes <= PUBLIC_PRUNE_REPLAY_MAX_BYTES, "resource"); shared.set(oid, bytes); }
+      }
+      batch.inputs.push(prepared); batchCurrent(batch, mutation);
+    }
+    batchOverlay(batch); batchCurrent(batch, mutation);
+    const token = Object.freeze({}) as PublicPruneInputBatch; batches.set(token, batch); return token;
+  });
+}
+/** Durable create-once archive install; the root selector remains the caller's separate commit point. */
+export function persistPublicPruneInputBatch(batch: PublicPruneInputBatch, options?: {
+  observe?: (phase: PublicPrunePersistPhase) => void; mutation: MutationHandle;
+}): PublicPruneInputRegistration {
+  return protectedCall(() => {
+    const prepared = batches.get(batch); guard(prepared); const mutation = options?.mutation ?? prepared.mutation;
+    batchCurrent(prepared, mutation); recoverLinkedTemps(prepared.dir); batchCurrent(prepared, mutation);
+    const { writes, result } = batchOverlay(prepared); batchCurrent(prepared, mutation);
+    for (const item of writes.values()) {
+      batchCurrent(prepared, mutation); write(prepared.dir, item.kind, item.id, item.bytes, options?.observe); batchCurrent(prepared, mutation);
+    }
+    // Validate installed bytes too, including exact retries and interrupted prior attempts.
+    replay({ realm: prepared.binding.realm, receivingGeneration: prepared.binding.receivingGeneration, inputSetHash: result.inputSetHash }, (kind, id) => read(prepared.dir, kind, id));
+    batchCurrent(prepared, mutation); return result;
   });
 }

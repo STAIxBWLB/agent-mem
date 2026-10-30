@@ -1,10 +1,12 @@
-import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
+import { assertNoPublicPruneIntent, readPublicPruneView, waitForPublicPruneWriter, PUBLIC_PRUNE_INTENT } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { readerAdmissionDatabase } from "./mutation.ts";
 import { dirname, join } from "node:path";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./platform.ts";
+import { shardDir, userShardDir } from "./shard.ts";
+import { readPublicPruneInputSetChain } from "./public-prune-inputs.ts";
 
 export interface BoundProfile {
   kind: "shared-v1" | "generation";
@@ -49,7 +51,7 @@ export function readProfileJSON(path: string, limit = LOCAL_METADATA_MAX_BYTES):
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; return unavailable(); }
 }
 function keys(value: object, allowed: string[]): boolean { return Object.keys(value).every(key => allowed.includes(key)); }
-export function readSelector(memoryDir: string): { selector?: ProfileSelector; revision: string } {
+function selectorSnapshot(memoryDir: string): { selector?: ProfileSelector; revision: string } {
   assertNoPublicPruneIntent(memoryDir);
   const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
@@ -69,7 +71,48 @@ export function readSelector(memoryDir: string): { selector?: ProfileSelector; r
   return { selector, revision: hashJSON(selector) };
 }
 
+/** A v2 writer can replace its two markers between individual reads. Retry its
+ * bounded completed publication rather than exposing a transient mixed pair. */
+export function readSelector(memoryDir: string): { selector?: ProfileSelector; revision: string } {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const result = selectorSnapshot(memoryDir); assertNoPublicPruneIntent(memoryDir);
+      const current = readProfileJSON(join(memoryDir, "profile.json"));
+      if (result.revision === (current === undefined ? "absent" : hashJSON(current))) return result;
+    } catch (error) {
+      if (error instanceof Error && error.message === "public prune view unavailable") throw error; // A spent wait budget is never restarted.
+      if (!lstatSync(join(memoryDir, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }) && !lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw error;
+      waitForPublicPruneWriter(memoryDir);
+    }
+  }
+  return unavailable();
+}
+
 export const selectorRevision = (memoryDir: string): string => readSelector(memoryDir).revision;
+/** Refresh the same shared profile object only across proved monotone same-generation v2 views.
+ * Unopened realms contribute set metadata only; their descriptors and bodies stay unopened. */
+export function rebindPublicPruneProfile(profile: BoundProfile): void {
+  if (!profile.foreignPruneFormat) return;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const current = readSelector(profile.home), selector = current.selector;
+    if (current.revision === profile.selectorRevision) return;
+    if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.pruneInputSetHash
+      || selector?.schema !== "agent-mem.profile/v2" || selector.generation !== profile.generation || selector.foreignPruneFormat !== profile.foreignPruneFormat) return unavailable();
+    const previous = readPublicPruneView(profile.home, profile.pruneInputSetHash, profile.generation);
+    const next = readPublicPruneView(profile.home, selector.pruneInputSetHash, profile.generation);
+    if (!Object.keys(previous.realms).every(key => Object.hasOwn(next.realms, key))) return unavailable();
+    for (const [key, hash] of Object.entries(next.realms)) {
+      const old = previous.realms[key]; if (old === hash) continue;
+      const dir = key === "user" ? userShardDir(profile.home) : shardDir(profile.home, key.slice(8));
+      const chain = readPublicPruneInputSetChain({ dir, receivingGeneration: profile.generation, inputSetHash: hash });
+      if (old !== undefined && !chain.commitments.includes(old)) return unavailable();
+    }
+    if (readSelector(profile.home).revision !== current.revision) continue;
+    profile.selectorRevision = current.revision; profile.pruneInputSetHash = selector.pruneInputSetHash;
+    return;
+  }
+  return unavailable();
+}
 export function generationDescriptor(generation: string): GenerationDescriptor {
   if (!validGeneration(generation)) return unavailable();
   return { schema: "agent-mem.generation/v1", generation, legacySchema: "agent-hub.memory/v1" };
@@ -159,7 +202,12 @@ export async function withProfileLock<T>(memoryDir: string, work: () => T | Prom
       await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
       continue;
     }
-    try { return await work(); }
+    try {
+      const result = work();
+      // A synchronous publisher must release its lock before a queued sync reader can block this event loop.
+      if (result !== null && (typeof result === "object" || typeof result === "function") && typeof (result as PromiseLike<T>).then === "function") return await result;
+      return result;
+    }
     finally {
       // A live owner's token cannot be reclaimed; do not remove a file another actor replaced.
       if (existsSync(file) && !lstatSync(file).isSymbolicLink() && readFileSync(file, "utf8") === owner) { unlinkSync(file); fsyncDirectory(memoryDir); }

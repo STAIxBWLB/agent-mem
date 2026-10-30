@@ -1,5 +1,7 @@
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, type BigIntStats } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join, relative, sep } from "node:path";
+import { rebindPublicPruneProfile } from "./generation.ts";
 import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
@@ -12,7 +14,9 @@ import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } 
  * machine's history never conflicts. Pull, then push; fail-open: a failure is a result with one reason, never a throw.
  */
 export type Visibility = "public" | "private" | "unknown";
-export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string }
+export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
+  pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
+}
 
 const GITIGNORE = "/*\n!/.gitignore\n!/log/\n/log/*\n!/log/*.jsonl\n";
 const STEP_MS = 60_000;
@@ -62,13 +66,19 @@ async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_
 
 export { git as syncGit };
 
+/** Shared hardening for text history queries and bounded binary object reads. */
+function spawnGenerationGit(dir: string, args: string[], group: boolean) {
+  // The shell receives only positional arguments; its umask is child-local.
+  return Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }), ...(group ? { detached: true } : {}) });
+}
+
 /** Generation-only process isolation; shared-v1 above retains its pre-P9 spawn and environment contract. */
 export async function generationSyncGit(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
   // A fixed child-only umask keeps Git-created metadata private without changing the daemon's process umask.
   // Args are positional shell parameters, never interpolated or evaluated as shell code.
   const group = signal !== undefined;   // see `git` above: own process group when the caller has a deadline
-  const p = Bun.spawn(["/bin/sh", "-c", 'umask 077; exec "$@"', "amem-git", ...memoryGitArgv(["-C", dir, ...args], { credentials: true })], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: memoryGitEnv(process.env, { repositoryIsolation: true }), ...(group ? { detached: true } : {}) });
+  const p = spawnGenerationGit(dir, args, group);
   const send = (name: "SIGTERM" | "SIGKILL") => { if (group) { try { process.kill(-p.pid, name); return; } catch { /* no group left: fall through to the pid */ } } p.kill(name); };
   const unregister = group ? register(p.pid) : () => {};
   // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
@@ -84,6 +94,53 @@ export async function generationSyncGit(dir: string, args: string[], signal?: Ab
     // git is gone, but a transport child in its group that ignored SIGTERM (a credential helper, a proxy) may not be, and the timer that would have killed it is cleared below. Once the
     // group was signalled, SIGKILL whatever is left of it (ESRCH when nothing is) before it is forgotten: it would otherwise live on at ppid 1 holding the repository.
     if (group && signalled) try { process.kill(-p.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill);
+  }
+}
+
+
+/** Exact Git object bytes. Bounds apply only here, never to full text history audits. */
+export async function generationSyncGitBytes(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS, maxBytes = 2 * 1024 * 1024): Promise<{ code: number; out: Uint8Array; err: string }> {
+  const empty = () => new Uint8Array(0);
+  if (signal?.aborted) return { code: -1, out: empty(), err: "stopped" };
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || !Number.isFinite(ms) || ms <= 0) return { code: -1, out: empty(), err: "invalid git output bound or deadline" };
+  // A bound or deadline can stop this call even without a caller signal, so always own its group.
+  const p = spawnGenerationGit(dir, args, true), unregister = register(p.pid);
+  const send = (name: "SIGTERM" | "SIGKILL") => {
+    try { process.kill(-p.pid, name); } catch { try { p.kill(name); } catch { /* already exited */ } }
+  };
+  let hard: ReturnType<typeof setTimeout> | undefined, stopped = false, overflow = false;
+  const kill = () => { stopped = true; send("SIGTERM"); hard ??= setTimeout(() => send("SIGKILL"), 2_000); };
+  const timer = setTimeout(kill, ms);
+  signal?.addEventListener("abort", kill, { once: true });
+  // Drain both pipes concurrently, including after overflow. Waiting on exit before draining
+  // deadlocks a full pipe; cancelling a reader can leave inherited child pipes unaccounted for.
+  const collect = async (stream: ReadableStream<Uint8Array>, limit: number, refuse: boolean): Promise<Buffer> => {
+    const reader = stream.getReader(), chunks: Buffer[] = []; let size = 0;
+    try {
+      for (;;) {
+        const part = await reader.read(); if (part.done) break;
+        const bytes = part.value, remaining = limit - size;
+        if (refuse && bytes.byteLength > remaining) { overflow = true; chunks.length = 0; kill(); }
+        if (!refuse || !overflow) {
+          const keep = Math.min(remaining, bytes.byteLength);
+          if (keep) { chunks.push(Buffer.from(bytes.subarray(0, keep))); size += keep; }
+        }
+      }
+      return Buffer.concat(chunks);
+    } finally { reader.releaseLock(); }
+  };
+  const operations = [p.exited, collect(p.stdout, maxBytes, true), collect(p.stderr, 65_536, false)] as const;
+  try {
+    const [code, out, err] = await Promise.all(operations);
+    return overflow ? { code: -1, out: empty(), err: "git output exceeds byte bound" }
+      : stopped ? { code: -1, out: empty(), err: "stopped" } : { code, out, err: err.toString("utf8").trim() };
+  } catch {
+    kill(); await Promise.allSettled(operations);
+    return { code: -1, out: empty(), err: "git output unavailable" };
+  } finally {
+    // Reap descendants even if Git exited first while they retained its pipe handles.
+    if (stopped) send("SIGKILL");
     unregister(); clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill);
   }
 }
@@ -161,18 +218,93 @@ export interface SyncOptions {
   visibility?: (url: string) => Promise<Visibility>;
   /** An extra screen over each outbound row's text, on top of the machine's configured policy (the CLI passes the repository-narrowed policy). */
   screen?: RowScreen;
+  /** Host-only policy binding stamp, never authorization or a substitute for screening. */
+  policyVersion?: () => string;
   /** A stopping hub aborts: the running git step is killed and the sync ends without touching the store. */
   signal?: AbortSignal;
 }
 
+/** Metadata-only sharded sync epoch. Hash complete source bytes, never notes or unopened shards. */
+export function shardSyncBinding(store: MemoryStore): string {
+  const unavailable = (): never => { throw new Error("sharded sync binding unavailable"); };
+  if (!store.profile.sharded) return unavailable();
+  const uid = process.getuid?.(); if (uid === undefined) return unavailable();
+  const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+  const owned = (stat: BigIntStats, directory: boolean) => {
+    if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n)
+      || stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n) unavailable();
+  };
+  const home = store.profile.home, digest = createHash("sha256"), directories = new Map<string, BigIntStats>(), checks: (() => void)[] = [];
+  const emit = (value: unknown) => { digest.update(JSON.stringify(value) + "\n"); };
+  const directory = (dir: string): void => {
+    if (directories.has(dir)) return;
+    const rel = relative(home, dir); if (rel === ".." || rel.startsWith(".." + sep)) unavailable();
+    if (dir !== home) directory(dirname(dir));
+    const before = lstatSync(dir, { bigint: true }); owned(before, true); directories.set(dir, before);
+    emit(["directory", dir, String(before.dev), String(before.ino)]);
+    checks.push(() => { const now = lstatSync(dir, { bigint: true }); owned(now, true); if (!same(before, now)) unavailable(); });
+  };
+  const source = (file: string): void => {
+    directory(dirname(file));
+    let before: BigIntStats;
+    try { before = lstatSync(file, { bigint: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      emit(["source", file, "absent"]);
+      checks.push(() => { if (lstatSync(file, { bigint: true, throwIfNoEntry: false }) !== undefined) unavailable(); }); return;
+    }
+    owned(before, false);
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = fstatSync(fd, { bigint: true }); owned(opened, false); if (!same(before, opened)) unavailable();
+      const content = createHash("sha256"), buffer = Buffer.allocUnsafe(65_536); let bytes = 0n;
+      for (;;) { const n = readSync(fd, buffer, 0, buffer.length, null); if (!n) break; content.update(buffer.subarray(0, n)); bytes += BigInt(n); }
+      const after = fstatSync(fd, { bigint: true }); owned(after, false);
+      if (bytes !== before.size || !same(before, after) || !same(before, lstatSync(file, { bigint: true }))) unavailable();
+      emit(["source", file, "present", String(before.dev), String(before.ino), String(before.size), String(before.mtimeNs), String(before.ctimeNs), content.digest("hex")]);
+    } finally { closeSync(fd); }
+    checks.push(() => { const now = lstatSync(file, { bigint: true }); owned(now, false); if (!same(before, now)) unavailable(); });
+  };
+  try {
+    directory(home);
+    for (const name of ["profile.json", "shards.json", "aliases.jsonl", "amem.config.json", "machine.json"]) source(join(home, name));
+    const targets = [...store.openedSyncTargets()].sort((a, b) => a.dir.localeCompare(b.dir));
+    for (const target of targets) {
+      directory(target.dir);
+      emit(["target", target.dir, target.profile.generation ?? null, target.machine.id, target.profile.shardUser ?? false, target.profile.shardKey ?? null]);
+      for (const name of ["project.json", "generation.json", "generation-seal.json", "machine.json"]) source(join(target.dir, name));
+    }
+    for (const check of checks) check();
+    return digest.digest("hex");
+  } catch { return unavailable(); }
+}
+
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  if (store.profile.sharded) {
+    try {
+      // Refresh only through the existing proved monotone profile rebind before pinning this attempt.
+      for (const target of store.openedSyncTargets()) rebindPublicPruneProfile(target.profile);
+      const binding = shardSyncBinding(store), policyVersion = opts.policyVersion?.();
+      const assertBinding = () => {
+        if (opts.policyVersion?.() !== policyVersion || shardSyncBinding(store) !== binding) throw new Error("binding changed");
+      };
+      assertBinding();
+      const screen = outboundScreen(store.profile.home, opts.screen);
+      const pass: RowScreen = row => { assertBinding(); const accepted = screen(row); assertBinding(); if (typeof accepted !== "boolean") throw new Error("invalid screen result"); return accepted; };
+      for (const target of store.openedSyncTargets()) {
+        const screened = screenOutboundRows(target, pass); assertBinding();
+        if (!screened.ok) return { ok: false, pushed: false, entries: 0, error: screened.reason };
+      }
+      const transport = await import("./shard-sync.ts"); assertBinding();
+      return transport.syncShardedMemory(store, opts);
+    } catch { return { ok: false, pushed: false, entries: 0, error: "sharded sync binding or policy unavailable or changed" }; }
+  }
   // F4: before anything is staged or pushed, this machine's own long-term notes pass the person's configured policy (every profile: single log, generation, shards).
   const pass = outboundScreen(store.profile.home, opts.screen);
   for (const target of store.openedSyncTargets()) {
     const screened = target.profile.kind === "generation" ? screenOutboundRows(target, pass) : screenOwnSegment(target.dir, target.machine.id, pass);
     if (!screened.ok) return { ok: false, pushed: false, entries: 0, error: screened.reason };
   }
-  if (store.profile.sharded) return (await import("./shard-sync.ts")).syncShardedMemory(store, opts);
   if (store.profile.kind === "generation") return syncGenerationMemory(store, opts);
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });

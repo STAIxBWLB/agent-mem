@@ -19,7 +19,7 @@ import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, cap
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
-import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, readSelector, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow } from "./generation.ts";
+import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, readSelector, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow, rebindPublicPruneProfile } from "./generation.ts";
 import { GenerationIndex, coalesceGenerationSource, explicitExpirySnapshot, GENERATION_TABLES } from "./generation-index.ts";
 import { legacyEntries, readLegacySnapshot, SegmentReader, type LegacyCheckpoint } from "./bridge.ts";
 import { readMigrationSources } from "./migrate.ts";
@@ -1012,6 +1012,7 @@ export class MemoryStore {
   /** Index deferred writes before any note, goal or suggestion read. */
   private ensureFresh(): void {
     this.releaseReaderLease?.verify();
+    if (!this.bootstrapOnly) rebindPublicPruneProfile(this.profile);
     this.userOverlay?.ensureFresh();
     for (const store of this.aliasStores) store.ensureFresh();
     if (this.generationIndex) { this.generationIndex.refresh(); return; }
@@ -1173,6 +1174,7 @@ export class MemoryStore {
     };
     const roots = new Set<string>(), fixed = new Set<string>();
     for (const store of this.readStores()) {
+      if (!store.bootstrapOnly) rebindPublicPruneProfile(store.profile);
       roots.add(store.dir);
       for (const name of ["profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "machine.json"]) fixed.add(join(store.profile.home, name));
       for (const name of ["generation.json", "generation-seal.json", "migration-sources.json", "machine.json"]) fixed.add(join(store.dir, name));
@@ -1204,6 +1206,7 @@ export class MemoryStore {
   }
   private prepareRecallRead(stores: readonly MemoryStore[]): void {
     for (const store of stores) {
+      if (!store.bootstrapOnly) rebindPublicPruneProfile(store.profile);
       const active = readSelector(store.profile.home);
       if (active.revision !== store.profile.selectorRevision) throw Error("recall profile changed");
       if (store.profile.sharded) {
@@ -1266,6 +1269,7 @@ export class MemoryStore {
       if (!Number.isFinite(time) || new Date(time).toISOString() !== value || time > present) throw Error("as-of must be a past canonical UTC date or timestamp");
     }
     const frontier = () => {
+      if (!this.bootstrapOnly) for (const store of this.readStores()) rebindPublicPruneProfile(store.profile);
       const active = readSelector(this.profile.home);
       if (active.revision !== this.profile.selectorRevision) throw Error("recall profile changed or is not active");
       if (this.profile.sharded) {

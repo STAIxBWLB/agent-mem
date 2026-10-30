@@ -171,6 +171,17 @@ function checkedIntent(value: unknown, home: string): Intent {
 }
 /** Dry-run reads proof only and defers native/v2 mask building. Apply/resume never roll markers backward. */
 export async function activatePublicPruneView(options: PublicPruneActivationOptions): Promise<PublicPruneActivationResult> {
+  const advanced = lstatSync(join(options.memoryDir,PUBLIC_PRUNE_INTENT),{throwIfNoEntry:false});
+  if (options.mode === "resume" && advanced?.isFile()) {
+    const value=JSON.parse(raw(join(options.memoryDir,PUBLIC_PRUNE_INTENT),false,advanced.nlink));
+    if (value?.schema === "agent-mem.public-prune-advance/v1") {
+      guard(options.authorizedPerson === true && options.tty === true);
+      const {resumePublicPruneAdvance}=await import("./public-prune-advance.ts");
+      const result=await resumePublicPruneAdvance(options.memoryDir,options.checkpoint);
+      return {mode:options.mode,generation:value.generation,active:true,realms:Object.keys(value.view.realms).length,viewHash:result.viewHash,maskBuildCheck:"verified"};
+    }
+  }
+
   guard(options.authorizedPerson === true && options.tty === true && ["dry-run", "apply", "resume"].includes(options.mode));
   const home = realPath(options.memoryDir); owned(home, true); const rootStat = lstatSync(home), intentFile = join(home, PUBLIC_PRUNE_INTENT);
   const pending = lstatSync(intentFile, { throwIfNoEntry: false });
@@ -202,6 +213,15 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
     guard(readProfileBytes(home) === intent.previousProfile && raw(join(home, "shards.json")) === intent.previousShards && aliases(home) === intent.aliases);
     realmBinding(home, intent.realms);
     return { mode: options.mode, generation: intent.generation, active: intent.previousProfile === intent.finalProfile && intent.previousShards === intent.finalShards, realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "deferred" };
+  }
+  if (!pending && intent.previousProfile !== "absent" && JSON.parse(intent.previousProfile).schema === "agent-mem.profile/v2") {
+    // Only the first reader-floor transition quiesces. Later views preserve native masks and grow foreign masks in place.
+    const alreadyActive = intent.previousProfile === intent.finalProfile && intent.previousShards === intent.finalShards;
+    if (!alreadyActive) {
+      const { advancePublicPruneView } = await import("./public-prune-advance.ts");
+      await advancePublicPruneView({ memoryDir: home, view: intent.view, expectedRevision: hashJSON(JSON.parse(intent.previousProfile)), checkpoint: options.checkpoint });
+    }
+    return { mode: options.mode, generation: intent.generation, active: true, ...(alreadyActive ? {alreadyActive:true} : {}), realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "verified" };
   }
   return withProfileLock(home, async () => {
     const releases: (() => void)[] = [];
