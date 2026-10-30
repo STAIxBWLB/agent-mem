@@ -1,3 +1,5 @@
+import { migrateShards } from "../src/memory/shard-migration.ts";
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** #13 P3 actual executable R1/R2 receipt. Never invokes a model, account, personal config or plugin installer.
  * Run serially after resource admission: bun scripts/measure-hooks-budget.ts.
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
@@ -124,6 +126,10 @@ function summarize(name: string, samples: Sample[]) {
 }
 try {
   await f.seed();
+  if (process.argv.includes("--public-prune-view")) {
+    await migrateShards({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+    await activatePublicPruneView({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+  }
   const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
   const dir = capture.dir, baseline = capture.stats().rows; capture.close();
   const plain = await samples("plain", RUNS.plain, () => invoke("PostToolUse", "plain"));

@@ -227,5 +227,5 @@ const measured = await budgetGroup("mcp-session", measureSession, report => ({ w
 
 // The existing mixed 5,001-row session remains unchanged; volume gets its own fresh child/watchdog.
 const volume = await budgetGroup("mcp-volume", measureMcpVolume, report => ({ wallPass: report.wallTimingPass, rssPass: report.R3.pass }), { retryPolicy: "stall" });
-console.log(JSON.stringify({ profile: process.argv.includes("--public-prune-view") ? "public-prune-view/v2" : "shards/v1", ...measured.result, groupAttempts: measured.attempts,
+console.log(JSON.stringify({ sessionProfile: process.argv.includes("--public-prune-view") ? "public-prune-view/v2" : "shards/v1", ...measured.result, groupAttempts: measured.attempts,
   volume: { ...volume.result, groupAttempts: volume.attempts }, pass: measured.result.pass && volume.result.pass }, null, 2));
