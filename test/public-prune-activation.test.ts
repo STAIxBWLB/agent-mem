@@ -9,7 +9,7 @@ import { canonicalJSON, hashJSON, readSelector } from "../src/memory/generation.
 import { resolveShardProfile } from "../src/memory/shard.ts";
 import { applyPrune, planPrune } from "../src/memory/prune.ts";
 import { persistPublicPruneInput, preparePublicPruneInput } from "../src/memory/public-prune-inputs.ts";
-import { PUBLIC_PRUNE_INTENT, readPublicPruneView } from "../src/memory/public-prune-view.ts";
+import { PUBLIC_PRUNE_INTENT, readPublicPruneView, type PublicPruneViewV1 } from "../src/memory/public-prune-view.ts";
 import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
 
 const A = "github.com/fixture/public-prune", B = "github.com/fixture/second", cleanup: (() => void)[] = [];
