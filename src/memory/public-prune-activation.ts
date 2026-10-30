@@ -48,10 +48,11 @@ function readProfileBytes(home: string): string {
   const file = join(home, "profile.json"); if (!lstatSync(file, { throwIfNoEntry: false })) return "absent";
   const text = raw(file); guard(text !== "absent"); return text;
 }
-const aliases = (home: string) => { const stat = owned(home, true); return hashJSON({ aliases: raw(aliasLogPath(home), true), machine: raw(join(home, "machine.json")), dev: stat.dev, ino: stat.ino }); };
+const optionalBytes = (file: string) => lstatSync(file, {throwIfNoEntry:false}) ? {exists:true,bytes:raw(file)} : {exists:false};
+const aliases = (home: string) => { const stat = owned(home, true); return hashJSON({ aliases: optionalBytes(aliasLogPath(home)), machine: raw(join(home, "machine.json")), dev: stat.dev, ino: stat.ino }); };
 function metadata(profile: BoundProfile): string {
   const stat = owned(profile.dir, true);
-  return hashJSON({ dev: stat.dev, ino: stat.ino, files: ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"].map(name => [name, raw(join(profile.dir, name), name === "project.json")]) });
+  return hashJSON({ dev: stat.dev, ino: stat.ino, files: ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"].map(name => [name, name === "project.json" ? optionalBytes(join(profile.dir, name)) : {exists:true,bytes:raw(join(profile.dir, name))}]) });
 }
 function enumerate(home: string): { key: string; profile: BoundProfile }[] {
   const result: { key: string; profile: BoundProfile }[] = [], projects = join(home, "projects");
@@ -70,7 +71,7 @@ function enumerate(home: string): { key: string; profile: BoundProfile }[] {
 function realmBinding(home: string, realms: Realm[]): void {
   const expected = new Set(realms.map(realm => realm.profile.dir)), found = new Set<string>(), projects = join(home, "projects");
   if (lstatSync(projects, { throwIfNoEntry: false })) for (const name of readdirSync(projects)) {
-    guard(hex(name, 64)); const dir = join(projects, name);
+    guard(hex(name, 16)); const dir = join(projects, name);
     if (lstatSync(join(dir, "generation.json"), { throwIfNoEntry: false })) { owned(dir, true); found.add(dir); }
   }
   const user = userShardDir(home); if (lstatSync(join(user, "generation.json"), { throwIfNoEntry: false })) { owned(user, true); found.add(user); }

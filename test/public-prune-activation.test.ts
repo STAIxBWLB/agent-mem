@@ -73,11 +73,13 @@ test("unknown v1 shard journal fields refuse before locks, indexes, maps or inte
 });
 
 test("activation preserves every old shard journal field and native mask; resume is a verified no-op", async () => {
-  const f = await fixture(), store = openShardStore({ memoryDir: f.memoryDir, project: A, screen: () => "keep" });
+  const f = await fixture(); let clock = Date.parse("2026-10-01T00:00:00.000Z");
+  const store = openShardStore({ memoryDir: f.memoryDir, project: A, now: () => clock, screen: () => "keep" });
   const expired = store.note(note(A, "EXPLICIT-NATIVE-PRUNE"));
-  expect(store.demote(expired, "person", A, "2000-01-01T00:00:00.000Z")).toBeDefined();
+  expect(store.demote(expired, "person", A, new Date(clock + 1000).toISOString())).toBeDefined();
+  clock += 2000;
   const port = store.prunePort(), authorization = { project: A, actor: "person" as const, authorize: () => true };
-  applyPrune(port, planPrune(port, { cutoff: new Date().toISOString(), targets: [expired] }, authorization), authorization); store.close();
+  applyPrune(port, planPrune(port, { cutoff: new Date(clock).toISOString(), targets: [expired] }, authorization), authorization); store.close();
   const old = f.markers(), oldShards = JSON.parse(old.shards), source = f.sources(), profile = resolveShardProfile(f.memoryDir, { project: A });
   const native = buildPublicPruneIndex(profile); expect(native.targets).toContain(expired);
   const result = await activatePublicPruneView({ ...f.opts, mode: "apply" }); expect(result.active).toBe(true);
@@ -123,12 +125,12 @@ test("activation refuses live readers and non-person requests before publishing 
 });
 
 test("checkpoint alias and source drift refuse while intent blocks readers; exact restoration permits resume", async () => {
-  for (const drift of ["alias", "source"] as const) {
+  for (const drift of ["alias", "alias-absent-literal", "selector", "source"] as const) {
     const f = await fixture(), profile = resolveShardProfile(f.memoryDir, { project: A });
-    const path = drift === "alias" ? join(f.memoryDir, "aliases.jsonl") : join(profile.dir, "log", "f".repeat(16) + ".jsonl");
+    const path = drift.startsWith("alias") ? join(f.memoryDir, "aliases.jsonl") : drift === "selector" ? join(f.memoryDir, "profile.json") : join(profile.dir, "log", "f".repeat(16) + ".jsonl");
     const existed = existsSync(path), previous = existed ? readFileSync(path) : undefined;
     await expect(activatePublicPruneView({ ...f.opts, mode: "apply", checkpoint: (stage: PublicPruneActivationStage) => {
-      if (stage === "after-intent") writeFileSync(path, drift === "alias" ? "ALIASES-DRIFT\n" : "INVALID-SOURCE-DRIFT\n", { mode: 0o600 });
+      if (stage === "after-intent") writeFileSync(path, drift === "alias" ? "ALIASES-DRIFT\n" : drift === "selector" || drift === "alias-absent-literal" ? "absent" : "INVALID-SOURCE-DRIFT\n", { mode: 0o600 });
     } })).rejects.toThrow();
     expect(existsSync(join(f.memoryDir, PUBLIC_PRUNE_INTENT))).toBe(true); expect(() => readSelector(f.memoryDir)).toThrow();
     if (previous) writeFileSync(path, previous); else rmSync(path);
