@@ -518,9 +518,11 @@ for (const withRealm of [false, true]) test(`doctor keeps all curated sections a
     return openShardStore({memoryDir:base,project:r.project,deferPromotions:true});
   }});
   expect(opened).toBe(true);
-  for (const name of ["duplicates","stale","brief","index"] as const) expect(report.sections[name].status,name).toBe("ok");
+  for (const name of ["duplicates","stale","brief"] as const) expect(report.sections[name].status,name).toBe("ok");
+  expect(report.sections.index.status).toBe("skipped"); // Existing split-index diagnostic semantics, rather than copy failure.
   expect(report.sections.brief).toMatchObject({coverage:{curated:"complete"}}); expect(exact(r)).toEqual(before);
   const cli = await doctor(r);
-  for (const name of ["duplicates","stale","brief","index"]) expect(cli.sections[name].status,name).toBe("ok");
+  for (const name of ["duplicates","stale","brief"]) expect(cli.sections[name].status,name).toBe("ok");
+  expect(cli.sections.index.status).toBe("skipped");
   expect(exact(r)).toEqual(before);
 });
