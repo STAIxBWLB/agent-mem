@@ -250,7 +250,7 @@ export class MemoryStore {
     this.screen = opts.screen;
     this.deferPromotions = opts.deferPromotions ?? false;
     // Announce before opening derived handles or reading rows; failed admission leaks no database handles.
-    if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home);
+    if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home, this.profile.sharded ? {scope:"shard"} : {});
     let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
     try {
       const indexFile = join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db");
@@ -1601,7 +1601,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
   const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
   readShardedSelection(home); // validate the floor before any lazy shard initialization
-  const admission = registerReaderLease(home);
+  const admission = registerReaderLease(home, {scope:"shard"});
   try {
   assertCuratedShardPaths(home, opts);
   // #15 T5: the one gate every recall path shares, checked before a shard can be created. The user shard has no lifecycle.

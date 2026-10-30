@@ -208,7 +208,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
     try {
       guard(lstatSync(home).dev === rootStat.dev && lstatSync(home).ino === rootStat.ino);
       const dirs = [...new Set([home, ...intent.realms.map(realm => realm.profile.dir)])].sort();
-      for (const dir of dirs) { assertNoLiveReaders(dir); const release = acquireMutation(dir); guard(release); releases.push(release); }
+      for (const dir of dirs) { assertNoLiveReaders(dir, {includeShards:true}); const release = acquireMutation(dir); guard(release); releases.push(release); }
       validateAdvance(intent);
       if (pending) immutable(intentFile, canonicalJSON(intent) + "\n");
       if (!pending) {
