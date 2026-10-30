@@ -1,10 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as lineageFs from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, generationDescriptor, hashJSON } from "../src/memory/generation.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
-import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage } from "../src/memory/prune-publisher-lineage.ts";
+import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage, publisherPruneLineages } from "../src/memory/prune-publisher-lineage.ts";
 import { pruneId, type PruneRow } from "../src/memory/prune.ts";
 import { resolveShardProfile } from "../src/memory/shard.ts";
 import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
@@ -80,4 +81,57 @@ test("partial line cannot establish a boundary or a post-seal claim", () => {
 test("replaying an older original after the boundary never upgrades its lineage", () => {
   const f = fixture(), old = f.row(); f.append(old); ensurePublisherBoundary(f.profile, f.mutation); f.append(old);
   expect(publisherPruneLineage(f.profile, f.mutation, old)).toBeUndefined();
+});
+
+
+test("batch lineage agrees with per-row calls and independently excludes pre-boundary, absent and mismatched originals", () => {
+  const f = fixture(), old = f.row(), fresh = f.row("2026-10-31T01:00:00.000Z"), next = f.row("2026-10-31T02:00:00.000Z"), missing = f.row("2026-10-31T03:00:00.000Z");
+  f.append(old); const boundary = ensurePublisherBoundary(f.profile, f.mutation);
+  f.append(old); f.append(fresh); f.append(fresh); f.append(next);
+  const changed = (fields: Partial<PruneRow>): PruneRow => { const { id: _id, ...body } = { ...fresh, ...fields }; return { ...body, id: pruneId(body) }; };
+  const otherMachine = changed({ machine: "c".repeat(16) }), otherGeneration = changed({ generation: "d".repeat(32) }), local = changed({ placement: "local" });
+  const rows = [old, fresh, fresh, next, missing, otherMachine, otherGeneration, local];
+  const expected = { kind: "post-seal", seal: boundary.sealHash, end: boundary.end };
+  const actual = publisherPruneLineages(f.profile, f.mutation, rows);
+  expect([...actual.keys()].sort()).toEqual([fresh.id, next.id].sort());
+  expect(actual.get(fresh.id)).toEqual(expected); expect(actual.get(next.id)).toEqual(expected);
+  for (const row of rows) {
+    const eligible = row === fresh || row === next;
+    expect(publisherPruneLineage(f.profile, f.mutation, row)).toEqual(eligible ? expected : undefined);
+    expect(actual.get(row.id)).toEqual(eligible ? expected : undefined);
+  }
+  expect(actual.has(old.id)).toBe(false); expect(actual.has(missing.id)).toBe(false);
+  expect(publisherPruneLineages(f.profile, f.mutation, [])).toEqual(new Map());
+});
+
+test("batch parses each complete own-log line once and keeps streaming reads independent of candidate count", () => {
+  const f = fixture(), old = f.row(), candidates = Array.from({ length: 12 }, (_, index) => f.row(`2026-10-31T${String(index + 1).padStart(2, "0")}:00:00.000Z`));
+  f.append(old); ensurePublisherBoundary(f.profile, f.mutation); f.append(old);
+  for (const row of candidates) f.append(row);
+  const lines = new Set([old, ...candidates].map(row => canonicalJSON(row))), open = lineageFs.openSync, read = lineageFs.readSync, close = lineageFs.closeSync, parse = JSON.parse;
+  const measure = (selected: PruneRow[]) => {
+    let opens = 0, reads = 0, parses = 0; const logDescriptors = new Set<number>();
+    const openSpy = spyOn(lineageFs, "openSync").mockImplementation(((...args: Parameters<typeof open>) => {
+      const fd = Reflect.apply(open, lineageFs, args); if (args[0] === f.log) { opens++; logDescriptors.add(fd); } return fd;
+    }) as typeof open);
+    const closeSpy = spyOn(lineageFs, "closeSync").mockImplementation(fd => { logDescriptors.delete(fd); return close(fd); });
+    const readSpy = spyOn(lineageFs, "readSync").mockImplementation(((...args: Parameters<typeof read>) => {
+      if (logDescriptors.has(args[0])) reads++; return Reflect.apply(read, lineageFs, args);
+    }) as typeof read);
+    const parseSpy = spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+      if (lines.has(text)) parses++; return Reflect.apply(parse, JSON, [text, reviver]);
+    });
+    try { const result = publisherPruneLineages(f.profile, f.mutation, selected); expect(result.size).toBe(selected.length); return { opens, reads, parses }; }
+    finally { parseSpy.mockRestore(); readSpy.mockRestore(); closeSpy.mockRestore(); openSpy.mockRestore(); }
+  };
+  const single = measure([candidates[0]!]), batch = measure(candidates);
+  expect(single.parses).toBe(candidates.length + 2); expect(batch.parses).toBe(single.parses);
+  expect(single.opens).toBeGreaterThan(0); expect(batch.opens).toBe(single.opens); expect(batch.reads).toBe(single.reads);
+});
+
+test("batch refuses incomplete tails and malformed eligible candidates without accepting partial evidence", () => {
+  const f = fixture(), row = f.row(); ensurePublisherBoundary(f.profile, f.mutation); f.append(row);
+  expect(() => publisherPruneLineages(f.profile, f.mutation, [{ ...row, id: "0".repeat(32) }])).toThrow();
+  appendFileSync(f.log, "partial");
+  expect(() => publisherPruneLineages(f.profile, f.mutation, [row])).toThrow();
 });

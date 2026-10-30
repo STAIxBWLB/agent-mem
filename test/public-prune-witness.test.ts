@@ -85,6 +85,48 @@ test("R13 absent/historical/single-destination lineage is an explicit hold with 
   }
 });
 
+test("lineage shape, cycles and encoded manifest budget refuse before the untrusted value is cloned", () => {
+  const f = golden(), cycle: Record<string, unknown> = { kind: "historical-translation" }; cycle.self = cycle;
+  const shared = { text: "x".repeat(1024) };
+  const values: unknown[] = [
+    { kind: "post-seal", seal: "x".repeat(PUBLIC_PRUNE_MANIFEST_MAX_BYTES * 2), end: 0 },
+    { kind: "historical-translation", text: "\n".repeat(PUBLIC_PRUNE_MANIFEST_MAX_BYTES / 2) },
+    { kind: "historical-translation", text: "한".repeat(PUBLIC_PRUNE_MANIFEST_MAX_BYTES / 2) },
+    { kind: "historical-translation", members: Array(128).fill(shared) },
+    cycle, new Map([["payload", "x".repeat(PUBLIC_PRUNE_MANIFEST_MAX_BYTES * 2)]]),
+  ];
+  let touched = 0;
+  const accessor = { kind: "native-generation", get seal() { touched++; return "a".repeat(64); } };
+  values.push(accessor);
+  for (const value of values) {
+    const clone = spyOn(globalThis, "structuredClone");
+    try {
+      expect(verifyPublicPruneWitness({ ...f.manifest, lineage: value }, f.evidence)).toEqual({ status: "invalid" });
+      expect(clone.mock.calls.some(args => args[0] === value)).toBe(false);
+    } finally { clone.mockRestore(); }
+  }
+  expect(touched).toBe(0);
+  const input = { ...f.manifest }; Object.defineProperty(input, "lineage", { enumerable: true, get() { touched++; return f.manifest.lineage; } });
+  expect(verifyPublicPruneWitness(input, f.evidence)).toEqual({ status: "invalid" }); expect(touched).toBe(0);
+});
+
+test("bounded historical JSON at the existing exact manifest ceiling stays a hold after full proof", () => {
+  const f = golden(), lineage = { kind: "historical-translation", details: { entries: [null, true, 1, ""] }, padding: "" };
+  const remaining = PUBLIC_PRUNE_MANIFEST_MAX_BYTES - Buffer.byteLength(canonicalJSON({ ...f.manifest, lineage }), "utf8");
+  lineage.padding = "x".repeat(remaining);
+  expect(Buffer.byteLength(canonicalJSON({ ...f.manifest, lineage }), "utf8")).toBe(PUBLIC_PRUNE_MANIFEST_MAX_BYTES);
+  const clone = spyOn(globalThis, "structuredClone");
+  try {
+    expect(verifyPublicPruneWitness({ ...f.manifest, lineage }, f.evidence)).toEqual({ status: "unsupported_lineage", reason: "lineage_unsupported" });
+    expect(clone.mock.calls.some(args => args[0] === lineage)).toBe(true);
+    const over = { ...lineage, padding: lineage.padding + "x" }; clone.mockClear();
+    expect(verifyPublicPruneWitness({ ...f.manifest, lineage: over }, f.evidence)).toEqual({ status: "invalid" });
+    expect(clone.mock.calls.some(args => args[0] === over)).toBe(false);
+  } finally { clone.mockRestore(); }
+  expect(verifyPublicPruneWitness({ ...f.manifest, lineage }, { ...f.evidence, packs: [] })).toEqual({ status: "invalid" });
+  expect(publicPruneWitnessHash(f.manifest)).toBe(fixture.expected.manifestHash);
+});
+
 test("R04/R06 selected rows, placement, person/public flags and old receipts never substitute for raw public occurrences", () => {
   const f = golden();
   for (const evidence of [{ realm: f.manifest.realm, rows: [originalNote()], publicWitness: true },
