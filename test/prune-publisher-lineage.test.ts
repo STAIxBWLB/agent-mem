@@ -91,7 +91,7 @@ test("batch lineage agrees with per-row calls and independently excludes pre-bou
   const changed = (fields: Partial<PruneRow>): PruneRow => { const { id: _id, ...body } = { ...fresh, ...fields }; return { ...body, id: pruneId(body) }; };
   const otherMachine = changed({ machine: "c".repeat(16) }), otherGeneration = changed({ generation: "d".repeat(32) }), local = changed({ placement: "local" });
   const rows = [old, fresh, fresh, next, missing, otherMachine, otherGeneration, local];
-  const expected = { kind: "post-seal", seal: boundary.sealHash, end: boundary.end };
+  const expected = { kind: "post-seal" as const, seal: boundary.sealHash, end: boundary.end };
   const actual = publisherPruneLineages(f.profile, f.mutation, rows);
   expect([...actual.keys()].sort()).toEqual([fresh.id, next.id].sort());
   expect(actual.get(fresh.id)).toEqual(expected); expect(actual.get(next.id)).toEqual(expected);
