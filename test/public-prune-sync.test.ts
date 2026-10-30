@@ -40,9 +40,9 @@ async function side(generation: string, v2 = true, legacyText?: string) {
   if (v2) await enable(); cleanup.push(close);
   return { home, memory, clock, generation, legacyId, get a() { return a; }, enable, close };
 }
-function prune(store: MemoryStore, target: string, clock: { now: number }, publicly = true): PruneRow {
-  expect(store.demote(target, "person", A)).toBeDefined(); clock.now += 2000;
-  const authorization = { project: A, actor: "person" as const, authorize: () => true,
+function prune(store: MemoryStore, target: string, clock: { now: number }, publicly = true, project = A): PruneRow {
+  expect(store.demote(target, "person", project)).toBeDefined(); clock.now += 2000;
+  const authorization = { project, actor: "person" as const, authorize: () => true,
     ...(publicly ? { policy: { revision: () => "public-fixture-v1", classify: () => "public" as const, attest: () => true } } : {}) };
   const plan = planPrune(store.prunePort(), { cutoff: new Date(clock.now).toISOString(), targets: [target] }, authorization);
   expect(plan.rows).toHaveLength(1); expect(plan.rows[0]!.placement).toBe(publicly ? "synced" : "local");
@@ -351,3 +351,81 @@ test("R20/R21 active proof replay and capture stay offline without the transport
     expect(network).not.toHaveBeenCalled();expect(spawn).not.toHaveBeenCalled();
   }finally{network.mockRestore();spawn.mockRestore();}
 },60_000);
+
+test("R16 a durable selector copy journals the exact transport plan before any native claim or log write", async () => {
+  const url = remote(), sibling = await side(G2), receiver = await side(G2), nativeTarget = sibling.a.note(note("PUBLIC_UNCLAIMED_NATIVE_TARGET"));
+  expect((await syncMemory(sibling.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  expect((await syncMemory(receiver.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  const row = prune(sibling.a, nativeTarget, sibling.clock); expect((await syncMemory(sibling.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  const original = receiver.a.prunePort.bind(receiver.a), segment = join(receiver.a.dir, "log", row.machine + ".jsonl"), claim = join(receiver.a.dir, "prune-plans", "pending-log-" + row.machine + ".json");
+  const previous = existsSync(segment) ? readFileSync(segment) : undefined; let captured: PrunePlan | undefined;
+  receiver.a.prunePort = () => { const port = original(); return { ...port, appendPrune: (payload, line, seal) => {
+    if (payload.id !== row.id) return port.appendPrune(payload, line, seal);
+    captured = JSON.parse(readFileSync(join(receiver.a.dir, "prune-plans", seal + ".json"), "utf8")) as PrunePlan;
+    expect(existsSync(join(receiver.a.dir, "prune-plans", "selector-history", seal + ".json"))).toBe(true);
+    throw new Error("PINNED-BEFORE-NATIVE-CLAIM-FAULT");
+  } }; };
+  try { expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: true }); }
+  finally { receiver.a.prunePort = original; }
+  expect(captured).toBeDefined(); expect(existsSync(claim)).toBe(false); expect(existsSync(segment)).toBe(previous !== undefined);
+  if (previous) expect(readFileSync(segment)).toEqual(previous);
+  const plan = captured!, planFile = join(receiver.a.dir, "prune-plans", plan.seal + ".json"), copy = join(receiver.a.dir, "prune-plans", "selector-history", plan.seal + ".json");
+  const planBytes = readFileSync(planFile), copyBytes = readFileSync(copy);
+  expect(hashJSON(JSON.parse(copyBytes.toString()))).toBe(plan.selectorRevision);
+  const foreign = await side(G1); expect((await syncMemory(foreign.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  const foreignTarget = foreign.a.note(note("PUBLIC_FOREIGN_WITH_UNCLAIMED_NATIVE")), foreignRow = prune(foreign.a, foreignTarget, foreign.clock);
+  expect((await syncMemory(foreign.a, { remote: url, ...privateRemote })).ok).toBe(true); let advanced = false;
+  expect(await syncShardedMemory(receiver.a, { remote: url, ...privateRemote }, undefined, phase => {
+    if (phase === "view-committed") { advanced = true; throw new Error("UNCLAIMED-PLAN-VIEW-ADVANCE-FAULT"); }
+  })).toMatchObject({ ok: false, pushed: true });
+  expect(advanced).toBe(true); expect(readSelector(receiver.memory).revision).not.toBe(plan.selectorRevision);
+  expect(existsSync(claim)).toBe(false); expect(readFileSync(planFile)).toEqual(planBytes); expect(readFileSync(copy)).toEqual(copyBytes);
+  expect(receiver.a.prunePort().snapshot().pruned).toContain(foreignTarget);
+  expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(existsSync(copy)).toBe(false); expect(readFileSync(planFile)).toEqual(planBytes);
+  expect(readFileSync(segment)).toEqual(Buffer.concat([previous ?? Buffer.alloc(0), Buffer.from(canonicalJSON(row) + "\n")]));
+  expect(receiver.a.prunePort().snapshot().durablePruneIds?.filter(id => id === row.id)).toHaveLength(1);
+  assertForeign(receiver.a, foreignTarget, foreignRow);
+}, 60_000);
+
+test("R16 an unopened B native partial plan survives a separate A foreign map advance in the same home", async () => {
+  const url = remote(), sibling = await side(G2), receiver = await side(G2);
+  const publisherB = openShardStore({ home: sibling.home, project: B, deferPromotions: true, now: () => sibling.clock.now, ttlMs: 1000 }); cleanup.push(() => publisherB.close());
+  const targetB = publisherB.note({ ...note("PUBLIC_B_PARTIAL_NATIVE_TARGET"), project: B });
+  expect((await syncMemory(publisherB, { remote: url, ...privateRemote })).ok).toBe(true);
+  let readerB: MemoryStore | undefined = openShardStore({ home: receiver.home, project: B, deferPromotions: true, now: () => receiver.clock.now, ttlMs: 1000 });
+  cleanup.push(() => readerB?.close()); const selectedB = readerB;
+  expect((await syncMemory(selectedB, { remote: url, ...privateRemote })).ok).toBe(true);
+  const row = prune(publisherB, targetB, sibling.clock, true, B);
+  expect((await syncMemory(publisherB, { remote: url, ...privateRemote })).ok).toBe(true);
+  const original = selectedB.prunePort.bind(selectedB), segment = join(selectedB.dir, "log", row.machine + ".jsonl"), claim = join(selectedB.dir, "prune-plans", "pending-log-" + row.machine + ".json");
+  let captured: PrunePlan | undefined, prefix: Buffer | undefined;
+  selectedB.prunePort = () => { const port = original(); return { ...port, appendPrune: (payload, line, seal) => {
+    if (payload.id !== row.id) return port.appendPrune(payload, line, seal);
+    captured = JSON.parse(readFileSync(join(selectedB.dir, "prune-plans", seal + ".json"), "utf8")) as PrunePlan;
+    expect(existsSync(join(selectedB.dir, "prune-plans", "selector-history", seal + ".json"))).toBe(true);
+    const fd = openSync(segment, "a"); try { fsyncSync(fd); } finally { closeSync(fd); }
+    prefix = readFileSync(segment); writeProfileJSON(claim, { schema: "agent-mem.prune-append/v1", seal, rowId: payload.id, lineHash: sha(line), offset: prefix.length, prefixHash: sha(prefix) });
+    appendFileSync(segment, Buffer.from(line).subarray(0, 23)); const partial = openSync(segment, "a"); try { fsyncSync(partial); } finally { closeSync(partial); }
+    throw new Error("B-PARTIAL-NATIVE-FAULT");
+  } }; };
+  try { expect(await syncMemory(selectedB, { remote: url, ...privateRemote })).toMatchObject({ ok: false, pushed: true }); }
+  finally { selectedB.prunePort = original; }
+  expect(captured).toBeDefined(); expect(prefix).toBeDefined();
+  const plan = captured!, planFile = join(selectedB.dir, "prune-plans", plan.seal + ".json"), copy = join(selectedB.dir, "prune-plans", "selector-history", plan.seal + ".json");
+  const planBytes = readFileSync(planFile), copyBytes = readFileSync(copy), claimBytes = readFileSync(claim), partialBytes = readFileSync(segment);
+  selectedB.close(); readerB = undefined; // A's next sync must not open or rewrite B to retain its pending authority.
+  const foreign = await side(G1), targetA = foreign.a.note(note("PUBLIC_A_ADVANCES_WHILE_B_UNOPENED"));
+  expect((await syncMemory(foreign.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  const foreignRow = prune(foreign.a, targetA, foreign.clock); expect((await syncMemory(foreign.a, { remote: url, ...privateRemote })).ok).toBe(true);
+  expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(readSelector(receiver.memory).revision).not.toBe(plan.selectorRevision); expect(readFileSync(copy)).toEqual(copyBytes);
+  expect(readFileSync(planFile)).toEqual(planBytes); expect(readFileSync(claim)).toEqual(claimBytes); expect(readFileSync(segment)).toEqual(partialBytes);
+  assertForeign(receiver.a, targetA, foreignRow);
+  readerB = openShardStore({ home: receiver.home, project: B, deferPromotions: true, now: () => receiver.clock.now, ttlMs: 1000 });
+  expect(await syncMemory(readerB, { remote: url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(existsSync(copy)).toBe(false); expect(existsSync(claim)).toBe(false); expect(readFileSync(planFile)).toEqual(planBytes);
+  expect(readFileSync(segment)).toEqual(Buffer.concat([prefix!, Buffer.from(canonicalJSON(row) + "\n")]));
+  expect(readerB.prunePort().snapshot().durablePruneIds?.filter(id => id === row.id)).toHaveLength(1); expect(readerB.get(targetB, B)).toBeUndefined();
+  assertForeign(receiver.a, targetA, foreignRow);
+}, 60_000);
