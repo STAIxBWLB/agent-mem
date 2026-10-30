@@ -51,7 +51,7 @@ Initial eligibility is deliberately strict:
 
 This includes independently initialized generations and immutable migrated legacy **ordinary** targets/bases when they have valid public proof. It does not treat legacy placement as proof, infer a source generation from local state, or accept a target subset as a complete original prune.
 
-## Blocking decision D01: multi-realm migration identity
+## Decided D01: conservative single-realm eligibility (2026-10-30)
 
 Current `shard-migration.ts:267-277` splits a prune across destinations. One group keeps the input row; several groups get subset payloads and newly computed IDs, plus sourceId/sourceHash translation metadata. A canonical transported subset may therefore already differ from the pre-migration authored prune.
 
@@ -63,14 +63,14 @@ Three requirements cannot be satisfied merely by adding sourceId:
 
 A subset does not determine the original SHA-256 payload. Exporting the full original can reveal outside-realm IDs; importing other realms' bodies to prove it violates realm ownership. A self-hashed or publisher-asserted mapping is not a membership proof.
 
-Recommended conservative disposition for review:
+Claude, planner and reviewer of task 404, accepted this conservative ceiling on 2026-10-30:
 
 - Define separately original transported row ID, pre-migration authored source ID and any already-existing translated ID. Never label one as the other or regenerate either during sync.
-- Apply this protocol only when the agreed original full payload and lineage can be retained and verified without widening realm access. Preserve available original/translation evidence unchanged.
-- If a historical multi-realm translation cannot meet that definition, retain an explicit non-application hold, with bounded safe diagnostics; do not silently omit/retag it or claim AC4 for it.
+- A neutral witness keeps the full original row and same-realm public target and basis proofs; the derived local mask stays separate from native PruneRows. A prune is eligible only when all original targets are in one authorized physical realm. Migrated immutable legacy targets remain eligible when their public occurrences are verified. Preserve available original/translation evidence unchanged.
+- Multi-realm translated historical prunes stay explicitly held, retaining both original and translation evidence with bounded safe diagnostics. This is the case where agent-mem#15 AC4 stays unmet; do not silently omit/retag it or claim the cross-realm gap solved.
 - Unknown provenance must not be assumed to mean native/untranslated. Existing unmarked v1 transport alone may not reconstruct pre-migration lineage.
 
-If full historical multi-realm application is required by this card, this is a design blocker. It needs a separately justified verifiable commitment/attestation and reader-trust contract, or an authorized scope rule. No Merkle proof, signature trust root or partial-prune acceptance is invented here, and shared-v1/PruneRow hashing is not changed. Planner acceptance of the conservative ceiling or an alternative is required before implementation.
+Do not design multi-realm transport in this task: no operator need has been reported, and exporting full originals would disclose IDs from unopened realms. Reopen it later as a separate issue only when a concrete need is reported. No new issue is filed now. No Merkle proof, signature trust root or partial-prune acceptance is introduced, and shared-v1/PruneRow hashing is unchanged. D01 is decided; D02 and D03 below still require review before implementation.
 
 ## Proposed portable manifest
 
@@ -224,6 +224,6 @@ Use isolated homes, an explicitly private local/test remote, fixed synthetic dat
 ## Review and implementation gate
 
 - Confirm the current 0.13.0 held-transport baseline rather than the obsolete all-sync refusal.
-- Resolve D01 original-ID/multi-realm eligibility, D02 exact reader floor/activation and D03 durable-source/resource acceptance. Proposed types are fully reviewable but no runtime API or implementation is frozen while those decisions are open.
+- Preserve the decided D01 single-realm ceiling and visible historical cross-realm AC4 gap. Resolve D02 exact reader floor/activation and D03 durable-source/resource acceptance. Proposed types are fully reviewable but no runtime API or implementation is frozen while those decisions are open.
 - Only after that ruling, amend normative contracts and propose implementation cards. Every card preserves original bytes/IDs, physical realm/public proof, current private-remote/history/Git boundaries and fail-closed reads.
 - AC4 is not closed by this proposal, a hold, transport success, a new marker or a partial target projection. It needs the accepted two-generation public-prune application and migration/provenance proof, with any remaining ceiling explicitly reported.
