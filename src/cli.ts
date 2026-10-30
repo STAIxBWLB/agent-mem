@@ -1,3 +1,4 @@
+import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
 import { agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
 import { randomUUID } from "node:crypto";
@@ -344,6 +345,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     const common = { memoryDir: memoryHome(), ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true };
+    if (options["--public-prune-view"] === true) {
+      if (options["--deactivate"] || options["--generation"] || options["--shards"]) throw new Error("public prune view is forward-only on an active split; no deactivate, generation replacement or new split");
+      if (actor === "agent" && mode !== "dry-run") administrative({ command: "migrate --public-prune-view", mode });
+      const result = await activatePublicPruneView({ memoryDir: memoryHome(), mode: mode as "dry-run" | "apply" | "resume", authorizedPerson: true, tty: true });
+      return options["--json"] ? JSON.stringify(result, null, 2) : `public prune view: ${result.mode}; generation ${result.generation}; mask build ${result.maskBuildCheck}; forward-only, no deactivation`;
+    }
     const shardRequested = options["--shards"] === true || (mode === "resume" && shardStatePresent());
     if (shardRequested) {
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");

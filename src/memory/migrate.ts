@@ -105,6 +105,7 @@ function refuseShardSelection(memoryDir: string): void {
 }
 
 export async function migrate(options: MigrateOptions): Promise<MigrationResult> {
+  if (readSelector(options.memoryDir).selector?.schema === "agent-mem.profile/v2") throw new Error("public prune view is forward-only; deactivation is unavailable");
   if (options.authorizedPerson !== true || options.tty !== true) throw new Error("migration requires an authorized person in a terminal");
   if (!["dry-run", "apply", "resume", "deactivate"].includes(options.mode) || options.generation !== undefined && !validGeneration(options.generation)) throw new Error("invalid migration request");
   const memoryDir = existsSync(options.memoryDir) ? realPath(options.memoryDir) : canonicalPath(options.memoryDir);
