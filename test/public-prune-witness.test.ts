@@ -206,3 +206,22 @@ test("R21 verifier performs no filesystem, process or network work and does not 
     expect(hashJSON(f)).toBe(before);
   } finally { for (const spy of spies) spy.mockRestore(); }
 });
+
+for (const suffix of ["\n", "\r\n"]) test(`exact hex and pack path syntax refuses trailing ${JSON.stringify(suffix)}`, () => {
+  const f = golden(); f.manifest.lineage.seal += suffix;
+  expect(verifyPublicPruneWitness(f.manifest, f.evidence)).toEqual({ status: "invalid" });
+  const g = golden(), original = g.manifest.pruneOccurrence.pack;
+  g.manifest.pruneOccurrence.pack += suffix;
+  g.evidence.packs = g.evidence.packs.map(p => p.pack === original ? { ...p, pack: p.pack + suffix } : p);
+  expect(verifyPublicPruneWitness(g.manifest, g.evidence)).toEqual({ status: "invalid" });
+});
+
+test("R07 Git blob identity and pack digest are checked independently of their matching manifest refs", () => {
+  const f = golden(); f.manifest.pruneOccurrence.blob = "f".repeat(40);
+  f.evidence.packs = f.evidence.packs.map((p, i) => i === 0 ? { ...p, blob: "f".repeat(40) } : p);
+  expect(verifyPublicPruneWitness(f.manifest, f.evidence)).toEqual({ status: "invalid" });
+  const g = golden(), bytes = Buffer.from(fixture.packs[0]!.text + "\n"), oid = blob(bytes);
+  g.manifest.pruneOccurrence.blob = oid;
+  g.evidence.packs = g.evidence.packs.map((p, i) => i === 0 ? { ...p, bytes, blob: oid } : p);
+  expect(verifyPublicPruneWitness(g.manifest, g.evidence)).toEqual({ status: "invalid" });
+});

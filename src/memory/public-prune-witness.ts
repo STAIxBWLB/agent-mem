@@ -32,7 +32,7 @@ export type PublicPruneVerification = VerifiedPublicPruneWitness | { status: "in
 type Candidate = Omit<PublicPruneWitnessV1, "lineage"> & { lineage?: unknown };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Record<string, unknown>, keys: string[]): boolean => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
-const hex = (v: unknown, n: number): v is string => typeof v === "string" && new RegExp(`^[a-f0-9]{${n}}$`).test(v);
+const hex = (v: unknown, n: number): v is string => typeof v === "string" && v.length === n && new RegExp(`^[a-f0-9]{${n}}$`).test(v);
 const bad = (): never => { throw new Error("public prune witness invalid or unavailable"); };
 function guard(ok: unknown): asserts ok { if (!ok) bad(); }
 function realm(input: unknown): ShardSyncRealm {
@@ -44,7 +44,7 @@ function realm(input: unknown): ShardSyncRealm {
 }
 function occurrence(input: unknown, witness = false): Occurrence {
   guard(object(input) && exact(input, witness ? ["pack", "blob", "id", "rowHash"] : ["pack", "blob"]));
-  guard(typeof input.pack === "string" && /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/.test(input.pack) && hex(input.blob, 40));
+  guard(typeof input.pack === "string" && input.pack.length === 140 && /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/.test(input.pack) && hex(input.blob, 40));
   return { pack: input.pack, blob: input.blob };
 }
 function candidate(input: unknown): Candidate {
@@ -53,6 +53,7 @@ function candidate(input: unknown): Candidate {
   guard(input.schema === "agent-mem.public-prune-witness/v1" && Array.isArray(input.witnesses) && input.witnesses.length <= PUBLIC_PRUNE_MAX_WITNESSES);
   guard(object(input.prune) && Array.isArray(input.prune.targets) && input.prune.targets.length <= 32);
   const prune = validatePruneRow(input.prune, undefined, "synced"), selected = realm(input.realm);
+  guard(hex(prune.generation, 32) && hex(prune.machine, 16));
   const needed = new Map<string, string>();
   for (const target of prune.targets) for (const ref of [target, target.basis]) {
     guard(!needed.has(ref.id) || needed.get(ref.id) === ref.rowHash); needed.set(ref.id, ref.rowHash);
@@ -94,7 +95,8 @@ export function verifyPublicPruneWitness(input: unknown, evidence: PublicPruneEv
     guard(evidence.packs.length === required.size);
     const packs = new Map<string, Map<string, PruneRow | PruneSourceRow["row"]>>(), seen = new Map<string, string>();
     for (const pack of evidence.packs) {
-      guard(object(pack) && exact(pack, ["pack", "blob", "bytes"]) && required.get(pack.pack) === pack.blob && !packs.has(pack.pack));
+      guard(object(pack) && exact(pack, ["pack", "blob", "bytes"]) && typeof pack.pack === "string" && typeof pack.blob === "string");
+      guard(required.get(pack.pack) === pack.blob && !packs.has(pack.pack));
       guard(pack.bytes instanceof Uint8Array && pack.bytes.byteLength > 0 && pack.bytes.byteLength <= SHARD_PACK_MAX_BYTES);
       const bytes = Buffer.from(pack.bytes);
       const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
