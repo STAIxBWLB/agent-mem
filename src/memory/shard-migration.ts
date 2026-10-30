@@ -8,7 +8,7 @@ import { pruneId, prunePayloadHash, reducePruneRows, validatePruneRow, type Prun
 import { acquireMutation } from "./mutation.ts";
 import { canonicalPath, realPath } from "./platform.ts";
 import { assertNoLiveReaders } from "./reader-lease.ts";
-import { assertCuratedShardPaths, ensureShardDescriptor, shardDir, SHARDED_SCHEMA, userShardDir, SHARD_SCHEMA } from "./shard.ts";
+import { assertCuratedShardPaths, ensureShardDescriptor, shardDir, SHARDED_SCHEMA, SHARDED_V2_SCHEMA, userShardDir, SHARD_SCHEMA } from "./shard.ts";
 import { buildGenerationIndex, type Entry } from "./store.ts";
 import { readMigrationSources, type SourcePrefix } from "./migrate.ts";
 import { label, PLAIN, singleLine, type Style } from "./style.ts";
@@ -19,7 +19,7 @@ const JOURNAL = "shards.json";
 const CONSEQUENCE = "Legacy bytes are never rewritten; unannounced older readers cannot be detected and remain safe only because of that rule. Before splitting a live home, ensure every installed host uses openShardStore; ordinary new MemoryStore opens are refused once the shard marker exists. No host capability registry is available to prove an absent host safe.";
 
 interface ShardJournal {
-  schema: typeof SHARDED_SCHEMA;
+  schema: typeof SHARDED_SCHEMA | typeof SHARDED_V2_SCHEMA;
   generation: string;
   sourceGeneration?: string;
   phase: "captured" | "active";
@@ -67,7 +67,7 @@ function readJournal(memoryDir: string, optional = false): ShardJournal | undefi
     if (optional) return undefined;
     throw new Error("no resumable shard migration journal");
   }
-  if (value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || !["captured", "active"].includes(value.phase ?? "")
+  if ((value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || !["captured", "active"].includes(value.phase ?? "")
     || value.sourceGeneration !== undefined && (!validGeneration(value.sourceGeneration) || value.sourceGeneration !== value.generation)
     || typeof value.selectorRevision !== "string" || !Array.isArray(value.sources) || !value.machine
     || typeof value.machine.id !== "string" || typeof value.machine.label !== "string") throw new Error("invalid shard migration journal");
@@ -503,6 +503,7 @@ function preflight(memoryDir: string, options: ShardMigrationOptions, chosen?: s
 }
 
 export async function migrateShards(options: ShardMigrationOptions): Promise<ShardMigrationResult> {
+  if (readSelector(options.memoryDir).selector?.schema === "agent-mem.profile/v2") throw new Error("public prune view is forward-only; use migrate --public-prune-view --resume");
   if (options.authorizedPerson !== true || options.tty !== true) throw new Error("shard migration requires an authorized person in a terminal");
   if (!["dry-run", "apply", "resume"].includes(options.mode) || options.generation !== undefined && !validGeneration(options.generation)) throw new Error("invalid shard migration request");
   const memoryDir = existsSync(options.memoryDir) ? realPath(options.memoryDir) : canonicalPath(options.memoryDir);

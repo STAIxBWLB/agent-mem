@@ -1,3 +1,4 @@
+import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -12,6 +13,9 @@ export interface BoundProfile {
   dir: string;
   generation?: string;
   selectorRevision: string;
+  /** Explicit v2 projection only, never inferred from an archive or caller flag. */
+  foreignPruneFormat?: "agent-mem.public-prune-witness/v1";
+  pruneInputSetHash?: string;
   /** Sharded profiles read only their own legacy input; the root home remains the machine/selector identity. */
   legacyHome?: string;
   /** Public legacy witnesses stay distinct from same-machine private bridge input. */
@@ -21,7 +25,8 @@ export interface BoundProfile {
   shardUser?: boolean;
 }
 export type ProfileInput = "shared-v1" | { generation: string };
-export interface ProfileSelector { schema: "agent-mem.profile/v1"; kind: "shared-v1" | "generation"; generation?: string }
+export type ProfileSelector = { schema: "agent-mem.profile/v1"; kind: "shared-v1" | "generation"; generation?: string }
+  | { schema: "agent-mem.profile/v2"; kind: "generation"; generation: string; foreignPruneFormat: "agent-mem.public-prune-witness/v1"; pruneInputSetHash: string };
 export interface GenerationDescriptor { schema: "agent-mem.generation/v1"; generation: string; legacySchema: "agent-hub.memory/v1" }
 export interface GenerationSeal { schema: "agent-mem.generation-seal/v1"; generation: string; descriptorHash: string; sourceDigest: string }
 export const PROFILE_LOCK_TIMEOUT_MS = 3000;
@@ -45,14 +50,25 @@ export function readProfileJSON(path: string, limit = LOCAL_METADATA_MAX_BYTES):
 }
 function keys(value: object, allowed: string[]): boolean { return Object.keys(value).every(key => allowed.includes(key)); }
 export function readSelector(memoryDir: string): { selector?: ProfileSelector; revision: string } {
+  assertNoPublicPruneIntent(memoryDir);
   const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
-  if (!value || typeof value !== "object" || Array.isArray(value) || !keys(value, ["schema", "kind", "generation"])) return unavailable();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable();
   const selector = value as ProfileSelector;
-  if (selector.schema !== "agent-mem.profile/v1" || !["shared-v1", "generation"].includes(selector.kind)
-    || (selector.kind === "generation" ? !validGeneration(selector.generation) : selector.generation !== undefined)) return unavailable();
+  if (selector.schema === "agent-mem.profile/v2") {
+    if (Object.keys(selector).length !== 5 || !keys(selector, ["schema", "kind", "generation", "foreignPruneFormat", "pruneInputSetHash"])
+      || selector.kind !== "generation" || !validGeneration(selector.generation) || selector.generation.length !== 32
+      || selector.foreignPruneFormat !== "agent-mem.public-prune-witness/v1" || typeof selector.pruneInputSetHash !== "string"
+      || selector.pruneInputSetHash.length !== 64 || !/^[a-f0-9]+$/.test(selector.pruneInputSetHash)) return unavailable();
+    const shard = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
+    if (!shard || shard.schema !== "agent-mem.shards/v2" || shard.phase !== "active" || shard.generation !== selector.generation || shard.selectorRevision !== hashJSON(selector)) return unavailable();
+    readPublicPruneView(memoryDir, selector.pruneInputSetHash, selector.generation);
+  } else if (selector.schema !== "agent-mem.profile/v1" || !keys(selector, ["schema", "kind", "generation"])
+    || !["shared-v1", "generation"].includes(selector.kind) || (selector.kind === "generation" ? !validGeneration(selector.generation) : selector.generation !== undefined)) return unavailable();
+  else if ((readProfileJSON(join(memoryDir, "shards.json")) as {schema?:unknown}|undefined)?.schema === "agent-mem.shards/v2") return unavailable();
   return { selector, revision: hashJSON(selector) };
 }
+
 export const selectorRevision = (memoryDir: string): string => readSelector(memoryDir).revision;
 export function generationDescriptor(generation: string): GenerationDescriptor {
   if (!validGeneration(generation)) return unavailable();
@@ -83,8 +99,9 @@ export function validateGeneration(memoryDir: string, generation: string): strin
 export function resolveProfile(memoryDir: string, explicit?: ProfileInput): BoundProfile {
   const home = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), selected = readSelector(home);
   if (explicit !== undefined && explicit !== "shared-v1" && (!explicit || typeof explicit !== "object" || !keys(explicit, ["generation"]) || !validGeneration(explicit.generation))) return unavailable();
+  if (selected.selector?.schema === "agent-mem.profile/v2" && explicit !== undefined) return unavailable();
   const generation = explicit === "shared-v1" ? undefined : explicit?.generation ?? (selected.selector?.kind === "generation" ? selected.selector.generation : undefined);
-  return generation ? { kind: "generation", home, dir: validateGeneration(home, generation), generation, selectorRevision: selected.revision }
+  return generation ? { kind: "generation", home, dir: validateGeneration(home, generation), generation, selectorRevision: selected.revision, ...(selected.selector?.schema === "agent-mem.profile/v2" ? { foreignPruneFormat: selected.selector.foreignPruneFormat, pruneInputSetHash: selected.selector.pruneInputSetHash } : {}) }
     : { kind: "shared-v1", home, dir: home, selectorRevision: selected.revision };
 }
 

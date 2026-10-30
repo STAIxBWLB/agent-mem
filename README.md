@@ -481,3 +481,16 @@ Run `amem consolidate [--project <current-key>]` (another project is refused) to
 The CLI runs the deterministic pass only. A library host may explicitly enable an injected model callback for the person; no provider is built in. It has batch, byte, deadline and persistent daily limits. Model answers remain marked machine-local candidates that cannot be accepted; `amem note add` is the separate path for an independently authored note. A non-answer is never saved.
 
 Agents use `amem_evidence` with a question to get cited, live curated entries, not an answer. The complete JSON bundle is byte-capped (`maxBytes`, default 4096, range 256..8192); excerpted entries retain an exact `mem:` reference for fetching the full note. Capture, repository-only rows, pending candidates and model answers are excluded. amem makes no model call for this tool. Rendering a citation in the bundle records only `rendered` after successful output, never `delivered` or `cited`.
+
+### Public prune view (Layer 3, opt-in)
+
+On an active curated split, the person can preview and enable the forward-only v2 reader floor. This keeps the receiving generation and native logs/seals, builds a separate `index-v2.db`, and preserves every native/local mask. It does not enable new transport or turn historical holds into active inputs.
+
+```sh
+AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --dry-run
+AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --apply
+# Finish an interrupted activation, using its exact recorded forward state.
+AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --resume
+```
+
+Dry-run writes nothing and reports mask building as deferred. Close all cooperating reader handles before apply/resume. While an intent exists or the two markers disagree, readers report unavailable; resume completes forward. Deactivation is refused because v1 would omit foreign masks. Install compatible hosts before activation: supported older readers reject the new markers, and unannounced historical readers can still read unchanged old bytes. Read and capture never activate the view. The root map binds each realm only to its own complete proof; missing committed evidence makes that realm unavailable rather than rebuilding an empty mask. Layer 4 transport and agent-mem#15 AC4 remain open.

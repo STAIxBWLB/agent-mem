@@ -1,3 +1,5 @@
+import { migrateShards } from "../src/memory/shard-migration.ts";
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** Diagnostic only: numeric cold-path milestones for actual runner failures. No budget overrides. */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -8,6 +10,10 @@ const f = hookFixture(), preload = join(f.root, "hook-stages.ts"), trace = join(
 const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
 try {
   await f.seed();
+  if (process.argv.includes("--public-prune-view")) {
+    await migrateShards({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+    await activatePublicPruneView({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+  }
   // Preload/observation still count toward the unchanged deadline; buffer bounded numeric marks so
   // synchronous trace-file I/O does not intervene at every measured stage. Flush once at CLI exit.
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
@@ -74,7 +80,12 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
   // is outside the measured hook, and these numeric stages diagnose its real deadline.
   const full = hookFixture(), foreign = hookFixture(), oldHome = process.env.HOME;
   try {
-    await full.seed(); process.env.HOME = full.env.HOME;
+    await full.seed();
+    if (process.argv.includes("--public-prune-view")) {
+      await migrateShards({ memoryDir: full.base, mode: "apply", authorizedPerson: true, tty: true });
+      await activatePublicPruneView({ memoryDir: full.base, mode: "apply", authorizedPerson: true, tty: true });
+    }
+    process.env.HOME = full.env.HOME;
     const { stageHookCapture } = await import("../src/hook-spool.ts");
     for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `stage diagnostic ${i}` }, { cwd: foreign.cwd, base: full.base });
     writeFileSync(trace, "", { mode: 0o600 });

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
-import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA } from "./shard.ts";
+import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
 import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
@@ -36,7 +36,7 @@ const fromRow = (r: CatalogRow): CatalogProject => ({ hash: r.hash, key: r.key, 
 function capturedSelection(base: string): boolean {
   const value = readProfileJSON(join(base, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined;
   if (value === undefined) return false;
-  if (!value || value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || (value.phase !== "captured" && value.phase !== "active") || typeof value.selectorRevision !== "string") throw new Error("curated shard selection is unavailable or invalid");
+  if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || (value.phase !== "captured" && value.phase !== "active") || typeof value.selectorRevision !== "string") throw new Error("curated shard selection is unavailable or invalid");
   return value.phase === "captured";
 }
 
@@ -48,10 +48,10 @@ function curatedStats(base: string, hash: string, key: string, captured: boolean
   if (!existsSync(join(dir, "generation.json")) && !existsSync(join(dir, "generation-seal.json"))) return { entries: 0, lastAt: null };
   const store = openShardStore({ memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore" });
   try {
-    const db = new Database(join(dir, "index.db"), { readonly: true });
+    const db = new Database(join(dir, store.profile.foreignPruneFormat ? "index-v2.db" : "index.db"), { readonly: true });
     try {
       db.run("PRAGMA busy_timeout = 0");
-      const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries WHERE scope = 'project' AND project = ?").get(key) as { n: number; last: string | null };
+      const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries WHERE scope = 'project' AND project = ?" + (store.profile.foreignPruneFormat ? " AND id NOT IN (SELECT id FROM generation_targets)" : "")).get(key) as { n: number; last: string | null };
       return { entries: row.n, lastAt: row.last };
     } finally { db.close(); }
   } finally { store.close(); }

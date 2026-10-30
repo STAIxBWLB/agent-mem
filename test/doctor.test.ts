@@ -1,15 +1,21 @@
+import { migrateShards } from "../src/memory/shard-migration.ts";
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
+import { preparePublicPruneInput, persistPublicPruneInput } from "../src/memory/public-prune-inputs.ts";
+import { readSelector } from "../src/memory/generation.ts";
+import { resolveShardProfile } from "../src/memory/shard.ts";
+import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
-import { DOCTOR_GIT_TIMEOUT_MS, sweepStaleScratch } from "../src/memory/doctor.ts";
+import { DOCTOR_GIT_TIMEOUT_MS, doctorReport, sweepStaleScratch } from "../src/memory/doctor.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
@@ -485,4 +491,38 @@ test("#132: a torn metrics line is counted, a tail with no decodable record is u
   expect(text).toMatch(/^UNAVAILABLE +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
   const { captureDropSummary } = await import("../src/memory/metrics.ts");
   expect(captureDropSummary(r.memory)).toEqual({});
+});
+
+for (const withRealm of [false, true]) test(`doctor keeps all curated sections available on an activated v2 home, realm=${withRealm}`, async () => {
+  const r = rig(); r.note("healthy v2 doctor control");
+  await migrateShards({ memoryDir: r.memory, mode: "apply", authorizedPerson: true, tty: true });
+  const profile = resolveShardProfile(r.memory, { project: r.project }), realms: Record<string, string> = {};
+  if (withRealm) {
+    const graph = publicPruneGraph({ note: { project: r.project }, manifest: value => { value.realm = {scope:"project",key:r.project}; } });
+    const binding = { realm: graph.manifest.realm, receivingGeneration: profile.generation!, selectorRevision: profile.selectorRevision, inputSetHash: null };
+    const registered = persistPublicPruneInput(preparePublicPruneInput({dir:profile.dir,binding,current:()=>binding,input:graph.input}));
+    realms[`project:${r.project}`] = registered.inputSetHash;
+  }
+  await activatePublicPruneView({memoryDir:r.memory,mode:"apply",authorizedPerson:true,tty:true,
+    view:{schema:"agent-mem.public-prune-view/v1",receivingGeneration:profile.generation!,realms}});
+  const selector = readSelector(r.memory).selector;
+  expect(selector?.schema).toBe("agent-mem.profile/v2");
+  if (selector?.schema !== "agent-mem.profile/v2") throw new Error("v2 fixture not activated");
+  // An unrelated root record must stay out of scratch; only the committed map is copied.
+  writeFileSync(join(r.memory,"public-prune-input-sets","f".repeat(64)+".json"),"UNREGISTERED-ROOT-RECORD",{mode:0o600});
+  const before = exact(r); let opened = false;
+  const report = await doctorReport({home:r.memory,homeSource:"test",cwd:r.cwd,project:r.project,aliases:[],now:Date.now(),openCurated:base=>{
+    opened = true; const directory = join(base,"public-prune-input-sets"), file = join(directory,selector.pruneInputSetHash+".json");
+    expect(readdirSync(directory)).toEqual([selector.pruneInputSetHash+".json"]);
+    expect(lstatSync(directory).mode & 0o777).toBe(0o700); expect(lstatSync(file).mode & 0o777).toBe(0o600);
+    return openShardStore({memoryDir:base,project:r.project,deferPromotions:true});
+  }});
+  expect(opened).toBe(true);
+  for (const name of ["duplicates","stale","brief"] as const) expect(report.sections[name].status,name).toBe("ok");
+  expect(report.sections.index.status).toBe("skipped"); // Existing split-index diagnostic semantics, rather than copy failure.
+  expect(report.sections.brief).toMatchObject({coverage:{curated:"complete"}}); expect(exact(r)).toEqual(before);
+  const cli = await doctor(r);
+  for (const name of ["duplicates","stale","brief"]) expect(cli.sections[name].status,name).toBe("ok");
+  expect(cli.sections.index.status).toBe("skipped");
+  expect(exact(r)).toEqual(before);
 });

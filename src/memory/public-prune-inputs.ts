@@ -1,7 +1,7 @@
 /** Inactive Layer 2. Only Layer 3 may commit a selector; Layer 4 owns sync admission. */
 import { createHash, randomBytes } from "node:crypto";
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON } from "./generation.ts";
 import { acquireMutation } from "./mutation.ts";
 import { realPath } from "./platform.ts";
@@ -40,7 +40,7 @@ export interface PublicPruneReplayInput {
   nativeTargets?: readonly string[]; ordinary?: readonly Entry[];
 }
 export interface PublicPruneProjection {
-  targets: Set<string>; rowHashes: Map<string, string>; authoredPrunes: number; inputs: string[];
+  targets: Set<string>; rowHashes: Map<string, string>; authoredPrunes: number; inputs: string[]; commitments: string[];
 }
 export type PublicPrunePersistPhase = `${"object" | "input" | "set"}-${"temp" | "fsync" | "installed"}`;
 export class PublicPruneInputError extends Error {
@@ -191,14 +191,14 @@ function folder(dir: string, kind: Kind, create = false): string {
   if (!stat) { guard(create); mkdirSync(name, { mode: 0o700 }); fsyncDirectory(dir); }
   privateStat(lstatSync(name), true); return name;
 }
-function read(dir: string, kind: Kind, id: string): Buffer {
+function read(dir: string, kind: Kind, id: string, observed?: (file: string, stat: Stats) => void): Buffer {
   const file = join(folder(dir, kind), filename(kind, id)), before = lstatSync(file); privateStat(before);
   guard(before.size > 0 && before.size <= (kind === "object" ? OBJECT_MAX : PUBLIC_PRUNE_INPUT_MAX_BYTES), "resource");
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(fd); privateStat(opened); guard(opened.dev === before.dev && opened.ino === before.ino);
-    const bytes = readFileSync(fd), after = fstatSync(fd), named = lstatSync(file);
-    guard(bytes.length === before.size && after.size === before.size && after.mtimeMs === before.mtimeMs && named.dev === before.dev && named.ino === before.ino); return bytes;
+    const bytes = readFileSync(fd), after = fstatSync(fd), named = lstatSync(file); privateStat(after); privateStat(named);
+    guard(bytes.length === before.size && after.size === before.size && after.mtimeMs === before.mtimeMs && named.dev === before.dev && named.ino === before.ino); observed?.(file, before); return bytes;
   } finally { closeSync(fd); }
 }
 type Loader = (kind: Kind, id: string) => Buffer;
@@ -230,7 +230,7 @@ function replay(input: Omit<PublicPruneReplayInput, "dir">, load: Loader): Publi
     const { id, ...body } = row; guard(hex(id, 32) && row.schema === "agent-hub.memory/v1" && entryId(body) === id);
     guard(!rowHashes.has(id) || rowHashes.get(id) === hashJSON(row));
   }
-  return { targets, rowHashes, authoredPrunes: identities.size, inputs: [...members] };
+  return { targets, rowHashes, authoredPrunes: identities.size, inputs: [...members], commitments: [...sets] };
 }
 export function reducePublicPruneInputs(input: PublicPruneReplayInput): PublicPruneProjection {
   return protectedCall(() => { const dir = rootDir(input.dir); return replay(input, (kind, id) => read(dir, kind, id)); });
@@ -248,6 +248,8 @@ function recoverLinkedTemps(dir: string): void {
     }
     for (const entries of inodes.values()) {
       const pending = entries.find(item => item.name.length === 41 && /^\.pending-[a-f0-9]{32}$/.exec(item.name)?.[0] === item.name);
+      // ponytail: single-link crash temps count toward the 256 MiB capacity ceiling;
+      // future maintenance may reclaim them under this writer fence, never committed proof.
       if (!pending || pending.stat.nlink === 1) continue;
       guard(entries.length === 2); const final = entries.find(item => item !== pending); guard(final && final.stat.nlink === 2);
       const id = final.name.slice(0, kind === "object" ? 40 : 64); guard(filename(kind, id) === final.name);
@@ -321,5 +323,25 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
       for (const value of writes.values()) { write(dir, value.kind, value.id, value.bytes, options.observe); current(); }
       return { ...(inputHash ? { inputHash } : {}), inputSetHash, previous };
     } finally { release(); }
+  });
+}
+
+/** In-process verified-byte frontier only. Never serialized or used as membership.
+ * Immutable source changes/deletion force replay/refusal; every new handle replays. */
+export function createPublicPruneReplayCache(input: Omit<PublicPruneReplayInput, "nativeTargets" | "ordinary">): () => PublicPruneProjection {
+  let cached: PublicPruneProjection | undefined; const stamps = new Map<string, string>();
+  const stamp = (stat: Stats) => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.uid, stat.mode, stat.nlink].join(":");
+  const root = rootDir(input.dir), original = lstatSync(root);
+  return () => protectedCall(() => {
+    const named = lstatSync(root); privateStat(named, true); guard(named.dev === original.dev && named.ino === original.ino);
+    const current = () => {
+      for (const parent of new Set([...stamps.keys()].map(file => dirname(file)))) privateStat(lstatSync(parent), true);
+      return [...stamps].every(([file, expected]) => { const stat = lstatSync(file); privateStat(stat); return stamp(stat) === expected; });
+    };
+    if (!cached || !current()) {
+      stamps.clear(); cached = replay(input, (kind, id) => read(root, kind, id, (file, stat) => stamps.set(file, stamp(stat))));
+      guard(current());
+    }
+    return { targets: new Set(cached.targets), rowHashes: new Map(cached.rowHashes), authoredPrunes: cached.authoredPrunes, inputs: [...cached.inputs], commitments: [...cached.commitments] };
   });
 }

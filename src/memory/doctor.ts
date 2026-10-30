@@ -1,6 +1,6 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { sessionStartBrief } from "../session-brief.ts";
 import { pendingSummary } from "./candidate-pending.ts";
@@ -87,8 +87,10 @@ class TooBig extends Error {}
 function copyTree(from: string, to: string, budget: { bytes: number }, skipNames: ReadonlySet<string> = new Set()): void {
   mkdirSync(to, { recursive: true, mode: 0o700 });
   for (const name of readdirSync(from)) {
-    if (SKIP.test(name) || skipNames.has(name)) continue;
+    const proofObject = basename(from) === "public-prune-objects" && /^[a-f0-9]{40}\.git$/.exec(name)?.[0] === name;
+    if (SKIP.test(name) && !proofObject || skipNames.has(name)) continue;
     const source = join(from, name), stat = lstatSync(source);
+    if (proofObject && !stat.isFile()) throw new Error("a public prune object is not a plain file");
     if (stat.isSymbolicLink()) throw new Error("the memory home holds a link where a plain file or directory is expected");
     if (stat.isDirectory()) copyTree(source, join(to, name), budget, skipNames);
     else if (stat.isFile()) { budget.bytes += stat.size; if (budget.bytes > COPY_LIMIT_BYTES) throw new TooBig(); copyFileSync(source, join(to, name)); }
@@ -102,6 +104,14 @@ function copyCurated(options: DoctorOptions, layout: Layout, scratch: string, bu
     if (SKIP.test(name) || !regularFile(join(home, name))) continue;
     const stat = statSync(join(home, name)); budget.bytes += stat.size; if (budget.bytes > COPY_LIMIT_BYTES) throw new TooBig();
     copyFileSync(join(home, name), join(scratch, name));
+  }
+  const selected = readSelector(home).selector;
+  if (selected?.schema === "agent-mem.profile/v2") {
+    const name = `${selected.pruneInputSetHash}.json`, source = join(home, "public-prune-input-sets", name), stat = lstatSync(source);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("the committed public prune view is not a plain file");
+    budget.bytes += stat.size; if (budget.bytes > COPY_LIMIT_BYTES) throw new TooBig();
+    const directory = join(scratch, "public-prune-input-sets"); mkdirSync(directory, { mode: 0o700 });
+    copyFileSync(source, join(directory, name)); chmodSync(join(directory, name), 0o600);
   }
   if (layout === "split") {
     for (const key of [options.project, ...options.aliases]) {

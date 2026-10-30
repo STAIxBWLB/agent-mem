@@ -1,4 +1,6 @@
-import { SHARDED_SCHEMA } from "./shard.ts";
+import { createPublicPruneReplayCache, type PublicPruneProjection } from "./public-prune-inputs.ts";
+import { readPublicPruneView, readPublicPruneViewForActivation } from "./public-prune-view.ts";
+import { SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -9,6 +11,7 @@ import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type Lega
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
 
+const FOREIGN_TABLES = ["generation_foreign_inputs", "generation_foreign_rows", "generation_foreign_targets"] as const;
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const fail = (): never => { throw new Error("generation input unavailable or changed; person inspection required"); };
 export const GENERATION_TABLES = ["generation_vault_links", "generation_rows", "generation_prunes", "generation_targets", "generation_segments", "generation_state"] as const;
@@ -65,9 +68,17 @@ export class GenerationIndex {
   private fullCapture = false;
   private retainedTail = false;
   private replayProvenance = false;
+  private foreignStamp?: string;
+  private foreignCache?: { set: string; load: () => PublicPruneProjection };
   constructor(private readonly options: GenerationIndexOptions) {
     this.profile = options.profile;
     const db = options.db;
+    if (this.profile.foreignPruneFormat) {
+      db.run("CREATE TABLE IF NOT EXISTS generation_foreign_inputs (id TEXT PRIMARY KEY)");
+      db.run("CREATE TABLE IF NOT EXISTS generation_foreign_rows (id TEXT PRIMARY KEY, hash TEXT NOT NULL)");
+      db.run("CREATE TABLE IF NOT EXISTS generation_foreign_targets (id TEXT PRIMARY KEY)");
+      this.replayProvenance = true; // persistent SQLite never supplies foreign membership
+    }
     db.run("CREATE TABLE IF NOT EXISTS generation_rows (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL, public INTEGER NOT NULL, own INTEGER NOT NULL, legacy INTEGER NOT NULL)");
     if (!(db.query("PRAGMA table_info(generation_rows)").all() as { name: string }[]).some(row => row.name === "legacy")) { db.run("ALTER TABLE generation_rows ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"); this.replayProvenance = true; }
     db.run("CREATE TABLE IF NOT EXISTS generation_vault_links (id TEXT PRIMARY KEY, target TEXT NOT NULL, row_hash TEXT NOT NULL, project TEXT NOT NULL, path TEXT NOT NULL, at TEXT NOT NULL)");
@@ -94,7 +105,8 @@ export class GenerationIndex {
   private shardFrontier(): string | undefined {
     if (!this.profile.sharded || this.options.limits !== undefined) return undefined;
     const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
-    if (!value || value.schema !== SHARDED_SCHEMA || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+    if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+    if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) return fail();
     return hashJSON(value);
   }
   private capture(reader: SegmentReader = this.reader): { segments: LegacySegment[]; commit?: string } {
@@ -161,7 +173,35 @@ export class GenerationIndex {
     const reduced = reducePruneRows(prunes, snapshot, this.profile.generation!);
     db.run("DELETE FROM generation_targets");
     for (const id of [...reduced.targets].sort()) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
-    this.pruned = reduced.targets;
+    this.applyForeign(true);
+    this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
+  }
+  private applyForeign(validateRows = false): void {
+    if (!this.profile.foreignPruneFormat) return;
+    const profile = this.profile;
+    if (!profile.pruneInputSetHash || !profile.generation || !profile.sharded) return fail();
+    const view = (this.options.limits !== undefined ? readPublicPruneViewForActivation : readPublicPruneView)(profile.home, profile.pruneInputSetHash, profile.generation);
+    const key = profile.shardUser ? "user" : `project:${profile.shardKey}`, set = view.realms[key];
+    const db = this.options.db;
+    if (!set) {
+      if ((db.query("SELECT COUNT(*) AS n FROM generation_foreign_inputs").get() as {n:number}).n) return fail();
+      return;
+    }
+    if (!this.foreignCache || this.foreignCache.set !== set) this.foreignCache = { set, load: createPublicPruneReplayCache({ dir: profile.dir,
+      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set }) };
+    const proof = this.foreignCache.load();
+    if (validateRows) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
+      const expected = proof.rowHashes.get(item.id); if (expected && hashJSON(JSON.parse(item.line)) !== expected) return fail();
+    }
+    if (validateRows || this.foreignStamp !== set) {
+    for (const table of FOREIGN_TABLES) db.run(`DELETE FROM ${table}`);
+    for (const id of proof.inputs) db.query("INSERT INTO generation_foreign_inputs VALUES (?)").run(id);
+    for (const [id, hash] of proof.rowHashes) db.query("INSERT INTO generation_foreign_rows VALUES (?,?)").run(id, hash);
+    for (const id of proof.targets) db.query("INSERT INTO generation_foreign_targets VALUES (?)").run(id);
+    this.foreignStamp = set;
+    }
+    const current = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
+    for (const id of proof.targets) if (!current.has(id)) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
   }
   private recordSkipped(segment: LegacySegment): void {
     this.options.db.query("INSERT INTO generation_state VALUES (?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(`skipped:${segment.source}:${segment.path}`);
@@ -188,7 +228,7 @@ export class GenerationIndex {
     const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
     const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null) && row.stamp === (segment.stamp ?? null)));
-    if (unchanged) { this.retainedTail = input.segments.some(segment => segment.tailBytes > 0); this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
+    if (unchanged) { if (this.profile.foreignPruneFormat) db.transaction(() => this.applyForeign()).deferred(); this.retainedTail = input.segments.some(segment => segment.tailBytes > 0); this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
     const committed = db.transaction(() => { if (this.frontier() !== before) return false; this.index(input); return true; }).immediate();
     if (!committed) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
     this.retainedTail = input.segments.some(segment => segment.tailBytes > 0);
@@ -201,7 +241,7 @@ export class GenerationIndex {
     finally { this.fullCapture = false; }
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;
-      for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES]) this.options.db.run(`DELETE FROM ${table}`);
+      for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES, ...(this.profile.foreignPruneFormat ? FOREIGN_TABLES : [])]) this.options.db.run(`DELETE FROM ${table}`);
       this.index(input); return true;
     }).immediate();
     if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1, reader); return fail(); }

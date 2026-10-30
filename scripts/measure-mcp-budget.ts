@@ -1,3 +1,4 @@
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** #13 frozen P2 R1/R3: a real stdio MCP session over a bounded synthetic project on macOS and Linux.
  * Instrumentation is confined to the child fixture; production handlers and transport are unchanged.
  * A .bun-version bump to 1.4.3+ requires re-baselining macOS R3: Bun changed rss/maxRSS to
@@ -53,6 +54,7 @@ try {
     if (curated.list({ project, limit: CURATED + 1 }).length !== CURATED) throw new Error("curated seed incomplete");
   } finally { curated.close(); }
   await migrateShards({ memoryDir: base, mode: "apply", generation: "b".repeat(32), authorizedPerson: true, tty: true });
+  if (process.argv.includes("--public-prune-view")) await activatePublicPruneView({ memoryDir: base, mode: "apply", authorizedPerson: true, tty: true });
   const capture = new CaptureStore({ home, project });
   try {
     for (let i = 0; i < CAPTURE; i++) {
@@ -225,5 +227,5 @@ const measured = await budgetGroup("mcp-session", measureSession, report => ({ w
 
 // The existing mixed 5,001-row session remains unchanged; volume gets its own fresh child/watchdog.
 const volume = await budgetGroup("mcp-volume", measureMcpVolume, report => ({ wallPass: report.wallTimingPass, rssPass: report.R3.pass }), { retryPolicy: "stall" });
-console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts,
+console.log(JSON.stringify({ sessionProfile: process.argv.includes("--public-prune-view") ? "public-prune-view/v2" : "shards/v1", ...measured.result, groupAttempts: measured.attempts,
   volume: { ...volume.result, groupAttempts: volume.attempts }, pass: measured.result.pass && volume.result.pass }, null, 2));

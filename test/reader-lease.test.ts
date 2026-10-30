@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertNoLiveReaders, registerReaderLease } from "../src/memory/reader-lease.ts";
@@ -59,4 +59,27 @@ test("reader refs in two memory homes close independently and allow fresh regist
   freshA.verify();freshB.verify();expect(leaseNames(a)).toHaveLength(1);expect(leaseNames(b)).toHaveLength(1);
   freshA();expect(leaseNames(a)).toHaveLength(0);expect(leaseNames(b)).toHaveLength(1);freshB.verify();
   freshB();expect(leaseNames(b)).toHaveLength(0);
+});
+
+test("shard readers use a separate reference-counted namespace with the same process identity", () => {
+  const dir = home(), legacy = registerReaderLease(dir), first = registerReaderLease(dir, { scope: "shard" }), second = registerReaderLease(dir, { scope: "shard" });
+  cleanup.push(legacy, first, second);
+  const shards = () => readdirSync(join(dir, "shard-readers"));
+  expect(shards()).toHaveLength(1); expect(leaseNames(dir)).toHaveLength(1); expect(shards()).toEqual(leaseNames(dir));
+  const record = JSON.parse(readFileSync(join(dir, "shard-readers", shards()[0]!), "utf8"));
+  expect(Object.keys(record).sort()).toEqual(["pid", "renewedAt", "schema", "signature"]);
+  expect(record.schema).toBe("agent-mem.reader-lease/v1"); expect(record.pid).toBe(process.pid);
+  expect(() => assertNoLiveReaders(dir)).toThrow("legacy reader is live"); legacy();
+  expect(assertNoLiveReaders(dir)).toEqual({ removed: 0 }); expect(() => assertNoLiveReaders(dir, { includeShards: true })).toThrow("reader is live");
+  first(); expect(shards()).toHaveLength(1); second.verify();
+  second(); expect(shards()).toEqual([]); expect(leaseNames(dir)).toEqual([]);
+  expect(assertNoLiveReaders(dir, { includeShards: true })).toEqual({ removed: 0 });
+});
+
+test("the default migration check does not inspect an unknown shard lease; activation still refuses it", () => {
+  const dir = home(); mkdirSync(join(dir, "shard-readers"));
+  const file = join(dir, "shard-readers", `999999-${"0".repeat(64)}.json`); writeFileSync(file, "{}\n");
+  expect(assertNoLiveReaders(dir)).toEqual({ removed: 0 });
+  expect(() => assertNoLiveReaders(dir, { includeShards: true })).toThrow("unverifiable");
+  expect(readFileSync(file, "utf8")).toBe("{}\n");
 });

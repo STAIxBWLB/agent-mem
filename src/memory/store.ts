@@ -1,3 +1,5 @@
+import { readPublicPruneView } from "./public-prune-view.ts";
+import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import { cliAttribution } from "./cli-attribution.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -23,7 +25,7 @@ import { legacyEntries, readLegacySnapshot, SegmentReader, type LegacyCheckpoint
 import { readMigrationSources } from "./migrate.ts";
 import type { PruneSourceRow, PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
-import { registerReaderLease } from "./reader-lease.ts";
+import { registerReaderLease, type ReaderLease } from "./reader-lease.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -215,7 +217,7 @@ export class MemoryStore {
   /** #13: the derived FTS5 copy of the curated rows, and the memory home base for capture shard resolution (#15 T1). */
   private readonly searchIndex: SearchIndex;
   private readonly memoryBaseDir: string;
-  private releaseReaderLease?: () => void;
+  private releaseReaderLease?: ReaderLease;
   private readonly userOverlay?: MemoryStore;
   /** #27: the other keys' shards of a reconciled read (curated shards); shared-v1 reads them from its own index. */
   private readonly aliasStores: MemoryStore[];
@@ -248,10 +250,16 @@ export class MemoryStore {
     this.screen = opts.screen;
     this.deferPromotions = opts.deferPromotions ?? false;
     // Announce before opening derived handles or reading rows; failed admission leaks no database handles.
-    if (!bootstrap) this.releaseReaderLease = registerReaderLease(this.profile.home);
+    if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home, this.profile.sharded ? {scope:"shard"} : {});
     let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
     try {
-      const db = openedDb = new Database(join(this.dir, "index.db"), { create: true });
+      const indexFile = join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db");
+      if (this.profile.foreignPruneFormat) for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        const stat = lstatSync(indexFile + suffix, {throwIfNoEntry:false});
+        if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.())) throw new Error("v2 index path unavailable");
+      }
+      const db = openedDb = new Database(indexFile, { create: true });
+      if (this.profile.foreignPruneFormat) chmodSync(indexFile, 0o600);
       db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
       db.run("PRAGMA journal_mode = WAL");
       if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
@@ -272,7 +280,7 @@ export class MemoryStore {
       // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
       this.searchIndex = openedSearch = new SearchIndex(this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
       this.memoryBaseDir = home;
-      try { chmodSync(join(this.dir, "index.db"), 0o600); } catch { /* best effort */ }
+      try { chmodSync(join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db"), 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
         apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
@@ -1003,6 +1011,7 @@ export class MemoryStore {
 
   /** Index deferred writes before any note, goal or suggestion read. */
   private ensureFresh(): void {
+    this.releaseReaderLease?.verify();
     this.userOverlay?.ensureFresh();
     for (const store of this.aliasStores) store.ensureFresh();
     if (this.generationIndex) { this.generationIndex.refresh(); return; }
@@ -1553,6 +1562,18 @@ export function buildGenerationIndex(profile: BoundProfile, sources: readonly Le
   finally { store.close(); }
 }
 
+/** Trusted activation bootstrap; caller holds profile + realm mutation fences. */
+export function buildPublicPruneIndex(profile: BoundProfile): {targets:string[];sourceHash:string} {
+  const sources = readShardLegacySnapshot(profile, {}).map(({bytes:_bytes,local:_local,...prefix}) => prefix);
+  const store = new MemoryStore({deferPromotions:true}, {token:MIGRATION_BOOTSTRAP, profile, limits:sources});
+  try {
+    const before = store.derivedTables(); store.rebuild(); const tables = store.derivedTables();
+    if (!isDeepStrictEqual(before, tables)) throw new Error("public prune view rebuild differs from incremental index");
+    return { targets: (tables.generation_targets as {id:string}[]).map(row=>row.id).sort(),
+      sourceHash: hashJSON([tables.generation_rows, tables.generation_prunes, tables.generation_segments, tables.generation_state]) };
+  } finally {store.close();}
+}
+
 function initializeShard(home: string, opts: { project?: string; user?: boolean }): void {
   const selection = readShardedSelection(home), generation = selection.generation;
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!), machine = machineId(home);
@@ -1565,7 +1586,9 @@ function initializeShard(home: string, opts: { project?: string; user?: boolean 
   }
   const legacyHome = join(dir, "legacy"), sources = readMigrationSources(legacyHome);
   writeProfileJSON(join(dir, "migration-sources.json"), { schema: "agent-mem.migration-sources/v1", sources });
+  const selected = readSelector(home).selector;
   const profile: BoundProfile = { kind: "generation", home, dir, generation, selectorRevision: selection.selectorRevision,
+    ...(selected?.schema === "agent-mem.profile/v2" ? {foreignPruneFormat: selected.foreignPruneFormat, pruneInputSetHash: selected.pruneInputSetHash} : {}),
     legacyHome, legacyMainHome: join(dir, "legacy-main"), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
   buildGenerationIndex(profile, sources);
   writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation,
@@ -1578,11 +1601,21 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
   const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
   assertCuratedShardPaths(home, opts);
-  // #15 T5: the one gate every recall path shares, checked before a shard can be created. The user shard has no lifecycle.
+  // Lifecycle refusal must remain before admission creates any lease/fence file.
   if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
+  readShardedSelection(home); // validate the floor before any lazy shard initialization
+  const admission = registerReaderLease(home, {scope:"shard"});
+  try {
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
   const missing = !existsSync(join(dir, "generation.json"));
-  if (missing) initializeShard(home, opts);
+  if (missing) {
+    const selected = readSelector(home).selector;
+    if (selected?.schema === "agent-mem.profile/v2") {
+      const view = readPublicPruneView(home, selected.pruneInputSetHash, selected.generation), key = opts.user ? "user" : `project:${opts.project}`;
+      if (view.realms[key] || ["generation-seal.json", "migration-sources.json", "machine.json"].some(name => existsSync(join(dir, name)))) throw new Error("v2 generation input unavailable; reader cannot repair committed inputs");
+    }
+    initializeShard(home, opts);
+  }
   const profile = resolveShardProfile(home, opts);
   const { reconcile, ...plain } = opts;
   const userOverlay = opts.user === true ? undefined : openShardStore({ ...plain, project: undefined, user: true });
@@ -1599,6 +1632,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
     }
     return new MemoryStore(opts, { token: MIGRATION_BOOTSTRAP, profile, authoring: true, userOverlay, aliasStores });
   } catch (error) { for (const store of aliasStores) store.close(); userOverlay?.close(); throw error; }
+  } finally { admission(); }
 }
 
 /** Administrative migration receipt; this inspector reads raw rows without opening a store or writing any index. */

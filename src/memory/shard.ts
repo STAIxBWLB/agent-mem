@@ -1,3 +1,4 @@
+import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -80,16 +81,25 @@ export function captureShardDir(base: string, key: string, machine: string): str
 }
 
 export const SHARDED_SCHEMA = "agent-mem.shards/v1";
-export interface ShardedSelection { schema: typeof SHARDED_SCHEMA; generation: string; phase: "active"; selectorRevision: string }
+export const SHARDED_V2_SCHEMA = "agent-mem.shards/v2";
+export const SHARDED_V2_FIELDS = ["schema", "generation", "phase", "selectorRevision", "sourceGeneration", "sources", "machine", "legacyCommit", "deadLeasesRemoved"] as const;
+export interface ShardedSelection { schema: typeof SHARDED_SCHEMA | typeof SHARDED_V2_SCHEMA; generation: string; phase: "active"; selectorRevision: string }
 
 export function userShardDir(base: string): string {
   return join(base, "user");
 }
 
 export function readShardedSelection(memoryDir: string): ShardedSelection {
+  assertNoPublicPruneIntent(memoryDir);
   const value = readProfileJSON(join(memoryDir, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined;
-  if (!value || value.schema !== SHARDED_SCHEMA || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
-  return { schema: SHARDED_SCHEMA, generation: value.generation, phase: "active", selectorRevision: value.selectorRevision };
+  if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
+  if (value.schema === SHARDED_V2_SCHEMA) {
+    const allowed: readonly string[] = SHARDED_V2_FIELDS;
+    if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error("unsupported curated shard view");
+  }
+  const selector = readSelector(memoryDir);
+  if ((value.schema === SHARDED_V2_SCHEMA) !== (selector.selector?.schema === "agent-mem.profile/v2") || value.schema === SHARDED_V2_SCHEMA && (selector.revision !== value.selectorRevision || selector.selector?.generation !== value.generation)) throw new Error("curated shard selector changed");
+  return { schema: value.schema, generation: value.generation, phase: "active", selectorRevision: value.selectorRevision };
 }
 
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
@@ -107,7 +117,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   check(dir, true);
   for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
   for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
-  for (const database of ["index.db", "search.db", "mutation-lock.db"]) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+  for (const database of ["index.db", "index-v2.db", "search.db", "mutation-lock.db"]) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */
@@ -129,8 +139,10 @@ export function resolveShardProfile(memoryDir: string, opts: { project?: string;
   if (typeof rootMachine?.id !== "string" || !/^[a-f0-9]{16}$/.test(rootMachine.id) || rootMachine.id !== shardMachine?.id) throw new Error("curated shard machine identity mismatch");
   const selector = readSelector(memoryDir);
   if (selector.revision !== selection.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
+  if (selector.selector?.schema === "agent-mem.profile/v2") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation);
   const legacyMainHome = join(dir, "legacy-main");
   const hasLegacyMain = existsSync(legacyMainHome) || sources.sources.some(source => !!source && typeof source === "object" && "source" in source && source.source === "legacy-main");
   return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: selector.revision,
+    ...(selector.selector?.schema === "agent-mem.profile/v2" ? { foreignPruneFormat: selector.selector.foreignPruneFormat, pruneInputSetHash: selector.selector.pruneInputSetHash } : {}),
     legacyHome: join(dir, "legacy"), ...(hasLegacyMain ? { legacyMainHome } : {}), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
 }
