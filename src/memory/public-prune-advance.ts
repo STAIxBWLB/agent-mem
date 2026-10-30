@@ -113,8 +113,6 @@ function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefine
       const viewHash=publicPruneViewHash(intent.view),file=join(intent.home,PUBLIC_PRUNE_INTENT),text=canonicalJSON(intent)+"\n";
       if(profile===intent.finalProfile&&shards===intent.finalShards&&!lstatSync(file,{throwIfNoEntry:false}))return{revision:intent.finalProfileHash,viewHash};
       immutable(join(intent.home,"public-prune-input-sets",viewHash+".json"),canonicalJSON(intent.view)+"\n");
-      // Recovery evidence only: pending native transport plans retain their exact original selector binding.
-      immutable(join(intent.home,"public-prune-selector-history",intent.expectedRevision+".json"),canonicalJSON(JSON.parse(intent.previousProfile))+"\n");
       immutable(file,text);yield "after-intent";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);
       if(shards!==intent.finalShards)replace(join(intent.home,"shards.json"),intent.finalShards);shards=intent.finalShards;
       yield "after-shards";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);

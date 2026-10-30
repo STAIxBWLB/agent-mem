@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -11,7 +11,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
 import { canonicalJSON, hashJSON, readSelector, writeProfileJSON } from "../src/memory/generation.ts";
 import { applyPrune, planPrune, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
-import { syncShardedMemory } from "../src/memory/shard-sync.ts";
+import { PENDING_SELECTOR_LIMIT, syncShardedMemory } from "../src/memory/shard-sync.ts";
 import { appendAlias, shardDir } from "../src/memory/shard.ts";
 import { shardSyncRef } from "../src/memory/shard-sync-format.ts";
 import { readPublicPruneView } from "../src/memory/public-prune-view.ts";
@@ -60,6 +60,13 @@ function history(url: string): { commit: string; file: string; text: string }[] 
   for (const commit of git(url, "rev-list", "--all").split("\n").filter(Boolean)) for (const file of git(url, "ls-tree", "-r", "--name-only", commit).split("\n").filter(Boolean)) result.push({ commit, file, text: git(url, "show", `${commit}:${file}`) });
   return result;
 }
+function selectorHistoryPaths(memory: string): string[] {
+  const result: string[] = [];
+  const visit = (dir: string) => { for (const entry of readdirSync(dir, { withFileTypes: true })) if (entry.isDirectory()) {
+    const next = join(dir, entry.name); if (entry.name === "selector-history" || entry.name === "public-prune-selector-history") result.push(next.slice(memory.length)); visit(next);
+  } };
+  visit(memory); return result.sort();
+}
 function assertForeign(store: MemoryStore, target: string, row: PruneRow) {
   const snapshot = store.prunePort().snapshot();
   expect(snapshot.pruned).toContain(target); expect(snapshot.durablePruneIds).not.toContain(row.id);
@@ -86,6 +93,7 @@ test("R01 independently initialized v2 homes apply original public prune identit
   expect(manifests.some(manifest => canonicalJSON(manifest.prune) === canonicalJSON(row) && manifest.prune.generation === G1)).toBe(true);
   for (const item of wire) { expect(item.file).not.toMatch(/(?:^|\/)(?:local|machine|work|capture)(?:\/|$)/); expect(item.text).not.toContain("LOCAL_ONLY_SYNC_CANARY"); }
   expect(existsSync(shardDir(receiver.memory, B))).toBe(false);
+  expect(selectorHistoryPaths(source.memory)).toEqual([]); expect(selectorHistoryPaths(receiver.memory)).toEqual([]);
 }, 60_000);
 
 test("R02 reverse publication and a third generation retain both independent original prune identities", async () => {
@@ -199,7 +207,7 @@ for (const change of ["policy", "alias"] as const) test(`R12 ${change} drift acr
   expect(source.a.get(target, A)?.id).toBe(target); expect(Object.keys(holds(source.memory))).toHaveLength(0);
 }, 60_000);
 
-test("R16 an old partial native transport plan resumes unchanged after a simultaneous foreign view advance", async () => {
+async function partialNativeForeign() {
   const url = remote(), sibling = await side(G2), receiver = await side(G2), nativeTarget = sibling.a.note(note("PUBLIC_NATIVE_PENDING_TARGET"));
   expect((await syncMemory(sibling.a, { remote: url, ...privateRemote })).ok).toBe(true);
   expect((await syncMemory(receiver.a, { remote: url, ...privateRemote })).ok).toBe(true);
@@ -238,17 +246,69 @@ test("R16 an old partial native transport plan resumes unchanged after a simulta
   expect(interrupted, JSON.stringify(result)).toBe(true); expect(result).toMatchObject({ ok: false, pushed: true });
   expect(readSelector(receiver.memory).revision).not.toBe(plan.selectorRevision);
   expect(readFileSync(planFile)).toEqual(planBytes); expect(readFileSync(claim)).toEqual(claimBytes); expect(readFileSync(segment)).toEqual(partialBytes);
-  const historyFile = join(receiver.memory, "public-prune-selector-history", plan.selectorRevision + ".json");
+  const historyFile = join(receiver.a.dir, "prune-plans", "selector-history", plan.seal + ".json");
   expect(hashJSON(JSON.parse(readFileSync(historyFile, "utf8")))).toBe(plan.selectorRevision);
+  expect(existsSync(join(receiver.memory, "public-prune-selector-history"))).toBe(false);
   expect(receiver.a.prunePort().snapshot().pruned).toContain(foreignTarget);
+  return { url, receiver, nativeTarget, nativeRow, foreignTarget, foreignRow, plan, planFile, planBytes, claim, claimBytes, segment,
+    partialBytes, prefix: prefix!, nativeLine, historyFile, historyBytes: readFileSync(historyFile) };
+}
 
+test("R16 an old partial native transport plan resumes unchanged after a simultaneous foreign view advance", async () => {
+  const { url, receiver, nativeTarget, nativeRow, foreignTarget, foreignRow, planFile, planBytes, claim, segment, prefix, nativeLine, historyFile } = await partialNativeForeign();
   expect(await syncMemory(receiver.a, { remote: url, ...privateRemote })).toMatchObject({ ok: true, pruneApplication: { phase: "complete", projectionActive: 1, held: 0 } });
-  expect(existsSync(claim)).toBe(false); expect(readFileSync(planFile)).toEqual(planBytes);
-  expect(readFileSync(segment)).toEqual(Buffer.concat([prefix!, Buffer.from(nativeLine)]));
+  expect(existsSync(claim)).toBe(false); expect(existsSync(historyFile)).toBe(false); expect(readFileSync(planFile)).toEqual(planBytes);
+  expect(readFileSync(segment)).toEqual(Buffer.concat([prefix, Buffer.from(nativeLine)]));
   const snapshot = receiver.a.prunePort().snapshot();
   expect(snapshot.durablePruneIds?.filter(id => id === nativeRow.id)).toHaveLength(1); expect(snapshot.durablePruneIds).not.toContain(foreignRow.id);
   expect(snapshot.pruned).toEqual(expect.arrayContaining([nativeTarget, foreignTarget]));
   assertForeign(receiver.a, foreignTarget, foreignRow);
+}, 60_000);
+
+for (const damage of ["missing", "altered"] as const) test(`R16 ${damage} needed selector copy refuses exact-plan recovery before publication or append`, async () => {
+  const f = await partialNativeForeign(), tips = git(f.url, "for-each-ref", "--format=%(refname) %(objectname)");
+  if (damage === "missing") rmSync(f.historyFile);
+  else writeFileSync(f.historyFile, canonicalJSON({ ...JSON.parse(f.historyBytes.toString()), pruneInputSetHash: "f".repeat(64) }) + "\n");
+  const record = existsSync(f.historyFile) ? readFileSync(f.historyFile) : undefined;
+  const result = await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote });
+  expect(result).toMatchObject({ ok: false, pushed: false }); expect(result.error).toContain("pending prune");
+  expect(git(f.url, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(tips);
+  expect(readFileSync(f.planFile)).toEqual(f.planBytes); expect(readFileSync(f.claim)).toEqual(f.claimBytes); expect(readFileSync(f.segment)).toEqual(f.partialBytes);
+  expect(existsSync(f.historyFile)).toBe(damage !== "missing"); if (record) expect(readFileSync(f.historyFile)).toEqual(record);
+  expect(f.receiver.a.prunePort().snapshot().pruned).toContain(f.foreignTarget);
+}, 60_000);
+
+test("R21 65 retained selector copies refuse as a resource bound before cleanup, push or append", async () => {
+  const f = await partialNativeForeign(), folder = join(f.receiver.a.dir, "prune-plans", "selector-history");
+  expect(PENDING_SELECTOR_LIMIT).toBe(64);
+  for (let n = 0; n < PENDING_SELECTOR_LIMIT; n++) writeFileSync(join(folder, sha("synthetic orphan plan seal " + n) + ".json"), f.historyBytes, { mode: 0o600 });
+  const inventory = Object.fromEntries(readdirSync(folder).sort().map(name => [name, readFileSync(join(folder, name)).toString("base64")]));
+  expect(Object.keys(inventory)).toHaveLength(PENDING_SELECTOR_LIMIT + 1);
+  const tips = git(f.url, "for-each-ref", "--format=%(refname) %(objectname)"), result = await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote });
+  expect(result).toMatchObject({ ok: false, pushed: false }); expect(result.error).toMatch(/resource/i);
+  expect(Object.fromEntries(readdirSync(folder).sort().map(name => [name, readFileSync(join(folder, name)).toString("base64")]))).toEqual(inventory);
+  expect(readFileSync(f.historyFile)).toEqual(f.historyBytes); expect(readFileSync(f.planFile)).toEqual(f.planBytes);
+  expect(readFileSync(f.claim)).toEqual(f.claimBytes); expect(readFileSync(f.segment)).toEqual(f.partialBytes);
+  expect(git(f.url, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(tips);
+}, 60_000);
+
+test("R16 a post-completion crash leaves a non-authoritative orphan cleaned only by the next fenced reproof", async () => {
+  const f = await partialNativeForeign(), original = f.receiver.a.prunePort.bind(f.receiver.a); let interrupted = false;
+  f.receiver.a.prunePort = () => {
+    const port = original(); return { ...port, appendPrune: (row, line, seal) => {
+      const result = port.appendPrune(row, line, seal);
+      if (row.id === f.nativeRow.id && !interrupted) { interrupted = true; throw new Error("AFTER-NATIVE-DURABILITY-BEFORE-SELECTOR-CLEANUP"); }
+      return result;
+    } };
+  };
+  try { expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: false, pushed: true }); }
+  finally { f.receiver.a.prunePort = original; }
+  expect(interrupted).toBe(true); expect(existsSync(f.claim)).toBe(false); expect(readFileSync(f.historyFile)).toEqual(f.historyBytes);
+  expect(f.receiver.a.prunePort().snapshot().durablePruneIds?.filter(id => id === f.nativeRow.id)).toHaveLength(1);
+  expect(await syncMemory(f.receiver.a, { remote: f.url, ...privateRemote })).toMatchObject({ ok: true });
+  expect(existsSync(f.historyFile)).toBe(false); expect(readFileSync(f.planFile)).toEqual(f.planBytes);
+  expect(readFileSync(f.segment)).toEqual(Buffer.concat([f.prefix, Buffer.from(f.nativeLine)]));
+  assertForeign(f.receiver.a, f.foreignTarget, f.foreignRow);
 }, 60_000);
 
 async function appliedForeign() {

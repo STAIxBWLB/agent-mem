@@ -22,13 +22,14 @@ const digest = (bytes: string | Uint8Array): string => createHash("sha256").upda
 const zero = "0".repeat(40);
 // The descriptor is at most 64 KiB and an original prune at most 16 KiB; keep receipt parsing bounded.
 const HOLD_MAX_BYTES = 128 * 1024;
+export const PENDING_SELECTOR_LIMIT = 64;
 type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string; selectorCheck?: () => void };
 type HoldSource = { ref: string; commit: string; pack: string; blob: string };
 type HoldReceipt = { schema: "agent-mem.prune-hold/v1"; remote: string; realm: ShardSyncRealm; receivingGeneration: string; row: PruneRow; payloadHash: string; source: HoldSource };
 type Hold = { file: string; bytes: Buffer };
 type SyncPhase = "published" | "hold-written" | "hold-installed" | "inputs-installed" | "view-committed" | "imported";
 type SyncManifest = { path: string; bytes: Buffer; value: unknown; row: PruneRow; eligible: boolean; commit: string; blob: string };
-type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; manifests: Map<string,SyncManifest>; eligible: Set<string>; mutation?: MutationHandle; batch?: PublicPruneInputBatch; registered: PublicPruneInputV1[]; local?: string; remote?: string; commit?: string };
+type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; manifests: Map<string,SyncManifest>; eligible: Set<string>; mutation?: MutationHandle; batch?: PublicPruneInputBatch; registered: PublicPruneInputV1[]; selectorChecks?: (()=>void)[]; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
@@ -54,10 +55,10 @@ function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRo
   return validatePrunePlan({ ...body, seal: hashJSON(body) });
 }
 /** A retained selector is owned recovery evidence, not authorization or input membership. */
-function selectorEvidence(folder: string, file: string): { value: unknown; check: () => void } {
+function selectorEvidence(folder: string, file: string, prefix?: Buffer): { value: unknown; bytes: Buffer; check: () => void } {
   privateHoldPath(folder,true); privateHoldPath(file,false);
   const parent=lstatSync(folder), before=lstatSync(file);
-  if(parent.uid!==process.getuid?.()||before.uid!==parent.uid||before.size<1||before.size>4096)refuse("prior selector unavailable");
+  if(parent.uid!==process.getuid?.()||before.uid!==parent.uid||before.size<(prefix?0:1)||before.size>4096)refuse("prior selector unavailable");
   const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try {
     const opened=fstatSync(fd), same=(stat:typeof opened)=>stat.dev===before.dev&&stat.ino===before.ino&&stat.size===before.size&&stat.mtimeMs===before.mtimeMs&&stat.ctimeMs===before.ctimeMs&&stat.uid===before.uid&&stat.nlink===1&&(stat.mode&0o077)===0&&stat.isFile();
@@ -66,8 +67,10 @@ function selectorEvidence(folder: string, file: string): { value: unknown; check
     while(count<bytes.length){const n=readSync(fd,bytes,count,bytes.length-count,count);if(!n)break;count+=n;}
     const check=()=>{privateHoldPath(folder,true);privateHoldPath(file,false);const current=lstatSync(folder);if(current.dev!==parent.dev||current.ino!==parent.ino||current.uid!==parent.uid||!same(lstatSync(file)))refuse("prior selector changed");};
     if(count!==before.size||!same(fstatSync(fd)))refuse("prior selector changed");check();
-    const text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(bytes.subarray(0,count)),value:unknown=JSON.parse(text);
-    if(canonicalJSON(value)+"\n"!==text)refuse("prior selector unavailable");return{value,check};
+    const data=bytes.subarray(0,count);
+    if(prefix){if(data.length>prefix.length||!data.equals(prefix.subarray(0,data.length)))refuse("prior selector staging changed");return{value:undefined,bytes:data,check};}
+    const text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(data),value:unknown=JSON.parse(text);
+    if(canonicalJSON(value)+"\n"!==text)refuse("prior selector unavailable");return{value,bytes:data,check};
   } finally {closeSync(fd);}
 }
 /** Recognize only the exact persisted transport shape; this reads metadata and never resumes an append. */
@@ -92,7 +95,7 @@ function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[
       let selectorCheck: (()=>void) | undefined;
       if (plan.selectorRevision !== store.profile.selectorRevision) {
         if (!store.profile.foreignPruneFormat) throw new Error("selector changed");
-        const history = join(store.profile.home,"public-prune-selector-history"), file = join(history,plan.selectorRevision+".json");
+        const history = join(store.dir,"prune-plans","selector-history"), file = join(history,plan.seal+".json");
         const evidence=selectorEvidence(history,file), prior=evidence.value as Record<string,unknown> | undefined;
         if (!prior || Object.keys(prior).length !== 5 || prior.schema !== "agent-mem.profile/v2" || prior.kind !== "generation"
           || prior.generation !== store.profile.generation || prior.foreignPruneFormat !== store.profile.foreignPruneFormat
@@ -111,6 +114,78 @@ function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[
     }
     return pending;
   } catch { return refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`); }
+}
+/** Private copies are addressed by their exact pending transport plan, never used as current selectors. */
+function selectorRetention(target: Target, advancing: boolean, install = false): void {
+  assertMutationHandle(target.mutation!,target.store.dir);
+  if(!target.store.profile.foreignPruneFormat)return;
+  const plans=join(target.store.dir,"prune-plans"),folder=join(plans,"selector-history"),exists=lstatSync(folder,{throwIfNoEntry:false});
+  const records=new Map<string,{file?:string;stage?:string}>();
+  if(exists){
+    privateHoldPath(folder,true);if(exists.uid!==process.getuid?.())refuse("selector recovery owner changed");
+    for(const name of readdirSync(folder)){
+      const match=/^([a-f0-9]{64})\.json(\.pending)?$/.exec(name);if(!match||match[0]!==name)refuse("selector recovery artifact unavailable");
+      const entry=records.get(match[1]!)??{};entry[match[2]?"stage":"file"]=join(folder,name);records.set(match[1]!,entry);
+      if(records.size>PENDING_SELECTOR_LIMIT)throw new PublicPruneInputError("resource");
+    }
+  }
+  const pending=new Map(target.pending.map(item=>[item.plan.seal,item])),keep=new Map<string,Buffer>(),remove:string[]=[],checks:(()=>void)[]=[];
+  let durable:Set<string>|undefined;
+  const validate=(plan:PrunePlan,value:unknown)=>{
+    const row=plan.rows[0]?.payload,prior=value as Record<string,unknown>|undefined;
+    if(plan.rows.length!==1||!row||plan.generation!==target.generation||row.generation!==target.generation
+      ||canonicalJSON(plan)!==canonicalJSON(importPrunePlan(target.store,target.realm,row,plan.selectorRevision))
+      ||!prior||Object.keys(prior).length!==5||prior.schema!=="agent-mem.profile/v2"||prior.kind!=="generation"
+      ||prior.generation!==target.generation||prior.foreignPruneFormat!==target.store.profile.foreignPruneFormat
+      ||hashJSON(prior)!==plan.selectorRevision)refuse("selector recovery plan binding unavailable");
+  };
+  for(const [seal,record] of records){
+    const active=pending.get(seal),plan=active?.plan??validatePrunePlan(readProfileJSON(join(plans,seal+".json")));
+    if(plan.seal!==seal)refuse("selector recovery plan identity changed");
+    if(!record.file){if(!active||plan.selectorRevision!==target.store.profile.selectorRevision)refuse("selector recovery evidence missing");continue;}
+    const evidence=selectorEvidence(folder,record.file);validate(plan,evidence.value);checks.push(evidence.check);
+    if(record.stage)checks.push(selectorEvidence(folder,record.stage,evidence.bytes).check);
+    if(active){keep.set(seal,evidence.bytes);continue;}
+    // Claim disappearance alone is not completion. Prove the original plan's exact native row is durable.
+    durable??=new Set(target.store.prunePort().snapshot().durablePruneIds);
+    const row=plan.rows[0]!.payload,claim=readProfileJSON(join(plans,`pending-log-${row.machine}.json`)) as {seal?:unknown}|undefined;
+    if(!durable.has(row.id)||canonicalJSON(target.rows.get(row.id))!==canonicalJSON(row)||claim?.seal===seal)refuse("selector recovery completion unavailable");
+    remove.push(record.file,...(record.stage?[record.stage]:[]));
+  }
+  for(const item of target.pending){
+    const seal=item.plan.seal;if(keep.has(seal)||!advancing&&!records.has(seal))continue;
+    if(item.plan.selectorRevision!==target.store.profile.selectorRevision)refuse("prior pending selector unavailable");
+    const selector=readSelector(target.store.profile.home).selector;validate(item.plan,selector);
+    const bytes=Buffer.from(canonicalJSON(selector)+"\n"),stage=records.get(seal)?.stage;
+    if(stage)checks.push(selectorEvidence(folder,stage,bytes).check);keep.set(seal,bytes);
+  }
+  if(keep.size>PENDING_SELECTOR_LIMIT)throw new PublicPruneInputError("resource");
+  const inventory=()=>{
+    const before=lstatSync(folder,{throwIfNoEntry:false}),names=before?readdirSync(folder).sort().join("\n"):undefined;
+    return()=>{const now=lstatSync(folder,{throwIfNoEntry:false});if(!before){if(now)refuse("selector recovery inventory changed");return;}
+      privateHoldPath(folder,true);if(!now||now.dev!==before.dev||now.ino!==before.ino||now.uid!==before.uid||readdirSync(folder).sort().join("\n")!==names)refuse("selector recovery inventory changed");};
+  };
+  for(const check of checks)check();assertMutationHandle(target.mutation!,target.store.dir);
+  if(!install){target.selectorChecks=[...checks,inventory()];return;}
+  for(const file of remove){unlinkSync(file);fsyncDirectory(folder);}
+  if(keep.size&&!exists){mkdirSync(folder,{mode:0o700});fsyncDirectory(plans);}
+  const retained:(()=>void)[]=[];
+  for(const [seal,bytes] of keep){
+    const file=join(folder,seal+".json"),stage=file+".pending";
+    if(!lstatSync(file,{throwIfNoEntry:false})){
+      const staged=lstatSync(stage,{throwIfNoEntry:false});if(staged)selectorEvidence(folder,stage,bytes).check();
+      const fd=openSync(stage,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW|constants.O_NONBLOCK,0o600);
+      try{
+        const stat=fstatSync(fd);if(!stat.isFile()||stat.nlink!==1||stat.uid!==process.getuid?.()||(stat.mode&0o077)!==0||stat.size>bytes.length)refuse("selector recovery staging unavailable");
+        const prefix=readFileSync(fd);if(!prefix.equals(bytes.subarray(0,prefix.length)))refuse("selector recovery staging changed");
+        let offset=prefix.length;while(offset<bytes.length){const count=writeSync(fd,bytes,offset,bytes.length-offset,offset);if(count<1)refuse("selector recovery write unavailable");offset+=count;}fsyncSync(fd);
+        const named=lstatSync(stage);if(named.dev!==stat.dev||named.ino!==stat.ino||named.nlink!==1||named.size!==bytes.length)refuse("selector recovery staging changed");
+      }finally{closeSync(fd);}
+      if(lstatSync(file,{throwIfNoEntry:false}))refuse("selector recovery copy changed");renameSync(stage,file);fsyncDirectory(folder);
+    }else if(lstatSync(stage,{throwIfNoEntry:false})){selectorEvidence(folder,stage,bytes).check();unlinkSync(stage);fsyncDirectory(folder);}
+    const evidence=selectorEvidence(folder,file);if(!evidence.bytes.equals(bytes))refuse("selector recovery copy changed");retained.push(evidence.check);
+  }
+  target.selectorChecks=[...retained,inventory()];assertMutationHandle(target.mutation!,target.store.dir);
 }
 /** Stream complete authored lines without a permanent file-size/history ceiling. */
 function* lines(file: string, claim?: PendingPrune): Generator<string> {
@@ -348,6 +423,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     for (const target of targets) {
       if (target.mutation) assertMutationHandle(target.mutation,target.store.dir);
       for(const pending of target.pending)pending.selectorCheck?.();
+      for(const check of target.selectorChecks??[])check();
       const profile = target.store.profile;
       const current = resolveShardProfile(profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
       if (current.dir !== profile.dir || current.generation !== target.generation || current.selectorRevision !== expectedRevision) refuse(`${shardSyncLabel(target.realm)}: selected profile changed`);
@@ -658,6 +734,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       const view:PublicPruneViewV1={...boundView!,realms};
       const changed=canonicalJSON(view)!==canonicalJSON(boundView);
       if(changed){
+        for(const target of targets)selectorRetention(target,true,true);
         const result=await advancePublicPruneView({memoryDir:store.profile.home,view,expectedRevision,mutations:[homeMutation!,...targets.map(item=>item.mutation!)]});
         expectedRevision=result.revision;boundView=view;
         // The same open handles validate/rebind; no close/reopen or authority flag is used.
@@ -673,6 +750,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); await loadExistingApplications(); await prepareHolds(targets, root, url, proveHoldSource); check(); }
       await buildTargets(); await prepareApplications(); check();
+      if(v2)for(const target of targets)selectorRetention(target,targets.some(item=>!!item.batch));
       if(v2)for(const target of targets)assertPublisherBoundary(target.store.profile,target.mutation!);
       const sent = await git(["push", "--atomic", "--no-follow-tags", "-q", "origin", ...targets.map(target => `${target.commit!}:${shardSyncRef(target.realm)}`)]);
       if (sent.code === 0) pushed = true;
@@ -687,7 +765,10 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         await installApplications();
         for (const target of targets) {
           assertCuratedShardPaths(target.store.profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
-          importRows(target); testOnlyPhase?.("imported");
+          importRows(target);
+          target.pending=[];target.selectorChecks=[];
+          if(v2)selectorRetention(target,false,true);
+          testOnlyPhase?.("imported");
         }
         for (const target of targets) await required(["update-ref", "--no-deref", shardSyncRef(target.realm), target.commit!, target.local ?? zero], "shard sync cached ref changed concurrently");
         const warning = holdWarning(targets, root);
