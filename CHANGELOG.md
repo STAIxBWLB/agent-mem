@@ -2,6 +2,13 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.14.0
+
+- **Opt-in v2 public prune view** (#15; PRs #155, #156, #157, #159). New `amem migrate --public-prune-view [--dry-run|--apply|--resume] [--json]` enables, for an active curated split, a forward-only v2 reader floor with a separate `index-v2.db` that keeps every native/local mask; deactivation is refused. Once activated, explicit `amem sync` publishes `shard-sync/v2` manifests and applies eligible complete same-realm public prunes from independently initialized generations, keeping each original prune ID, generation and attribution and leaving native logs and seals unchanged. The first v2 sync primes a private publisher boundary; only own prune rows appended after it receive `post-seal` lineage. `SyncResult.pruneApplication` reports transport, proof, projection, native application and held counts separately. Without activation, homes, wire formats and shared-v1/PruneRow hashes are unchanged, and no package export or runtime dependency is added.
+- **Compatibility:** 0.13.0 and earlier readers refuse an activated v2 home and the v2 transport tip, with no fallback. Upgrade every amem that shares the memory home (agent-hub pins included) to 0.14.0 before activating. Historical multi-realm translations and older unsupported lineage stay "held, not applied", so #15 AC4 stays open.
+- Documentation: the generation-neutral public prune witness contract (`docs/generation-neutral-prune-witness.md`, `docs/contracts.md`) (PR #154).
+
+
 ## 0.13.0
 
 - Add the public `configuredPolicy(base, cwd?, options?)` library export so hosts apply amem home/repository deny paths and PII patterns together with their host policy; other configuration helpers remain internal (#151).
