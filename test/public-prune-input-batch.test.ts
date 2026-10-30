@@ -71,7 +71,7 @@ test("binding drift, opaque token forgery and released/wrong-directory fences re
   expect(() => persistPublicPruneInputBatch({} as PublicPruneInputBatch, { mutation: f.mutation })).toThrow();
   const other = fixture(); expect(() => persistPublicPruneInputBatch(batch, { mutation: other.mutation })).toThrow();
   expect(() => preparePublicPruneInputBatch({ dir: f.dir, binding: f.state.binding, current: () => f.state.binding, inputs: [] }, (() => {}) as MutationHandle)).toThrow();
-  f.mutation(); expect(() => persistPublicPruneInputBatch(batch)).toThrow(); expect(files(f.dir)).toEqual(before);
+  f.mutation(); const released = files(f.dir); expect(() => persistPublicPruneInputBatch(batch)).toThrow(); expect(files(f.dir)).toEqual(released);
 });
 test("persist rechecks aggregate capacity and retained input integrity after preparation", () => {
   const f = fixture(), batch = f.prepare(), archive = join(f.dir, "public-prune-objects"); mkdirSync(archive, { mode: 0o700 });

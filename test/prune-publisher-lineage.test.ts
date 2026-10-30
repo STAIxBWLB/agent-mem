@@ -76,3 +76,8 @@ test("partial line cannot establish a boundary or a post-seal claim", () => {
   const f = fixture(); appendFileSync(f.log, "partial", { mode: 0o600 });
   expect(() => ensurePublisherBoundary(f.profile, f.mutation)).toThrow();
 });
+
+test("replaying an older original after the boundary never upgrades its lineage", () => {
+  const f = fixture(), old = f.row(); f.append(old); ensurePublisherBoundary(f.profile, f.mutation); f.append(old);
+  expect(publisherPruneLineage(f.profile, f.mutation, old)).toBeUndefined();
+});

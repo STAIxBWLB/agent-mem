@@ -50,7 +50,7 @@ function inspect(log: string, end?: number, row?: PruneRow): { end: number; hash
   if (!before) { guard(end === undefined || end === 0); return { end: 0, hash: createHash("sha256").digest("hex"), found: false }; }
   owned(before); const bound = end ?? before.size; guard(Number.isSafeInteger(bound) && bound >= 0 && bound <= before.size);
   const fd = openSync(log, constants.O_RDONLY | constants.O_NOFOLLOW), digest = createHash("sha256"), chunk = Buffer.alloc(65536);
-  let position = 0, lineStart = bound, line: number[] = [], found = false, last = -1, boundaryNewline = bound === 0;
+  let position = 0, lineStart = 0, line: number[] = [], found = false, older = false, last = -1, boundaryNewline = bound === 0;
   try {
     guard(same(before, fstatSync(fd)));
     while (position < before.size) {
@@ -59,10 +59,11 @@ function inspect(log: string, end?: number, row?: PruneRow): { end: number; hash
       for (let i = 0; i < count; i++) {
         const byte = chunk[i]!; last = byte;
         if (position + i + 1 === bound) boundaryNewline = byte === 10;
-        if (row && position + i >= bound) {
+        if (row) {
           if (byte === 10) {
             guard(line.length > 0);
             const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(line)));
+            if (lineStart < bound && value && typeof value === "object" && "id" in value && value.id === row.id) older = true;
             if (lineStart >= bound && canonicalJSON(value) === canonicalJSON(row)) { validatePruneRow(value, row.generation, "synced"); found = true; }
             line = []; lineStart = position + i + 1;
           } else { line.push(byte); guard(line.length <= 1024 * 1024); }
@@ -70,10 +71,9 @@ function inspect(log: string, end?: number, row?: PruneRow): { end: number; hash
       }
       position += count;
       if (!row && position === before.size) break;
-      if (position === bound) lineStart = bound;
     }
     guard(boundaryNewline && (before.size === 0 || last === 10) && same(before, fstatSync(fd)) && same(before, lstatSync(log)));
-    return { end: bound, hash: digest.digest("hex"), found };
+    return { end: bound, hash: digest.digest("hex"), found: found && !older };
   } finally { closeSync(fd); }
 }
 function decode(value: Buffer): PublisherBoundaryV1 {

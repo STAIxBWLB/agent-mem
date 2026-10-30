@@ -300,7 +300,7 @@ Prune apply still requires a sealed JSON plan. Save `amem prune --dry-run --cuto
 
 Intake runs at the end of each Codex, Kimi, Pi and Qwen session once `amem setup <cli> --apply` has registered it. Sync is off unless you ask for it: amem registers no sync hook and runs nothing between sessions. To sync on a schedule you have authorized, call `amem sync --if-due` from the chosen shell or scheduler; it has no TTY gate. This release registers no sync schedule or hook, and the configured privacy and remote-visibility checks still apply. It syncs at most hourly, backs off 15 minutes doubling to a day after failures, stops after 30 seconds, and does nothing without a remote set by `amem sync --remote <private git url>`. `--force` skips the schedule and the backoff.
 
-Split-home sync durably holds verified foreign-generation prunes with a "held, not applied" warning while unrelated sync continues; targets can remain visible, and full cross-generation removal remains a separate ceiling (see [the sync contract](docs/contracts.md#per-shard-private-sync-15-t3)).
+V1 split-home sync durably holds verified foreign-generation prunes with a "held, not applied" warning. The opt-in v2 path below applies eligible complete same-realm public prunes across generations after durable proof and root-map commitment. Unsupported historical lineage and multi-realm translations remain held; targets can remain visible and agent-mem#15 AC4 stays open (see [the sync contract](docs/contracts.md#per-shard-private-sync-15-t3)).
 
 ## Native transcript intake
 
@@ -482,9 +482,9 @@ The CLI runs the deterministic pass only. A library host may explicitly enable a
 
 Agents use `amem_evidence` with a question to get cited, live curated entries, not an answer. The complete JSON bundle is byte-capped (`maxBytes`, default 4096, range 256..8192); excerpted entries retain an exact `mem:` reference for fetching the full note. Capture, repository-only rows, pending candidates and model answers are excluded. amem makes no model call for this tool. Rendering a citation in the bundle records only `rendered` after successful output, never `delivered` or `cited`.
 
-### Public prune view (Layer 3, opt-in)
+### Public prune view and v2 sync (opt-in)
 
-On an active curated split, the person can preview and enable the forward-only v2 reader floor. This keeps the receiving generation and native logs/seals, builds a separate `index-v2.db`, and preserves every native/local mask. It does not enable new transport or turn historical holds into active inputs.
+On an active curated split, the person can preview and enable the forward-only v2 reader floor. This keeps the receiving generation and native logs/seals, builds a separate `index-v2.db`, and preserves every native/local mask. Once activated, explicit sync uses the v2 transport and can install complete generation-neutral public-prune proof; historical hold receipts alone never authorize a mask.
 
 ```sh
 AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --dry-run
@@ -493,4 +493,10 @@ AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --apply
 AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --resume
 ```
 
-Dry-run writes nothing and reports mask building as deferred. Close all cooperating reader handles before apply/resume. While an intent exists or the two markers disagree, readers report unavailable; resume completes forward. Deactivation is refused because v1 would omit foreign masks. Install compatible hosts before activation: supported older readers reject the new markers, and unannounced historical readers can still read unchanged old bytes. Read and capture never activate the view. The root map binds each realm only to its own complete proof; missing committed evidence makes that realm unavailable rather than rebuilding an empty mask. Layer 4 transport and agent-mem#15 AC4 remain open.
+Dry-run writes nothing and reports mask building as deferred. Close cooperating reader handles for initial v1-to-v2 activation or its resume, and install compatible hosts first: older readers reject the new markers and transport tip. Initial activation preserves all native/local masks and currently performs ten old/new comparison rebuilds per realm across five verification passes, plus snapshot/index work. Deactivation is refused because v1 would omit foreign masks. Unannounced historical readers can still inspect unchanged old bytes; this is logical masking, not erasure.
+
+The first explicit v2 `amem sync` primes a private create-once publisher boundary for each selected shard/current machine. Only complete own prune rows appended after that boundary can receive new `post-seal` lineage; all earlier rows and unsupported historical lineage stay ineligible. Sync never infers a native-generation claim or rewrites native seals/rows. Both machines need compatible v2 readers and explicit sync. Stable exact project/user refs make a one-way v1-to-v2 history transition; returning a ref to v1 is refused.
+
+Sync validates all selected history and complete raw Git proof, and checks each realm's aggregate input/archive capacity before atomic publication. It then fsyncs immutable inputs and commits the root map before ordinary/native imports, preventing an unmasked first import. Already-v2 map advances preserve generation/format and monotone ancestry, use a forward-only intent and rebind existing readers without requiring them to close. A reader waits at most 3000 ms for a v2 writer; an unresolved intent, incompatible marker pair or missing committed proof reports unavailable. The same `--resume` command completes an interrupted advance forward. Read and capture never activate, prime a boundary or repair a pending operation.
+
+`SyncResult.pruneApplication` reports transport durability, complete-proof count, neutral projection activity, native application, held count and phase separately. Transport durability alone does not establish completed local application. Historical multi-realm translations and older unsupported lineage retain "held, not applied" warnings, so agent-mem#15 AC4 remains open. The [full contract](docs/generation-neutral-prune-witness.md) states the owned-source integrity and resource ceilings; this source behavior does not establish release or live-host verification.

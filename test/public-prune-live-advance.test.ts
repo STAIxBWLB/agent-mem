@@ -100,8 +100,8 @@ test("a healthy second-process writer can finish while a synchronous reader wait
   const f = await fixture(), generation = f.profile.generation!, files = join(import.meta.dir, "../src/memory/generation.ts");
   const writer = await child(f.root, `import {withProfileLock,writeProfileJSON} from ${JSON.stringify(files)};import {unlinkSync} from "node:fs";
 await withProfileLock(${JSON.stringify(f.memoryDir)},async()=>{writeProfileJSON(${JSON.stringify(join(f.memoryDir, PUBLIC_PRUNE_INTENT))},{schema:"agent-mem.public-prune-advance/v1",home:${JSON.stringify(f.memoryDir)},generation:${JSON.stringify(generation)}});
-console.log(JSON.stringify({ready:true}));await new Promise(resolve=>process.stdin.once("data",resolve));await Bun.sleep(75);unlinkSync(${JSON.stringify(join(f.memoryDir, PUBLIC_PRUNE_INTENT))});});`);
-  await writer.wait(0); writer.proc.stdin.write("finish\n");
+console.log(JSON.stringify({ready:true}));await new Promise(resolve=>process.stdin.once("data",resolve));console.log(JSON.stringify({finishing:true}));await Bun.sleep(75);unlinkSync(${JSON.stringify(join(f.memoryDir, PUBLIC_PRUNE_INTENT))});});`);
+  await writer.wait(0); writer.proc.stdin.write("finish\n"); await writer.wait(1);
   expect(readSelector(f.memoryDir).selector?.schema).toBe("agent-mem.profile/v2");
   expect(existsSync(join(f.memoryDir, PUBLIC_PRUNE_INTENT))).toBe(false);
 });
