@@ -1,0 +1,68 @@
+{
+  "provenance": "Independent Python hashlib + sorted compact UTF-8 JSON, not production validators. Synthetic only.",
+  "manifest": {
+    "schema": "agent-mem.public-prune-witness/v1",
+    "realm": {
+      "scope": "project",
+      "key": "github.com/fixture/public-prune"
+    },
+    "prune": {
+      "schema": "agent-mem.prune/v1",
+      "op": "prune",
+      "generation": "0123456789abcdef0123456789abcdef",
+      "at": "2026-10-04T00:00:00.000Z",
+      "machine": "0011223344556677",
+      "actor": "person",
+      "placement": "synced",
+      "cutoff": "2026-10-03T00:00:00.000Z",
+      "targets": [
+        {
+          "id": "6c4bbefe6c1343c0e48d8659c6543ec6",
+          "rowHash": "68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459",
+          "expiredAt": "2026-10-02T00:00:00.000Z",
+          "basis": {
+            "kind": "note",
+            "id": "6c4bbefe6c1343c0e48d8659c6543ec6",
+            "rowHash": "68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459"
+          }
+        }
+      ],
+      "id": "f11c1cef8fed940b107604bf3c949d67"
+    },
+    "lineage": {
+      "kind": "native-generation",
+      "seal": "abababababababababababababababababababababababababababababababab"
+    },
+    "pruneOccurrence": {
+      "pack": "rows/d5d3695901ac0579a15ca75aeb2f72d4108d331fcde96f35e6cc7e0b316b8814/0d1828468134c5bf2a4e15627f0a883bc7dbb1430fd2fbb0602508819cb672b3.jsonl",
+      "blob": "f5fa44df29fa9bf6d3a0ea28d6c71125813570f7"
+    },
+    "witnesses": [
+      {
+        "pack": "rows/22d2ba7c04ad5b970c22f345c3942e2da5c81eeb286966fdb10a161570a586d5/a4257db0b8a17df54a427dcb37f2b0b8a15391f7ce85a28eee83a11bfe3184c1.jsonl",
+        "blob": "6b5ae453532eb8e59dc9f4119570370964177a0c",
+        "id": "6c4bbefe6c1343c0e48d8659c6543ec6",
+        "rowHash": "68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459"
+      }
+    ]
+  },
+  "packs": [
+    {
+      "pack": "rows/d5d3695901ac0579a15ca75aeb2f72d4108d331fcde96f35e6cc7e0b316b8814/0d1828468134c5bf2a4e15627f0a883bc7dbb1430fd2fbb0602508819cb672b3.jsonl",
+      "blob": "f5fa44df29fa9bf6d3a0ea28d6c71125813570f7",
+      "text": "{\"actor\":\"person\",\"at\":\"2026-10-04T00:00:00.000Z\",\"cutoff\":\"2026-10-03T00:00:00.000Z\",\"generation\":\"0123456789abcdef0123456789abcdef\",\"id\":\"f11c1cef8fed940b107604bf3c949d67\",\"machine\":\"0011223344556677\",\"op\":\"prune\",\"placement\":\"synced\",\"schema\":\"agent-mem.prune/v1\",\"targets\":[{\"basis\":{\"id\":\"6c4bbefe6c1343c0e48d8659c6543ec6\",\"kind\":\"note\",\"rowHash\":\"68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459\"},\"expiredAt\":\"2026-10-02T00:00:00.000Z\",\"id\":\"6c4bbefe6c1343c0e48d8659c6543ec6\",\"rowHash\":\"68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459\"}]}\n"
+    },
+    {
+      "pack": "rows/22d2ba7c04ad5b970c22f345c3942e2da5c81eeb286966fdb10a161570a586d5/a4257db0b8a17df54a427dcb37f2b0b8a15391f7ce85a28eee83a11bfe3184c1.jsonl",
+      "blob": "6b5ae453532eb8e59dc9f4119570370964177a0c",
+      "text": "{\"about\":[\"path:src/public.ts\"],\"at\":\"2026-10-01T00:00:00.000Z\",\"expires\":\"2026-10-02T00:00:00.000Z\",\"id\":\"6c4bbefe6c1343c0e48d8659c6543ec6\",\"kind\":\"contract\",\"machine\":\"immutable legacy author\",\"op\":\"note\",\"peer\":\"codex\",\"project\":\"github.com/fixture/public-prune\",\"schema\":\"agent-hub.memory/v1\",\"scope\":\"project\",\"source\":\"hub\",\"text\":\"Independent synthetic expired public note\",\"tier\":\"long\",\"title\":\"공개 원본\"}\n"
+    }
+  ],
+  "expected": {
+    "manifestHash": "9e7706d8b23e6c449f83cdce599a0f3b899e6462e6994aef3074503c7c668d93",
+    "prunePayloadHash": "8d6db33d2d699e06384cc14910592e74e2a24591756d3b0a99f93de94e17123a",
+    "pruneId": "f11c1cef8fed940b107604bf3c949d67",
+    "noteId": "6c4bbefe6c1343c0e48d8659c6543ec6",
+    "noteRowHash": "68a7a6f65eaa9f854a2c44066e2914d5c66503b997260775b3dc1be285dc7459"
+  }
+}
