@@ -4,7 +4,7 @@ import { canonicalJSON } from "../src/memory/generation.ts";
 import { entryId, MEMORY_SCHEMA, type OpEntry, type NoteEntry, type GoalEntry } from "../src/memory/store.ts";
 import { pruneId, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
-import { decodeShardPack, encodeShardPacks, SHARD_PACK_MAX_BYTES, SHARD_SYNC_SCHEMA, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
+import { decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_SYNC_V2_SCHEMA, decodeShardPack, encodeShardPacks, SHARD_PACK_MAX_BYTES, SHARD_SYNC_SCHEMA, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
 
 const G = "a".repeat(32), otherG = "b".repeat(32), project = "github.com/fixture/private-repository";
 const realm: ShardSyncRealm = { scope: "project", key: project };
@@ -104,4 +104,45 @@ test("public prune transport preserves both generations without supplying applic
 test("same id with a different payload is rejected instead of silently winning", () => {
   const row = note();
   expect(() => encodeShardPacks([row, { ...row, text: "different body" }])).toThrow("row id collision");
+});
+
+
+test("v1/v2 descriptors are exact canonical closed realm metadata", () => {
+  for (const selected of [realm, { scope: "user" } as const]) for (const version of ["v1", "v2"] as const) {
+    const text = shardSyncDescriptor(selected, version);
+    expect(decodeShardDescriptor(Buffer.from(text), selected)).toBe(version);
+    expect(JSON.parse(text).schema).toBe(version === "v1" ? SHARD_SYNC_SCHEMA : SHARD_SYNC_V2_SCHEMA);
+    const object = JSON.parse(text);
+    for (const bad of [text.trimEnd(), text + "\n", " " + text, JSON.stringify(object) + "\n", canonicalJSON({ ...object, extra: true }) + "\n", canonicalJSON({ ...object, schema: "future" }) + "\n"]) {
+      if (bad !== text) expect(() => decodeShardDescriptor(Buffer.from(bad), selected)).toThrow(ShardSyncFormatError);
+    }
+    expect(() => decodeShardDescriptor(Buffer.from(text), selected.scope === "user" ? realm : { scope: "user" })).toThrow(ShardSyncFormatError);
+  }
+  for (const bytes of [Buffer.from([255, 10]), Buffer.alloc(65_537, 32), Buffer.from("[]\n"), Buffer.from("null\n"), Buffer.from('{"schema":"agent-mem.shard-sync/v2","schema":"agent-mem.shard-sync/v1","scope":"user"}\n')]) {
+    expect(() => decodeShardDescriptor(bytes, { scope: "user" })).toThrow(ShardSyncFormatError);
+  }
+});
+
+test("manifest codec preserves canonical hash identity and leaves unsupported lineage for Layer 1", () => {
+  const row = prune(), pack = `rows/${"a".repeat(64)}/${"b".repeat(64)}.jsonl`;
+  const manifest = { schema: "agent-mem.public-prune-witness/v1" as const, realm, prune: row,
+    lineage: { kind: "native-generation" as const, seal: "f".repeat(64) }, pruneOccurrence: { pack, blob: "c".repeat(40) },
+    witnesses: [{ pack, blob: "c".repeat(40), id: "1".repeat(32), rowHash: "2".repeat(64) }] };
+  const encoded = encodeShardManifest(manifest);
+  expect(encoded.path).toBe(`prune-witnesses/${digest(canonicalJSON(manifest))}.json`);
+  expect(encoded.bytes.toString()).toBe(canonicalJSON(manifest) + "\n");
+  expect(decodeShardManifest(encoded.path, encoded.bytes)).toEqual(manifest);
+  const unsupported = { ...manifest, lineage: { kind: "future" } }, body = canonicalJSON(unsupported);
+  expect(decodeShardManifest(`prune-witnesses/${digest(body)}.json`, Buffer.from(body + "\n"))).toEqual(unsupported);
+  expect(() => encodeShardManifest(unsupported as unknown as typeof manifest)).toThrow(ShardSyncFormatError);
+  for (const path of ["../" + encoded.path, encoded.path + "/", encoded.path.toUpperCase(), "prune-witnesses/x.json", `prune-witnesses/${"a".repeat(63)}.json`]) {
+    expect(isShardManifestPath(path)).toBe(false); expect(() => decodeShardManifest(path, encoded.bytes)).toThrow(ShardSyncFormatError);
+  }
+  expect(isShardManifestPath(encoded.path)).toBe(true);
+  expect(() => decodeShardManifest(`prune-witnesses/${"0".repeat(64)}.json`, encoded.bytes)).toThrow(ShardSyncFormatError);
+  for (const bytes of [Buffer.from([255, 10]), Buffer.alloc(65_537, 32), Buffer.from(canonicalJSON(manifest)), Buffer.from(encoded.bytes.toString() + "\n"), Buffer.from("[]\n")]) {
+    expect(() => decodeShardManifest(encoded.path, bytes)).toThrow(ShardSyncFormatError);
+  }
+  const wrong = canonicalJSON({ ...manifest, schema: "future" });
+  expect(() => decodeShardManifest(`prune-witnesses/${digest(wrong)}.json`, Buffer.from(wrong + "\n"))).toThrow(ShardSyncFormatError);
 });

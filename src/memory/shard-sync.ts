@@ -1,14 +1,20 @@
+import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage } from "./prune-publisher-lineage.ts";
+import { verifyPublicPruneWitness, type PublicPruneWitnessV1 } from "./public-prune-witness.ts";
+import { readPublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
+import { advancePublicPruneView } from "./public-prune-advance.ts";
+import { collectPublicPruneGitGraph } from "./shard-sync-graph.ts";
+import { PublicPruneInputError, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, preparePublicPruneInputBatch, persistPublicPruneInputBatch, readPublicPruneInputDescriptor, reducePublicPruneInputs, type PublicPruneInputBatch, type PublicPruneInputV1 } from "./public-prune-inputs.ts";
 import { randomBytes, createHash } from "node:crypto";
-import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
+import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON } from "./generation.ts";
+import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON, readSelector, rebindPublicPruneProfile } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
-import { acquireMutation } from "./mutation.ts";
+import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
 import { reducePruneRows, validatePrunePlan, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow } from "./prune.ts";
 import { assertCuratedShardPaths, isLocalKey, resolveShardProfile } from "./shard.ts";
-import { decodeShardPack, encodeShardPacks, SHARD_PACK_MAX_BYTES, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
-import { generationSyncGit, remoteVisibility, type SyncOptions, type SyncResult } from "./sync.ts";
+import { decodeShardPack, encodeShardPacks, decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_PACK_MAX_BYTES, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
+import { generationSyncGit, generationSyncGitBytes, remoteVisibility, shardSyncBinding, shardSyncSourceBinding, type SyncOptions, type SyncResult } from "./sync.ts";
 import type { Entry, MemoryStore } from "./store.ts";
 
 const OID = /^[a-f0-9]{40}$/, PACK = /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/;
@@ -16,12 +22,14 @@ const digest = (bytes: string | Uint8Array): string => createHash("sha256").upda
 const zero = "0".repeat(40);
 // The descriptor is at most 64 KiB and an original prune at most 16 KiB; keep receipt parsing bounded.
 const HOLD_MAX_BYTES = 128 * 1024;
-type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string };
+export const PENDING_SELECTOR_LIMIT = 64;
+type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string; selectorCheck?: () => void; unclaimed?: true };
 type HoldSource = { ref: string; commit: string; pack: string; blob: string };
 type HoldReceipt = { schema: "agent-mem.prune-hold/v1"; remote: string; realm: ShardSyncRealm; receivingGeneration: string; row: PruneRow; payloadHash: string; source: HoldSource };
 type Hold = { file: string; bytes: Buffer };
-type SyncPhase = "published" | "hold-written" | "hold-installed" | "imported";
-type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; local?: string; remote?: string; commit?: string };
+type SyncPhase = "published" | "hold-written" | "hold-installed" | "inputs-installed" | "view-committed" | "imported";
+type SyncManifest = { path: string; bytes: Buffer; value: unknown; row: PruneRow; eligible: boolean; commit: string; blob: string };
+type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; manifests: Map<string,SyncManifest>; eligible: Set<string>; mutation?: MutationHandle; batch?: PublicPruneInputBatch; registered: PublicPruneInputV1[]; selectorChecks?: (()=>void)[]; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
 function directory(path: string): void {
@@ -39,12 +47,40 @@ function mergeRows(into: Map<string, ShardSyncRow>, rows: readonly ShardSyncRow[
     into.set(row.id, row);
   }
 }
-function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRow): PrunePlan {
+function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRow, selectorRevision = store.prunePort().selectorRevision()): PrunePlan {
   const body: Omit<PrunePlan, "seal"> = { schema: "agent-mem.prune-plan/v1", generation: store.profile.generation!,
-    selectorRevision: store.prunePort().selectorRevision(), project: realm.scope === "project" ? realm.key : "user",
+    selectorRevision, project: realm.scope === "project" ? realm.key : "user",
     policyRevision: hashJSON({ schema: "agent-mem.shard-sync/v1", realm }), rows: [{ placement: "synced", payload: row }],
     counts: { eligible: row.targets.length, selected: row.targets.length, local: 0, synced: row.targets.length }, hasMore: false };
   return validatePrunePlan({ ...body, seal: hashJSON(body) });
+}
+/** A retained selector is owned recovery evidence, not authorization or input membership. */
+function selectorEvidence(folder: string, file: string, prefix?: Buffer | true): { value: unknown; bytes: Buffer; check: () => void } {
+  privateHoldPath(folder,true); privateHoldPath(file,false);
+  const parent=lstatSync(folder), before=lstatSync(file);
+  if(parent.uid!==process.getuid?.()||before.uid!==parent.uid||before.size<(prefix?0:1)||before.size>4096)refuse("prior selector unavailable");
+  const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try {
+    const opened=fstatSync(fd), same=(stat:typeof opened)=>stat.dev===before.dev&&stat.ino===before.ino&&stat.size===before.size&&stat.mtimeMs===before.mtimeMs&&stat.ctimeMs===before.ctimeMs&&stat.uid===before.uid&&stat.nlink===1&&(stat.mode&0o077)===0&&stat.isFile();
+    if(!same(opened))refuse("prior selector changed");
+    const bytes=Buffer.alloc(before.size+1);let count=0;
+    while(count<bytes.length){const n=readSync(fd,bytes,count,bytes.length-count,count);if(!n)break;count+=n;}
+    const check=()=>{privateHoldPath(folder,true);privateHoldPath(file,false);const current=lstatSync(folder);if(current.dev!==parent.dev||current.ino!==parent.ino||current.uid!==parent.uid||!same(lstatSync(file)))refuse("prior selector changed");};
+    if(count!==before.size||!same(fstatSync(fd)))refuse("prior selector changed");check();
+    const data=bytes.subarray(0,count);
+    if(prefix){if(prefix!==true&&(data.length>prefix.length||!data.equals(prefix.subarray(0,data.length))))refuse("prior selector staging changed");return{value:undefined,bytes:data,check};}
+    const text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(data),value:unknown=JSON.parse(text);
+    if(canonicalJSON(value)+"\n"!==text)refuse("prior selector unavailable");return{value,bytes:data,check};
+  } finally {closeSync(fd);}
+}
+function pendingSelector(store:MemoryStore,plan:PrunePlan,required=false):(()=>void)|undefined {
+  if(!required&&plan.selectorRevision===store.profile.selectorRevision)return undefined;
+  if(!store.profile.foreignPruneFormat)refuse("pending selector unavailable");
+  const history=join(store.dir,"prune-plans","selector-history"),file=join(history,plan.seal+".json"),evidence=selectorEvidence(history,file),prior=evidence.value as Record<string,unknown>|undefined;
+  if(!prior||Object.keys(prior).length!==5||prior.schema!=="agent-mem.profile/v2"||prior.kind!=="generation"||prior.generation!==store.profile.generation
+    ||prior.foreignPruneFormat!==store.profile.foreignPruneFormat||typeof prior.pruneInputSetHash!=="string"||!/^[a-f0-9]{64}$/.test(prior.pruneInputSetHash)||hashJSON(prior)!==plan.selectorRevision)refuse("pending selector binding unavailable");
+  const bound={...store.profile,selectorRevision:plan.selectorRevision,pruneInputSetHash:prior.pruneInputSetHash};
+  const check=()=>{evidence.check();const probe={...bound};rebindPublicPruneProfile(probe);if(probe.selectorRevision!==store.profile.selectorRevision)refuse("pending selector ancestry unavailable");};check();return check;
 }
 /** Recognize only the exact persisted transport shape; this reads metadata and never resumes an append. */
 function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[] {
@@ -65,13 +101,107 @@ function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[
       const plan = validatePrunePlan(readProfileJSON(planFile));
       if (plan.rows.length !== 1) throw new Error("plan shape");
       const row = plan.rows[0]!.payload, line = canonicalJSON(row) + "\n";
-      if (plan.seal !== claim.seal || canonicalJSON(plan) !== canonicalJSON(importPrunePlan(store, realm, row))
+      const selectorCheck=pendingSelector(store,plan);
+      if (plan.seal !== claim.seal || canonicalJSON(plan) !== canonicalJSON(importPrunePlan(store, realm, row, plan.selectorRevision))
         || name !== `pending-log-${row.machine}.json` || claim.rowId !== row.id || claim.lineHash !== digest(line)) throw new Error("plan binding");
       regular(join(store.dir, "log", `${row.machine}.jsonl`));
-      pending.push({ plan, row, line, offset: claim.offset, prefixHash: claim.prefixHash });
+      pending.push({ plan, row, line, offset: claim.offset, prefixHash: claim.prefixHash, ...(selectorCheck?{selectorCheck}:{}) });
+    }
+    const history=join(dir,"selector-history");
+    if(store.profile.foreignPruneFormat&&existsSync(history)){
+      privateHoldPath(history,true);const seals=new Set<string>();
+      for(const name of readdirSync(history)){const match=/^([a-f0-9]{64})\.json(\.pending)?$/.exec(name);if(!match||match[0]!==name)throw new Error("selector copy name");seals.add(match[1]!);if(seals.size>PENDING_SELECTOR_LIMIT)throw new PublicPruneInputError("resource");}
+      const claimed=new Set(pending.map(item=>item.plan.seal)),durable=new Set(store.prunePort().snapshot().durablePruneIds);
+      for(const seal of seals){
+        if(claimed.has(seal)||!existsSync(join(history,seal+".json")))continue;
+        const plan=validatePrunePlan(readProfileJSON(join(dir,seal+".json"))),row=plan.rows[0]?.payload;
+        if(plan.seal!==seal||plan.rows.length!==1||!row||canonicalJSON(plan)!==canonicalJSON(importPrunePlan(store,realm,row,plan.selectorRevision)))throw new Error("selector plan binding");
+        if(durable.has(row.id))continue;
+        // A durable selector copy also journals the interval before append creates its native claim.
+        const selectorCheck=pendingSelector(store,plan,true);
+        pending.push({plan,row,line:canonicalJSON(row)+"\n",offset:0,prefixHash:digest(""),unclaimed:true,selectorCheck});
+      }
     }
     return pending;
-  } catch { return refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`); }
+  } catch(error) { if(error instanceof PublicPruneInputError)throw error;return refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`); }
+}
+/** Private copies are addressed by their exact pending transport plan, never used as current selectors. */
+function selectorRetention(target: Target, advancing: boolean, install = false, reserveNative = false): void {
+  assertMutationHandle(target.mutation!,target.store.dir);
+  if(!target.store.profile.foreignPruneFormat)return;
+  const plans=join(target.store.dir,"prune-plans"),folder=join(plans,"selector-history"),exists=lstatSync(folder,{throwIfNoEntry:false});
+  const records=new Map<string,{file?:string;stage?:string}>();
+  if(exists){
+    privateHoldPath(folder,true);if(exists.uid!==process.getuid?.())refuse("selector recovery owner changed");
+    for(const name of readdirSync(folder)){
+      const match=/^([a-f0-9]{64})\.json(\.pending)?$/.exec(name);if(!match||match[0]!==name)refuse("selector recovery artifact unavailable");
+      const entry=records.get(match[1]!)??{};entry[match[2]?"stage":"file"]=join(folder,name);records.set(match[1]!,entry);
+      if(records.size>PENDING_SELECTOR_LIMIT)throw new PublicPruneInputError("resource");
+    }
+  }
+  const pending=new Map(target.pending.map(item=>[item.plan.seal,item])),keep=new Map<string,Buffer>(),remove:string[]=[],checks:(()=>void)[]=[];
+  let durable:Set<string>|undefined;
+  const validate=(plan:PrunePlan,value:unknown)=>{
+    const row=plan.rows[0]?.payload,prior=value as Record<string,unknown>|undefined;
+    if(plan.rows.length!==1||!row||plan.generation!==target.generation||row.generation!==target.generation
+      ||canonicalJSON(plan)!==canonicalJSON(importPrunePlan(target.store,target.realm,row,plan.selectorRevision))
+      ||!prior||Object.keys(prior).length!==5||prior.schema!=="agent-mem.profile/v2"||prior.kind!=="generation"
+      ||prior.generation!==target.generation||prior.foreignPruneFormat!==target.store.profile.foreignPruneFormat
+      ||typeof prior.pruneInputSetHash!=="string"||!/^[a-f0-9]{64}$/.test(prior.pruneInputSetHash)||hashJSON(prior)!==plan.selectorRevision)refuse("selector recovery plan binding unavailable");
+  };
+  for(const [seal,record] of records){
+    const active=pending.get(seal),plan=active?.plan??validatePrunePlan(readProfileJSON(join(plans,seal+".json")));
+    if(plan.seal!==seal)refuse("selector recovery plan identity changed");
+    if(!record.file){
+      if(active){if(plan.selectorRevision!==target.store.profile.selectorRevision)refuse("selector recovery evidence missing");continue;}
+      const row=plan.rows[0]?.payload,claim=row?readProfileJSON(join(plans,`pending-log-${row.machine}.json`)) as {seal?:unknown}|undefined:undefined;
+      if(!row||plan.rows.length!==1||claim?.seal===seal||canonicalJSON(plan)!==canonicalJSON(importPrunePlan(target.store,target.realm,row,plan.selectorRevision)))refuse("selector staging binding unavailable");
+      // An incomplete temp precedes both registration and the native claim; it grants no replay authority.
+      checks.push(selectorEvidence(folder,record.stage!,true).check);remove.push(record.stage!);continue;
+    }
+    const evidence=selectorEvidence(folder,record.file);validate(plan,evidence.value);checks.push(evidence.check);
+    if(record.stage)checks.push(selectorEvidence(folder,record.stage,evidence.bytes).check);
+    if(active){keep.set(seal,evidence.bytes);continue;}
+    // Claim disappearance alone is not completion. Prove the original plan's exact native row is durable.
+    durable??=new Set(target.store.prunePort().snapshot().durablePruneIds);
+    const row=plan.rows[0]!.payload,claim=readProfileJSON(join(plans,`pending-log-${row.machine}.json`)) as {seal?:unknown}|undefined;
+    if(!durable.has(row.id)||canonicalJSON(target.rows.get(row.id))!==canonicalJSON(row)||claim?.seal===seal)refuse("selector recovery completion unavailable");
+    remove.push(record.file,...(record.stage?[record.stage]:[]));
+  }
+  for(const item of target.pending){
+    const seal=item.plan.seal;if(keep.has(seal)||!advancing&&!records.has(seal))continue;
+    if(item.plan.selectorRevision!==target.store.profile.selectorRevision)refuse("prior pending selector unavailable");
+    const selector=readSelector(target.store.profile.home).selector;validate(item.plan,selector);
+    const bytes=Buffer.from(canonicalJSON(selector)+"\n"),stage=records.get(seal)?.stage;
+    if(stage)checks.push(selectorEvidence(folder,stage,bytes).check);keep.set(seal,bytes);
+  }
+  if(Math.max(keep.size,reserveNative?1:0)>PENDING_SELECTOR_LIMIT)throw new PublicPruneInputError("resource");
+  const inventory=()=>{
+    const before=lstatSync(folder,{throwIfNoEntry:false}),names=before?readdirSync(folder).sort().join("\n"):undefined;
+    return()=>{const now=lstatSync(folder,{throwIfNoEntry:false});if(!before){if(now)refuse("selector recovery inventory changed");return;}
+      privateHoldPath(folder,true);if(!now||now.dev!==before.dev||now.ino!==before.ino||now.uid!==before.uid||readdirSync(folder).sort().join("\n")!==names)refuse("selector recovery inventory changed");};
+  };
+  for(const check of checks)check();assertMutationHandle(target.mutation!,target.store.dir);
+  if(!install){target.selectorChecks=[...checks,inventory()];return;}
+  for(const file of remove){unlinkSync(file);fsyncDirectory(folder);}
+  if(keep.size&&!exists){mkdirSync(folder,{mode:0o700});fsyncDirectory(plans);}
+  const retained:(()=>void)[]=[];
+  for(const [seal,bytes] of keep){
+    const file=join(folder,seal+".json"),stage=file+".pending";
+    if(!lstatSync(file,{throwIfNoEntry:false})){
+      const staged=lstatSync(stage,{throwIfNoEntry:false});if(staged)selectorEvidence(folder,stage,bytes).check();
+      const fd=openSync(stage,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW|constants.O_NONBLOCK,0o600);
+      try{
+        const stat=fstatSync(fd);if(!stat.isFile()||stat.nlink!==1||stat.uid!==process.getuid?.()||(stat.mode&0o077)!==0||stat.size>bytes.length)refuse("selector recovery staging unavailable");
+        const prefix=readFileSync(fd);if(!prefix.equals(bytes.subarray(0,prefix.length)))refuse("selector recovery staging changed");
+        let offset=prefix.length;while(offset<bytes.length){const count=writeSync(fd,bytes,offset,bytes.length-offset,offset);if(count<1)refuse("selector recovery write unavailable");offset+=count;}fsyncSync(fd);
+        const named=lstatSync(stage);if(named.dev!==stat.dev||named.ino!==stat.ino||named.nlink!==1||named.size!==bytes.length)refuse("selector recovery staging changed");
+      }finally{closeSync(fd);}
+      if(lstatSync(file,{throwIfNoEntry:false}))refuse("selector recovery copy changed");renameSync(stage,file);fsyncDirectory(folder);
+    }else if(lstatSync(stage,{throwIfNoEntry:false})){selectorEvidence(folder,stage,bytes).check();unlinkSync(stage);fsyncDirectory(folder);}
+    const evidence=selectorEvidence(folder,file);if(!evidence.bytes.equals(bytes))refuse("selector recovery copy changed");retained.push(evidence.check);
+  }
+  target.selectorChecks=[...retained,inventory()];assertMutationHandle(target.mutation!,target.store.dir);
 }
 /** Stream complete authored lines without a permanent file-size/history ceiling. */
 function* lines(file: string, claim?: PendingPrune): Generator<string> {
@@ -107,7 +237,7 @@ function* lines(file: string, claim?: PendingPrune): Generator<string> {
   } finally { closeSync(fd); }
 }
 function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[]; pending: PendingPrune[] } {
-  const pending = pendingPrunes(store, realm), claims = new Map(pending.map(claim => [`${claim.row.machine}.jsonl`, claim]));
+  const pending = pendingPrunes(store, realm), claims = new Map(pending.filter(claim=>!claim.unclaimed).map(claim => [`${claim.row.machine}.jsonl`, claim]));
   const snapshot = store.prunePort().snapshot();
   const pruned = new Set(snapshot.pruned ?? []);
   // Placement decides transport; the verified snapshot retains separate prune provenance.
@@ -181,15 +311,26 @@ function importRows(target: Target): void {
   port.refresh();
   const resumed = new Set<string>();
   // The caller has proved all selected refs and atomically published them. Resume originals before other rows of their author.
-  for (const pending of target.pending) {
-    port.persistPrunePlan(pending.plan); port.appendPrune(pending.row, pending.line, pending.plan.seal); resumed.add(pending.row.id);
+  for (const pending of [...target.pending]) {
+    port.persistPrunePlan(pending.plan);
+    if(target.store.profile.foreignPruneFormat)selectorRetention(target,true,true);
+    port.appendPrune(pending.row,pending.line,pending.plan.seal);resumed.add(pending.row.id);
+    target.pending=target.pending.filter(item=>item.plan.seal!==pending.plan.seal);target.selectorChecks=[];
+    if(target.store.profile.foreignPruneFormat)selectorRetention(target,false,true);
   }
   for (const row of target.rows.values()) if (row.op === "prune" && row.generation === target.generation) {
     if (resumed.has(row.id)) continue;
     // A transport imports an already-authored person row without changing its author or generation.
     // Native durable-plan append confirms fsync even for an already parsed id after a crash.
-    const plan = importPrunePlan(target.store, target.realm, row);
-    port.persistPrunePlan(plan); port.appendPrune(row, canonicalJSON(row) + "\n", plan.seal);
+    const plan = importPrunePlan(target.store,target.realm,row),line=canonicalJSON(row)+"\n";
+    port.persistPrunePlan(plan);
+    if(target.store.profile.foreignPruneFormat&&!before.durablePruneIds?.includes(row.id)){
+      target.pending.push({plan,row,line,offset:0,prefixHash:digest(""),unclaimed:true});
+      selectorRetention(target,true,true);
+    }
+    port.appendPrune(row,line,plan.seal);
+    target.pending=target.pending.filter(item=>item.plan.seal!==plan.seal);target.selectorChecks=[];
+    if(target.store.profile.foreignPruneFormat)selectorRetention(target,false,true);
   }
   port.refresh();
 }
@@ -237,7 +378,7 @@ function installHold(root: string, hold: Hold, phase?: (phase: SyncPhase) => voi
 function holdWarning(targets: readonly Target[], root: string): string | undefined {
   const warnings: string[] = [];
   for (const target of targets) if (target.holds.length) {
-    const rows = [...target.rows.values()].filter((row): row is PruneRow => row.op === "prune" && row.generation !== target.generation);
+    const rows = [...target.rows.values()].filter((row): row is PruneRow => row.op === "prune" && row.generation !== target.generation && !target.eligible.has(row.id));
     const ids = [...new Set(rows.flatMap(row => row.targets.map(item => item.id)))].sort(), shown = ids.slice(0, 10);
     const location = target.holds[0]!.file.slice(root.length + 1).split("/").slice(0, -2).join("/");
     warnings.push(`${shardSyncLabel(target.realm)}: ${rows.length} foreign-generation prune(s) held, not applied; targets ${shown.join(",")}${ids.length > shown.length ? ` (+${ids.length - shown.length} more)` : ""} may remain visible; receipts shard-sync/${location}; bring this machine to the origin generation, or prune the entry here as the person`);
@@ -277,7 +418,8 @@ async function prepareHolds(targets: readonly Target[], root: string, url: strin
   for (const target of targets) {
     target.holds = [];
     for (const row of target.rows.values()) if (row.op === "prune" && row.generation !== target.generation) {
-      target.holds.push(await prepareHold(root, url, target, row, proveSource));
+      const hold = await prepareHold(root, url, target, row, proveSource);
+      if (!target.eligible.has(row.id)) target.holds.push(hold);
     }
   }
 }
@@ -294,14 +436,24 @@ function mergePackOrigins(into: Map<string, HoldSource>, byRealm: Map<string, Ma
 export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void, testOnlyPhase?: (phase: SyncPhase) => void): Promise<SyncResult> {
   let pushed = false, releaseTransport: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
-  const fail = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });
-  let root = "", cache = "", targets: Target[] = [];
+  const v2 = store.profile.foreignPruneFormat === "agent-mem.public-prune-witness/v1";
+  let expectedRevision = store.profile.selectorRevision;
+  let expectedBinding: string | undefined, expectedSources: string | undefined, expectedPolicy: string | undefined;
+  const application: NonNullable<SyncResult["pruneApplication"]> = { transport:"unconfirmed", proofComplete:0, projectionActive:null, nativeApplied:null, held:0, phase:"preflight" };
+  const fail = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error, ...(v2 ? {pruneApplication:{...application,transport:pushed?"durable":"unconfirmed"}} : {}) });
+  let root = "", cache = "", targets: Target[] = [], homeMutation:MutationHandle|undefined;
+  let boundView:PublicPruneViewV1|undefined;
   const check = () => {
     if (opts.signal?.aborted) refuse("stopped");
+    if (expectedBinding !== undefined && (shardSyncBinding(store) !== expectedBinding || shardSyncSourceBinding(store) !== expectedSources || opts.policyVersion?.() !== expectedPolicy)) refuse("shard sync binding or policy changed");
+    if(homeMutation)assertMutationHandle(homeMutation,store.profile.home);
     for (const target of targets) {
+      if (target.mutation) assertMutationHandle(target.mutation,target.store.dir);
+      for(const pending of target.pending)pending.selectorCheck?.();
+      for(const check of target.selectorChecks??[])check();
       const profile = target.store.profile;
       const current = resolveShardProfile(profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
-      if (current.dir !== profile.dir || current.generation !== target.generation || current.selectorRevision !== profile.selectorRevision) refuse(`${shardSyncLabel(target.realm)}: selected profile changed`);
+      if (current.dir !== profile.dir || current.generation !== target.generation || current.selectorRevision !== expectedRevision) refuse(`${shardSyncLabel(target.realm)}: selected profile changed`);
     }
   };
   // Git's auto-maintenance may outlive fetch and remove maintenance.lock during the strict cache walk.
@@ -316,11 +468,12 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
   try {
     if (opts.signal?.aborted) return fail("stopped");
     if (!store.profile.sharded || store.profile.kind !== "generation") return fail("shard sync requires a selected curated shard");
+    expectedBinding = shardSyncBinding(store); expectedSources = shardSyncSourceBinding(store); expectedPolicy = opts.policyVersion?.();
     const borrowed = store.openedSyncTargets();
     targets = borrowed.map(opened => {
       const profile = opened.profile;
       if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.shardUser && !profile.shardKey) refuse("shard sync target identity unavailable");
-      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], pending: [], origins: new Map<string, HoldSource>(), holds: [], generation: profile.generation };
+      return { store: opened, realm: profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: profile.shardKey! }, rows: new Map<string, ShardSyncRow>(), fetched: new Set<string>(), sources: [], pending: [], origins: new Map<string, HoldSource>(), holds: [], generation: profile.generation, manifests:new Map(),eligible:new Set(),registered:[] };
     });
     if (!targets.length || targets.length > 2 || targets.some(target => target.store.profile.home !== store.profile.home)
       || new Set(targets.map(target => shardSyncRef(target.realm))).size !== targets.length
@@ -368,46 +521,66 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     const fetchURLs = (await required(["remote", "get-url", "--all", "origin"], "shard sync fetch destination unavailable")).split("\n");
     const pushURLs = (await required(["remote", "get-url", "--push", "--all", "origin"], "shard sync push destination unavailable")).split("\n");
     if (fetchURLs.length !== 1 || fetchURLs[0] !== url || pushURLs.length !== 1 || pushURLs[0] !== url) refuse("shard sync refuses differing or multiple remote destinations");
+    homeMutation = v2 ? acquireMutation(store.profile.home) : undefined;
+    if (v2 && !homeMutation) refuse("another home selection mutation is running");
+    if (homeMutation) releases.push(homeMutation);
     // Cooperating source writers stay excluded across remote reads and final imports. No nested withMutation calls.
     for (const target of [...targets].sort((a, b) => a.store.dir < b.store.dir ? -1 : 1)) {
-      const release = acquireMutation(target.store.dir); if (!release) refuse(`${shardSyncLabel(target.realm)}: another source mutation is running`); releases.push(release);
+      const release = acquireMutation(target.store.dir); if (!release) refuse(`${shardSyncLabel(target.realm)}: another source mutation is running`); releases.push(release); target.mutation=release;
+      if (v2) ensurePublisherBoundary(target.store.profile,release);
     }
     const blobCache = new Map<string, Buffer>(), decoded = new Map<string, ShardSyncRow[]>();
     const blob = async (object: string, path: string): Promise<Buffer> => {
-      const maximum = path === "shard.json" ? 64 * 1024 : SHARD_PACK_MAX_BYTES, prior = blobCache.get(object);
+      const maximum = path === "shard.json" || isShardManifestPath(path) ? 64 * 1024 : SHARD_PACK_MAX_BYTES, prior = blobCache.get(object);
       if (prior) { if (prior.length > maximum) refuse("shard sync blob exceeds its bound"); return prior; }
       const size = Number(await required(["cat-file", "-s", object], "shard sync blob size unavailable"));
       if (!Number.isSafeInteger(size) || size < 1 || size > maximum) refuse("shard sync blob exceeds its bound");
-      const value = await required(["cat-file", "blob", object], "shard sync blob unavailable"), bytes = Buffer.from(value + "\n");
-      if (bytes.length !== size) refuse("shard sync requires complete newline-terminated public blobs");
+      check(); const result = await generationSyncGitBytes(root,gitArgs(["cat-file","blob",object]),opts.signal,undefined,maximum); check();
+      if(result.code!==0)refuse("shard sync blob unavailable"); const bytes=Buffer.from(result.out);
+      if (bytes.length !== size || bytes.at(-1) !== 10) refuse("shard sync requires complete newline-terminated public blobs");
       const identity = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
       if (identity !== object) refuse("shard sync public blob identity mismatch");
       blobCache.set(object, bytes); return bytes;
     };
-    type History = { rows: Map<string, ShardSyncRow>; files: Map<string, Buffer>; origins: Map<string, HoldSource> };
+    type History = { rows: Map<string, ShardSyncRow>; files: Map<string, Buffer>; origins: Map<string, HoldSource>; version:"v1"|"v2"; manifests:Map<string,SyncManifest> };
     // Keep only requested tips. Per-commit full row maps would make append-only history quadratic in memory.
     const histories = new Map<string, History>(), audited = new Set<string>();
     const firstOrigins = new Map<string, Map<string, HoldSource>>();
+    const manifestOrigins = new Map<string,{commit:string;blob:string}>();
     const treeState = async (commit: string, target: Target): Promise<History> => {
-      const entries = (await required(["ls-tree", "-r", "-z", commit], "shard sync tree unavailable")).split("\0").filter(Boolean);
-      const rows = new Map<string, ShardSyncRow>(), files = new Map<string, Buffer>(), origins = new Map<string, HoldSource>();
-      for (const entry of entries) {
-        const match = /^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
-        if (!match || match[2] !== "shard.json" && !PACK.test(match[2]!)) refuse(`${shardSyncLabel(target.realm)}: forbidden historical tree entry`);
-        const path = match[2]!, object = match[1]!, bytes = await blob(object, path); files.set(path, bytes);
-        if (path === "shard.json") {
-          if (bytes.toString() !== shardSyncDescriptor(target.realm)) refuse(`${shardSyncLabel(target.realm)}: historical descriptor mismatch`);
-        } else {
-          const key = `${shardSyncRef(target.realm)}:${object}`;
-          let pack = decoded.get(key);
-          if (!pack) { pack = decodeShardPack(path, bytes, target.realm, target.generation); decoded.set(key, pack); }
-          else if (!path.endsWith(`/${digest(bytes)}.jsonl`) || pack.some(row => path !== `rows/${digest(row.machine)}/${digest(bytes)}.jsonl`)) refuse(`${shardSyncLabel(target.realm)}: immutable pack path changed`);
-          mergeRows(rows, pack, target.realm);
-          mergePackOrigins(origins, firstOrigins, pack, { ref: shardSyncRef(target.realm), commit, pack: path, blob: object });
-        }
+      const entries=(await required(["ls-tree","-r","-z",commit],"shard sync tree unavailable")).split("\0").filter(Boolean);
+      const rows=new Map<string,ShardSyncRow>(),files=new Map<string,Buffer>(),origins=new Map<string,HoldSource>(),objects=new Map<string,string>(),manifests=new Map<string,SyncManifest>();
+      for(const entry of entries){
+        const match=/^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
+        if(!match||match[0]!==entry||match[2]!=="shard.json"&&!PACK.test(match[2]!)&&!isShardManifestPath(match[2]!))refuse(`${shardSyncLabel(target.realm)}: forbidden historical tree entry`);
+        const path=match[2]!,oid=match[1]!,bytes=await blob(oid,path);files.set(path,bytes);objects.set(path,oid);
       }
-      if (!files.has("shard.json")) refuse(`${shardSyncLabel(target.realm)}: historical descriptor missing`);
-      return { rows, files, origins };
+      const descriptor=files.get("shard.json");if(!descriptor)refuse(`${shardSyncLabel(target.realm)}: historical descriptor missing`);
+      const version=decodeShardDescriptor(descriptor,target.realm);
+      if(version==="v2"&&!v2)refuse("remote shard requires the explicitly activated public prune view");
+      for(const [path,bytes] of files)if(PACK.test(path)){
+        const oid=objects.get(path)!,key=`${shardSyncRef(target.realm)}:${oid}`;let pack=decoded.get(key);
+        if(!pack){pack=decodeShardPack(path,bytes,target.realm,target.generation);decoded.set(key,pack);}
+        else if(!path.endsWith(`/${digest(bytes)}.jsonl`)||pack.some(row=>path!==`rows/${digest(row.machine)}/${digest(bytes)}.jsonl`))refuse("immutable pack path changed");
+        mergeRows(rows,pack,target.realm);mergePackOrigins(origins,firstOrigins,pack,{ref:shardSyncRef(target.realm),commit,pack:path,blob:oid});
+      }
+      for(const [path,bytes] of files)if(isShardManifestPath(path)){
+        if(version!=="v2")refuse("a v1 tree cannot contain prune manifests");
+        const value=decodeShardManifest(path,bytes),candidate=value as {prune?:unknown;pruneOccurrence?:{pack:string;blob:string};witnesses?:{pack:string;blob:string}[]};
+        const row=validatePruneRow(candidate.prune,undefined,"synced");
+        if(canonicalJSON(rows.get(row.id))!==canonicalJSON(row))refuse("manifest original prune is missing or conflicts");
+        if(!candidate.pruneOccurrence||!Array.isArray(candidate.witnesses))refuse("manifest references unavailable");
+        const selected=new Map<string,{pack:string;blob:string;bytes:Buffer}>();
+        for(const ref of [candidate.pruneOccurrence,...candidate.witnesses]){
+          if(!ref||typeof ref.pack!=="string"||objects.get(ref.pack)!==ref.blob||!files.has(ref.pack))refuse("manifest complete pack is unavailable");
+          selected.set(ref.pack,{pack:ref.pack,blob:ref.blob,bytes:files.get(ref.pack)!});
+        }
+        const proof=verifyPublicPruneWitness(value,{realm:target.realm,packs:[...selected.values()]});
+        if(proof.status==="invalid")refuse("manifest lacks complete original public proof");
+        const identity=`${shardSyncRef(target.realm)}:${path}`,origin=manifestOrigins.get(identity)??{commit,blob:objects.get(path)!};manifestOrigins.set(identity,origin);
+        manifests.set(path,{path,bytes,value,row,eligible:proof.status==="verified",...origin});
+      }
+      return{rows,files,origins,version,manifests};
     };
     const history = async (tip: string, target: Target): Promise<History> => {
       const key = `${shardSyncRef(target.realm)}:${tip}`, cached = histories.get(key); if (cached) return cached;
@@ -424,6 +597,8 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         for (const parent of parents) {
           if (!audited.has(`${shardSyncRef(target.realm)}:${parent}`)) refuse(`${shardSyncLabel(target.realm)}: historical parent unavailable`);
           const previous = histories.get(`${shardSyncRef(target.realm)}:${parent}`) ?? await treeState(parent, target);
+          if(previous.version==="v2"&&current.version!=="v2")refuse("shard history cannot downgrade from v2");
+          if(previous.version==="v2")for(const [path,bytes] of previous.files)if(path!=="shard.json"&&!current.files.get(path)?.equals(bytes))refuse("immutable v2 history artifact removed or changed");
           for (const row of previous.rows.values()) if (canonicalJSON(current.rows.get(row.id)) !== canonicalJSON(row)) refuse(`${shardSyncLabel(target.realm)}: historical original row removed or replaced`);
         }
         audited.add(identity); if (commit === tip) latest = current;
@@ -451,6 +626,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         if (target.local) await required(["merge-base", "--is-ancestor", target.local, tip], `${shardSyncLabel(target.realm)}: remote history is not fast-forward`);
         const remote = await history(tip, target); target.remote = tip;
         mergeRows(target.rows, Array.from(remote.rows.values()), target.realm);
+        target.manifests=new Map(remote.manifests);target.eligible=new Set([...remote.manifests.values()].filter(item=>item.eligible).map(item=>item.row.id));
         for (const row of remote.rows.values()) { target.fetched.add(row.id); target.origins.set(row.id, remote.origins.get(row.id)!); }
       }
     };
@@ -471,11 +647,25 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       for (const target of targets) {
         const remote = target.remote ? await history(target.remote, target) : undefined;
         const files = new Map(remote?.files);
-        files.set("shard.json", Buffer.from(shardSyncDescriptor(target.realm)));
+        files.set("shard.json", Buffer.from(shardSyncDescriptor(target.realm,v2?"v2":"v1")));
         // Retain immutable packs and append only new ids; repacking every prefix would duplicate the entire history at each sync.
         const additions = [...target.rows.values()].filter(row => !remote?.rows.has(row.id));
         for (const [path, bytes] of encodeShardPacks(additions)) {
           const old = files.get(path); if (old && !old.equals(bytes)) refuse(`${shardSyncLabel(target.realm)}: immutable pack conflict`); files.set(path, bytes);
+        }
+        if(v2){
+          assertPublisherBoundary(target.store.profile,target.mutation!);
+          const occurrences=new Map<string,{pack:string;blob:string}>();
+          for(const [path,bytes] of files)if(PACK.test(path))for(const row of decodeShardPack(path,bytes,target.realm,target.generation))if(!occurrences.has(row.id))occurrences.set(row.id,{pack:path,blob:createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")});
+          for(const row of target.rows.values())if(row.op==="prune"&&row.generation===target.generation&&!target.fetched.has(row.id)&&![...target.manifests.values()].some(item=>item.row.id===row.id)){
+            const lineage=publisherPruneLineage(target.store.profile,target.mutation!,row);if(!lineage)continue;
+            const own=occurrences.get(row.id);if(!own)refuse("original prune occurrence unavailable");
+            const needed=new Map<string,string>();for(const entry of row.targets)for(const ref of [entry,entry.basis])needed.set(ref.id,ref.rowHash);
+            const witnesses=[...needed].sort(([a],[b])=>a<b?-1:1).map(([id,rowHash])=>{const location=occurrences.get(id);if(!location)refuse("public witness occurrence unavailable");return{...location,id,rowHash};});
+            const manifest:PublicPruneWitnessV1={schema:"agent-mem.public-prune-witness/v1",realm:target.realm,prune:row,lineage,pruneOccurrence:own,witnesses};
+            const encoded=encodeShardManifest(manifest);const packs=new Map([own,...witnesses].map(ref=>[ref.pack,{pack:ref.pack,blob:ref.blob,bytes:files.get(ref.pack)!}]));
+            if(verifyPublicPruneWitness(manifest,{realm:target.realm,packs:[...packs.values()]}).status!=="verified")refuse("publisher manifest proof unavailable");files.set(encoded.path,encoded.bytes);
+          }
         }
         await required(["read-tree", "--empty"], "shard sync private index unavailable");
         for (const [path, bytes] of [...files].sort(([a], [b]) => a < b ? -1 : 1)) {
@@ -498,11 +688,101 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         || !decodeShardPack(value.source.pack, bytes, target.realm, target.generation).some(item => canonicalJSON(item) === canonicalJSON(value.row))
         || value.source.ref !== shardSyncRef(target.realm)) refuse(`${shardSyncLabel(target.realm)}: prune hold source mismatch`);
     };
-    localTargets(); await fetchTargets(); localTargets(); provePrunes(targets); await prepareHolds(targets, root, url, proveHoldSource); check();
+    const loadExistingApplications = async () => {
+      if(!v2)return;
+      const selected=readSelector(store.profile.home).selector;if(selected?.schema!=="agent-mem.profile/v2")refuse("selected v2 profile unavailable");
+      boundView=readPublicPruneView(store.profile.home,selected.pruneInputSetHash,store.profile.generation!);
+      for(const target of targets){
+        target.registered=[];const key=target.realm.scope==="user"?"user":`project:${target.realm.key}`,set=boundView.realms[key];if(!set)continue;
+        const projection=reducePublicPruneInputs({dir:target.store.dir,realm:target.realm,receivingGeneration:target.generation,inputSetHash:set});
+        for(const hash of projection.inputs){
+          const descriptor=readPublicPruneInputDescriptor({dir:target.store.dir,hash});
+          if(!target.remote||descriptor.source.remoteHash!==digest(url))refuse("registered prune source history disappeared or its remote binding changed");
+          await required(["merge-base","--is-ancestor",descriptor.source.commit,target.remote],"registered prune source is missing from replacement history");
+          const original=await history(descriptor.source.commit,target),manifest=original.manifests.get(descriptor.source.manifestPath);
+          if(!manifest||!manifest.eligible||manifest.blob!==descriptor.source.manifestBlob||descriptor.source.ref!==shardSyncRef(target.realm)||digest(canonicalJSON(manifest.value))!==descriptor.witnessHash)refuse("registered prune anchor no longer has exact audited evidence");
+          target.registered.push(descriptor);
+        }
+      }
+    };
+    const objectCache=new Map<string,{type:"commit"|"tree"|"blob";body:Uint8Array}>(), graphObjects=new Map<string,Uint8Array>();
+    // ponytail: one sync retains at most the 256 MiB replay budget across selected realms; segmented acquisition is the upgrade.
+    let objectBytes=0;
+    const readObject=async(oid:string)=>{
+      const prior=objectCache.get(oid);if(prior)return prior;
+      if(OID.exec(oid)?.[0]!==oid)refuse("Git object identity invalid");
+      const type=await required(["cat-file","-t",oid],"Git object type unavailable");
+      if(type!=="commit"&&type!=="tree"&&type!=="blob")refuse("Git object type refused");
+      const size=Number(await required(["cat-file","-s",oid],"Git object size unavailable")),limit=type==="commit"?65536:SHARD_PACK_MAX_BYTES;
+      if(!Number.isSafeInteger(size)||size<0||size>limit)refuse("Git object exceeds complete evidence bound");
+      const encodedSize=Buffer.byteLength(`${type} ${size}`)+1+size;
+      if(objectBytes+encodedSize>PUBLIC_PRUNE_REPLAY_MAX_BYTES)throw new PublicPruneInputError("resource");
+      check();const result=await generationSyncGitBytes(root,gitArgs(["cat-file",type,oid]),opts.signal,undefined,limit);check();
+      if(result.code!==0||result.out.length!==size)refuse("Git object bytes unavailable");
+      const value:{type:"commit"|"tree"|"blob";body:Uint8Array}={type:type as "commit"|"tree"|"blob",body:result.out};objectBytes+=encodedSize;objectCache.set(oid,value);return value;
+    };
+    const prepareApplications = async () => {
+      if(!v2)return;application.proofComplete=0;application.held=0;
+      for(const target of targets){
+        const current=await history(target.commit!,target);target.manifests=new Map(current.manifests);
+        target.eligible=new Set([...current.manifests.values()].filter(item=>item.eligible).map(item=>item.row.id));
+        application.proofComplete+=target.eligible.size;
+        const key=target.realm.scope==="user"?"user":`project:${target.realm.key}`,initial=boundView!.realms[key]??null;
+        const inputs=[];
+        for(const record of [...current.manifests.values()].sort((a,b)=>a.path<b.path?-1:1)){
+          if(!record.eligible||record.row.generation===target.generation)continue;
+          const witnessHash=digest(canonicalJSON(record.value));
+          if(target.registered.some(item=>item.witnessHash===witnessHash))continue;
+          if(inputs.length>=PUBLIC_PRUNE_MAX_SETS)throw new PublicPruneInputError("resource");
+          const acquired=await collectPublicPruneGitGraph({commit:record.commit,manifestPath:record.path,manifestBlob:record.blob,realm:target.realm,readObject});
+          // Share exact raw objects before accumulating inputs; repeated manifests cannot multiply graph memory.
+          const objects=acquired.map(item=>{
+            const prior=graphObjects.get(item.oid);if(prior&&!Buffer.from(prior).equals(item.bytes))refuse("conflicting Git graph bytes");
+            const bytes=prior??item.bytes;graphObjects.set(item.oid,bytes);
+            const cached=objectCache.get(item.oid)!;objectCache.set(item.oid,{type:cached.type,body:bytes.subarray(bytes.indexOf(0)+1)});return{oid:item.oid,bytes};
+          });
+          inputs.push({witnessHash,source:{remoteHash:digest(url),ref:shardSyncRef(target.realm),commit:record.commit,manifestPath:record.path,manifestBlob:record.blob},objects});
+        }
+        target.batch=undefined;
+        if(inputs.length){
+          const binding={realm:target.realm,receivingGeneration:target.generation,selectorRevision:expectedRevision,inputSetHash:initial};
+          target.batch=preparePublicPruneInputBatch({dir:target.store.dir,binding,current:()=>{check();return{...binding,selectorRevision:expectedRevision};},inputs},target.mutation!);
+        }
+      }
+      await prepareHolds(targets,root,url,proveHoldSource);application.held=targets.reduce((n,item)=>n+item.holds.length,0);application.phase="prepared";
+    };
+    const installApplications = async () => {
+      if(!v2)return;
+      const realms={...boundView!.realms};
+      for(const target of targets)if(target.batch){
+        const installed=persistPublicPruneInputBatch(target.batch,{mutation:target.mutation!,observe:()=>check()});
+        realms[target.realm.scope==="user"?"user":`project:${target.realm.key}`]=installed.inputSetHash;testOnlyPhase?.("inputs-installed");
+      }
+      const view:PublicPruneViewV1={...boundView!,realms};
+      const changed=canonicalJSON(view)!==canonicalJSON(boundView);
+      if(changed){
+        for(const target of targets)selectorRetention(target,true,true);
+        const result=await advancePublicPruneView({memoryDir:store.profile.home,view,expectedRevision,mutations:[homeMutation!,...targets.map(item=>item.mutation!)]});
+        expectedRevision=result.revision;boundView=view;
+        // The same open handles validate/rebind; no close/reopen or authority flag is used.
+        for(const target of targets)target.store.refresh();
+        if(shardSyncSourceBinding(store)!==expectedSources||opts.policyVersion?.()!==expectedPolicy)refuse("source binding or policy changed during view commit");
+        expectedBinding=shardSyncBinding(store);
+        testOnlyPhase?.("view-committed");
+      }
+      application.projectionActive=targets.reduce((n,target)=>n+[...target.eligible].filter(id=>(target.rows.get(id) as PruneRow).generation!==target.generation).length,0);application.phase="active";check();
+    };
+    localTargets(); await fetchTargets(); localTargets(); provePrunes(targets); await loadExistingApplications(); await prepareHolds(targets, root, url, proveHoldSource); check();
     // Every selected realm, including its complete remote history/prunes, is preflighted before the first append or publication.
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); await prepareHolds(targets, root, url, proveHoldSource); check(); }
-      await buildTargets(); check();
+      if (attempt) { await fetchTargets(); localTargets(); provePrunes(targets); await loadExistingApplications(); await prepareHolds(targets, root, url, proveHoldSource); check(); }
+      await buildTargets(); await prepareApplications(); check();
+      if(v2)for(const target of targets){
+        const durable=new Set(target.store.prunePort().snapshot().durablePruneIds),reserve=[...target.rows.values()].some(row=>row.op==="prune"&&row.generation===target.generation&&!durable.has(row.id));
+        // Existing pending plans complete before fresh native rows, so only one serial new-plan slot is reserved.
+        selectorRetention(target,targets.some(item=>!!item.batch),false,reserve);
+      }
+      if(v2)for(const target of targets)assertPublisherBoundary(target.store.profile,target.mutation!);
       const sent = await git(["push", "--atomic", "--no-follow-tags", "-q", "origin", ...targets.map(target => `${target.commit!}:${shardSyncRef(target.realm)}`)]);
       if (sent.code === 0) pushed = true;
       check();
@@ -513,20 +793,25 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         // No selected ordinary/native imports can precede durable receipts for every foreign prune.
         for (const target of targets) for (const hold of target.holds) installHold(root, hold, testOnlyPhase);
         check();
+        await installApplications();
         for (const target of targets) {
           assertCuratedShardPaths(target.store.profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
-          importRows(target); testOnlyPhase?.("imported");
+          importRows(target);
+          target.pending=[];target.selectorChecks=[];
+          if(v2)selectorRetention(target,false,true);
+          testOnlyPhase?.("imported");
         }
         for (const target of targets) await required(["update-ref", "--no-deref", shardSyncRef(target.realm), target.commit!, target.local ?? zero], "shard sync cached ref changed concurrently");
         const warning = holdWarning(targets, root);
+        if(v2){application.nativeApplied=targets.reduce((n,target)=>n+[...target.rows.values()].filter(row=>row.op==="prune"&&row.generation===target.generation).length,0);application.phase="complete";application.transport="durable";}
         return { ok: true, pushed, entries: targets.reduce((n, target) => n + [...target.rows.values()].filter(row => row.op === "note").length, 0),
-          ...(warning ? { warning } : {}) };
+          ...(warning ? { warning } : {}), ...(v2?{pruneApplication:application}:{}) };
       }
       if (opts.signal?.aborted) return fail("stopped");
     }
     return fail("shard sync selected-ref push failed");
   } catch (error) {
-    if (error instanceof ShardSyncFormatError || error instanceof SyncRefusal) return fail(error.message);
+    if (error instanceof PublicPruneInputError || error instanceof ShardSyncFormatError || error instanceof SyncRefusal) return fail(error.message);
     try { testOnlyUnexpectedError?.(error); } catch { /* A test observer cannot change the neutral result. */ }
     return fail("shard sync unavailable");
   } finally {

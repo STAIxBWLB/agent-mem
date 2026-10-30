@@ -3,11 +3,15 @@ import { legacyEntries } from "./bridge.ts";
 import { canonicalJSON, validGeneration } from "./generation.ts";
 import { validatePruneRow, type PruneRow } from "./prune.ts";
 import { shardKeyHash } from "./shard.ts";
+import { validatePublicPruneWitness, type PublicPruneWitnessV1 } from "./public-prune-witness.ts";
 import type { Entry } from "./store.ts";
 
 export type ShardSyncRealm = { scope: "project"; key: string } | { scope: "user" };
 export type ShardSyncRow = Entry | PruneRow;
 export const SHARD_SYNC_SCHEMA = "agent-mem.shard-sync/v1";
+export const SHARD_SYNC_V2_SCHEMA = "agent-mem.shard-sync/v2";
+const METADATA_MAX_BYTES = 65_536;
+const MANIFEST = /^prune-witnesses\/([a-f0-9]{64})\.json$/;
 export const SHARD_PACK_MAX_BYTES = 1024 * 1024;
 const PACK = /^rows\/([a-f0-9]{64})\/([a-f0-9]{64})\.jsonl$/;
 const hash = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
@@ -28,9 +32,43 @@ export function shardSyncRef(realm: ShardSyncRealm): string {
   checkRealm(realm);
   return realm.scope === "user" ? "refs/heads/amem/u" : `refs/heads/amem/p/${shardKeyHash(realm.key)}`;
 }
-export function shardSyncDescriptor(realm: ShardSyncRealm): string {
+export function shardSyncDescriptor(realm: ShardSyncRealm, version: "v1" | "v2" = "v1"): string {
   checkRealm(realm);
-  return canonicalJSON(realm.scope === "user" ? { schema: SHARD_SYNC_SCHEMA, scope: "user" } : { schema: SHARD_SYNC_SCHEMA, scope: "project", key: realm.key }) + "\n";
+  if (version !== "v1" && version !== "v2") throw new ShardSyncFormatError("shard", "unsupported descriptor version");
+  const schema = version === "v1" ? SHARD_SYNC_SCHEMA : SHARD_SYNC_V2_SCHEMA;
+  return canonicalJSON(realm.scope === "user" ? { schema, scope: "user" } : { schema, scope: "project", key: realm.key }) + "\n";
+}
+
+/** Closed canonical metadata, including its single complete newline terminator. */
+function decodeMetadata(bytes: Uint8Array, label: string): Record<string, unknown> {
+  try {
+    if (!bytes.byteLength || bytes.byteLength > METADATA_MAX_BYTES) throw new Error("bound");
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value) || canonicalJSON(value) + "\n" !== text) throw new Error("canonical");
+    return value as Record<string, unknown>;
+  } catch { throw new ShardSyncFormatError(label, "invalid canonical metadata or bound"); }
+}
+export function decodeShardDescriptor(bytes: Uint8Array, realm: ShardSyncRealm): "v1" | "v2" {
+  const label = shardSyncLabel(realm), value = decodeMetadata(bytes, label);
+  const version = value.schema === SHARD_SYNC_SCHEMA ? "v1" : value.schema === SHARD_SYNC_V2_SCHEMA ? "v2" : undefined;
+  if (!version || canonicalJSON(value) + "\n" !== shardSyncDescriptor(realm, version)) throw new ShardSyncFormatError(label, "descriptor realm or schema mismatch");
+  return version;
+}
+export function isShardManifestPath(path: string): boolean { return MANIFEST.exec(path)?.[0] === path; }
+/** Shape and lineage classification belong to Layer 1 after complete pack acquisition. */
+export function decodeShardManifest(path: string, bytes: Uint8Array): unknown {
+  const match = MANIFEST.exec(path), label = "shard manifest";
+  if (!match || match[0] !== path) throw new ShardSyncFormatError(label, "invalid manifest path");
+  const value = decodeMetadata(bytes, label);
+  if (value.schema !== "agent-mem.public-prune-witness/v1" || hash(canonicalJSON(value)) !== match[1]) throw new ShardSyncFormatError(label, "invalid manifest schema or hash");
+  return value;
+}
+export function encodeShardManifest(manifest: PublicPruneWitnessV1): { path: string; bytes: Buffer } {
+  try {
+    const value = validatePublicPruneWitness(manifest), body = canonicalJSON(value), bytes = Buffer.from(body + "\n");
+    if (bytes.byteLength > METADATA_MAX_BYTES) throw new Error("bound");
+    return { path: `prune-witnesses/${hash(body)}.json`, bytes };
+  } catch { throw new ShardSyncFormatError("shard manifest", "invalid supported manifest or bound"); }
 }
 
 /** Only row shape/public placement here. The sync engine must prove target/basis realm ownership across the full source set. */

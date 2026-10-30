@@ -6,7 +6,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLink } from "./generation.ts";
+import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLink, rebindPublicPruneProfile } from "./generation.ts";
 import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
@@ -14,6 +14,7 @@ import { PROMOTED_KINDS, type Entry } from "./store.ts";
 const FOREIGN_TABLES = ["generation_foreign_inputs", "generation_foreign_rows", "generation_foreign_targets"] as const;
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const fail = (): never => { throw new Error("generation input unavailable or changed; person inspection required"); };
+class PublicPruneViewChanged extends Error { constructor() { super("public prune view changed repeatedly; retry the read"); } }
 export const GENERATION_TABLES = ["generation_vault_links", "generation_rows", "generation_prunes", "generation_targets", "generation_segments", "generation_state"] as const;
 export interface GenerationIndexOptions {
   profile: BoundProfile; db: Database; now: () => number;
@@ -104,10 +105,14 @@ export class GenerationIndex {
   /** Authoring handles cannot read or append a partially resumed split; migration index bootstraps use captured limits. */
   private shardFrontier(): string | undefined {
     if (!this.profile.sharded || this.options.limits !== undefined) return undefined;
-    const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
-    if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
-    if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) return fail();
-    return hashJSON(value);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      rebindPublicPruneProfile(this.profile);
+      const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
+      if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) { if (this.profile.foreignPruneFormat) continue; return fail(); }
+      if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+      return hashJSON(value);
+    }
+    return fail();
   }
   private capture(reader: SegmentReader = this.reader): { segments: LegacySegment[]; commit?: string } {
     const shardBefore = this.shardFrontier();
@@ -131,7 +136,7 @@ export class GenerationIndex {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
     }
-    if (this.shardFrontier() !== shardBefore) return fail();
+    if (this.shardFrontier() !== shardBefore) { if (this.profile.foreignPruneFormat) throw new PublicPruneViewChanged(); return fail(); }
     return { segments: [...legacy, ...own], ...(commit ? { commit } : {}) };
   }
   private index(captured: { segments: LegacySegment[]; commit?: string }): void {
@@ -190,7 +195,7 @@ export class GenerationIndex {
     if (!this.foreignCache || this.foreignCache.set !== set) this.foreignCache = { set, load: createPublicPruneReplayCache({ dir: profile.dir,
       realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set }) };
     const proof = this.foreignCache.load();
-    if (validateRows) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
+    if (validateRows || this.foreignStamp !== set) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
       const expected = proof.rowHashes.get(item.id); if (expected && hashJSON(JSON.parse(item.line)) !== expected) return fail();
     }
     if (validateRows || this.foreignStamp !== set) {
@@ -223,7 +228,7 @@ export class GenerationIndex {
     const before = this.frontier(), db = this.options.db;
     let input: ReturnType<GenerationIndex["capture"]>;
     try { input = this.capture(reader); }
-    catch (error) { if (attempt < 5 && this.frontier() !== before) return this.refresh(attempt + 1, reader); throw error; }
+    catch (error) { if (attempt < 5 && (error instanceof PublicPruneViewChanged || this.frontier() !== before)) return this.refresh(attempt + 1, reader); throw error; }
     if (this.frontier() !== before) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
     const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
@@ -237,7 +242,7 @@ export class GenerationIndex {
     const before = this.frontier();
     let input: ReturnType<GenerationIndex["capture"]>;
     try { this.fullCapture = true; input = this.capture(reader); }
-    catch (error) { this.fullCapture = false; if (attempt < 5 && this.frontier() !== before) return this.rebuild(attempt + 1, reader); throw error; }
+    catch (error) { this.fullCapture = false; if (attempt < 5 && (error instanceof PublicPruneViewChanged || this.frontier() !== before)) return this.rebuild(attempt + 1, reader); throw error; }
     finally { this.fullCapture = false; }
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;

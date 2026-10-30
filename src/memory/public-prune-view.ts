@@ -1,7 +1,7 @@
 /** Root selector commitment only; this module never writes or activates a profile. */
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON } from "./generation.ts";
+import { canonicalJSON, hashJSON, PROFILE_LOCK_TIMEOUT_MS } from "./generation.ts";
 import { realPath } from "./platform.ts";
 
 export const PUBLIC_PRUNE_INTENT = "public-prune-view.intent.json";
@@ -42,9 +42,60 @@ export function validatePublicPruneView(input: unknown): PublicPruneViewV1 {
   });
 }
 export function publicPruneViewHash(view: PublicPruneViewV1): string { return hashJSON(validatePublicPruneView(view)); }
-/** Any intent shape, including a directory or dangling symlink, blocks reads. Never repair it here. */
-export function assertNoPublicPruneIntent(home: string): void {
-  protectedCall(() => { guard(!lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false })); });
+/** A v2 reader may wait for a short cooperating writer, never authorize or repair one.
+ * No liveness helper, network call, PID exemption or mutation occurs on this path. */
+export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number): void {
+  protectedCall(() => {
+    const deadline = Math.min(absoluteDeadline ?? Infinity, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
+    const intentFile = join(home, PUBLIC_PRUNE_INTENT), lockFile = join(home, "profile.lock");
+    if (!lstatSync(intentFile, { throwIfNoEntry: false }) && !lstatSync(lockFile, { throwIfNoEntry: false })) return;
+    const small = (file: string, limit: number): Record<string, unknown> => {
+      const before = lstatSync(file); privateStat(before); guard(before.size > 0 && before.size <= limit);
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd); privateStat(opened); guard(opened.size > 0 && opened.size <= limit);
+        const bytes = Buffer.alloc(opened.size + 1); let count = 0;
+        while (count < bytes.length) { const read = readSync(fd, bytes, count, bytes.length - count, count); if (!read) break; count += read; }
+        const after = fstatSync(fd); privateStat(after); guard(count === opened.size && same(opened, after));
+        const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count))); guard(object(parsed)); return parsed;
+      } finally { closeSync(fd); }
+    };
+    const profileFile = join(home, "profile.json");
+    if (!lstatSync(profileFile, { throwIfNoEntry: false })) return; // Implicit shared-v1 has no selector marker.
+    const profile = small(profileFile, MAX_BYTES);
+    if (profile.schema !== "agent-mem.profile/v2") return; // v1 admission/intent behavior is unchanged.
+    for (;;) {
+      try {
+        const intent = lstatSync(intentFile, { throwIfNoEntry: false }), lock = lstatSync(lockFile, { throwIfNoEntry: false });
+        if (!intent && !lock) return;
+        if (lock) {
+          privateStat(lock);
+          if (lock.size) {
+            const owner = small(lockFile, 4096);
+            guard(Reflect.ownKeys(owner).length === 3 && Number.isSafeInteger(owner.pid) && Number(owner.pid) > 0 && hex(owner.signature, 64) && hex(owner.token, 32));
+          }
+        }
+        if (intent?.nlink === 2) {
+          // Create-once publication briefly links the complete staging inode to its final
+          // name before fsync/unlink. Wait under an owned complete writer lock, without
+          // reading or trusting that not-yet-independent intent as published evidence.
+          guard(lock && lock.size > 0 && intent.isFile() && !intent.isSymbolicLink()
+            && intent.uid === process.getuid?.() && (intent.mode & 0o077) === 0
+            && intent.size > 0 && intent.size <= 1024 * 1024);
+        } else if (intent) {
+          const pending = small(intentFile, 1024 * 1024);
+          guard(pending.schema === "agent-mem.public-prune-advance/v1" && pending.home === realPath(home) && pending.generation === profile.generation);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; // Publication disappeared normally; retry the bounded observation.
+      }
+      const remaining = deadline - Date.now(); guard(remaining > 0); Bun.sleepSync(Math.min(5, remaining));
+    }
+  });
+}
+/** Any unresolved intent blocks reads. Never remove it, including malformed bytes. */
+export function assertNoPublicPruneIntent(home: string, absoluteDeadline?: number): void {
+  protectedCall(() => { waitForPublicPruneWriter(home, absoluteDeadline); guard(!lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false })); });
 }
 function privateStat(stat: Stats, directory = false): void {
   guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1));
@@ -81,8 +132,8 @@ export function readPublicPruneViewForActivation(home: string, hash: string, gen
   });
 }
 
-export function readPublicPruneView(home: string, hash: string, generation: string): PublicPruneViewV1 {
-  assertNoPublicPruneIntent(home);
+export function readPublicPruneView(home: string, hash: string, generation: string, absoluteDeadline?: number): PublicPruneViewV1 {
+  assertNoPublicPruneIntent(home, absoluteDeadline);
   const result = readPublicPruneViewForActivation(home, hash, generation);
-  assertNoPublicPruneIntent(home); return result;
+  assertNoPublicPruneIntent(home, absoluteDeadline); return result;
 }

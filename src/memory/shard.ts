@@ -2,7 +2,7 @@ import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-v
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, type BoundProfile, type GenerationSeal } from "./generation.ts";
+import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, PROFILE_LOCK_TIMEOUT_MS, type BoundProfile, type GenerationSeal } from "./generation.ts";
 import { SHARD_SCHEMA, resolveAlias } from "./aliases.ts";
 
 /**
@@ -89,17 +89,45 @@ export function userShardDir(base: string): string {
   return join(base, "user");
 }
 
-export function readShardedSelection(memoryDir: string): ShardedSelection {
-  assertNoPublicPruneIntent(memoryDir);
-  const value = readProfileJSON(join(memoryDir, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined;
+type ShardedJournal = Record<string, unknown> & ShardedSelection;
+function shardJournal(memoryDir: string): ShardedJournal {
+  const value = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
   if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
-  if (value.schema === SHARDED_V2_SCHEMA) {
-    const allowed: readonly string[] = SHARDED_V2_FIELDS;
-    if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error("unsupported curated shard view");
+  if (value.schema === SHARDED_V2_SCHEMA && Object.keys(value).some(key => !(SHARDED_V2_FIELDS as readonly string[]).includes(key))) throw new Error("unsupported curated shard view");
+  return value as ShardedJournal;
+}
+function compatibleShardAdvance(before: ShardedJournal, after: ShardedJournal): boolean {
+  if (before.schema !== SHARDED_V2_SCHEMA || after.schema !== SHARDED_V2_SCHEMA) return false;
+  const { selectorRevision: _old, ...old } = before, { selectorRevision: _next, ...next } = after;
+  return canonicalJSON(old) === canonicalJSON(next);
+}
+function shardSnapshot(memoryDir: string, deadline: number) {
+  assertNoPublicPruneIntent(memoryDir, deadline);
+  let journal = shardJournal(memoryDir);
+  for (let attempt = 0; attempt < 6 && Date.now() <= deadline; attempt++) {
+    let selector: ReturnType<typeof readSelector>;
+    try { selector = readSelector(memoryDir, deadline); }
+    catch (error) {
+      // The writer's spent wait budget or unavailable proof is never restarted here.
+      if (error instanceof Error && error.message === "public prune view unavailable") throw error;
+      const current = shardJournal(memoryDir);
+      if (current.selectorRevision === journal.selectorRevision || !compatibleShardAdvance(journal, current)) throw error;
+      journal = current; continue;
+    }
+    const current = shardJournal(memoryDir);
+    if (canonicalJSON(current) !== canonicalJSON(journal)) {
+      if (!compatibleShardAdvance(journal, current)) throw new Error("curated shard selector changed");
+      journal = current; continue;
+    }
+    if ((journal.schema === SHARDED_V2_SCHEMA) !== (selector.selector?.schema === "agent-mem.profile/v2")) throw new Error("curated shard selector changed");
+    if (journal.schema === SHARDED_V2_SCHEMA && (selector.revision !== journal.selectorRevision || selector.selector?.generation !== journal.generation)) continue;
+    return { journal, selector };
   }
-  const selector = readSelector(memoryDir);
-  if ((value.schema === SHARDED_V2_SCHEMA) !== (selector.selector?.schema === "agent-mem.profile/v2") || value.schema === SHARDED_V2_SCHEMA && (selector.revision !== value.selectorRevision || selector.selector?.generation !== value.generation)) throw new Error("curated shard selector changed");
-  return { schema: value.schema, generation: value.generation, phase: "active", selectorRevision: value.selectorRevision };
+  throw new Error("curated shard selector changed");
+}
+export function readShardedSelection(memoryDir: string): ShardedSelection {
+  const { journal } = shardSnapshot(memoryDir, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
+  return { schema: journal.schema, generation: journal.generation, phase: "active", selectorRevision: journal.selectorRevision };
 }
 
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
@@ -124,7 +152,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
 export function resolveShardProfile(memoryDir: string, opts: { project?: string; user?: boolean }): BoundProfile {
   if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
   assertCuratedShardPaths(memoryDir, opts);
-  const selection = readShardedSelection(memoryDir), generation = selection.generation;
+  const deadline = Date.now() + PROFILE_LOCK_TIMEOUT_MS, initial = shardSnapshot(memoryDir, deadline), generation = initial.journal.generation;
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   if (opts.project !== undefined && readShardDescriptor(memoryDir, shardKeyHash(opts.project))?.key !== opts.project) throw new Error("curated shard project identity mismatch");
   const expected = generationDescriptor(generation);
@@ -137,9 +165,10 @@ export function resolveShardProfile(memoryDir: string, opts: { project?: string;
   const rootMachine = readProfileJSON(join(memoryDir, "machine.json"), 4096) as { id?: unknown } | undefined;
   const shardMachine = readProfileJSON(join(dir, "machine.json"), 4096) as { id?: unknown } | undefined;
   if (typeof rootMachine?.id !== "string" || !/^[a-f0-9]{16}$/.test(rootMachine.id) || rootMachine.id !== shardMachine?.id) throw new Error("curated shard machine identity mismatch");
-  const selector = readSelector(memoryDir);
-  if (selector.revision !== selection.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
-  if (selector.selector?.schema === "agent-mem.profile/v2") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation);
+  const final = shardSnapshot(memoryDir, deadline), selector = final.selector;
+  if (canonicalJSON(final.journal) !== canonicalJSON(initial.journal) && !compatibleShardAdvance(initial.journal, final.journal)
+    || selector.revision !== final.journal.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
+  if (selector.selector?.schema === "agent-mem.profile/v2") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation, deadline);
   const legacyMainHome = join(dir, "legacy-main");
   const hasLegacyMain = existsSync(legacyMainHome) || sources.sources.some(source => !!source && typeof source === "object" && "source" in source && source.source === "legacy-main");
   return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: selector.revision,
