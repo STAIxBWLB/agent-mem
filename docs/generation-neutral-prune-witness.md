@@ -81,6 +81,8 @@ interface PublicPruneWitnessV1 {
   schema: "agent-mem.public-prune-witness/v1";
   realm: { scope: "project"; key: string } | { scope: "user" };
   prune: PruneRow; // complete original row, never a target subset
+  lineage: { kind: "native-generation"; seal: string }
+    | { kind: "post-seal"; seal: string; end: number };
   pruneOccurrence: { pack: string; blob: string };
   witnesses: Array<{
     id: string;      // exact Entry ID
@@ -91,6 +93,9 @@ interface PublicPruneWitnessV1 {
 }
 ```
 
+- The closed `lineage` field is a positive publisher statement about the complete `prune.generation`, included in the manifest hash. `native-generation` names the full 64-hex hash of that generation's seal and asserts that its sealed records contain no migration sources. `post-seal` names that seal hash and a nonnegative safe-integer `end`, the sealed migration log end offset; it asserts that the complete prune occurrence was authored after that end. Neither kind changes the original prune ID or attribution.
+- The publisher derives these claims from its own sealed generation records. Layer 4 (task 571) owns that derivation and the audited selected-realm evidence path; Layer 1 never reads local seals, migration sources or translation receipts. The receiver validates the closed kind/fields, seal-hash format and offset, and checks the complete prune occurrence against the manifest's original generation and payload. It accepts the statement under D03's owned-source trust premise; the hash alone does not authenticate a seal, prove an offset, or certify person consent. No PKI or subset-membership proof is introduced.
+- Missing or unsupported lineage, including historical multi-realm or single-destination migration output (even an unchanged ID) and migrations older than receipts, is `unsupported_lineage`, with a fixed bounded reason and no mask. Absence of receipts never proves native origin. Malformed known lineage claims or invalid/incomplete public proof are `invalid`; validate the complete public proof before classifying otherwise unsupported lineage. A verified result is structural Layer 1 evidence, never active projection or application success.
 - Manifest identity is a new full canonical content hash over this artifact; it is not a new prune ID. Receiving generation, selector revision, local install time, current remote tip and credential URL do not enter it.
 - Source generation and attribution remain in the full original prune. Target/basis hashes remain in its target list; each distinct referenced Entry appears once in the sorted witness list. Reject duplicates, unused witnesses, unknown fields and conflicting equal-ID bytes.
 - The pruneOccurrence resolves the same complete canonical prune in its original author bucket. References point to complete existing public row packs. Decode complete bounded UTF-8/newline-terminated bytes, verify pack hash, Git object identity, author bucket, row schema/ID/hash and physical realm. Never trim blob text or accept a byte-count-only check.
