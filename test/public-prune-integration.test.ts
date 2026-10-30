@@ -133,6 +133,7 @@ test("R19 CLI previews without writes, explicitly enables an empty view and resu
     expect(preview.maskBuildCheck).toBe("deferred"); expect(readSelector(f.memoryDir)).toEqual(profile);
     const result = JSON.parse(await runCli(["migrate","--public-prune-view","--apply","--json"],context));
     expect(result.active).toBe(true); expect(result.maskBuildCheck).toBe("verified");
+    expect(JSON.parse(await runCli(["migrate","--public-prune-view","--dry-run","--json"],context)).active).toBe(true);
     expect(JSON.parse(await runCli(["migrate","--public-prune-view","--resume","--json"],context)).alreadyActive).toBe(true);
     await expect(runCli(["migrate","--public-prune-view","--deactivate"],context)).rejects.toThrow(/forward-only/);
     // Durable unregistered inputs are not inferred into the CLI's explicit empty map.

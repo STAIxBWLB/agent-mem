@@ -1600,12 +1600,12 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
   if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
   const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+  assertCuratedShardPaths(home, opts);
+  // Lifecycle refusal must remain before admission creates any lease/fence file.
+  if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
   readShardedSelection(home); // validate the floor before any lazy shard initialization
   const admission = registerReaderLease(home, {scope:"shard"});
   try {
-  assertCuratedShardPaths(home, opts);
-  // #15 T5: the one gate every recall path shares, checked before a shard can be created. The user shard has no lifecycle.
-  if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
   const missing = !existsSync(join(dir, "generation.json"));
   if (missing) {

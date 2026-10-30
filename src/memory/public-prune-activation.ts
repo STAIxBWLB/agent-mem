@@ -201,7 +201,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
   if (options.mode === "dry-run") {
     guard(readProfileBytes(home) === intent.previousProfile && raw(join(home, "shards.json")) === intent.previousShards && aliases(home) === intent.aliases);
     realmBinding(home, intent.realms);
-    return { mode: options.mode, generation: intent.generation, active: false, realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "deferred" };
+    return { mode: options.mode, generation: intent.generation, active: intent.previousProfile === intent.finalProfile && intent.previousShards === intent.finalShards, realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "deferred" };
   }
   return withProfileLock(home, async () => {
     const releases: (() => void)[] = [];
