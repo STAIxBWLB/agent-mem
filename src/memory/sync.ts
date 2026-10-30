@@ -225,7 +225,10 @@ export interface SyncOptions {
 }
 
 /** Metadata-only sharded sync epoch. Hash complete source bytes, never notes or unopened shards. */
-export function shardSyncBinding(store: MemoryStore): string {
+export function shardSyncBinding(store: MemoryStore): string { return captureShardSyncBinding(store, true); }
+/** Selection bytes may change only after this sync commits; source/policy identity remains pinned across that commit. */
+export function shardSyncSourceBinding(store: MemoryStore): string { return captureShardSyncBinding(store, false); }
+function captureShardSyncBinding(store: MemoryStore, selection: boolean): string {
   const unavailable = (): never => { throw new Error("sharded sync binding unavailable"); };
   if (!store.profile.sharded) return unavailable();
   const uid = process.getuid?.(); if (uid === undefined) return unavailable();
@@ -267,7 +270,7 @@ export function shardSyncBinding(store: MemoryStore): string {
   };
   try {
     directory(home);
-    for (const name of ["profile.json", "shards.json", "aliases.jsonl", "amem.config.json", "machine.json"]) source(join(home, name));
+    for (const name of [...(selection ? ["profile.json", "shards.json"] : []), "aliases.jsonl", "amem.config.json", "machine.json"]) source(join(home, name));
     const targets = [...store.openedSyncTargets()].sort((a, b) => a.dir.localeCompare(b.dir));
     for (const target of targets) {
       directory(target.dir);

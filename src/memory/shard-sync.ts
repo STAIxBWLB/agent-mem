@@ -14,7 +14,7 @@ import { realPath } from "./platform.ts";
 import { reducePruneRows, validatePrunePlan, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow } from "./prune.ts";
 import { assertCuratedShardPaths, isLocalKey, resolveShardProfile } from "./shard.ts";
 import { decodeShardPack, encodeShardPacks, decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_PACK_MAX_BYTES, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
-import { generationSyncGit, generationSyncGitBytes, remoteVisibility, shardSyncBinding, type SyncOptions, type SyncResult } from "./sync.ts";
+import { generationSyncGit, generationSyncGitBytes, remoteVisibility, shardSyncBinding, shardSyncSourceBinding, type SyncOptions, type SyncResult } from "./sync.ts";
 import type { Entry, MemoryStore } from "./store.ts";
 
 const OID = /^[a-f0-9]{40}$/, PACK = /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/;
@@ -304,14 +304,14 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
   const v2 = store.profile.foreignPruneFormat === "agent-mem.public-prune-witness/v1";
   let expectedRevision = store.profile.selectorRevision;
-  let expectedBinding: string | undefined, expectedPolicy: string | undefined;
+  let expectedBinding: string | undefined, expectedSources: string | undefined, expectedPolicy: string | undefined;
   const application: NonNullable<SyncResult["pruneApplication"]> = { transport:"unconfirmed", proofComplete:0, projectionActive:null, nativeApplied:null, held:0, phase:"preflight" };
   const fail = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error, ...(v2 ? {pruneApplication:{...application,transport:pushed?"durable":"unconfirmed"}} : {}) });
   let root = "", cache = "", targets: Target[] = [], homeMutation:MutationHandle|undefined;
   let boundView:PublicPruneViewV1|undefined;
   const check = () => {
     if (opts.signal?.aborted) refuse("stopped");
-    if (expectedBinding !== undefined && (shardSyncBinding(store) !== expectedBinding || opts.policyVersion?.() !== expectedPolicy)) refuse("shard sync binding or policy changed");
+    if (expectedBinding !== undefined && (shardSyncBinding(store) !== expectedBinding || shardSyncSourceBinding(store) !== expectedSources || opts.policyVersion?.() !== expectedPolicy)) refuse("shard sync binding or policy changed");
     if(homeMutation)assertMutationHandle(homeMutation,store.profile.home);
     for (const target of targets) {
       if (target.mutation) assertMutationHandle(target.mutation,target.store.dir);
@@ -332,7 +332,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
   try {
     if (opts.signal?.aborted) return fail("stopped");
     if (!store.profile.sharded || store.profile.kind !== "generation") return fail("shard sync requires a selected curated shard");
-    expectedBinding = shardSyncBinding(store); expectedPolicy = opts.policyVersion?.();
+    expectedBinding = shardSyncBinding(store); expectedSources = shardSyncSourceBinding(store); expectedPolicy = opts.policyVersion?.();
     const borrowed = store.openedSyncTargets();
     targets = borrowed.map(opened => {
       const profile = opened.profile;
@@ -579,7 +579,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if(!Number.isSafeInteger(size)||size<0||size>limit)refuse("Git object exceeds complete evidence bound");
       check();const result=await generationSyncGitBytes(root,gitArgs(["cat-file",type,oid]),opts.signal,undefined,limit);check();
       if(result.code!==0||result.out.length!==size)refuse("Git object bytes unavailable");
-      const value={type,body:result.out};objectCache.set(oid,value);return value;
+      const value:{type:"commit"|"tree"|"blob";body:Uint8Array}={type:type as "commit"|"tree"|"blob",body:result.out};objectCache.set(oid,value);return value;
     };
     const prepareApplications = async () => {
       if(!v2)return;application.proofComplete=0;application.held=0;
@@ -618,6 +618,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         expectedRevision=result.revision;boundView=view;
         // The same open handles validate/rebind; no close/reopen or authority flag is used.
         for(const target of targets)target.store.refresh();
+        if(shardSyncSourceBinding(store)!==expectedSources||opts.policyVersion?.()!==expectedPolicy)refuse("source binding or policy changed during view commit");
         expectedBinding=shardSyncBinding(store);
         testOnlyPhase?.("view-committed");
       }
