@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as raceFs from "node:fs";
 import { tmpdir } from "node:os";
@@ -194,4 +194,35 @@ test("paired marker retries share the original writer deadline rather than renew
   }) as typeof original);
   try { expect(() => readShardedSelection(f.memoryDir)).toThrow(); expect(fired).toBe(true); expect(slept).toBe(20); expect(clock).toBe(PROFILE_LOCK_TIMEOUT_MS); }
   finally { reader.mockRestore(); sleep.mockRestore(); date.mockRestore(); }
+});
+
+
+test("a synchronous reader waits across a second-process intent create-once hardlink phase", async () => {
+  const f = await fixture(), module = join(import.meta.dir, "../src/memory/generation.ts"), file = join(f.memoryDir, PUBLIC_PRUNE_INTENT), temp = file + ".publication-test";
+  const writer = await child(f.root, `import {withProfileLock,writeProfileJSON} from ${JSON.stringify(module)};import {linkSync,unlinkSync} from "node:fs";
+await withProfileLock(${JSON.stringify(f.memoryDir)},async()=>{
+writeProfileJSON(${JSON.stringify(temp)},{schema:"agent-mem.public-prune-advance/v1",home:${JSON.stringify(f.memoryDir)},generation:${JSON.stringify(f.profile.generation)}});
+linkSync(${JSON.stringify(temp)},${JSON.stringify(file)});console.log(JSON.stringify({ready:true}));
+await new Promise(resolve=>process.stdin.once("data",resolve));console.log(JSON.stringify({finishing:true}));
+await Bun.sleep(75);unlinkSync(${JSON.stringify(temp)});await Bun.sleep(75);unlinkSync(${JSON.stringify(file)});});`);
+  await writer.wait(0); expect(lstatSync(file).nlink).toBe(2); writer.proc.stdin.write("finish\n"); await writer.wait(1);
+  expect(readSelector(f.memoryDir).selector?.schema).toBe("agent-mem.profile/v2");
+  expect(existsSync(file)).toBe(false); expect(existsSync(temp)).toBe(false);
+});
+
+test("two-link intent staging waits only within the original deadline and never becomes trusted evidence", async () => {
+  const f = await fixture(), file = join(f.memoryDir, PUBLIC_PRUNE_INTENT), temp = file + ".publication-test", lock = join(f.memoryDir, "profile.lock");
+  writeProfileJSON(lock, { pid: process.pid, signature: "a".repeat(64), token: "b".repeat(32) });
+  // These bytes are deliberately not parsed while the owned writer still holds both names.
+  writeFileSync(temp, "UNREGISTERED-INTENT-CANARY", { mode: 0o600 }); linkSync(temp, file);
+  let clock = 100, slept = 0;
+  const date = spyOn(Date, "now").mockImplementation(() => clock), sleep = spyOn(Bun, "sleepSync").mockImplementation(ms => { clock += Number(ms); slept += Number(ms); });
+  try { expect(() => readSelector(f.memoryDir, 125)).toThrow(); expect(slept).toBe(25); expect(clock).toBe(125); }
+  finally { date.mockRestore(); sleep.mockRestore(); }
+  expect(lstatSync(file).nlink).toBe(2); expect(readFileSync(file, "utf8")).toBe("UNREGISTERED-INTENT-CANARY");
+  unlinkSync(lock); expect(() => readSelector(f.memoryDir)).toThrow();
+  writeProfileJSON(lock, { pid: process.pid, signature: "a".repeat(64), token: "b".repeat(32) });
+  chmodSync(file, 0o644); expect(() => readSelector(f.memoryDir)).toThrow(); chmodSync(file, 0o600);
+  unlinkSync(temp); expect(() => readSelector(f.memoryDir)).toThrow();
+  expect(readFileSync(file, "utf8")).toBe("UNREGISTERED-INTENT-CANARY");
 });

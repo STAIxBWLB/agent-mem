@@ -68,16 +68,23 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
       try {
         const intent = lstatSync(intentFile, { throwIfNoEntry: false }), lock = lstatSync(lockFile, { throwIfNoEntry: false });
         if (!intent && !lock) return;
-        if (intent) {
-          const pending = small(intentFile, 1024 * 1024);
-          guard(pending.schema === "agent-mem.public-prune-advance/v1" && pending.home === realPath(home) && pending.generation === profile.generation);
-        }
         if (lock) {
           privateStat(lock);
           if (lock.size) {
             const owner = small(lockFile, 4096);
             guard(Reflect.ownKeys(owner).length === 3 && Number.isSafeInteger(owner.pid) && Number(owner.pid) > 0 && hex(owner.signature, 64) && hex(owner.token, 32));
           }
+        }
+        if (intent?.nlink === 2) {
+          // Create-once publication briefly links the complete staging inode to its final
+          // name before fsync/unlink. Wait under an owned complete writer lock, without
+          // reading or trusting that not-yet-independent intent as published evidence.
+          guard(lock && lock.size > 0 && intent.isFile() && !intent.isSymbolicLink()
+            && intent.uid === process.getuid?.() && (intent.mode & 0o077) === 0
+            && intent.size > 0 && intent.size <= 1024 * 1024);
+        } else if (intent) {
+          const pending = small(intentFile, 1024 * 1024);
+          guard(pending.schema === "agent-mem.public-prune-advance/v1" && pending.home === realPath(home) && pending.generation === profile.generation);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; // Publication disappeared normally; retry the bounded observation.
