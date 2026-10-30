@@ -10,19 +10,15 @@ import { prunePayloadHash } from "./prune.ts";
 import { shardSyncRef, type ShardSyncRealm } from "./shard-sync-format.ts";
 import { verifyPublicPruneWitness, type VerifiedPublicPruneWitness } from "./public-prune-witness.ts";
 
-export const PUBLIC_PRUNE_INPUT_MAX_BYTES = 65_536;
+import { PUBLIC_PRUNE_INPUT_MAX_BYTES, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, PublicPruneInputError, validatePublicPruneInputSet, type PublicPruneInputSetV1 } from "./public-prune-input-chain.ts";
+export { PUBLIC_PRUNE_INPUT_MAX_BYTES, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, PublicPruneInputError, validatePublicPruneInputSet, readPublicPruneInputSetChain, type PublicPruneInputSetV1 } from "./public-prune-input-chain.ts";
 export const PUBLIC_PRUNE_GRAPH_MAX_BYTES = 80 * 1024 * 1024;
 export const PUBLIC_PRUNE_GRAPH_MAX_OBJECTS = 256;
-export const PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
-export const PUBLIC_PRUNE_MAX_SETS = 4096;
 const OBJECT_MAX = 1024 * 1024 + 64, ARCHIVE_FILES_MAX = 16_384;
 type Source = { remoteHash: string; ref: string; commit: string; manifestPath: string; manifestBlob: string };
 export interface PublicPruneInputV1 {
   schema: "agent-mem.public-prune-input/v1"; realm: ShardSyncRealm; receivingGeneration: string;
   selectorRevision: string; witnessHash: string; source: Source;
-}
-export interface PublicPruneInputSetV1 {
-  schema: "agent-mem.public-prune-input-set/v1"; receivingGeneration: string; previous: string | null; inputs: string[];
 }
 export interface PublicPruneBinding { realm: ShardSyncRealm; receivingGeneration: string; selectorRevision: string; inputSetHash: string | null }
 /** Complete Git object bytes, including the uncompressed '<type> <size>\0' header. */
@@ -43,11 +39,6 @@ export interface PublicPruneProjection {
   targets: Set<string>; rowHashes: Map<string, string>; authoredPrunes: number; inputs: string[]; commitments: string[];
 }
 export type PublicPrunePersistPhase = `${"object" | "input" | "set"}-${"temp" | "fsync" | "installed"}`;
-export class PublicPruneInputError extends Error {
-  constructor(readonly code: "unavailable" | "resource" | "binding" = "unavailable") {
-    super(`public prune input ${code}`); this.name = "PublicPruneInputError";
-  }
-}
 const fail = (code: PublicPruneInputError["code"] = "unavailable"): never => { throw new PublicPruneInputError(code); };
 function guard(ok: unknown, code?: PublicPruneInputError["code"]): asserts ok { if (!ok) fail(code); }
 function protectedCall<T>(work: () => T): T { try { return work(); } catch (error) { if (error instanceof PublicPruneInputError) throw error; return fail(); } }
@@ -74,15 +65,6 @@ export function validatePublicPruneInput(v: unknown): PublicPruneInputV1 {
     guard(v.schema === "agent-mem.public-prune-input/v1" && hex(v.receivingGeneration, 32) && (hex(v.selectorRevision, 64) || v.selectorRevision === "absent") && hex(v.witnessHash, 64));
     const realm = selectedRealm(v.realm);
     return { schema: v.schema, realm, receivingGeneration: v.receivingGeneration, selectorRevision: v.selectorRevision, witnessHash: v.witnessHash, source: source(v.source, realm, v.witnessHash) };
-  });
-}
-export function validatePublicPruneInputSet(v: unknown): PublicPruneInputSetV1 {
-  return protectedCall(() => {
-    guard(object(v) && exact(v, ["schema", "receivingGeneration", "previous", "inputs"])); boundedJSON(v);
-    guard(v.schema === "agent-mem.public-prune-input-set/v1" && hex(v.receivingGeneration, 32) && (v.previous === null || hex(v.previous, 64)) && Array.isArray(v.inputs));
-    let previous = "";
-    for (const id of v.inputs) { guard(hex(id, 64) && id > previous); previous = id; }
-    return { schema: v.schema, receivingGeneration: v.receivingGeneration, previous: v.previous, inputs: [...v.inputs] as string[] };
   });
 }
 function binding(v: PublicPruneBinding): PublicPruneBinding {
@@ -343,23 +325,6 @@ export function createPublicPruneReplayCache(input: Omit<PublicPruneReplayInput,
       guard(current());
     }
     return { targets: new Set(cached.targets), rowHashes: new Map(cached.rowHashes), authoredPrunes: cached.authoredPrunes, inputs: [...cached.inputs], commitments: [...cached.commitments] };
-  });
-}
-
-/** Metadata ancestry only: never opens descriptors, Git bodies or the network. */
-export function readPublicPruneInputSetChain(input: { dir: string; receivingGeneration: string; inputSetHash: string }): { commitments: string[]; inputs: string[] } {
-  return protectedCall(() => {
-    guard(hex(input.receivingGeneration, 32) && hex(input.inputSetHash, 64));
-    const dir = rootDir(input.dir), commitments: string[] = [], seen = new Set<string>();
-    let id: string | null = input.inputSetHash, later: Set<string> | undefined, inputs: string[] = [], total = 0;
-    while (id !== null) {
-      guard(!seen.has(id)); guard(seen.size < PUBLIC_PRUNE_MAX_SETS, "resource"); seen.add(id); commitments.push(id);
-      const bytes = read(dir, "set", id); total += bytes.length; guard(total <= PUBLIC_PRUNE_REPLAY_MAX_BYTES, "resource");
-      const set = validatePublicPruneInputSet(json(bytes)); guard(hashJSON(set) === id && set.receivingGeneration === input.receivingGeneration);
-      if (later) guard(set.inputs.every(member => later!.has(member))); else inputs = set.inputs;
-      later = new Set(set.inputs); id = set.previous;
-    }
-    return { commitments, inputs: [...inputs] };
   });
 }
 

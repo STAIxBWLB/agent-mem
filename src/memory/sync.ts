@@ -233,9 +233,9 @@ function captureShardSyncBinding(store: MemoryStore, selection: boolean): string
   if (!store.profile.sharded) return unavailable();
   const uid = process.getuid?.(); if (uid === undefined) return unavailable();
   const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
-  const owned = (stat: BigIntStats, directory: boolean) => {
+  const owned = (stat: BigIntStats, directory: boolean, privateMode = true) => {
     if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n)
-      || stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n) unavailable();
+      || stat.uid !== BigInt(uid) || privateMode && (stat.mode & 0o077n) !== 0n) unavailable();
   };
   const home = store.profile.home, digest = createHash("sha256"), directories = new Map<string, BigIntStats>(), checks: (() => void)[] = [];
   const emit = (value: unknown) => { digest.update(JSON.stringify(value) + "\n"); };
@@ -247,7 +247,8 @@ function captureShardSyncBinding(store: MemoryStore, selection: boolean): string
     emit(["directory", dir, String(before.dev), String(before.ino)]);
     checks.push(() => { const now = lstatSync(dir, { bigint: true }); owned(now, true); if (!same(before, now)) unavailable(); });
   };
-  const source = (file: string): void => {
+  // Policy config keeps its established file modes inside this already-private owned home. Its complete bytes/inode still bind the epoch.
+  const source = (file: string, privateMode = true): void => {
     directory(dirname(file));
     let before: BigIntStats;
     try { before = lstatSync(file, { bigint: true }); }
@@ -256,21 +257,21 @@ function captureShardSyncBinding(store: MemoryStore, selection: boolean): string
       emit(["source", file, "absent"]);
       checks.push(() => { if (lstatSync(file, { bigint: true, throwIfNoEntry: false }) !== undefined) unavailable(); }); return;
     }
-    owned(before, false);
+    owned(before, false, privateMode);
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const opened = fstatSync(fd, { bigint: true }); owned(opened, false); if (!same(before, opened)) unavailable();
+      const opened = fstatSync(fd, { bigint: true }); owned(opened, false, privateMode); if (!same(before, opened)) unavailable();
       const content = createHash("sha256"), buffer = Buffer.allocUnsafe(65_536); let bytes = 0n;
       for (;;) { const n = readSync(fd, buffer, 0, buffer.length, null); if (!n) break; content.update(buffer.subarray(0, n)); bytes += BigInt(n); }
-      const after = fstatSync(fd, { bigint: true }); owned(after, false);
+      const after = fstatSync(fd, { bigint: true }); owned(after, false, privateMode);
       if (bytes !== before.size || !same(before, after) || !same(before, lstatSync(file, { bigint: true }))) unavailable();
       emit(["source", file, "present", String(before.dev), String(before.ino), String(before.size), String(before.mtimeNs), String(before.ctimeNs), content.digest("hex")]);
     } finally { closeSync(fd); }
-    checks.push(() => { const now = lstatSync(file, { bigint: true }); owned(now, false); if (!same(before, now)) unavailable(); });
+    checks.push(() => { const now = lstatSync(file, { bigint: true }); owned(now, false, privateMode); if (!same(before, now)) unavailable(); });
   };
   try {
     directory(home);
-    for (const name of [...(selection ? ["profile.json", "shards.json"] : []), "aliases.jsonl", "amem.config.json", "machine.json"]) source(join(home, name));
+    for (const name of [...(selection ? ["profile.json", "shards.json"] : []), "aliases.jsonl", "amem.config.json", "machine.json"]) source(join(home, name), name !== "amem.config.json");
     const targets = [...store.openedSyncTargets()].sort((a, b) => a.dir.localeCompare(b.dir));
     for (const target of targets) {
       directory(target.dir);

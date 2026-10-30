@@ -6,7 +6,7 @@ import { readerAdmissionDatabase } from "./mutation.ts";
 import { dirname, join } from "node:path";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./platform.ts";
 import { shardDir, userShardDir } from "./shard.ts";
-import { readPublicPruneInputSetChain } from "./public-prune-inputs.ts";
+import { readPublicPruneInputSetChain } from "./public-prune-input-chain.ts";
 
 export interface BoundProfile {
   kind: "shared-v1" | "generation";
