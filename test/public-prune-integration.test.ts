@@ -40,7 +40,7 @@ async function fixture() {
 test("R19 real 0.13/0.12 readers preserve v1 and reject both v2 markers without legacy fallback", async () => {
   const f = await fixture();
   for (const core of [Old, Older]) {
-    expect(core.readSelector(f.memoryDir)).toEqual(readSelector(f.memoryDir));
+    expect(JSON.stringify(core.readSelector(f.memoryDir))).toBe(JSON.stringify(readSelector(f.memoryDir)));
     const old = core.openShardStore({ home: f.home, project: f.project, now });
     try { expect(old.get(f.graph.note.id, f.project)?.id).toBe(f.graph.note.id); } finally { old.close(); }
   }

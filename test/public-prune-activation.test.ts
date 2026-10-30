@@ -171,7 +171,7 @@ test("v2 root maps cannot omit old realms or replace membership with an unrelate
     const binding = { realm: graph.manifest.realm, receivingGeneration: original.generation!, selectorRevision, inputSetHash };
     return persistPublicPruneInput(preparePublicPruneInput({ dir: original.dir, binding, current: () => binding, input: graph.input }));
   };
-  const first = register(original.selectorRevision, null), view = (set?: string) => ({ schema: "agent-mem.public-prune-view/v1" as const,
+  const first = register(original.selectorRevision, null), view = (set?: string): PublicPruneViewV1 => ({ schema: "agent-mem.public-prune-view/v1" as const,
     receivingGeneration: original.generation!, realms: set ? { [`project:${A}`]: set } : {} });
   await activatePublicPruneView({ ...f.opts, mode: "apply", view: view(first.inputSetHash) });
   const selected = resolveShardProfile(f.memoryDir, { project: A }), unrelated = register(selected.selectorRevision, null);
