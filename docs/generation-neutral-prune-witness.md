@@ -1,6 +1,6 @@
 # Generation-neutral public prune witnesses
 
-Design proposal for agent-mem#15 T3, agent-hub task 404. Source inspected at `1c3846931d415c31bb1b6f4166ae91fff06de5e7` (0.13.0). No implementation, schema activation, migration, test execution or AC4 completion is claimed. Existing contracts remain normative until this proposal and its blocking decisions are reviewed.
+Approved design contract for agent-mem#15 T3, agent-hub task 404. Claude read the full note at 191744e2 and approved D01-D03 on 2026-10-30; the disposition is recorded below. Source inspected at `1c3846931d415c31bb1b6f4166ae91fff06de5e7` (0.13.0). No implementation, schema activation, migration or AC4 completion is claimed. The amendment in docs/contracts.md makes this the normative target for the follow-up implementation; current 0.13.0 behavior below remains the shipped baseline.
 
 ## Problem and current boundary
 
@@ -70,11 +70,11 @@ Claude, planner and reviewer of task 404, accepted this conservative ceiling on 
 - Multi-realm translated historical prunes stay explicitly held, retaining both original and translation evidence with bounded safe diagnostics. This is the case where agent-mem#15 AC4 stays unmet; do not silently omit/retag it or claim the cross-realm gap solved.
 - Unknown provenance must not be assumed to mean native/untranslated. Existing unmarked v1 transport alone may not reconstruct pre-migration lineage.
 
-Do not design multi-realm transport in this task: no operator need has been reported, and exporting full originals would disclose IDs from unopened realms. Reopen it later as a separate issue only when a concrete need is reported. No new issue is filed now. No Merkle proof, signature trust root or partial-prune acceptance is introduced, and shared-v1/PruneRow hashing is unchanged. D01 is decided; D02 and D03 below still require review before implementation.
+Do not design multi-realm transport in this task: no operator need has been reported, and exporting full originals would disclose IDs from unopened realms. Reopen it later as a separate issue only when a concrete need is reported. No new issue is filed now. No Merkle proof, signature trust root or partial-prune acceptance is introduced, and shared-v1/PruneRow hashing is unchanged. D01-D03 are decided; this docs contract must merge before any implementation starts.
 
 ## Proposed portable manifest
 
-Names below are proposed, not current exported types. A new versioned shard-transport descriptor would admit this exact, bounded artifact. Existing rows/Entry and PruneRow bodies keep their schemas.
+Names below define the approved target contract, not current exported types. A new versioned shard-transport descriptor would admit this exact, bounded artifact. Existing rows/Entry and PruneRow bodies keep their schemas.
 
 ```ts
 interface PublicPruneWitnessV1 {
@@ -123,7 +123,7 @@ Proposed local layout, in a new supported generation semantics version:
 
 - A content-addressed proof archive retains the manifest and its required public pack/object evidence. Deduplicate by content hash, preserve owned path/descriptor/no-symlink/no-hardlink/private permission checks and fsync; no credential URL or source private body is copied into it.
 - A create-once local input descriptor binds manifest hash, remote identity hash, exact source ref/commit/blob, physical realm, receiving generation and selector revision. Receiving metadata is separate from authored attribution. Unknown schemas, partial/pending installation or missing source evidence are never active inputs.
-- Source/object anchoring must be validated against the owned accepted transport history, not a public:true or applied:true field. The existing same-user source-storage integrity premise is unchanged; hashes and actor strings do not become authentication. D03 requires a concrete accepted-source/registry format before code.
+- Source/object anchoring must be validated against the owned accepted transport history, not a public:true or applied:true field. The existing same-user source-storage integrity premise is unchanged; hashes and actor strings do not become authentication. The cumulative input-set commitment below defines accepted membership before any code is added.
 - The index records foreign inputs/target mappings in new derived structures. Native generation_prunes stays native and uses the original validator. Effective generation_targets/pruned is the union of native reduction and validated foreign projections under the new reader version.
 - All read surfaces, FTS, composed work/relations, brief and search must use that same exact-ID mask; no query-specific sidecar shortcut. No foreign input enters shared-v1 ops/logs, legacy-main, native operation registry or receiver-authored person history.
 
@@ -152,7 +152,7 @@ Each descriptor is complete, bounded to 64 KiB and create-once under the existin
 
 Registration needs an authoritative complete set, not a directory scan. Proposed `agent-mem.public-prune-input-set/v1` is a canonical, immutable, hash-named document containing the receiving generation, predecessor set hash (null only for the activation set), and the sorted unique cumulative descriptor hashes. The v2 selector carries the current `pruneInputSetHash`; activation commits an explicit empty set when appropriate. Under the existing shared mutation fence, sync fsyncs proof objects, descriptors and the new cumulative set before atomically replacing and fsyncing the selector commitment. A crash before this last replacement leaves the prior set authoritative; retry may reuse complete unregistered artifacts. No successful admission removes a previously registered descriptor. The descriptor's selector revision records its admission binding; later input-set commits do not invalidate it merely by advancing the current revision. Realm/generation switches still require explicit revalidation.
 
-A fresh rebuild starts from that selector commitment, verifies the set's canonical hash, generation, predecessor chain and every registered descriptor/object, and refuses missing or altered members. Unregistered files cannot supply membership. Deletion of the committed set or one of its members is detectable even after deleting SQLite. Replacing or rolling back the selector and all trusted source commitments together remains outside the stated owned-source integrity premise; a self-hash is not an anti-rollback or authentication mechanism. The proposed selector commitment and registration transaction are part of D02/D03 approval, not an existing storage feature.
+A fresh rebuild starts from that selector commitment, verifies the set's canonical hash, generation, predecessor chain and every registered descriptor/object, and refuses missing or altered members. Unregistered files cannot supply membership. Deletion of the committed set or one of its members is detectable even after deleting SQLite. Replacing or rolling back the selector and all trusted source commitments together remains outside the stated owned-source integrity premise; a self-hash is not an anti-rollback or authentication mechanism. The selector commitment and registration transaction are part of the approved D02/D03 target, not an existing storage feature.
 
 Rebuild derives the same masks solely from durable validated local input and retained raw public proof, without network/model access. SQLite/cache alone is not source authority. A deleted/altered required source, invalid filename/hash or contradictory input makes the affected reader unavailable; it must not rebuild an empty mask or expose targets. Losing remote connectivity does not invalidate an already durable locally proved mask.
 
@@ -172,11 +172,11 @@ Generation migration/switch may carry only registered eligible neutral inputs af
 
 Archive cleanup may not remove proof needed by a live mask. If capacity cannot retain complete required evidence, refuse the new application before publication/activation rather than evict a proof and resurrect data. Current manual history/cache and retained-public-data ceilings remain explicit; this is logical masking, not physical deletion from old Git history or historical homes.
 
-## Blocking decision D02: reader compatibility and activation
+## Decided D02: reader compatibility and activation (2026-10-30)
 
 Old 0.13.0 readers do not know these inputs. Merely adding a sidecar or optional descriptor field is unsafe because rebuild could ignore masks.
 
-Proposed floor, for planner review:
+Accepted reader floor:
 
 - `agent-mem.profile/v2`, kind generation, retains the existing 32-hex receiving generation and adds closed `foreignPruneFormat: "agent-mem.public-prune-witness/v1"` and `pruneInputSetHash` fields. `agent-mem.shards/v2` binds active shard selection to that selector revision. Old readSelector/readShardedSelection reject both exact version changes before active reads; never fall back.
 - Do not rewrite the underlying native generation descriptor/seal/logs or retag native/local prune rows. The new selector is a versioned projection view over the same receiving generation and immutable legacy inputs. A new derived `index-v2.db` avoids an unannounced older index writer deleting/overwriting foreign masks in the historical `index.db`; both remain rebuildable, not authority.
@@ -185,11 +185,11 @@ Proposed floor, for planner review:
 - Explicit person-run selection/view migration occurs only after supported hosts are installed/quiesced through current cooperating-reader admission. No read/capture call upgrades a marker. Build the v2 index from all current native/local masks plus supported neutral inputs before publishing the new selector; refuse activation if any previously effective native/local mask would be lost. Source bytes stay unchanged.
 - Existing unsplit/shared-v1 paths and Entry/PruneRow hashes are unchanged. The v2 projection is inactive outside the explicit supported profile. Published unannounced older readers can keep reading unchanged historical bytes, the existing C1 ceiling; a process scan proves no absence and old data was not erased. Such a historical view must not be reported as the current v2 view to an agent.
 
-The profile/shard/transport schema names and closed fields above are the proposed concrete floor, not an already-published version. Implementation waits for their old/new host matrix, explicit transition/rollback behavior and user-visible unsupported result to be approved. A software version guess or permissive unknown-field parsing is not a floor.
+The profile/shard/transport schema names and closed fields above are the accepted target floor, not already-published versions. The old/new host matrix, explicit transition/rollback behavior and user-visible unsupported result are implementation acceptance requirements. A software version guess or permissive unknown-field parsing is not a floor.
 
-## Blocking decision D03: durable proof anchoring and resource accounting
+## Decided D03: durable proof anchoring and resource accounting (2026-10-30)
 
-The proposed input descriptor/content archive above specifies offline replay and create-once registration. Review must confirm that the complete anchor/object graph, scope and current source-storage integrity boundary are sufficient; a metadata-only receipt or self-hash cannot certify publicness or consent. No new key registry or signature trust model is silently introduced. If stronger authorship authentication is required, that is an additional explicit design prerequisite.
+The proposed input descriptor/content archive above specifies offline replay and create-once registration. The planner accepts the complete anchor/object graph, scope and current same-user source-storage integrity premise as stated; a metadata-only receipt or self-hash cannot certify publicness or consent. No new key registry or signature trust model is silently introduced. If stronger authorship authentication is required, that is an additional explicit design prerequisite.
 
 References keep the manifest small, but a prune can require 64 public rows from up to 65 existing 1 MiB packs including its prune pack. Deduplicated content storage, streaming verification and existing source-index frontiers are required; no small-RSS/read-latency claim follows from a 64 KiB manifest. Preserve full selected history audit, no lifetime cutoff/row omission. Resource excess is an explicit refusal/pending result, not incomplete proof labelled complete. Meet existing #13 opening/read/capture budgets before implementation is accepted; capture/read never fetch, call models, start a resident helper or access other projects to repair proof.
 
@@ -224,6 +224,6 @@ Use isolated homes, an explicitly private local/test remote, fixed synthetic dat
 ## Review and implementation gate
 
 - Confirm the current 0.13.0 held-transport baseline rather than the obsolete all-sync refusal.
-- Preserve the decided D01 single-realm ceiling and visible historical cross-realm AC4 gap. Resolve D02 exact reader floor/activation and D03 durable-source/resource acceptance. Proposed types are fully reviewable but no runtime API or implementation is frozen while those decisions are open.
-- Only after that ruling, amend normative contracts and propose implementation cards. Every card preserves original bytes/IDs, physical realm/public proof, current private-remote/history/Git boundaries and fail-closed reads.
+- Preserve the decided D01 single-realm ceiling and visible historical cross-realm AC4 gap, accepted D02 reader floor and D03 source-storage/resource ceiling. These are target contracts; no runtime API or version is implemented by this document.
+- After this docs contract merges, propose priority 3 implementation backlog cards, one per layer: manifest+validation, durable inputs+input set, v2 profile/selector activation, and sync transport v2. Each card carries its relevant rows of the matrix above. Start no implementation before then. Every card preserves original bytes/IDs, physical realm/public proof, current private-remote/history/Git boundaries and fail-closed reads.
 - AC4 is not closed by this proposal, a hold, transport success, a new marker or a partial target projection. It needs the accepted two-generation public-prune application and migration/provenance proof, with any remaining ceiling explicitly reported.
