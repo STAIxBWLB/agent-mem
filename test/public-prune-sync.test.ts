@@ -1,8 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { CaptureStore } from "../src/memory/capture.ts";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { migrate } from "../src/memory/migrate.ts";
@@ -33,10 +34,11 @@ async function side(generation: string, v2 = true, legacyText?: string) {
   const legacyId = legacyText === undefined ? undefined : legacy.note(note(legacyText)), memory = legacy.dir; legacy.close();
   await migrateShards({ memoryDir: memory, generation, mode: "apply", authorizedPerson: true, tty: true });
   const open = () => openShardStore({ home, project: A, deferPromotions: true, now: () => clock.now, ttlMs: 1000 });
-  let a = open();
-  const enable = async () => { a.close(); await activatePublicPruneView({ memoryDir: memory, mode: "apply", authorizedPerson: true, tty: true }); a = open(); };
-  if (v2) await enable(); cleanup.push(() => a.close());
-  return { home, memory, clock, generation, legacyId, get a() { return a; }, enable };
+  let a = open(), closed = false;
+  const close = () => { if (!closed) { a.close(); closed = true; } };
+  const enable = async () => { close(); await activatePublicPruneView({ memoryDir: memory, mode: "apply", authorizedPerson: true, tty: true }); a = open(); closed = false; };
+  if (v2) await enable(); cleanup.push(close);
+  return { home, memory, clock, generation, legacyId, get a() { return a; }, enable, close };
 }
 function prune(store: MemoryStore, target: string, clock: { now: number }, publicly = true): PruneRow {
   expect(store.demote(target, "person", A)).toBeDefined(); clock.now += 2000;
@@ -248,3 +250,44 @@ test("R16 an old partial native transport plan resumes unchanged after a simulta
   expect(snapshot.pruned).toEqual(expect.arrayContaining([nativeTarget, foreignTarget]));
   assertForeign(receiver.a, foreignTarget, foreignRow);
 }, 60_000);
+
+async function appliedForeign() {
+  const url = remote(), source = await side(G1), target = source.a.note(note("PUBLIC_RETAINED_PROOF_TARGET"));
+  expect((await syncMemory(source.a, {remote:url,...privateRemote})).ok).toBe(true);
+  const row = prune(source.a,target,source.clock);
+  expect((await syncMemory(source.a,{remote:url,...privateRemote})).ok).toBe(true);
+  const receiver=await side(G2);
+  expect((await syncMemory(receiver.a,{remote:url,...privateRemote})).ok).toBe(true);
+  assertForeign(receiver.a,target,row);return{url,source,receiver,target,row};
+}
+for (const missing of ["map","set","input","object"] as const) test(`R15 v2 sync-committed ${missing} loss stays unavailable after SQLite deletion`,async()=>{
+  const f=await appliedForeign(), selected=readSelector(f.receiver.memory).selector!;
+  if(selected.schema!=="agent-mem.profile/v2")throw new Error("fixture floor");
+  const mapFile=join(f.receiver.memory,"public-prune-input-sets",selected.pruneInputSetHash+".json"),view=JSON.parse(readFileSync(mapFile,"utf8"));
+  const dir=f.receiver.a.dir,setFile=join(dir,"public-prune-input-sets",view.realms[`project:${A}`]+".json"),set=JSON.parse(readFileSync(setFile,"utf8"));
+  const file=missing==="map"?mapFile:missing==="set"?setFile:missing==="input"?join(dir,"public-prune-inputs",set.inputs[0]+".json"):join(dir,"public-prune-objects",readdirSync(join(dir,"public-prune-objects")).find(name=>name.endsWith(".git"))!);
+  f.receiver.close();rmSync(file);
+  for(const base of ["index.db","index-v2.db"])for(const suffix of ["","-wal","-shm"])rmSync(join(dir,base+suffix),{force:true});
+  expect(()=>{const reader=openShardStore({memoryDir:f.receiver.memory,project:A,now:()=>f.receiver.clock.now});try{reader.rebuild();reader.list({project:A});}finally{reader.close();}}).toThrow();
+},60_000);
+
+test("R18 replacement remote missing a registered manifest's original commit refuses even after cache loss",async()=>{
+  const f=await appliedForeign(),ref=shardSyncRef({scope:"project",key:A}),revision=readSelector(f.receiver.memory).revision;
+  const replacement=git(f.url,"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit-tree",git(f.url,"rev-parse",ref+"^{tree}"),"-m","replacement root without original history");
+  git(f.url,"update-ref",ref,replacement);rmSync(join(f.receiver.memory,"shard-sync","objects.git"),{recursive:true,force:true});
+  const tips=git(f.url,"for-each-ref","--format=%(refname) %(objectname)");
+  expect(await syncMemory(f.receiver.a,{remote:f.url,...privateRemote})).toMatchObject({ok:false,pushed:false});
+  expect(git(f.url,"for-each-ref","--format=%(refname) %(objectname)")).toBe(tips);expect(readSelector(f.receiver.memory).revision).toBe(revision);
+  assertForeign(f.receiver.a,f.target,f.row);
+},60_000);
+
+test("R20/R21 active proof replay and capture stay offline without the transport cache",async()=>{
+  const f=await appliedForeign();rmSync(join(f.receiver.memory,"shard-sync","objects.git"),{recursive:true,force:true});
+  const network=spyOn(globalThis,"fetch").mockImplementation(()=>{throw new Error("unexpected network");}),spawn=spyOn(Bun,"spawn").mockImplementation(()=>{throw new Error("unexpected resident helper");});
+  try{
+    assertForeign(f.receiver.a,f.target,f.row);
+    const capture=new CaptureStore({home:f.receiver.home,project:A});
+    try{capture.append({project:A,agent:"fixture",event:"PostToolUse",excerpt:"offline capture proof"});expect(capture.stats().rows).toBe(1);}finally{capture.close();}
+    expect(network).not.toHaveBeenCalled();expect(spawn).not.toHaveBeenCalled();
+  }finally{network.mockRestore();spawn.mockRestore();}
+},60_000);
