@@ -218,3 +218,16 @@ test("R08/R15 committed descriptors cannot be borrowed by another realm or recei
     expect(() => reducePublicPruneInputs({ dir: f.dir, ...f.state.binding, inputSetHash: f.state.binding.inputSetHash!, ...change })).toThrow("public prune input unavailable");
   }
 });
+
+for (const kind of ["object", "input", "set"] as const) test(`R16 crash-left ${kind} final/temp link pair recovers under the writer fence`, () => {
+  const f = fixture(); f.register(null); const previous = f.state.binding.inputSetHash, plan = f.prepare();
+  const candidate = persistPublicPruneInput(plan);
+  const id = kind === "object" ? f.graph.input.source.manifestBlob : kind === "input" ? candidate.inputHash! : candidate.inputSetHash;
+  const final = archive(f.dir, kind, id), temp = join(final.slice(0, final.lastIndexOf("/")), ".pending-" + "a".repeat(32));
+  linkSync(final, temp); expect(lstatSync(final).nlink).toBe(2);
+  // Actual crash residue, unlike the exception tests whose finally removes temp.
+  expect(f.state.binding.inputSetHash).toBe(previous); expect(f.replay().targets.size).toBe(0);
+  const recovered = persistPublicPruneInput(plan); expect(recovered).toEqual(candidate);
+  expect(existsSync(temp)).toBe(false); expect(lstatSync(final).nlink).toBe(1);
+  f.commit(recovered); expect(f.replay().targets.has(f.graph.note.id)).toBe(true);
+});

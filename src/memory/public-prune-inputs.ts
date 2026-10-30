@@ -1,6 +1,6 @@
 /** Inactive Layer 2. Only Layer 3 may commit a selector; Layer 4 owns sync admission. */
 import { createHash, randomBytes } from "node:crypto";
-import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
+import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON } from "./generation.ts";
 import { acquireMutation } from "./mutation.ts";
@@ -181,8 +181,8 @@ export function preparePublicPruneInput(options: PublicPruneInputOptions): Publi
 type Kind = "object" | "input" | "set";
 const folders: Record<Kind, string> = { object: "public-prune-objects", input: "public-prune-inputs", set: "public-prune-input-sets" };
 function filename(kind: Kind, id: string): string { guard(hex(id, kind === "object" ? 40 : 64)); return `${id}.${kind === "object" ? "git" : "json"}`; }
-function privateStat(stat: ReturnType<typeof lstatSync>, directory = false): void {
-  guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1));
+function privateStat(stat: Stats, directory = false, links = 1): void {
+  guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === links));
   guard(stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0);
 }
 function rootDir(dir: string): string { privateStat(lstatSync(dir), true); return realPath(dir); }
@@ -235,6 +235,38 @@ function replay(input: Omit<PublicPruneReplayInput, "dir">, load: Loader): Publi
 export function reducePublicPruneInputs(input: PublicPruneReplayInput): PublicPruneProjection {
   return protectedCall(() => { const dir = rootDir(input.dir); return replay(input, (kind, id) => read(dir, kind, id)); });
 }
+/** A crash after link, before temp unlink, leaves two names. Recover only that
+ * exact complete pair under the kernel writer fence; external hardlinks refuse. */
+function recoverLinkedTemps(dir: string): void {
+  for (const kind of Object.keys(folders) as Kind[]) {
+    const base = join(dir, folders[kind]); if (!lstatSync(base, { throwIfNoEntry: false })) continue;
+    folder(dir, kind); const names = readdirSync(base); guard(names.length <= ARCHIVE_FILES_MAX, "resource");
+    const inodes = new Map<string, { name: string; stat: Stats }[]>();
+    for (const name of names) {
+      const stat = lstatSync(join(base, name)); guard(stat.nlink === 1 || stat.nlink === 2); privateStat(stat, false, stat.nlink);
+      const key = `${stat.dev}:${stat.ino}`, entries = inodes.get(key) ?? []; entries.push({ name, stat }); inodes.set(key, entries);
+    }
+    for (const entries of inodes.values()) {
+      const pending = entries.find(item => item.name.length === 41 && /^\.pending-[a-f0-9]{32}$/.exec(item.name)?.[0] === item.name);
+      if (!pending || pending.stat.nlink === 1) continue;
+      guard(entries.length === 2); const final = entries.find(item => item !== pending); guard(final && final.stat.nlink === 2);
+      const id = final.name.slice(0, kind === "object" ? 40 : 64); guard(filename(kind, id) === final.name);
+      const file = join(base, final.name), temp = join(base, pending.name), fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd); privateStat(opened, false, 2);
+        guard(opened.dev === final.stat.dev && opened.ino === final.stat.ino && opened.size > 0 && opened.size <= (kind === "object" ? OBJECT_MAX : PUBLIC_PRUNE_INPUT_MAX_BYTES), "resource");
+        const bytes = readFileSync(fd); guard(bytes.length === opened.size);
+        if (kind === "object") gitObject(id, bytes);
+        else {
+          const value = kind === "input" ? validatePublicPruneInput(json(bytes)) : validatePublicPruneInputSet(json(bytes));
+          guard(hashJSON(value) === id);
+        }
+        for (const name of [file, temp]) { const named = lstatSync(name); privateStat(named, false, 2); guard(named.dev === opened.dev && named.ino === opened.ino && named.size === opened.size && named.mtimeMs === opened.mtimeMs); }
+        unlinkSync(temp); fsyncDirectory(base);
+      } finally { closeSync(fd); }
+    }
+  }
+}
 function capacity(dir: string, writes: Map<string, { kind: Kind; id: string; bytes: Buffer }>): void {
   let total = 0, count = 0;
   for (const kind of Object.keys(folders) as Kind[]) {
@@ -272,7 +304,7 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
     // The shared SQLite lock is an ownership fence, never an archive or membership source.
     for (const suffix of ["", "-wal", "-shm", "-journal"]) { const stat = lstatSync(join(dir, "mutation-lock.db" + suffix), { throwIfNoEntry: false }); if (stat) privateStat(stat); }
     const release = acquireMutation(dir); guard(release); try {
-      current(); const previous = expected.inputSetHash;
+      current(); recoverLinkedTemps(dir); current(); const previous = expected.inputSetHash;
       const members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, (kind, id) => read(dir, kind, id)).inputs : [];
       const inputHash = prepared.input && hashJSON(prepared.input), includes = inputHash !== undefined && members.includes(inputHash);
       const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration,
