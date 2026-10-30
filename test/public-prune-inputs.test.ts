@@ -1,12 +1,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { entryId, type Entry } from "../src/memory/store.ts";
 import { persistPublicPruneInput, preparePublicPruneInput, reducePublicPruneInputs, validatePublicPruneInputSet,
-  PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, type PublicPruneBinding, type PublicPruneInputRegistration, type PublicPrunePersistPhase } from "../src/memory/public-prune-inputs.ts";
+  PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, PUBLIC_PRUNE_REPLAY_MAX_BYTES, type PublicPruneBinding, type PublicPruneInputRegistration, type PublicPrunePersistPhase } from "../src/memory/public-prune-inputs.ts";
 import { publicPruneGraph, rawGitObject } from "./fixtures/public-prune-graph.ts";
 
 const cleanups: (() => void)[] = [];
@@ -230,4 +230,26 @@ for (const kind of ["object", "input", "set"] as const) test(`R16 crash-left ${k
   const recovered = persistPublicPruneInput(plan); expect(recovered).toEqual(candidate);
   expect(existsSync(temp)).toBe(false); expect(lstatSync(final).nlink).toBe(1);
   f.commit(recovered); expect(f.replay().targets.has(f.graph.note.id)).toBe(true);
+});
+
+test("R14 a copied historical hold cannot become an input even when its hash is committed", () => {
+  const f = fixture(), old = f.register(null);
+  mkdirSync(join(f.dir, "public-prune-inputs"), { mode: 0o700 });
+  const hold = { schema: "agent-mem.prune-hold/v1", row: f.graph.manifest.prune, source: f.graph.input.source }, inputHash = hashJSON(hold);
+  writeFileSync(archive(f.dir, "input", inputHash), canonicalJSON(hold) + "\n", { mode: 0o600 });
+  const set = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: f.state.binding.receivingGeneration, previous: old.inputSetHash, inputs: [inputHash] };
+  const setHash = hashJSON(set); writeFileSync(archive(f.dir, "set", setHash), canonicalJSON(set) + "\n", { mode: 0o600 });
+  f.state.binding.inputSetHash = setHash;
+  expect(() => f.replay()).toThrow("public prune input unavailable");
+});
+
+test("R21 archive capacity counts unregistered storage and refuses without publishing or evicting", () => {
+  const f = fixture(), old = f.register(null);
+  const base = join(f.dir, "public-prune-objects"); mkdirSync(base, { mode: 0o700 });
+  const orphan = join(base, ".orphan-resource"), plan = f.prepare();
+  writeFileSync(orphan, "", { mode: 0o600 }); truncateSync(orphan, PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
+  const before = files(f.dir);
+  expect(() => persistPublicPruneInput(plan)).toThrow("public prune input resource");
+  expect(files(f.dir)).toEqual(before); expect(lstatSync(orphan).size).toBe(PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
+  expect(f.state.binding.inputSetHash).toBe(old.inputSetHash); expect(f.replay().targets.size).toBe(0);
 });
