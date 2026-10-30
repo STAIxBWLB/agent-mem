@@ -1,4 +1,4 @@
-/** Inactive Layer 2. Only Layer 3 may commit a selector; Layer 4 owns sync admission. */
+/** Durable evidence and candidate sets. Activation/advance alone commits a selector; sync owns transport admission. */
 import { createHash, randomBytes } from "node:crypto";
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";

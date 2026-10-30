@@ -3,11 +3,11 @@ import { verifyPublicPruneWitness, type PublicPruneWitnessV1 } from "./public-pr
 import { readPublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
 import { advancePublicPruneView } from "./public-prune-advance.ts";
 import { collectPublicPruneGitGraph } from "./shard-sync-graph.ts";
-import { PublicPruneInputError, preparePublicPruneInputBatch, persistPublicPruneInputBatch, readPublicPruneInputDescriptor, reducePublicPruneInputs, type PublicPruneInputBatch, type PublicPruneInputV1 } from "./public-prune-inputs.ts";
+import { PublicPruneInputError, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, preparePublicPruneInputBatch, persistPublicPruneInputBatch, readPublicPruneInputDescriptor, reducePublicPruneInputs, type PublicPruneInputBatch, type PublicPruneInputV1 } from "./public-prune-inputs.ts";
 import { randomBytes, createHash } from "node:crypto";
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON, readSelector } from "./generation.ts";
+import { canonicalJSON, fsyncDirectory, hashJSON, readProfileJSON, readSelector, rebindPublicPruneProfile } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
@@ -22,7 +22,7 @@ const digest = (bytes: string | Uint8Array): string => createHash("sha256").upda
 const zero = "0".repeat(40);
 // The descriptor is at most 64 KiB and an original prune at most 16 KiB; keep receipt parsing bounded.
 const HOLD_MAX_BYTES = 128 * 1024;
-type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string };
+type PendingPrune = { plan: PrunePlan; row: PruneRow; line: string; offset: number; prefixHash: string; selectorCheck?: () => void };
 type HoldSource = { ref: string; commit: string; pack: string; blob: string };
 type HoldReceipt = { schema: "agent-mem.prune-hold/v1"; remote: string; realm: ShardSyncRealm; receivingGeneration: string; row: PruneRow; payloadHash: string; source: HoldSource };
 type Hold = { file: string; bytes: Buffer };
@@ -46,12 +46,29 @@ function mergeRows(into: Map<string, ShardSyncRow>, rows: readonly ShardSyncRow[
     into.set(row.id, row);
   }
 }
-function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRow): PrunePlan {
+function importPrunePlan(store: MemoryStore, realm: ShardSyncRealm, row: PruneRow, selectorRevision = store.prunePort().selectorRevision()): PrunePlan {
   const body: Omit<PrunePlan, "seal"> = { schema: "agent-mem.prune-plan/v1", generation: store.profile.generation!,
-    selectorRevision: store.prunePort().selectorRevision(), project: realm.scope === "project" ? realm.key : "user",
+    selectorRevision, project: realm.scope === "project" ? realm.key : "user",
     policyRevision: hashJSON({ schema: "agent-mem.shard-sync/v1", realm }), rows: [{ placement: "synced", payload: row }],
     counts: { eligible: row.targets.length, selected: row.targets.length, local: 0, synced: row.targets.length }, hasMore: false };
   return validatePrunePlan({ ...body, seal: hashJSON(body) });
+}
+/** A retained selector is owned recovery evidence, not authorization or input membership. */
+function selectorEvidence(folder: string, file: string): { value: unknown; check: () => void } {
+  privateHoldPath(folder,true); privateHoldPath(file,false);
+  const parent=lstatSync(folder), before=lstatSync(file);
+  if(parent.uid!==process.getuid?.()||before.uid!==parent.uid||before.size<1||before.size>4096)refuse("prior selector unavailable");
+  const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try {
+    const opened=fstatSync(fd), same=(stat:typeof opened)=>stat.dev===before.dev&&stat.ino===before.ino&&stat.size===before.size&&stat.mtimeMs===before.mtimeMs&&stat.ctimeMs===before.ctimeMs&&stat.uid===before.uid&&stat.nlink===1&&(stat.mode&0o077)===0&&stat.isFile();
+    if(!same(opened))refuse("prior selector changed");
+    const bytes=Buffer.alloc(before.size+1);let count=0;
+    while(count<bytes.length){const n=readSync(fd,bytes,count,bytes.length-count,count);if(!n)break;count+=n;}
+    const check=()=>{privateHoldPath(folder,true);privateHoldPath(file,false);const current=lstatSync(folder);if(current.dev!==parent.dev||current.ino!==parent.ino||current.uid!==parent.uid||!same(lstatSync(file)))refuse("prior selector changed");};
+    if(count!==before.size||!same(fstatSync(fd)))refuse("prior selector changed");check();
+    const text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(bytes.subarray(0,count)),value:unknown=JSON.parse(text);
+    if(canonicalJSON(value)+"\n"!==text)refuse("prior selector unavailable");return{value,check};
+  } finally {closeSync(fd);}
 }
 /** Recognize only the exact persisted transport shape; this reads metadata and never resumes an append. */
 function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[] {
@@ -72,10 +89,25 @@ function pendingPrunes(store: MemoryStore, realm: ShardSyncRealm): PendingPrune[
       const plan = validatePrunePlan(readProfileJSON(planFile));
       if (plan.rows.length !== 1) throw new Error("plan shape");
       const row = plan.rows[0]!.payload, line = canonicalJSON(row) + "\n";
-      if (plan.seal !== claim.seal || canonicalJSON(plan) !== canonicalJSON(importPrunePlan(store, realm, row))
+      let selectorCheck: (()=>void) | undefined;
+      if (plan.selectorRevision !== store.profile.selectorRevision) {
+        if (!store.profile.foreignPruneFormat) throw new Error("selector changed");
+        const history = join(store.profile.home,"public-prune-selector-history"), file = join(history,plan.selectorRevision+".json");
+        const evidence=selectorEvidence(history,file), prior=evidence.value as Record<string,unknown> | undefined;
+        if (!prior || Object.keys(prior).length !== 5 || prior.schema !== "agent-mem.profile/v2" || prior.kind !== "generation"
+          || prior.generation !== store.profile.generation || prior.foreignPruneFormat !== store.profile.foreignPruneFormat
+          || typeof prior.pruneInputSetHash !== "string" || !/^[a-f0-9]{64}$/.test(prior.pruneInputSetHash) || hashJSON(prior) !== plan.selectorRevision) throw new Error("prior selector unavailable");
+        const bound = {...store.profile,selectorRevision:plan.selectorRevision,pruneInputSetHash:prior.pruneInputSetHash};
+        selectorCheck=()=>{
+          evidence.check();
+          const probe={...bound};rebindPublicPruneProfile(probe); // Every old realm/set retained in the current same-generation/format chain.
+          if(probe.selectorRevision!==store.profile.selectorRevision)throw new Error("selector ancestry unavailable");
+        };selectorCheck();
+      }
+      if (plan.seal !== claim.seal || canonicalJSON(plan) !== canonicalJSON(importPrunePlan(store, realm, row, plan.selectorRevision))
         || name !== `pending-log-${row.machine}.json` || claim.rowId !== row.id || claim.lineHash !== digest(line)) throw new Error("plan binding");
       regular(join(store.dir, "log", `${row.machine}.jsonl`));
-      pending.push({ plan, row, line, offset: claim.offset, prefixHash: claim.prefixHash });
+      pending.push({ plan, row, line, offset: claim.offset, prefixHash: claim.prefixHash, ...(selectorCheck?{selectorCheck}:{}) });
     }
     return pending;
   } catch { return refuse(`${shardSyncLabel(realm)}: pending prune requires its original plan to resume`); }
@@ -315,6 +347,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     if(homeMutation)assertMutationHandle(homeMutation,store.profile.home);
     for (const target of targets) {
       if (target.mutation) assertMutationHandle(target.mutation,target.store.dir);
+      for(const pending of target.pending)pending.selectorCheck?.();
       const profile = target.store.profile;
       const current = resolveShardProfile(profile.home, target.realm.scope === "user" ? { user: true } : { project: target.realm.key });
       if (current.dir !== profile.dir || current.generation !== target.generation || current.selectorRevision !== expectedRevision) refuse(`${shardSyncLabel(target.realm)}: selected profile changed`);
@@ -401,7 +434,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if (!Number.isSafeInteger(size) || size < 1 || size > maximum) refuse("shard sync blob exceeds its bound");
       check(); const result = await generationSyncGitBytes(root,gitArgs(["cat-file","blob",object]),opts.signal,undefined,maximum); check();
       if(result.code!==0)refuse("shard sync blob unavailable"); const bytes=Buffer.from(result.out);
-      if (bytes.length !== size) refuse("shard sync requires complete newline-terminated public blobs");
+      if (bytes.length !== size || bytes.at(-1) !== 10) refuse("shard sync requires complete newline-terminated public blobs");
       const identity = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
       if (identity !== object) refuse("shard sync public blob identity mismatch");
       blobCache.set(object, bytes); return bytes;
@@ -561,7 +594,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         const projection=reducePublicPruneInputs({dir:target.store.dir,realm:target.realm,receivingGeneration:target.generation,inputSetHash:set});
         for(const hash of projection.inputs){
           const descriptor=readPublicPruneInputDescriptor({dir:target.store.dir,hash});
-          if(!target.remote)refuse("registered prune source history disappeared from the selected remote");
+          if(!target.remote||descriptor.source.remoteHash!==digest(url))refuse("registered prune source history disappeared or its remote binding changed");
           await required(["merge-base","--is-ancestor",descriptor.source.commit,target.remote],"registered prune source is missing from replacement history");
           const original=await history(descriptor.source.commit,target),manifest=original.manifests.get(descriptor.source.manifestPath);
           if(!manifest||!manifest.eligible||manifest.blob!==descriptor.source.manifestBlob||descriptor.source.ref!==shardSyncRef(target.realm)||digest(canonicalJSON(manifest.value))!==descriptor.witnessHash)refuse("registered prune anchor no longer has exact audited evidence");
@@ -569,7 +602,9 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
         }
       }
     };
-    const objectCache=new Map<string,{type:"commit"|"tree"|"blob";body:Uint8Array}>();
+    const objectCache=new Map<string,{type:"commit"|"tree"|"blob";body:Uint8Array}>(), graphObjects=new Map<string,Uint8Array>();
+    // ponytail: one sync retains at most the 256 MiB replay budget across selected realms; segmented acquisition is the upgrade.
+    let objectBytes=0;
     const readObject=async(oid:string)=>{
       const prior=objectCache.get(oid);if(prior)return prior;
       if(OID.exec(oid)?.[0]!==oid)refuse("Git object identity invalid");
@@ -577,9 +612,11 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       if(type!=="commit"&&type!=="tree"&&type!=="blob")refuse("Git object type refused");
       const size=Number(await required(["cat-file","-s",oid],"Git object size unavailable")),limit=type==="commit"?65536:SHARD_PACK_MAX_BYTES;
       if(!Number.isSafeInteger(size)||size<0||size>limit)refuse("Git object exceeds complete evidence bound");
+      const encodedSize=Buffer.byteLength(`${type} ${size}`)+1+size;
+      if(objectBytes+encodedSize>PUBLIC_PRUNE_REPLAY_MAX_BYTES)throw new PublicPruneInputError("resource");
       check();const result=await generationSyncGitBytes(root,gitArgs(["cat-file",type,oid]),opts.signal,undefined,limit);check();
       if(result.code!==0||result.out.length!==size)refuse("Git object bytes unavailable");
-      const value:{type:"commit"|"tree"|"blob";body:Uint8Array}={type:type as "commit"|"tree"|"blob",body:result.out};objectCache.set(oid,value);return value;
+      const value:{type:"commit"|"tree"|"blob";body:Uint8Array}={type:type as "commit"|"tree"|"blob",body:result.out};objectBytes+=encodedSize;objectCache.set(oid,value);return value;
     };
     const prepareApplications = async () => {
       if(!v2)return;application.proofComplete=0;application.held=0;
@@ -593,7 +630,14 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
           if(!record.eligible||record.row.generation===target.generation)continue;
           const witnessHash=digest(canonicalJSON(record.value));
           if(target.registered.some(item=>item.witnessHash===witnessHash))continue;
-          const objects=await collectPublicPruneGitGraph({commit:record.commit,manifestPath:record.path,manifestBlob:record.blob,realm:target.realm,readObject});
+          if(inputs.length>=PUBLIC_PRUNE_MAX_SETS)throw new PublicPruneInputError("resource");
+          const acquired=await collectPublicPruneGitGraph({commit:record.commit,manifestPath:record.path,manifestBlob:record.blob,realm:target.realm,readObject});
+          // Share exact raw objects before accumulating inputs; repeated manifests cannot multiply graph memory.
+          const objects=acquired.map(item=>{
+            const prior=graphObjects.get(item.oid);if(prior&&!Buffer.from(prior).equals(item.bytes))refuse("conflicting Git graph bytes");
+            const bytes=prior??item.bytes;graphObjects.set(item.oid,bytes);
+            const cached=objectCache.get(item.oid)!;objectCache.set(item.oid,{type:cached.type,body:bytes.subarray(bytes.indexOf(0)+1)});return{oid:item.oid,bytes};
+          });
           inputs.push({witnessHash,source:{remoteHash:digest(url),ref:shardSyncRef(target.realm),commit:record.commit,manifestPath:record.path,manifestBlob:record.blob},objects});
         }
         target.batch=undefined;
