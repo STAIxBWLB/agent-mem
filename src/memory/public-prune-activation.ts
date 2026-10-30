@@ -58,7 +58,7 @@ function enumerate(home: string): { key: string; profile: BoundProfile }[] {
   if (lstatSync(projects, { throwIfNoEntry: false })) {
     owned(projects, true); const names = readdirSync(projects).sort(); guard(names.length <= 1024);
     for (const hash of names) {
-      guard(hex(hash, 64)); const dir = join(projects, hash); owned(dir, true);
+      guard(hex(hash, 16)); const dir = join(projects, hash); owned(dir, true);
       if (!lstatSync(join(dir, "generation.json"), { throwIfNoEntry: false })) continue;
       const descriptor = readShardDescriptor(home, hash); guard(descriptor && shardKeyHash(descriptor.key) === hash);
       result.push({ key: `project:${descriptor.key}`, profile: resolveShardProfile(home, { project: descriptor.key }) });

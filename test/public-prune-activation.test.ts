@@ -74,7 +74,8 @@ test("unknown v1 shard journal fields refuse before locks, indexes, maps or inte
 
 test("activation preserves every old shard journal field and native mask; resume is a verified no-op", async () => {
   const f = await fixture(), store = openShardStore({ memoryDir: f.memoryDir, project: A, screen: () => "keep" });
-  const expired = store.note({ ...note(A, "EXPLICIT-NATIVE-PRUNE"), expires: "2000-01-01T00:00:00.000Z" });
+  const expired = store.note(note(A, "EXPLICIT-NATIVE-PRUNE"));
+  expect(store.demote(expired, "person", A, "2000-01-01T00:00:00.000Z")).toBeDefined();
   const port = store.prunePort(), authorization = { project: A, actor: "person" as const, authorize: () => true };
   applyPrune(port, planPrune(port, { cutoff: new Date().toISOString(), targets: [expired] }, authorization), authorization); store.close();
   const old = f.markers(), oldShards = JSON.parse(old.shards), source = f.sources(), profile = resolveShardProfile(f.memoryDir, { project: A });
