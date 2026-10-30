@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as Old from "@staix/agent-mem-v013";
@@ -114,4 +114,12 @@ test("R21 warm v2 reads do no network/process work, never rewrite native sources
   expect(["profile.json", "shards.json"].map(name => readFileSync(join(f.memoryDir, name)))).toEqual(markers);
   await expect(migrate({ memoryDir: f.memoryDir, mode: "deactivate", authorizedPerson: true, tty: true })).rejects.toThrow(/forward-only/);
   await expect(migrateShards({ memoryDir: f.memoryDir, mode: "resume", authorizedPerson: true, tty: true })).rejects.toThrow(/forward-only/);
+});
+
+test("R19 the v2 index cannot alias the historical index through a hardlink", async () => {
+  const f = await fixture(); await f.activate();
+  const historical = join(f.profile.dir, "index.db"), projected = join(f.profile.dir, "index-v2.db"), bytes = readFileSync(historical);
+  unlinkSync(projected); linkSync(historical, projected);
+  expect(() => { const next = openShardStore({memoryDir:f.memoryDir,project:f.project,now}); next.close(); }).toThrow("v2 index path unavailable");
+  expect(readFileSync(historical)).toEqual(bytes);
 });

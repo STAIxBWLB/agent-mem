@@ -252,7 +252,13 @@ export class MemoryStore {
     if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home);
     let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
     try {
-      const db = openedDb = new Database(join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db"), { create: true });
+      const indexFile = join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db");
+      if (this.profile.foreignPruneFormat) for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        const stat = lstatSync(indexFile + suffix, {throwIfNoEntry:false});
+        if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.())) throw new Error("v2 index path unavailable");
+      }
+      const db = openedDb = new Database(indexFile, { create: true });
+      if (this.profile.foreignPruneFormat) chmodSync(indexFile, 0o600);
       db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
       db.run("PRAGMA journal_mode = WAL");
       if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
