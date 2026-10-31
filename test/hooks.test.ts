@@ -120,7 +120,7 @@ test("native hook capture stays separate while marked CLI reads are screened and
   expect(read.exitCode).toBe(0); expect(read.stderr.toString()).toBe("");
   expect(read.stdout.toString()).toContain("p3 curated public fixture"); expect(read.stdout.toString()).not.toContain(privateMarker);
   const history = run(["list", "--history"]);
-  expect(history.exitCode).toBe(1); expect(history.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+  expect(history.exitCode).toBe(1); expect(history.stderr.toString()).toContain("agent-marked list accepts only --limit and --since.");
 
   const unmarkedEnv = { ...f.env }; delete unmarkedEnv.CLAUDECODE;
   const unmarked = run(["list", "--json"], unmarkedEnv);

@@ -177,7 +177,7 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
 }, 30_000);
 
 test("status and doctor keep their bounded refusal for agent reads", async () => {
-  for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
 });
 
 test("setup confirmation shows the raw plan under --json and the readable plan otherwise", () => {

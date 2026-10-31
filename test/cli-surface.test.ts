@@ -72,9 +72,8 @@ for (const marker of MARKERS) test(`${marker}: unsupported historical reads use 
   const r = rig();
   try {
     const agent = { cwd: r.cwd, env: { [marker]: "x", AMEM_HOME: join(r.root, "agent-memory") }, stdinTTY: false, stdoutTTY: false };
-    const unavailable = "Memory operation unavailable or refused; no partial result is shown.";
     for (const args of [["list", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
-      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(unavailable);
+      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
     }
     for (const args of [["--help", "--json"], ["list", "--help"], ["review", "--help"], ["--version", "--json"]]) {
       const output = await runCli(args, agent); expect(output).not.toMatch(HOST);
@@ -102,5 +101,5 @@ test("the bin prints help and version in an agent shell and uses the generic err
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
   const refused = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(refused.exitCode).toBe(1); expect(refused.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown."); expect(refused.stderr.toString()).not.toMatch(HOST);
+  expect(refused.exitCode).toBe(1); expect(refused.stderr.toString()).toContain("agent-marked list accepts only --limit and --since."); expect(refused.stderr.toString()).not.toMatch(HOST);
 });

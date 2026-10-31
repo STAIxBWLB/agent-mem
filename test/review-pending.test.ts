@@ -170,7 +170,7 @@ test("AC4: review list stamps nothing, with or without a terminal and with or wi
     await cli(r, [...args], { ...extra });
     expect(shownAt(r, a), args.join(" ")).toBeNull(); expect(shownAt(r, b)).toBeNull();
   }
-  await expect(cli(r, ["review", "list", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(cli(r, ["review", "list", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
   expect(shownAt(r, a)).toBeNull(); expect(shownAt(r, b)).toBeNull();
   // `list </dev/null` as a script or cron runs it: the 7-day clock must not start with nobody reading.
   const real = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "review", "list"], { cwd: r.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: r.memory }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
