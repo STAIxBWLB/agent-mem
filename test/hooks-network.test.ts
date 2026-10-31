@@ -144,7 +144,8 @@ test("AC3 actual executable hooks and SessionStart context do not attempt networ
 
 test("AC3 native Codex ingest executable remains offline and actually imports the project record", () => {
   const f = fixture(), sessions = join(f.env.CODEX_HOME!, "sessions", "2026", "10", "23"); mkdirSync(sessions, { recursive: true });
-  const at = "2026-10-23T01:00:00.000Z", text = "p3-offline-ingest-positive-marker";
+  // Use the running clock, which also reaches the actual ingest executable.
+  const at = new Date(Math.floor(Date.now() / 86400000) * 86400000 - 86400000 + 3600000).toISOString(), text = "p3-offline-ingest-positive-marker";
   writeFileSync(join(sessions, "rollout-fixture.jsonl"), [
     { timestamp: at, type: "session_meta", payload: { cwd: f.cwd, id: "network-fixture" } },
     { timestamp: at, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } },

@@ -18,7 +18,10 @@ async function ingestTranscript(kind: "codex" | "kimi" | "pi", options: Record<s
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const at = "2026-10-23T01:00:00.000Z";
+// All source times and since cutoffs share yesterday's UTC anchor, including after a clock shift.
+const day = Math.floor(Date.now() / 86400000) * 86400000 - 86400000;
+const timeAt = (hour: number) => new Date(day + hour * 3600000).toISOString();
+const at = timeAt(1);
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "amem-ingest-")); roots.push(root);
   const cwd = join(root, "project"), other = join(root, "foreign"), base = join(root, "memory"), file = join(root, "transcript.jsonl");
@@ -76,7 +79,7 @@ test("bounded passes resume complete records, reset truncation and refuse linked
 test("project aliases are resolved at startup and since never fabricates timestamps", async () => {
   const f=fixture();appendAlias(f.base,{alias:memoryProjectKey(f.other),key:memoryProjectKey(f.cwd),actor:"person",machine:"fixture"});
   writeFileSync(f.file,line(codexHeader(f.other))+line(codexMessage("aliased public answer")));
-  expect((await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-22T00:00:00Z"})).imported).toBe(1);
+  expect((await ingestTranscript("codex",{...f,files:[f.file],since:new Date(day - 86400000).toISOString()})).imported).toBe(1);
   const unknown=join(f.root,"unknown.jsonl");writeFileSync(unknown,line(codexMessage("no session scope")));
   const r=await ingestTranscript("codex",{...f,files:[unknown]});expect(r.imported).toBe(0);expect(r.errors).toBeGreaterThan(0);expect(JSON.stringify(r)).not.toContain(f.root);
 });
@@ -108,10 +111,10 @@ test("invalid UTF-8 native records are skipped rather than imported with replace
 
 
 test("lowering or removing since backfills older records without recapturing newer ones", async () => {
-  const f=fixture(),newer={...codexMessage("newer"),timestamp:"2026-10-23T03:00:00Z"};
+  const f=fixture(),newer={...codexMessage("newer"),timestamp:timeAt(3)};
   writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("older"))+line(newer));
-  expect((await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T02:00:00Z"})).imported).toBe(1);
-  expect((await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T00:00:00Z"})).imported).toBe(1);
+  expect((await ingestTranscript("codex",{...f,files:[f.file],since:timeAt(2)})).imported).toBe(1);
+  expect((await ingestTranscript("codex",{...f,files:[f.file],since:timeAt(0)})).imported).toBe(1);
   expect((await ingestTranscript("codex",{...f,files:[f.file]})).imported).toBe(0);expect(rows(f).map(r=>r.excerpt).sort()).toEqual(["newer","older"]);
 });
 
@@ -164,8 +167,8 @@ test("oversized unterminated tails retain skip state until the real newline arri
 
 test("a broader cutoff clears an in-flight oversized skip before backfilling", async () => {
   const f=fixture();writeFileSync(f.file,line(codexHeader(f.cwd))+line(codexMessage("backfilled before"))+line({type:"image",payload:"A".repeat(5*1024*1024)})+line(codexMessage("backfilled after")));
-  await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T02:00:00Z"});
-  for(let i=0;i<3;i++)await ingestTranscript("codex",{...f,files:[f.file],since:"2026-10-23T00:00:00Z"});
+  await ingestTranscript("codex",{...f,files:[f.file],since:timeAt(2)});
+  for(let i=0;i<3;i++)await ingestTranscript("codex",{...f,files:[f.file],since:timeAt(0)});
   expect(rows(f).map(row=>row.excerpt)).toEqual(["backfilled before","backfilled after"]);
 });
 

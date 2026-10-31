@@ -13,7 +13,10 @@ afterEach(() => {
   for (const reset of restore.splice(0).reverse()) reset();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-const at = "2026-10-26T01:00:00.000Z", sessionId = "11111111-1111-4111-8111-111111111111";
+// All source times and since cutoffs share yesterday's UTC anchor, including after a clock shift.
+const day = Math.floor(Date.now() / 86400000) * 86400000 - 86400000;
+const timeAt = (hour: number) => new Date(day + hour * 3600000).toISOString();
+const at = timeAt(1), sessionId = "11111111-1111-4111-8111-111111111111";
 const line = (value: unknown) => JSON.stringify(value) + "\n";
 function env(key: "QWEN_HOME" | "QWEN_RUNTIME_DIR", value: string | undefined) {
   const old = process.env[key];
@@ -111,12 +114,12 @@ test("Qwen screens complete native records and extracted inputs before capture",
 
 test("Qwen partial tails, since backfill and lost cursor replay retain existing idempotence", async () => {
   const f = fixture();
-  const old = message(f.cwd, "older"), recent = message(f.cwd, "newer", { timestamp: "2026-10-26T03:00:00.000Z" });
+  const old = message(f.cwd, "older"), recent = message(f.cwd, "newer", { timestamp: timeAt(3) });
   writeFileSync(f.file, line(old) + JSON.stringify(recent));
-  const first = await ingestTranscript("qwen", { ...f, files: [f.file], since: "2026-10-26T02:00:00Z" });
+  const first = await ingestTranscript("qwen", { ...f, files: [f.file], since: timeAt(2) });
   expect(first.imported).toBe(0); expect(first.remaining).toBe(true);
   appendFileSync(f.file, "\n");
-  expect((await ingestTranscript("qwen", { ...f, files: [f.file], since: "2026-10-26T02:00:00Z" })).imported).toBe(1);
+  expect((await ingestTranscript("qwen", { ...f, files: [f.file], since: timeAt(2) })).imported).toBe(1);
   expect((await ingestTranscript("qwen", { ...f, files: [f.file] })).imported).toBe(1);
   const dir = cursorDirectory(f);
   for (const name of readdirSync(dir)) if (name.endsWith(".db")) rmSync(join(dir, name));
