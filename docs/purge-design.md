@@ -38,9 +38,10 @@ Items 1-3 and 15 are the ones the invariant protects; 4-5 are fully derived and 
 
 ### a. Purge through a new generation migration that leaves the target out
 
-A person-only `amem purge <full-entry-id> [--confirm]` writes a new generation G' by replaying every authored row of the active generation except the purged targets (and rows whose only content is a target, such as its settlement or promotion copy), then activates G' through the existing migration path (`profile.lock`, staged rebuild validation, selector replacement as the last commit point). After verification, the old generation's segments, indexes and Git repo are deleted. A purge record (ID and row hash only, no text) is appended to G' so other machines can apply the same cut.
+A person-only `amem purge <full-entry-id> [--confirm]` writes a new generation G' by replaying every authored row of the active generation except the purged targets (and rows whose only content is a target, such as its settlement or promotion copy), then activates G' through the existing migration path (`profile.lock`, staged rebuild validation, selector replacement as the last commit point). After verification, the outgoing generation's segments, indexes and Git repo are deleted. A purge record (ID and row hash only, no text) is appended to G' so other machines can apply the same cut.
 
 - No existing log line is rewritten: G' is new append-only data; the old generation is deleted, not edited.
+- Deleting the outgoing generation is not enough: the text also sits in amem-owned historical copies (items 13-14), namely the legacy shared-v1 root (`M/log/`, `M/local/`) and its `M/.git` store, earlier inactive generations under `M/generations/`, migration sources, and the shard-sync object cache `M/shard-sync/objects.git` (with its `prune-holds/`). Option a must purge every one of these copies that contains the target (by replaying or deleting it under the same verification, and expiring and repacking the object cache) before its receipt may say local bytes are gone. Which of them a purge may delete, versus only report, is a decision point for the option a issue; until it is decided, the receipt lists each copy it left in place.
 - Derived DBs (4, 5) are rebuilt from G' rather than vacuumed, so no free-page residue survives.
 - Capture, candidates and work lists (7, 9, 10) need their own targeted deletes keyed by the same text search (they are not part of the generation).
 - Remote (15): G' publishes on a new ref; the old ref must be deleted on the remote, and Git history is not rewritten. A remote host that keeps unreachable objects or reflogs may still serve the old blobs until it collects garbage.
@@ -66,19 +67,19 @@ Document what to do today with existing tools:
 
 1. `amem forget <id>` (or a person-authored prune) so no amem reader shows the entry anywhere, including on other machines after sync.
 2. Rotate or revoke the secret. This is the only step that makes a leaked credential harmless.
-3. For local bytes: stop every amem and hub process, back up the home, and remove the home and re-import from a cleaned export (`amem project export` then hand-edit then `amem project import --confirm`), or accept that the masked row stays on disk.
+3. For local bytes, the default is to accept that the masked row stays on disk. A rebuild is opt-in: stop every amem and hub process, list every project (`amem projects --all --json`), export each one, delete the leaked line from its export, rename the old home aside, import every export into a fresh home, and delete the old home only after every project is restored and the person has accepted what cannot be carried over (lifecycle operations, capture, goals, work lists, notes outside any project export, candidates, generation history and sync state). In a multi-project home, never delete the old home while it holds anything not restored.
 4. For the remote: create a new private remote, re-sync from the cleaned home, and delete the old remote; or run `git filter-repo` and re-clone everywhere.
 5. Delete capture shards, `candidates.db` and stale exports for the affected project (all machine-local and rebuildable or disposable).
 
 Cost: small (documentation and maybe a `doctor` hint). Breaks nothing.
 
-Limits: relies on manual steps that are easy to get wrong; re-import loses lifecycle operations (`supersede`, `demote`, `settle`, `forget` are not exported, per `docs/contracts.md` §Native-memory candidates and portable projects); no machine-checked verification that the text is gone.
+Limits: relies on manual steps that are easy to get wrong; a rebuild loses lifecycle operations (`supersede`, `demote`, `settle`, `forget` are not exported, per `docs/contracts.md` §Native-memory candidates and portable projects), capture, goals and work lists (export-only), and notes no project export selects; no machine-checked verification that the text is gone.
 
 ### Comparison
 
 | | Local logs (1-3) | Derived (4-5) | Capture/candidates/work (7, 9, 10) | Remote (15) | Other machines (16) | Code cost | Invariant change |
 |---|---|---|---|---|---|---|---|
-| a | purged (old generation deleted) | rebuilt | needs targeted deletes | new ref; old ref deleted; host GC needed | apply purge record on next sync | large | segment paths and vanished-ref refusal |
+| a | purged (outgoing generation and the historical copies 13-14 that hold it) | rebuilt | needs targeted deletes | new ref; old ref deleted; host GC needed | apply purge record on next sync | large | segment paths and vanished-ref refusal |
 | b | redacted in place | rebuilt and vacuumed | needs targeted deletes | manual history rewrite | re-clone | medium | "never rewrite a log line" |
 | c | masked only (or manual rebuild) | masked | manual delete | manual new remote | manual | small | none |
 
