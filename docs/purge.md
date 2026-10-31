@@ -54,7 +54,14 @@ If you cannot accept a loss on that list, stop here and keep the masked row.
    amem project import <project-key> --from /path/outside/home/<project-key>.jsonl --confirm
    ```
 
-   Check each preview's counts before `--confirm`; add `--allow-shared` only if the export holds shared-scope rows you mean to restore.
+   Import refuses shared-scope rows unless you pass `--allow-shared`, so for an export that holds shared rows you mean to restore, add it to **both** commands:
+
+   ```sh
+   amem project import <project-key> --from /path/outside/home/<project-key>.jsonl --allow-shared
+   amem project import <project-key> --from /path/outside/home/<project-key>.jsonl --allow-shared --confirm
+   ```
+
+   Check each preview's counts before `--confirm`.
 6. Compare `amem projects --all` and each project's note count in the new home with the old one. Keep the old home, untouched, until every project you need is restored and you have copied out anything on the loss list that you still need. Only then delete the old home and every export and backup (each holds the leak). A deleted file can still sit in filesystem snapshots or backups (step 6).
 
 ## 4. Machine-local tiers
@@ -63,7 +70,7 @@ These are outside the curated log and never synced. Use the ids from the forget 
 
 - **Capture** (`<home>/projects/<key-hash>/machine/<machine-id>/capture.db` and its `-wal`): recall context only. Deleting the project's capture shard directory removes all of its capture; it is rebuilt from new hook events and ingests. `amem gc --confirm` only evicts by age and cap, not by content.
 - **Candidates** (`<home>/candidates.db`): review proposals. Reject listed pending candidates with `amem review reject <full-candidate-id>`; a rejected or accepted candidate's row stays in `candidates.db` until its retention removes it. Deleting `candidates.db` (with amem stopped) removes every candidate for every project; it is disposable.
-- **Work lists** (`<home>/projects/<key-hash>/work/`): the forget receipt lists matching items as `work:<list>#<hash>`, where the hash is the first 12 hex characters of the SHA-256 of the task name. Work lists are append-only; closing an item hides it but keeps its line. Removing the bytes means removing the project's `work/` directory, which drops all of its work lists.
+- **Work lists** (`<home>/projects/<key-hash>/work/`): the forget receipt lists matching items as `work:<list-hash>#<task-hash>`, each the first 12 hex characters of the SHA-256 of the list name and the task name (either can hold the leak, so neither is printed). To find an item, compare `printf %s '<name>' | shasum -a 256` against the hashes; a list whose name holds the text lists every item in it. Work lists are append-only; closing an item hides it but keeps its line. Removing the bytes means removing the project's `work/` directory, which drops all of its work lists.
 - **Exports**: delete every `amem project export` file that holds the row, including the one from step 3.
 - **Derived indexes** (`index.db`, `search*.db`): `amem rebuild` regenerates them from the logs; SQLite can keep old text in free pages and the WAL until the file is rebuilt or vacuumed, so a fresh home (step 3) is the reliable way to drop it.
 

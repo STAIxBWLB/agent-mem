@@ -25,7 +25,8 @@ export interface ForgetNearby { capture: ForgetNearbyTier; candidates: ForgetNea
  *   case-insensitive substring of the excerpt (no migration or index build);
  * - candidates: the #174 word-overlap measure (`overlapWords`/`wordOverlap`, >= 0.5) over each candidate's text;
  * - work items: case-insensitive substring of that longest line in the task name or any string field. A task name can
- *   itself hold the leak, so a work item is listed as `work:<list>#<first 12 hex of sha256(task)>`, never by name.
+ *   itself hold the leak, and so can a list name, so a work item is listed as `work:<sha256(list)[:12]>#<sha256(task)[:12]>`,
+ *   never by name; a list name holding the text matches every item in it.
  * Rows the screen refuses are neither listed nor counted. Each tier fails open to an empty result.
  */
 export async function forgetNearby(opts: { base: string; project: string; text: string; title?: string | null; screen: (value: unknown) => boolean | Promise<boolean> }): Promise<ForgetNearby> {
@@ -72,8 +73,8 @@ export async function forgetNearby(opts: { base: string; project: string; text: 
       try {
         const lower = needle.toLowerCase();
         for (const list of await store.read(undefined, true)) for (const item of list.items) {
-          const haystack = [item.task, ...Object.values(item.fields).filter((value): value is string => typeof value === "string")].join("\n").toLowerCase();
-          if (haystack.includes(lower)) work.add(`work:${list.list}#${createHash("sha256").update(item.task).digest("hex").slice(0, 12)}`);
+          const haystack = [list.list, item.task, ...Object.values(item.fields).filter((value): value is string => typeof value === "string")].join("\n").toLowerCase();
+          if (haystack.includes(lower)) work.add(`work:${shortHash(list.list)}#${shortHash(item.task)}`);
         }
       } finally { store.close(); }
     } catch { /* no work lists */ }
@@ -81,6 +82,8 @@ export async function forgetNearby(opts: { base: string; project: string; text: 
   const plain = (t: ForgetNearbyTier) => ({ ids: t.ids, total: t.total, truncated: t.truncated });
   return { capture: plain(capture), candidates: plain(candidates), work: plain(work) };
 }
+
+const shortHash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
 
 /** The longest non-empty line, trimmed and bounded: the most specific fragment to look for. */
 function probe(text: string): string {

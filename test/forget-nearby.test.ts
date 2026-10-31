@@ -27,7 +27,7 @@ function rig() {
   const note = (text: string, key = project) => { const s = new MemoryStore({ memoryDir: memory, deferPromotions: true }); try { return s.note({ op: "note", project: key, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text, about: [] }); } finally { s.close(); } };
   const capture = (excerpt: string, key = project, dir = cwd) => { const c = new CaptureStore({ memoryDir: memory, project: key, cwd: dir }); try { const r = c.append({ project: key, agent: "fixture", event: "PostToolUse", excerpt }); return "id" in r ? r.id : -1; } finally { c.close(); } };
   const candidate = (text: string, key = project) => { const c = new CandidateStore({ memoryDir: memory }); try { return c.put({ project: key, kind: "memory", text, noteKind: "finding" }, "public"); } finally { c.close(); } };
-  const work = async (task: string, key = project) => { const w = new WorkListStore({ base: memory, project: key, policy: () => true }); try { await w.write("fixture-list", { task, status: "doing" }); } finally { w.close(); } };
+  const work = async (task: string, key = project, list = "fixture-list") => { const w = new WorkListStore({ base: memory, project: key, policy: () => true }); try { await w.write(list, { task, status: "doing" }); } finally { w.close(); } };
   const cli = (args: string[], env: Record<string, string> = {}) => runCli(args, { cwd, env: { AMEM_HOME: memory, ...env }, stdinTTY: false, stdoutTTY: false });
   return { root, memory, cwd, project, otherProject, other, note, capture, candidate, work, cli };
 }
@@ -43,7 +43,7 @@ test("forget --json lists same-project capture, candidate and work ids that cont
   expect(receipt.forgot).toBe(id);
   expect(receipt.nearby.capture).toEqual({ ids: [`capture:${capId}`], total: 1, truncated: false });
   expect(receipt.nearby.candidates).toEqual({ ids: [candId], total: 1, truncated: false });
-  expect(receipt.nearby.work).toEqual({ ids: [`work:fixture-list#${createHash("sha256").update(`follow up on ${LEAK}`).digest("hex").slice(0, 12)}`], total: 1, truncated: false });
+  expect(receipt.nearby.work).toEqual({ ids: [`work:${createHash("sha256").update("fixture-list").digest("hex").slice(0, 12)}#${createHash("sha256").update(`follow up on ${LEAK}`).digest("hex").slice(0, 12)}`], total: 1, truncated: false });
   expect(out).not.toContain(LEAK);
   expect(out).not.toContain("tool output mentioned"); expect(out).not.toContain("proposed again");
   // The human receipt lists ids and counts and points to the procedure.
@@ -73,6 +73,20 @@ test("an agent-marked forget gets the same ids-only receipt", async () => {
   const r = rig(), id = r.note(LEAK); const capId = r.capture(`${LEAK} seen`);
   const receipt = JSON.parse(await r.cli(["forget", id, "--json"], { CLAUDECODE: "1" }));
   expect(receipt.nearby.capture.ids).toEqual([`capture:${capId}`]);
+});
+
+test("a list name and a task name holding the forgotten text are both hashed, never printed", async () => {
+  const r = rig(), fragment = "leakylistname4417", id = r.note(fragment);
+  await r.work(`task ${fragment}`, r.project, `list-${fragment}`);
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  const json = await r.cli(["forget", id, "--json"]), receipt = JSON.parse(json);
+  expect(receipt.nearby.work.ids).toEqual([`work:${hash(`list-${fragment}`)}#${hash(`task ${fragment}`)}`]);
+  const nearby = JSON.stringify(receipt.nearby);
+  expect(nearby).not.toContain(fragment);
+  // The human receipt prints the forgotten note's id, not its text; check its nearby list for a second note.
+  const human = await r.cli(["forget", r.note(`second\n${fragment}`)]);
+  expect(human).toContain(`work:${hash(`list-${fragment}`)}#`);
+  expect(human.toLowerCase()).not.toContain(fragment);
 });
 
 test("listing is read-only for capture (no migration or index build) and matches non-ASCII text", async () => {
