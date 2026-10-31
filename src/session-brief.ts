@@ -199,6 +199,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           const page = read({ project, limit: PAGE_ROWS, after });
           for (const row of page.rows) {
             if ((row as { project?: unknown }).project !== project) { coverage[section] = "partial"; continue; }
+            // #173: subagent capture stays searchable but never enters the session brief.
+            if (section === "capture" && (row as { subagent?: unknown }).subagent === true) continue;
             if (!await screen(row)) continue;
             if (selected++ >= SECTION_RECORDS) { coverage[section] = "partial"; return; }
             await add(section, display(row), section === "curated");

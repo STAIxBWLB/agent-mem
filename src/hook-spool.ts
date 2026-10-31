@@ -276,15 +276,17 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer } | undefined 
       || value.schema !== SCHEMA || typeof value.cwd !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
       || value.scope !== null && (typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope))) return undefined;
     const c = value.capture;
-    if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length !== 8
-      || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes"].includes(key))
+    if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
+      || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
       || c.agent !== "claude" || !(HOOK_EVENTS as readonly string[]).includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
-      ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }) });
+      ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }),
+      ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) });
     const actual = c as unknown as {[key: string]: unknown};
     // A record staged under a configured cap is already inside the built-in one, so normalizing it again must leave every field unchanged.
+    if (Object.keys(actual).length !== Object.keys(normalized).length) return undefined;
     if (Object.entries(normalized).some(([key, item]) => JSON.stringify(actual[key]) !== JSON.stringify(item))) return undefined;
     return { value, bytes };
   } catch { return undefined; }
@@ -463,7 +465,12 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // F4: the person's configured caps apply at staging. Replay (`decoded`) re-normalizes with the built-in caps, which are the ceiling, so a record
   // staged under a tighter cap still verifies after the cap is raised or removed.
   const configured = loadAmemConfig(base, repoConfigRoot(cwd)).config;   // the repository's .amem/config narrows here too
+  // #173: attribution. Only a fixed-width hash of the native session id is kept, never the id or transcript path;
+  // a non-empty agent_id marks a subagent (or in-process teammate) event. Both are read from the already-screened input.
+  const session = typeof value.session_id === "string" && value.session_id.length > 0 && value.session_id.length <= 256 ? hash(`amem-session\0${value.session_id}`).slice(0, 16) : undefined;
+  const subagent = typeof value.agent_id === "string" && value.agent_id.length > 0;
   const capture = normalizeCaptureFields({ agent: "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
+    ...(session ? { session } : {}), ...(subagent ? { subagent: true } : {}),
     ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt: typeof content === "string" ? content : JSON.stringify(content) },
     undefined,
     (text: string) => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),   // the configured patterns redact the excerpt, as the store does
@@ -553,7 +560,8 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         continue;
       }
       const input: CaptureInput = { project: options.project, agent: c.agent, event: c.event, at: c.at, paths: c.paths,
-        ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt };
+        ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt,
+        ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }
       if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp) { blocked++; continue; }
       append(input, hash(record.bytes));
