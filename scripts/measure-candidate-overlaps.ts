@@ -27,7 +27,8 @@ try {
     const rows = JSON.parse(output) as { overlaps: unknown[] }[];
     if (rows.length !== candidates || rows.some(row => row.overlaps.length !== 3)) throw Error("synthetic overlap fixture lost candidates or hints");
   }
-  console.log(JSON.stringify({ fixture: "synthetic", platform: process.platform, bun: Bun.version, notes, candidates, listMs,
+  console.log(JSON.stringify({ fixture: "synthetic", measured: "runCli review list --json (startup excluded)", platform: process.platform, bun: Bun.version,
+    runtimeMode: process.execArgv.includes("--smol") ? "--smol" : "default", notes, candidates, listMs,
     processRssMB: Math.round(process.memoryUsage().rss / 1048576 * 100) / 100 }));
 } finally {
   if (previousHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previousHome;

@@ -53,6 +53,7 @@ export async function candidateOverlapsBatch(candidates: readonly OverlapCandida
     const target = input.kind === "promotion" ? targets.get(input.target.id) : undefined, proposed = candidateText(input, target);
     return proposed ? { proposed, terms: target ? targetTerms.get(target.id)! : overlapWords(proposed), selected: [], ...(target ? { target } : {}) } : undefined;
   });
+  if (!prepared.some(Boolean)) { check(); return candidates.map(() => []); }
   let after: Parameters<MemoryStore["readPage"]>[0]["after"];
   for (;;) {
     check();
