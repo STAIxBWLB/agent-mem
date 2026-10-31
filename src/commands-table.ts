@@ -194,9 +194,36 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   return { path, definition, options, positionals, rawArgs };
 }
 
-export function commandHelp(): string {
-  return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => {
-    const names = [...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ");
-    return `  ${names}${Object.entries(row.options).map(([name, option]) => ` [${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}]`).join("")}`;
-  }), "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Agent-marked reads use the MCP privacy ceiling. Explicit apply/confirm flags do not require a terminal; review walk and the note editor remain interactive."].join("\n");
+const optionLabel = (name: string, option: OptionDefinition) =>
+  `${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}`;
+const usageRow = (row: CompletionDefinition) =>
+  `${[...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ")}${Object.entries(row.options).map(([name, option]) => ` [${optionLabel(name, option)}]`).join("")}`;
+const described = (rows: [string, string][]) => {
+  // Long enum labels (review --kind) would push every description far right; they overflow instead.
+  const width = Math.min(24, Math.max(...rows.map(([label]) => label.length)));
+  return rows.map(([label, description]) => `  ${label.padEnd(width)}  ${description}`);
+};
+
+/** Full command list, or one command's help when argv names a command path (defaultCommand is not applied). */
+export function commandHelp(argv: readonly string[] = []): string {
+  const path: string[] = [], rows = completionDefinitions();
+  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, command: CommandDefinition | undefined, row = rows[0]!;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token.startsWith("--")) {
+      // An option's value is never a command name.
+      if (!token.includes("=") && row.options[token]?.value !== undefined) i++;
+      continue;
+    }
+    if (!commands || !Object.hasOwn(commands, token)) break;
+    command = commands[token]!; path.push(token); commands = command.commands;
+    row = rows.find(candidate => candidate.path.join(" ") === path.join(" "))!;
+  }
+  if (command && path[0] !== "help") {
+    const lines = [`usage: amem ${usageRow(row)}`, "", command.description, "", "options:", ...described(Object.entries(row.options).map(([name, option]) => [optionLabel(name, option), option.description]))];
+    if (command.commands) lines.push("", "commands:", ...described(Object.entries(command.commands).map(([name, child]) => [name, child.description])));
+    return lines.join("\n");
+  }
+  return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => `  ${usageRow(row)}`),
+    "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Agent-marked reads use the MCP privacy ceiling. Explicit apply/confirm flags do not require a terminal; review walk and the note editor remain interactive."].join("\n");
 }

@@ -223,14 +223,14 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
   }
-  if (argv[0] === "hook") {
+  if (argv[0] === "hook" && !argv.includes("--help")) {
     const { hookMain } = await import("./hooks.ts");
     return hookMain(argv.slice(1));
   }
   if (argv[0] === "ingest") {
     // Capture-only native intake: no project/home override, policy bypass or curated write capability.
     const parsed = parseCommand(argv);
-    if (parsed.options["--help"] === true) return commandHelp();
+    if (parsed.options["--help"] === true) return commandHelp(argv);
     const kind = parsed.positionals[0];
     if (parsed.positionals.length !== 1 || !["codex", "kimi", "pi", "qwen"].includes(kind ?? "")) throw new Error("usage: amem ingest codex|kimi|pi|qwen [--since ISO] [--json]");
     const { ingestTranscript } = await import("./ingest.ts");
@@ -244,7 +244,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "help")) return commandHelp();
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
-  if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp();
+  if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp(argv);
   let parsed;
   try {
     parsed = parseCommand(argv);
