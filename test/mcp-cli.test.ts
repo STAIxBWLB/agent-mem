@@ -56,6 +56,6 @@ test("MCP surface stays stable while marked CLI reads are screened and writes re
     finally { after.close(); }
 
     const review = Bun.spawnSync([process.execPath, bin, "review", "list"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
-    expect(review.exitCode).toBe(1); expect(review.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+    expect(review.exitCode).toBe(1); expect(review.stderr.toString()).toContain("amem review list is not available to an agent-marked session.");
   } finally { clearTimeout(timer); if (child.exitCode === null) { child.kill(); await child.exited; } rmSync(root, { recursive: true, force: true }); }
 });

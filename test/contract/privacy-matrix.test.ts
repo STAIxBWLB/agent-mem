@@ -232,7 +232,8 @@ test("marked CLI unsupported reads fail closed before opening a memory home", as
     ["graph", "a".repeat(32), "--as-of", "2026-01-01"], ["vault-candidates", "--all-projects"], ["repo", "status"],
     ["project", "export", "synthetic/project", "--to", join(root, "out.json")],
   ]) {
-    await expect(runCli(argv, context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+    // #166: refusals decided from the parsed command alone are data-free and say what was refused; the home stays unopened (below).
+    await expect(runCli(argv, context)).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: |^agent-marked \S+ accepts /);
   }
   await expect(runCli(["review", "walk"], context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   await expect(runCli(["review", "walk"], { ...context, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
