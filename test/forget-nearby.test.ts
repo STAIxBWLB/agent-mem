@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -72,6 +73,21 @@ test("an agent-marked forget gets the same ids-only receipt", async () => {
   const r = rig(), id = r.note(LEAK); const capId = r.capture(`${LEAK} seen`);
   const receipt = JSON.parse(await r.cli(["forget", id, "--json"], { CLAUDECODE: "1" }));
   expect(receipt.nearby.capture.ids).toEqual([`capture:${capId}`]);
+});
+
+test("listing is read-only for capture (no migration or index build) and matches non-ASCII text", async () => {
+  const r = rig(), hangul = "비밀 키를 노출한 문장입니다 테스트", id = r.note(hangul);
+  const capId = r.capture(`도구 출력: ${hangul}`);
+  const shard = new CaptureStore({ memoryDir: r.memory, project: r.project, cwd: r.cwd }), file = join(shard.dir, "capture.db"); shard.close();
+  // The WAL shared-memory index (-shm) is touched by any reader, read-only included; the database and WAL must not change.
+  const files = () => readdirSync(dirname(file)).filter(name => !name.endsWith("-shm")).sort().map(name => [name, statSync(join(dirname(file), name)).mtimeMs]);
+  const before = files();
+  const tables = () => { const db = new Database(file, { readonly: true }); try { return JSON.stringify(db.query("SELECT name FROM sqlite_master ORDER BY name").all()); } finally { db.close(); } };
+  const schema = tables();
+  const receipt = JSON.parse(await r.cli(["forget", id, "--json"]));
+  expect(receipt.nearby.capture.ids).toEqual([`capture:${capId}`]);
+  expect(tables()).toBe(schema);
+  expect(files()).toEqual(before);
 });
 
 test("doctor adds an informational masked row only when forget ops exist, and never raises attention", async () => {

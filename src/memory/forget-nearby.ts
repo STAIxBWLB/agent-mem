@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { CaptureStore } from "./capture.ts";
+import { Database } from "bun:sqlite";
 import { machineId } from "./machine.ts";
 import { captureShardDir, shardDir } from "./shard.ts";
 import { CandidateStore, type Candidate } from "./candidates.ts";
@@ -21,8 +21,8 @@ export interface ForgetNearby { capture: ForgetNearbyTier; candidates: ForgetNea
 /**
  * Listing only, for the purge procedure (docs/purge.md step 4): same-project machine-local rows that contain or
  * overlap a forgotten note's text. Ids and counts only, never text. Deterministic, no model or vectors:
- * - capture: the capture tier's own FTS (`readPage` query), falling back to substring, then a substring check of
- *   the excerpt for the note text's longest line (FTS terms alone can over-match);
+ * - capture: a read-only scan of the newest 2048 rows of the project's shard, matching the note text's longest line as a
+ *   case-insensitive substring of the excerpt (no migration or index build);
  * - candidates: the #174 word-overlap measure (`overlapWords`/`wordOverlap`, >= 0.5) over each candidate's text;
  * - work items: case-insensitive substring of that longest line in the task name or any string field. A task name can
  *   itself hold the leak, so a work item is listed as `work:<list>#<first 12 hex of sha256(task)>`, never by name.
@@ -35,20 +35,25 @@ export async function forgetNearby(opts: { base: string; project: string; text: 
     return result;
   };
   const capture = tier(), candidates = tier(), work = tier();
-  if (needle && existsSync(join(captureShardDir(opts.base, opts.project, machineId(opts.base).id), "capture.db"))) {
+  const captureFile = needle ? join(captureShardDir(opts.base, opts.project, machineId(opts.base).id), "capture.db") : "";
+  if (needle && existsSync(captureFile)) {
     try {
-      const store = new CaptureStore({ memoryDir: opts.base, project: opts.project, busyTimeoutMs: 200 });
+      // Listing only: a read-only connection, so a forget never migrates the shard or builds an index as a side effect.
+      const db = new Database(captureFile, { readonly: true });
       try {
-        let after: { position: number; id: string } | undefined;
-        for (let page = 0; page < CAPTURE_PAGES; page++) {
-          const result = store.readPage({ project: opts.project, limit: CAPTURE_PAGE, order: "id", query: needle, ...(after ? { after } : {}) });
-          for (const row of result.rows) if (row.excerpt.toLowerCase().includes(needle.toLowerCase()) && await opts.screen(row)) capture.add(`capture:${row.id}`);
-          if (!result.next) break;
-          after = { position: result.next.position, id: result.next.id };
-          if (page === CAPTURE_PAGES - 1) capture.truncated = true;
+        db.run("PRAGMA busy_timeout = 200");
+        const projects = JSON.stringify([opts.project, ...aliasedKeys(opts.base, opts.project)]);
+        // SQLite lower() folds ASCII only; JavaScript's toLowerCase confirms the match for every script.
+        const limit = CAPTURE_PAGE * CAPTURE_PAGES, lower = needle.toLowerCase();
+        const rows = db.query("SELECT id, at, project, agent, event, tool, paths, status, excerpt FROM rows WHERE project IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT ?").all(projects, limit + 1) as { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string }[];
+        if (rows.length > limit) capture.truncated = true;
+        for (const raw of rows.slice(0, limit).reverse()) {
+          if (!raw.excerpt.toLowerCase().includes(lower)) continue;
+          let paths: unknown = []; try { paths = JSON.parse(raw.paths); } catch { /* malformed paths are screened as empty */ }
+          if (await opts.screen({ ...raw, paths })) capture.add(`capture:${raw.id}`);
         }
-      } finally { store.close(); }
-    } catch { /* no capture shard, or unreadable: nothing to list */ }
+      } finally { db.close(); }
+    } catch { /* unreadable or contended: nothing to list */ }
   }
   if (words.size && existsSync(join(opts.base, "candidates.db"))) {
     try {
