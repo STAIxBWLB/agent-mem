@@ -3,6 +3,7 @@ import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
+import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand, geminiSettingsPath } from "./setup-gemini.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -15,13 +16,13 @@ import { memoryHome } from "./memory/home.ts";
 import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
-export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "agy"] as const;
+export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy"] as const;
 /** Workspace-scoped Antigravity setup is always selected explicitly. */
 export const SETUP_ALL_TARGETS = SETUP_TARGETS.filter(target => target !== "agy");
 export type SetupTarget = typeof SETUP_TARGETS[number];
 // Only recorded layout verification versions belong here; null means no version was recorded.
 const SETUP_VERIFIED_VERSIONS: Readonly<Record<SetupTarget, string | null>> = {
-  claude: null, codex: "0.165.0", kimi: null, pi: null, qwen: "0.26.1", jcode: "0.99.1", opencode: "1.18.35", agy: null,
+  claude: null, codex: "0.165.0", kimi: null, pi: null, qwen: "0.26.1", jcode: "0.99.1", opencode: "1.18.35", gemini: "0.61.0", agy: null,
 };
 interface ClientVersion { output: string | null; verified: string | null; matches: boolean | null }
 type Env = Readonly<Record<string, string | undefined>>;
@@ -148,6 +149,8 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
     // xdg-basedir 5.1.0: XDG_CONFIG_HOME verbatim when set and non-empty, else ~/.config (OpenCode v1.18.35 packages/core/src/global.ts).
     opencode: [join(opencodeConfigRoot(env, home), "opencode", "opencode.json")],
+    // Gemini CLI's own user settings, never Antigravity's <home>/.gemini/config/mcp_config.json.
+    gemini: [geminiSettingsPath(env, home)],
     agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
@@ -163,6 +166,7 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi" || target === "jcode" || target === "opencode" || target === "agy") return null;
   if (target === "qwen") return [target, "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", bun, "--", "--smol", entry, "mcp"];
+  if (target === "gemini") return geminiAddCommand(bun, entry);
   return [target, "mcp", "add", ...(target === "claude" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
 /**
@@ -211,19 +215,21 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
-  if (target === "jcode" || target === "opencode" || target === "agy") return [];
+  if (target === "jcode" || target === "opencode" || target === "gemini" || target === "agy") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}${target === "pi" ? "" : " --json"}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
-const lifecycle = (target: SetupTarget) => target === "jcode" || target === "opencode" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+const lifecycle = (target: SetupTarget) => target === "jcode" || target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
-  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|agy|all [--apply|--undo]");
+  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
   if (targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   if (targets.includes("opencode") && (target === "opencode" || available(c, "opencode", options))) assertOpencodeLayout(c, mode);
+  if (targets.includes("gemini") && (target === "gemini" || available(c, "gemini", options))) assertGeminiHome(c.env);
+  if (mode !== "undo" && targets.includes("gemini")) assertGeminiRuntime(c.bun, c.entry);
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
     const settings = json(read(c.paths.claude[1]!));
@@ -235,6 +241,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
   if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP only. Native saved sessions do not prove per-message project scope, so capture and ingest hooks are unavailable; no hook or config.toml is installed.");
+  if (targets.includes("gemini")) pluginNotes.push("Gemini CLI setup registers MCP only, at user scope in ~/.gemini/settings.json (GEMINI_CLI_HOME moves it), through the native gemini mcp add in a private staging HOME. Antigravity's ~/.gemini/config/mcp_config.json is never touched. A workspace .gemini/settings.json defining mcpServers.amem overrides this entry. No hook or ingest is installed: see docs/gemini-cli.md for why transcripts are not ingested.");
   if (targets.includes("opencode")) pluginNotes.push("OpenCode setup registers MCP only in the global strict-JSON opencode.json (mcp.amem, a local server started in the session's project directory). No plugin or ingest hook is installed: see docs/opencode.md for why transcripts are not ingested. A project opencode.json defining mcp.amem overrides this entry.");
   if (c.workspace) {
     pluginNotes.push(`Antigravity MCP is pinned to this repository only: ${c.workspace.root}. Restart the CLI/IDE and use one workspace; no global or plugin definitions are replaced, and same-name definitions elsewhere are unsupported. Native capture is unavailable; no hooks are installed. Only strict JSON is supported; JSONC is refused. Native TUI/IDE presence and live behavior are unverified; availability means this direct configuration operation is supported.`);
@@ -248,7 +255,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const document: Record<string, unknown> = target === "agy" ? {} : target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
     const hasAmem = target === "jcode" || target === "opencode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
-    const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
+    const add = command(target, c.bun, c.entry), remove = target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
     if (version?.matches === false) pluginNotes.push(`WARNING: ${target} version ${version.output}; layout verified on ${version.verified}. Apply remains guarded by native configuration validation.`);
     return { target, available: installed, ...(version ? { version } : {}), files: c.paths[target], receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
@@ -261,6 +268,10 @@ function stagingEnvironment(c: ReturnType<typeof context>, target: SetupTarget, 
   env.QWEN_RUNTIME_DIR = join(staging, "qwen-runtime");
   env.QWEN_CODE_SYSTEM_SETTINGS_PATH = join(staging, "qwen-system-settings.json");
   env.QWEN_CODE_SYSTEM_DEFAULTS_PATH = join(staging, "qwen-system-defaults.json");
+  // Gemini CLI: GEMINI_CLI_HOME overrides HOME for all its state; system settings paths are isolated too.
+  env.GEMINI_CLI_HOME = staging;
+  env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = join(staging, "gemini-system-settings.json");
+  env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH = join(staging, "gemini-system-defaults.json");
   mkdirSync(env.TMPDIR!, { mode: 0o700 });
   if (c.env.CLAUDE_CONFIG_DIR?.trim()) env.CLAUDE_CONFIG_DIR = join(staging, ".claude"); else delete env.CLAUDE_CONFIG_DIR;
   // The staging workspace is a trusted private binding, not a Git repository or the real caller cwd.
@@ -290,7 +301,7 @@ function probeClientVersion(c: ReturnType<typeof context>, target: SetupTarget, 
 function verifyNativeMcp(target: SetupTarget, env: Env, cwd: string): void {
   // In older free-form Pi CLIs, an unknown subcommand can be treated as a model prompt.
   const help = spawnSync(target, ["--help"], { cwd, env: { ...env }, encoding: "utf8", timeout: 5000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
-  if (help.status !== 0 || !/^\s+(?:(?:pi|qwen)\s+)?mcp(?:\s|$)/m.test(help.stdout)) throw Error(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
+  if (help.status !== 0 || !/^\s+(?:(?:pi|qwen|gemini)\s+)?mcp(?:\s|$)/m.test(help.stdout)) throw Error(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
 }
 function native(argv: readonly string[], env: Env, cwd: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { cwd, env: { ...env }, encoding: "utf8", timeout: 10_000, maxBuffer: MAX, stdio: ["ignore", "pipe", "pipe"] });
@@ -328,6 +339,7 @@ function restoreChange(value: Receipt, change: Change, index: number, live: Imag
 function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
   if (target === "jcode") assertJcodeRuntime(c);
   if (target === "opencode") assertOpencodeLayout(c, "apply");
+  if (target === "gemini") assertGeminiHome(c.env);
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
   const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
@@ -344,7 +356,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const text = expected[0]!.bytes === null ? "" : Buffer.from(expected[0]!.bytes!, "base64").toString("utf8");
       const document = target === "codex" ? toml(text) : json(expected[0]!);
       const servers = document[target === "codex" ? "mcp_servers" : "mcpServers"];
-      if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)([target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"], env, staging);
+      if (servers && Object.hasOwn(record(servers), "amem")) (options.native ?? native)(target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"], env, staging);
       (options.native ?? native)(argv, env, staging);
       changes[0]!.after = { ...read(staged.paths[target][0]!), mode: changes[0]!.before.mode };
       if (changes[0]!.after.bytes === null) throw Error(`${target} native registration produced no configuration`);
