@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -79,10 +79,11 @@ test("listing is read-only for capture (no migration or index build) and matches
   const r = rig(), hangul = "비밀 키를 노출한 문장입니다 테스트", id = r.note(hangul);
   const capId = r.capture(`도구 출력: ${hangul}`);
   const shard = new CaptureStore({ memoryDir: r.memory, project: r.project, cwd: r.cwd }), file = join(shard.dir, "capture.db"); shard.close();
-  // The WAL shared-memory index (-shm) is touched by any reader, read-only included; the database and WAL must not change.
-  const files = () => readdirSync(dirname(file)).filter(name => !name.endsWith("-shm")).sort().map(name => [name, statSync(join(dirname(file), name)).mtimeMs]);
+  // SQLite may create or touch -wal/-shm for any reader of a WAL database, read-only included; the database itself,
+  // its schema and user_version must not change.
+  const files = () => { const st = statSync(file); return [st.mtimeMs, st.size]; };
   const before = files();
-  const tables = () => { const db = new Database(file, { readonly: true }); try { return JSON.stringify(db.query("SELECT name FROM sqlite_master ORDER BY name").all()); } finally { db.close(); } };
+  const tables = () => { const db = new Database(file, { readonly: true }); try { return JSON.stringify([db.query("SELECT name FROM sqlite_master ORDER BY name").all(), db.query("PRAGMA user_version").get()]); } finally { db.close(); } };
   const schema = tables();
   const receipt = JSON.parse(await r.cli(["forget", id, "--json"]));
   expect(receipt.nearby.capture.ids).toEqual([`capture:${capId}`]);
