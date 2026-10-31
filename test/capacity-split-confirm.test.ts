@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { CaptureStore, readCaptureConfigFile } from "../src/memory/capture.ts";
@@ -13,6 +13,18 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const A = "github.com/o/a", B = "github.com/o/b", HOUR = 3600_000;
 function world() {
   const dir = mkdtempSync(join(tmpdir(), "amem-split-confirm-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  // Capacity reads df through PATH. Fix free space at 512 GiB: the 0.0001 share
+  // has 52 whole MiB, 0.05 has 26214, and the tiny share still cannot fund two shards.
+  const bin = join(dir, "bin"); mkdirSync(bin, { mode: 0o700 });
+  writeFileSync(join(bin, "df"), `#!/bin/sh
+if [ "$#" -ne 2 ] || [ "$1" != "-k" ]; then
+  exit 2
+fi
+printf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' 'fixture-disk 1073741824 536870912 536870912 50% /'
+`, { mode: 0o700 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = previousPath === undefined ? bin : `${bin}:${previousPath}`;
+  cleanup.push(() => { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath; });
   const base = join(dir, "memory");
   for (const project of [A, B]) { const store = new CaptureStore({ home: dir, project }); store.append({ project, agent: "kimi", event: "PostToolUse", excerpt: `row ${"x".repeat(2000)}`, at: new Date().toISOString() }); store.close(); }
   const configOf = (key: string) => join(shardMachineDir(base, key, machineId(base).id), "config.json");
