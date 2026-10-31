@@ -706,6 +706,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const result = await importExternalMemory({ base: memoryHome(), project: boundProject(), source, cwd: policyCwd, env: context.env ?? process.env,
       ...(typeof options["--from"] === "string" ? { from: options["--from"] } : {}), policy: value => policy.screenStandalone(value) });
     return options["--json"] ? JSON.stringify(result, null, 2)
+      : result.checked ? `no ${source} memory found; checked ${result.checked.join(" and ")}`
       : `imported ${result.added} ${source} candidates from ${result.files} files (${result.read} records, ${result.pending.count} pending); skipped ${result.skipped.rules} rule files, ${result.skipped.policy} policy/secret records, ${result.skipped.invalid} invalid records and ${result.skipped.truncated} oversized inputs${result.queueFull ? "; candidate queue is full" : result.limitReached ? "; per-run candidate cap reached" : ""}`;
   }
   if (sub === "project") {
