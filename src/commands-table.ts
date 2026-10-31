@@ -206,16 +206,20 @@ const described = (rows: [string, string][]) => {
 
 /** Full command list, or one command's help when argv names a command path (defaultCommand is not applied). */
 export function commandHelp(argv: readonly string[] = []): string {
-  const path: string[] = [];
-  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, command: CommandDefinition | undefined;
-  for (const token of argv) {
-    if (token.startsWith("--")) continue;
-    const next: CommandDefinition | undefined = commands?.[token];
-    if (!next) break;
-    command = next; path.push(token); commands = next.commands;
+  const path: string[] = [], rows = completionDefinitions();
+  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, command: CommandDefinition | undefined, row = rows[0]!;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token.startsWith("--")) {
+      // An option's value is never a command name.
+      if (!token.includes("=") && row.options[token]?.value !== undefined) i++;
+      continue;
+    }
+    if (!commands || !Object.hasOwn(commands, token)) break;
+    command = commands[token]!; path.push(token); commands = command.commands;
+    row = rows.find(candidate => candidate.path.join(" ") === path.join(" "))!;
   }
   if (command && path[0] !== "help") {
-    const row = completionDefinitions().find(candidate => candidate.path.join(" ") === path.join(" "))!;
     const lines = [`usage: amem ${usageRow(row)}`, "", command.description, "", "options:", ...described(Object.entries(row.options).map(([name, option]) => [optionLabel(name, option), option.description]))];
     if (command.commands) lines.push("", "commands:", ...described(Object.entries(command.commands).map(([name, child]) => [name, child.description])));
     return lines.join("\n");

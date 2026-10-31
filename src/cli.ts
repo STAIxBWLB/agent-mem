@@ -223,7 +223,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
   }
-  if (argv[0] === "hook") {
+  if (argv[0] === "hook" && !argv.includes("--help")) {
     const { hookMain } = await import("./hooks.ts");
     return hookMain(argv.slice(1));
   }

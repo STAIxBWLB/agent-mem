@@ -28,6 +28,12 @@ test("existing help contracts hold", async () => {
   // Positionals stop path resolution; an unknown command keeps the full list.
   expect((await runCli(["search", "capacity", "--help"], person)).startsWith("usage: amem search <words>")).toBe(true);
   expect(await runCli(["nosuch", "--help"], person)).toBe(commandHelp());
+  // Option values are not command names; inherited Object names are not commands.
+  expect(await runCli(["--peer", "review", "--help"], person)).toBe(commandHelp());
+  expect((await runCli(["review", "--kind", "memory", "accept", "--help"], person)).startsWith("usage: amem review accept ")).toBe(true);
+  for (const name of ["toString", "constructor", "__proto__"]) expect(await runCli([name, "--help"], agent)).toBe(commandHelp());
+  // hook --help reaches the help renderer instead of the hook handler.
+  expect((await runCli(["hook", "--help"], agent)).startsWith("usage: amem hook <event>")).toBe(true);
   expect(await runCli(["--help"], agent)).toBe(commandHelp());
   expect(await runCli(["help"], person)).toBe(commandHelp());
 });
