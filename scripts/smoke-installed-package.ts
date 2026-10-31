@@ -27,11 +27,13 @@ export function assertSmokeCliArgs(args: readonly string[]): void {
   requireSmoke(args.length === 1 && ["--help", "--version", "mcp"].includes(args[0]!) || args.length === 2 && args[0] === "hook" && args[1] === "PostToolUse" || args.length === 3 && args[0] === "ingest" && ["codex", "kimi", "pi", "qwen"].includes(args[1]!) && args[2] === "--json" || ["setup all --json", "setup agy --json", "setup all --apply --json", "setup agy --apply --json"].includes(args.join(" ")), "installed smoke refuses unsupported CLI arguments");
 }
 export function registeredSmokeCommand(value: unknown, bun: string, entry: string): string[] {
-  const server = object(value);
+  const raw = object(value);
+  // OpenCode keeps one `command` array (type "local"); every other client splits command and args.
+  const server = raw.type === "local" && Array.isArray(raw.command) ? { ...raw, command: raw.command[0], args: raw.command.slice(1) } : raw;
   requireSmoke(server.command === bun && JSON.stringify(server.args) === JSON.stringify(["--smol", entry, "mcp"]) && server.enabled !== false, "registered MCP command differs from the installed artifact");
   return [server.command, ...server.args];
 }
-export function assertSetupApplied(output: string, expected: readonly string[] = ["claude", "codex", "kimi", "pi", "qwen", "jcode"]): void {
+export function assertSetupApplied(output: string, expected: readonly string[] = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode"]): void {
   const result = /\{\s*"applied"\s*:[\s\S]*\}\s*$/.exec(output);
   requireSmoke(result, "installed setup confirmation did not return an apply result");
   const applied = object(JSON.parse(result![0]));
@@ -48,12 +50,12 @@ export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.P
 }
 export function assertSetupPreview(value: unknown, home: string, entry: string): string[] {
   const plan = object(value);
-  requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi", "qwen", "jcode"]) && Array.isArray(plan.actions) && plan.actions.length === 6, "installed setup did not return the all-target dry-run plan");
+  requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode"]) && Array.isArray(plan.actions) && plan.actions.length === 7, "installed setup did not return the all-target dry-run plan");
   requireSmoke(JSON.stringify(plan.actions.map((action: any) => action?.target)) === JSON.stringify(plan.targets), "installed setup target inventory is incomplete");
   const files: string[] = [];
   for (const raw of plan.actions) { const action = object(raw); requireSmoke(Array.isArray(action.files) && action.files.length > 0 && typeof action.receipt === "string", "installed setup inventory is incomplete");
     if (action.registration !== null) requireSmoke(Array.isArray(action.registration) && action.registration.includes(entry), "installed setup registration uses a stale package entry");
-    requireSmoke(Array.isArray(action.hooks) && (action.target === "jcode" ? action.hooks.length === 0 : action.hooks.length > 0) && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed client hooks use a stale package entry");
+    requireSmoke(Array.isArray(action.hooks) && (action.target === "jcode" || action.target === "opencode" ? action.hooks.length === 0 : action.hooks.length > 0) && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed client hooks use a stale package entry");
     for (const file of [...action.files, action.receipt]) { requireSmoke(typeof file === "string" && isAbsolute(file) && inside(home, file), "installed setup escaped its isolated HOME"); files.push(file); }
   }
   return files;
@@ -235,7 +237,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     const versionEnv = { AMEM_HOME: "memory", AGENTHUB_HOME: "hub", CLAUDE_CONFIG_DIR: ".claude", CODEX_HOME: ".codex", KIMI_CODE_HOME: ".kimi-code", PI_CODING_AGENT_DIR: ".pi/agent", QWEN_HOME: ".qwen", QWEN_RUNTIME_DIR: "qwen-runtime", QWEN_CODE_SYSTEM_SETTINGS_PATH: "qwen-system-settings.json", QWEN_CODE_SYSTEM_DEFAULTS_PATH: "qwen-system-defaults.json", JCODE_HOME: ".jcode", XDG_CONFIG_HOME: ".config", XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache", XDG_STATE_HOME: ".local/state", TMP: "tmp", TEMP: "tmp" };
     const versionShellChecks = Object.entries(versionEnv).map(([key, tail]) => `[ "\$${key}" = "\$stage/${tail}" ] || exit 96`).join("\n");
-    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then stage="\${TMPDIR%/tmp}"; case "$stage" in ${quote(env.TMPDIR! + "/amem-setup-")}*) ;; *) exit 96 ;; esac; [ -d "$stage" ] && [ ! -L "$stage" ] && [ "$(stat -c '%a' "$stage" 2>/dev/null || stat -f '%Lp' "$stage" 2>/dev/null)" = "700" ] && [ "$HOME" = "$stage" ] && [ "$PWD" = "$stage" ] && [ "$TMPDIR" = "$stage/tmp" ] || exit 96\n${versionShellChecks}\nprintf '%s 0.0.0-fixture\\n' ${quote(name)}; exit 0; fi\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
+    for (const name of ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "agy"]) writeFileSync(join(traps, name), `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then stage="\${TMPDIR%/tmp}"; case "$stage" in ${quote(env.TMPDIR! + "/amem-setup-")}*) ;; *) exit 96 ;; esac; [ -d "$stage" ] && [ ! -L "$stage" ] && [ "$(stat -c '%a' "$stage" 2>/dev/null || stat -f '%Lp' "$stage" 2>/dev/null)" = "700" ] && [ "$HOME" = "$stage" ] && [ "$PWD" = "$stage" ] && [ "$TMPDIR" = "$stage/tmp" ] || exit 96\n${versionShellChecks}\nprintf '%s 0.0.0-fixture\\n' ${quote(name)}; exit 0; fi\nprintf '%s\\n' "$0" >> ${quote(nativeCalls)}\nexit 97\n`, { mode: 0o700 });
     const packed = JSON.parse(await ownedCommand(bun, [npm!, "pack", checkout, "--offline", "--json", "--ignore-scripts", "--pack-destination", artifacts], artifacts, env));
     requireSmoke(Array.isArray(packed) && packed.length === 1 && typeof packed[0]?.filename === "string" && basename(packed[0].filename) === packed[0].filename, "npm pack did not return one local artifact");
     const tarball = realPath(join(artifacts, packed[0].filename)); requireSmoke(inside(artifacts, tarball), "packed artifact escaped its private directory");
@@ -294,8 +296,9 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     const registeredMcp: string[] = [];
     for (const action of [...plan.actions, ...agyPlan.actions]) {
       const source = readFileSync(action.files[0], "utf8"), document = object(action.target === "codex" ? Bun.TOML.parse(source) : JSON.parse(source));
-      const server = object(document[action.target === "codex" ? "mcp_servers" : action.target === "jcode" ? "servers" : "mcpServers"]).amem;
+      const server = object(document[action.target === "codex" ? "mcp_servers" : action.target === "jcode" ? "servers" : action.target === "opencode" ? "mcp" : "mcpServers"]).amem;
       if (action.target === "jcode") { requireSmoke(object(server).shared === false && action.hooks.length === 0, "Jcode registration must be private per session and MCP-only"); requireSmoke(!Object.hasOwn(document, "mcpServers") && !existsSync(join(env.JCODE_HOME!, "config.toml")), "Jcode setup wrote an alias or hook configuration"); }
+      if (action.target === "opencode") requireSmoke(object(server).type === "local" && object(server).cwd === undefined && action.hooks.length === 0 && !existsSync(join(dirname(action.files[0]), "plugins")), "OpenCode registration must be a local MCP-only server bound to the session directory");
       if (action.target === "agy") requireSmoke(object(server).cwd === projectDir && action.hooks.length === 0, "Antigravity registration has the wrong workspace binding");
       const command = registeredSmokeCommand(server, bun, entry);
       assertInstalledEntry(realPath(command[2]!), installed, checkout, env.TMPDIR!);

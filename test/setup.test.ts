@@ -27,7 +27,7 @@ function snapshot(root: string): Array<{ name: string; mode: number; bytes?: str
 }
 function fixture() {
   const home = realPath(mkdtempSync(join(tmpdir(), "amem-setup-test-"))); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), QWEN_HOME: join(home, ".qwen"), JCODE_HOME: join(home, ".jcode") };
+  const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), CODEX_HOME: join(home, ".codex"), KIMI_CODE_HOME: join(home, ".kimi-code"), PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), QWEN_HOME: join(home, ".qwen"), JCODE_HOME: join(home, ".jcode"), XDG_CONFIG_HOME: join(home, ".config") };
   const calls: Call[] = [], entry = join(home, "package with space", "bin", "amem.js"), bun = process.execPath;
   const native: NonNullable<SetupContext["native"]> = (argv, stagedEnv, cwd) => {
     calls.push({ argv: [...argv], env: { ...stagedEnv }, cwd });
@@ -148,11 +148,14 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
   put(f.file("pi"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } } }) + "\n", 0o640);
   put(f.file("qwen"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } }, hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "existing-qwen" }] }] }, ui: { theme: "keep" } }) + "\n", 0o640);
   put(f.file("jcode"), '{ "servers": {"other":{"command":"other-server","args":["keep"]}}, "unrelated": {"keep":true} }\n', 0o640);
+  put(f.file("opencode"), '{ "$schema": "https://opencode.ai/config.json", "mcp": {"other":{"command":"other-server","args":["keep"]}}, "model": "keep" }\n', 0o640);
   const rules = ["AGENTS.md", "CLAUDE.md", ".claude/rules/keep.md", ".codex/rules/keep.rules", ".pi/agent/extensions/keep.ts"].map(name => join(f.home, name));
   for (const rule of rules) put(rule, "unrelated user content\n", 0o640);
   return rules;
 }
-const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : target === "jcode" ? JSON.parse(text(file)).servers : JSON.parse(text(file)).mcpServers;
+const mcp = (file: string, target: SetupTarget) => target === "codex" ? (Bun.TOML.parse(text(file)) as Record<string, any>).mcp_servers : target === "jcode" ? JSON.parse(text(file)).servers : target === "opencode" ? JSON.parse(text(file)).mcp : JSON.parse(text(file)).mcpServers;
+const expectedAmem = (f: { bun: string; entry: string }, target: SetupTarget) => target === "opencode" ? { type: "local", command: [f.bun, "--smol", f.entry, "mcp"], enabled: true }
+  : { command: f.bun, args: ["--smol", f.entry, "mcp"], ...(target === "jcode" ? { shared: false } : {}) };
 function rewrittenCodex(f: ReturnType<typeof fixture>, rewrite: (document: Record<string, any>) => string | void): NonNullable<SetupContext["native"]> {
   return (argv, env, cwd) => {
     f.options.native!(argv, env, cwd);
@@ -249,8 +252,8 @@ test.skipIf(process.env.AMEM_CODEX_NATIVE_SMOKE !== "1")("real Codex isolated em
 }, 30_000);
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
-  expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(6);
-  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
+  expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(SETUP_ALL_TARGETS.length);
+  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" || action.target === "opencode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, json: true, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
@@ -265,7 +268,7 @@ test("all-target apply stages native commands, records private receipts and is b
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
     expect(receipt).toMatchObject({ version: 1, target, phase: "applied" }); expect(receipt.changes.map(change => change.path)).toEqual(action.files);
     expect(lstatSync(action.receipt).mode & 0o077).toBe(0); expect(lstatSync(dirname(action.receipt)).mode & 0o077).toBe(0);
-    expect(mcp(f.file(target), target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], ...(target === "jcode" ? { shared: false } : {}) });
+    expect(mcp(f.file(target), target).amem).toEqual(expectedAmem(f, target));
     expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
   }
   const settings = JSON.parse(text(f.file("claude", 1))); expect(settings.enabledPlugins).toEqual({ "other@catalog": true }); expect(settings.hooks.SessionStart[0].hooks[0].command).toBe("existing-start"); expect(Object.keys(settings.hooks)).toHaveLength(7);
@@ -382,7 +385,7 @@ test("explicit agent config roots stay inside the isolated HOME and undo restore
   expect(files.every(file => !existsSync(file))).toBe(true); applySetup(plan, options);
   expect(files.every(file => existsSync(file))).toBe(true);
   expect(f.calls.find(call => call.argv[0] === "claude")?.env.CLAUDE_CONFIG_DIR).toBe(join(f.calls[0]!.cwd, ".claude"));
-  for (const action of plan.actions) expect(mcp(action.files[0]!, action.target).amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], ...(action.target === "jcode" ? { shared: false } : {}) });
+  for (const action of plan.actions) expect(mcp(action.files[0]!, action.target).amem).toEqual(expectedAmem(f, action.target));
   undoSetup(planSetup("all", "undo", options), options); expect(files.every(file => !existsSync(file))).toBe(true);
 });
 
@@ -426,7 +429,7 @@ test("runtime relocation updates managed entries and still restores original byt
   const moved: SetupContext = { ...f.options, bun: join(f.home, "relocated-runtime", "bun"), entry: join(f.home, "relocated-package", "bin", "amem.js") };
   expect(applySetup(planSetup("all", "apply", moved), moved).applied).toEqual([...SETUP_ALL_TARGETS]);
   expect(f.calls.length).toBeGreaterThan(calls); const updatedCalls = f.calls.length;
-  for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject({ command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
+  for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject(target === "opencode" ? { command: [moved.bun, "--smol", moved.entry, "mcp"] } : { command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
   expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_ALL_TARGETS] });
   expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(updatedCalls);
 });
