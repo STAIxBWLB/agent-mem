@@ -34,6 +34,8 @@ test("tool events prepend input before old content while other events keep their
   expect(pre).toBeDefined(); expect(pending(f).find(row => row.name === pre!.name)!.value.capture.excerpt).toBe("git status");
   const failure = await stageHookCapture("PostToolUseFailure", { cwd: f.cwd, hook_event_name: "PostToolUseFailure", tool_input: { command: "make check" }, error: { message: "failed" }, tool_response: "ignored" }, options);
   expect(failure).toBeDefined(); expect(pending(f).find(row => row.name === failure!.name)!.value.capture.excerpt).toBe("make check\n{\"message\":\"failed\"}");
+  const edit = await stageHookCapture("PostToolUse", { cwd: f.cwd, tool_name: "Edit", tool_input: { file_path: "src/edit.ts", old_string: "old-body-marker", new_string: "new-body-marker" }, tool_response: "edit done" }, options);
+  expect(edit).toBeDefined(); expect(pending(f).find(row => row.name === edit!.name)!.value.capture.excerpt).toBe("src/edit.ts\nedit done");
   const prompt = await stageHookCapture("UserPromptSubmit", { cwd: f.cwd, hook_event_name: "UserPromptSubmit", prompt: "ordinary prompt", tool_input: { command: "not included" } }, options);
   expect(prompt).toBeDefined(); expect(pending(f).find(row => row.name === prompt!.name)!.value.capture.excerpt).toBe("ordinary prompt");
 });

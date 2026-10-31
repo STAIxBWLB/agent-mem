@@ -13,7 +13,7 @@ import { memoryHome } from "./home.ts";
 import { machineId, type Machine } from "./machine.ts";
 import { assertProjectActive } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
-import { rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
+import { captureWeightedScore, rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
 export type { SearchScoreDetails } from "./search-score.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
@@ -1094,6 +1094,7 @@ export class MemoryStore {
     for (const store of this.readStores()) store.syncSearchIndex();
     const now = this.now();
     const hits: SearchHit[] = [];
+    let captureShard: string | undefined, captureNotBefore: string | undefined;
     // The project filter runs inside the FTS query (its rows plus shared ones), so a busy sibling project can never
     // starve this project's LIMIT.
     // Superseded, forgotten, expired and `since` rows are filtered after FTS, so a fixed candidate cap could be filled
@@ -1122,13 +1123,17 @@ export class MemoryStore {
     // #15 D4/T1: the capture tier is project-scoped; without a project key there is no shard to recall from.
     if (f.includeCapture !== false && f.project) {
       const shard = shardMachineDir(this.memoryBaseDir, resolveAlias(this.memoryBaseDir, f.project), this.machine.id);
+      captureShard = shard;
       // The retention cutoff and `since` run in the capture query, so neither expired nor old rows take a candidate slot.
       // An out-of-range retention_days gives no cutoff rather than failing the whole search (eviction keeps its own check).
       const override = f.captureRetentionDays, days = typeof override === "number" && Number.isFinite(override) && override > 0 ? override : readCaptureConfig(shard, this.memoryBaseDir).retentionDays;
       const cutoff = new Date(now - days * 24 * 3600_000);
       const retained = Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined;
       const since = f.since && Number.isFinite(Date.parse(f.since)) ? new Date(Date.parse(f.since)).toISOString() : undefined;
-      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), since && (!retained || since > retained) ? since : retained)) {
+      captureNotBefore = since && (!retained || since > retained) ? since : retained;
+      // First reproduce the old unweighted BM25 candidate window. Only these baseline capture slots may change;
+      // curated membership and positions are not affected by conversational weighting or session collapse.
+      for (const { row, rank } of captureSearch(shard, q, Math.max(limit * 4, 32), captureNotBefore, { weightEvents: false, onePerSession: false })) {
         const selected: SearchHit = { source: "capture", score: rankedScore(rank, "capture", row.at, now), capture: row };
         if (f.explain) selected.scoreDetails = rankedScoreDetails("capture", rank, "capture", row.at, now, selected.score);
         hits.push(selected);
@@ -1144,7 +1149,23 @@ export class MemoryStore {
     }
     const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));
-    return { engine: "fts5", hits: hits.slice(0, limit) };
+    const baseline = hits.slice(0, limit), captureSlots = baseline.filter(hit => hit.source === "capture").length;
+    if (!captureSlots || !captureShard) return { engine: "fts5", hits: baseline };
+    // Search the weighted BM25 window independently and widen only when duplicates leave too few sessions.
+    // Recency ranks the retained session representatives; their exposed score remains the legacy unweighted score.
+    const weighted = captureSearch(captureShard, q, captureSlots, captureNotBefore,
+      { weightEvents: true, onePerSession: true, now, candidateWindow: Math.max(limit * 4, 32) });
+    const replacements = weighted.map(({ row, rank }) => {
+      const score = rankedScore(rank, "capture", row.at, now), hit: SearchHit = { source: "capture", score, capture: row };
+      if (f.explain) hit.scoreDetails = rankedScoreDetails("capture", rank, "capture", row.at, now, score);
+      return hit;
+    });
+    let nextCapture = 0;
+    const selected = baseline.flatMap(hit => {
+      if (hit.source !== "capture") return [hit];
+      const replacement = replacements[nextCapture++]; return replacement ? [replacement] : [];
+    });
+    return { engine: "fts5", hits: selected };
   }
 
   /** Bring the derived FTS copy level with the curated rows when a prune, a crash, a lock or a rebuild drifted them apart. */

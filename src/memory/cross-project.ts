@@ -44,9 +44,10 @@ export function searchAllProjects(base: string, query: string, opts: { limit?: n
       }
     } finally { store?.close(); }
     if (opts.includeCapture !== false) {
+      // #196 fixes selected-project store/MCP capture slots; this separate cross-project merge keeps its legacy cohort.
       for (const dir of shard.machineDirs) {
         const days = readCaptureConfig(dir, base).retentionDays, cutoff = new Date(now - days * 24 * 3600_000);
-        for (const { row, rank } of captureSearch(dir, query, Math.max(limit * 4, 32), Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined)) {
+        for (const { row, rank } of captureSearch(dir, query, Math.max(limit * 4, 32), Number.isFinite(cutoff.getTime()) ? cutoff.toISOString() : undefined, { weightEvents: false, onePerSession: false })) {
           hits.push({ source: "capture", score: -rank * 0.5, capture: row as CaptureRow, project: shard.key });
         }
       }

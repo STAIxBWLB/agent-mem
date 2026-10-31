@@ -34,12 +34,12 @@ function fixture(remote?: string) {
 
 test("pending hook stages contain bounded normalized capture fields, never the raw native envelope", async () => {
   const f = fixture();
-  const staged = await stageHookCapture("PreToolUse", { cwd: f.cwd, hook_event_name: "PreToolUse", prompt: "public retained excerpt", metadata: { rawEnvelopeMarker: "RAW_ENVELOPE_NOT_CAPTURED" }, tool_name: "Read", tool_input: { file_path: "src/public.ts", command: "RAW_COMMAND_NOT_CAPTURED" } }, f.options);
+  const staged = await stageHookCapture("PreToolUse", { cwd: f.cwd, hook_event_name: "PreToolUse", prompt: "public retained excerpt", metadata: { rawEnvelopeMarker: "RAW_ENVELOPE_NOT_CAPTURED" }, tool_name: "Read", tool_input: { file_path: "src/public.ts", command: "SEARCHABLE_COMMAND" } }, f.options);
   expect(staged).toBeDefined(); expect(hookCapturePending(f.base, staged!.name)).toBe(true);
   const rows = f.pending(); expect(rows).toHaveLength(1);
-  expect(rows[0]!.value.capture).toMatchObject({ agent: "claude", event: "PreToolUse", tool: "Read", paths: ["src/public.ts"], status: "ok", excerpt: "public retained excerpt" });
+  expect(rows[0]!.value.capture).toMatchObject({ agent: "claude", event: "PreToolUse", tool: "Read", paths: ["src/public.ts"], status: "ok", excerpt: "SEARCHABLE_COMMAND | src/public.ts\npublic retained excerpt" });
   expect(Number.isFinite(Date.parse(rows[0]!.value.capture.at))).toBe(true);
-  expect(JSON.stringify(rows)).not.toContain("RAW_ENVELOPE_NOT_CAPTURED"); expect(JSON.stringify(rows)).not.toContain("RAW_COMMAND_NOT_CAPTURED");
+  expect(JSON.stringify(rows)).not.toContain("RAW_ENVELOPE_NOT_CAPTURED"); expect(JSON.stringify(rows)).toContain("SEARCHABLE_COMMAND");
   expect(rows[0]!.value).not.toHaveProperty("input"); expect(rows[0]!.value).not.toHaveProperty("tool_input");
 });
 
