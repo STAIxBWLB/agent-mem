@@ -16,7 +16,7 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  add('  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);','globalThis.__recoveryNote(2,deadline-performance.now());');
  add('    const project = resolveAlias(base, identity.value);','globalThis.__recoveryNote(3,remaining());');
  add('    // The current SessionStart is durable in its bounded reserve.','globalThis.__recoveryNote(4,remaining(),Number(full));');
- add('    const losses = captureDropSummary(base);','globalThis.__recoveryNote(5,remaining());');
+ add('    const brief = await sessionStartBrief(','globalThis.__recoveryNote(5,remaining());');
  add('    result.pending = !!pending && !result.captured;','globalThis.__recoveryNote(6,remaining());');
  add('  const workDeadline = deadline - WORKER_CLEANUP_MS;','globalThis.__recoveryNote(7,deadline-performance.now());');
  add('    if (!answer || !answer[1]) return result;','globalThis.__recoveryNote(8,workDeadline-performance.now(),Number(!!answer),answer?.[1]?.length??0);');
