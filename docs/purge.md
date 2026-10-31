@@ -21,27 +21,41 @@ What this does **not** do: the authored row stays in the local log, in every der
 
 ## 3. Local bytes, if they must go
 
-Only if the masked row must also leave this machine's disk:
+**Default: accept that the masked row stays on disk.** Steps 1 and 2 already make the leak harmless and invisible to every amem reader. Rebuilding the home is lossy, and in a home that holds more than one project it puts every other project at risk. Do the rebuild below only if the bytes must leave this machine, and only after you have accepted the losses it lists.
+
+A rebuild cannot carry over:
+
+- lifecycle operations: supersede, demote, settle and forget are not exported, so the new home has the authored notes without them;
+- capture rows, goals and work lists: `jsonl` export writes them, but `amem project import` does not read them back;
+- notes that no project export selects, such as user-scope and shared-scope notes outside a project, and notes of a project you did not export;
+- candidates, generation history, migration sources and sync state.
+
+If you cannot accept a loss on that list, stop here and keep the masked row.
 
 1. Stop every amem and hub process (hooks, `amem mcp`, agent-hub) so nothing writes to the home.
-2. Back up the memory home (`amem status` shows its path) to a place you will delete safely afterwards; the backup holds the leak too.
-3. Export the project:
+2. List **every** project in the home, archived and forgotten ones included:
 
    ```sh
-   amem project export <project-key> --to /path/outside/home/project.jsonl --format jsonl
+   amem projects --all --json
    ```
 
-4. **Delete** the leaked note's line from the export. Do not edit it: `amem project import` recomputes each row's id from its content and refuses an edited row. Rows that point at the deleted one (a `supersedes` or `promotedFrom` relation) are refused too, because their target is no longer in the file; note their ids from the import preview and decide whether to delete them as well.
-5. Move the old home aside, start from a fresh empty home, recreate the exported aliases there (`amem alias add <from-key> <to-key>` for each alias in the export header; import refuses without them), and import:
+3. Export each listed project, not only the affected one, to a directory outside the home:
 
    ```sh
-   amem project import <project-key> --from /path/outside/home/project.jsonl
-   amem project import <project-key> --from /path/outside/home/project.jsonl --confirm
+   amem project export <project-key> --to /path/outside/home/<project-key>.jsonl --format jsonl
    ```
 
-   The first command is a preview; check its counts before `--confirm`.
+   Check each export's withheld counts: a row the privacy screen withholds is not in the file and will not be restored.
+4. In the export that holds the leak, **delete** the leaked note's line. Do not edit it: `amem project import` recomputes each row's id from its content and refuses an edited row. Rows that point at the deleted one (a `supersedes` or `promotedFrom` relation) are refused too, because their target is no longer in the file; note their ids from the import preview and decide whether to delete them as well.
+5. **Rename** the old home aside (do not delete it), start from a fresh empty home, and for each exported project recreate its aliases there (`amem alias add <from-key> <to-key>` for each alias in the export header; import refuses without them), then preview and import it:
 
-What this loses: supersede, demote, settle and forget operations are not exported, so the fresh home has the authored notes without those lifecycle changes. Capture, goals and work lists are export-only and are not re-imported. Repeat for every project that held the leak, then delete the old home and the backup once the new home is checked. A file deleted from disk can still sit in filesystem snapshots or backups (step 6).
+   ```sh
+   amem project import <project-key> --from /path/outside/home/<project-key>.jsonl
+   amem project import <project-key> --from /path/outside/home/<project-key>.jsonl --confirm
+   ```
+
+   Check each preview's counts before `--confirm`; add `--allow-shared` only if the export holds shared-scope rows you mean to restore.
+6. Compare `amem projects --all` and each project's note count in the new home with the old one. Keep the old home, untouched, until every project you need is restored and you have copied out anything on the loss list that you still need. Only then delete the old home and every export and backup (each holds the leak). A deleted file can still sit in filesystem snapshots or backups (step 6).
 
 ## 4. Machine-local tiers
 
