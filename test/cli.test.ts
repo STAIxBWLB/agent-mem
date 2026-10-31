@@ -17,7 +17,7 @@ const temp = () => { const dir = mkdtempSync(join(tmpdir(), "amem-cli-")); dirs.
 const context = (cwd: string, stdinTTY = false) => ({ cwd, env: {}, stdinTTY });
 
 for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`${key} marks attribution; help, version and completion work, unsupported reads use the MCP refusal`, async () => {
-  const home = join(temp(), "isolated-memory"), unavailable = "Memory operation unavailable or refused; no partial result is shown.";
+  const home = join(temp(), "isolated-memory");
   for (const value of ["", "invalid marker", "1", "codex"]) {
     expect(agentMarked({ [key]: value })).toBe(true);
     const agent = { env: { [key]: value, AMEM_HOME: home }, stdinTTY: false, stdoutTTY: false };
@@ -25,7 +25,7 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
     for (const args of [["--version"], ["version"], ["--version", "--json"]]) expect(await runCli(args, agent)).toMatch(/^amem \d/);
     expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
     for (const args of [["list", "--history"], ["search", "fixture", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
-      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(unavailable);
+      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
     }
   }
   expect(existsSync(home)).toBe(false);
@@ -67,7 +67,7 @@ test("bin refuses Node before TS and agent unsupported reads use the fixed amem 
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
   const child = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+  expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain("agent-marked list accepts only --limit and --since.");
 });
 
 test("help and version work without opening a store", async () => {

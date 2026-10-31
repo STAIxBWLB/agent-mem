@@ -144,7 +144,7 @@ test("marked current-project reads match MCP DTOs; retained history and cross-pr
         ["search", "needle", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00Z"],
         ["search", "needle", "--all-projects"], ["show", id, "--history"],
       ]) {
-        await expect(runCli(argv, context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+        await expect(runCli(argv, context)).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
       }
     } finally { mcp.close(); }
   } finally { f.store.close(); }

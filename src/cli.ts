@@ -1,5 +1,5 @@
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
-import { agentCliRead } from "./cli-agent-reads.ts";
+import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
 import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
@@ -211,6 +211,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       try { readable = configuredPolicy(memoryHome(), context.cwd ?? process.cwd()).screenStandalone(error.report); } catch { /* Withhold if policy is unavailable. */ }
       if (!readable) throw new CliPartialApplyError(error.applied.length, error.jsonOutput);
       const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
+    }
+    // Data-free errors (decided before any store or file is opened) keep their own message.
+    if (marked && error instanceof AgentUsageError) throw error;
+    if (marked) {
+      // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
+      let usage: Error | undefined;
+      try { parseCommand(argv); } catch (parseError) { usage = parseError as Error; }
+      if (usage) throw Object.assign(new Error(usage.message), (error as { exitCode?: number }).exitCode === undefined ? {} : { exitCode: (error as { exitCode?: number }).exitCode });
     }
     // Marked administrative failures must not reveal a target's private state or native errors.
     if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");

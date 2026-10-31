@@ -124,7 +124,7 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   expect(readFileSync(to, "utf8")).not.toContain("beta");
   await expect(runCli(["project", "export", A, "--to", to], person)).rejects.toThrow(/exists/);
   await expect(runCli(["project", "export", A], person)).rejects.toThrow(/--to/);
-  await expect(runCli(["project", "export", A, "--to", to], { ...person, env: { CLAUDECODE: "1" } })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["project", "export", A, "--to", to], { ...person, env: { CLAUDECODE: "1" } })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
 });
 
 test("search --all-projects crosses, says so in text and JSON, and plain search never does; ahub memory's raw command refuses the flag", async () => {

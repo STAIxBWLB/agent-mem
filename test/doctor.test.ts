@@ -239,7 +239,7 @@ test("the human report names every section, marks attention and shows the hint",
 
 test("doctor is outside the marked CLI read ceiling and is refused before the home is opened", async () => {
   const r = rig();
-  await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x", HOME: r.root, AMEM_HOME: r.memory }, stdinTTY: false })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x", HOME: r.root, AMEM_HOME: r.memory }, stdinTTY: false })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
   expect(existsSync(r.memory)).toBe(false);
 });
 
