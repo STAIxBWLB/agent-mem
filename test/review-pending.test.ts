@@ -15,9 +15,8 @@ import { realPath } from "../src/memory/platform.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 // agent-mem#40 F7 / AC4: the brief says how many candidates wait, `amem review` walks them, and no candidate expires without having been shown.
-// CLI and PTY children use the real clock; keep their fresh candidates within retention.
-// Tests that advance the rig clock still exercise the same exact relative age/grace boundaries.
-const DAY = 86400_000, START = Math.floor(Date.now() / DAY) * DAY;
+// Rows are seeded at START while the CLI reads the real clock, so START is the run time: a fixed date expires them 30 days later.
+const DAY = 86400_000, START = Date.now();
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 function rig() {
