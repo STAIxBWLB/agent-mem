@@ -17,7 +17,10 @@ if (!globalThis[installed]) {
     const native = Bun[method].bind(Bun);
     Bun[method] = (command, options) => {
       if (Array.isArray(command) && command[0] === process.execPath) {
-        return native([command[0], '--preload', import.meta.path, ...command.slice(1)], options);
+        const env = options?.env ?? process.env;
+        return native(command, { ...options, env: { ...env,
+          BUN_OPTIONS: `${env.BUN_OPTIONS ?? ''} --preload=${JSON.stringify(import.meta.path)}`,
+        } });
       }
       return native(command, options);
     };
