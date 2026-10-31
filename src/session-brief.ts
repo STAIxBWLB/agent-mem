@@ -181,7 +181,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       await run("work", async () => {
         const measured = options.measureOnly;
         if (measured && !measured.workBase) { coverage.work = "unavailable"; return; }
-        if (measured && !lstatSync(join(shardDir(measured.workBase!, project), "work", "log"), { throwIfNoEntry: false })) return;   // no work log: the real brief shows an empty list
+        if (measured && ![project, ...aliases].some(key => lstatSync(join(shardDir(measured.workBase!, key), "work", "log"), { throwIfNoEntry: false }))) return;   // no work log: the real brief shows an empty list
         const work = new WorkListStore({ base: measured?.workBase ?? base, project, aliases, policy: screen, ...(options.nativeSession ? { busyTimeoutMs: 0, timeRemaining: options.timeRemaining } : {}) }); closers.push(() => work.close());
         // Complete operation rows AND the composed view are screened before closed-item filtering or display caps.
         const views = await work.read(undefined, true); guard();

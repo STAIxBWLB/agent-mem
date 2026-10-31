@@ -14,7 +14,8 @@ import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { ensureShardDescriptor } from "../src/memory/shard.ts";
+import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
+import { WorkListStore } from "../src/memory/work-lists.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { consoleSetup } from "../src/setup-console.ts";
 import { plugin } from "../src/ui/plugin.ts";
@@ -88,6 +89,16 @@ test("Recap cold read creates no live lease or work index beyond ordinary consol
   const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
   expect(snapshot.error).toBeUndefined(); expect((snapshot.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
   expect(tree(f.base)).toEqual(before);
+});
+
+test("Recap includes work logs that exist only under a reconciled alias", async () => {
+  const f = fixture(), old = "old-recap-project", work = new WorkListStore({ base: f.base, project: old, policy: () => true });
+  try { await work.write("alias-recap", { task: "alias-only recap work", status: "doing" }); } finally { work.close(); }
+  appendAlias(f.base, { alias: old, key: f.project, actor: "person", machine: "a".repeat(16) });
+  const provider = await open(f.family), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  const direct = await briefModule.sessionStartBrief({ cwd: f.base, base: f.base, project: f.project, repository: false, policy: configuredPolicyOptions(f.base) });
+  expect(snapshot.error).toBeUndefined(); expect(snapshot.brief).toEqual(direct);
+  expect(direct.context).toContain("alias-only recap work");
 });
 
 test("only Recap snapshots compute the SessionStart brief", async () => {
