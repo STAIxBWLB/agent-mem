@@ -68,6 +68,13 @@ test.skipIf(!executable("zsh"))("zsh first autoload invocation invokes the regis
   for (const command of ["list", "goal", "completion"]) expect(candidates).toContain(command);
 });
 
+test("inherited Object names are not commands", () => {
+  for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+    expect(() => parseCommand([name])).toThrow(`unknown command ${name}`);
+    expect(() => parseCommand(["goal", name])).toThrow(`unknown command goal ${name}`);
+  }
+});
+
 test("default command options and equals values share parser validation with completion", () => {
   expect(parseCommand(["goal", "--all", "--json"]).path).toEqual(["goal", "list"]);
   expect(parseCommand(["goal", "--all", "--json"]).options).toMatchObject({ "--all": true, "--json": true });
