@@ -2,6 +2,7 @@ import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
+import { opencodeServer } from "./setup-opencode.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -14,13 +15,13 @@ import { memoryHome } from "./memory/home.ts";
 import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
-export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy"] as const;
+export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "agy"] as const;
 /** Workspace-scoped Antigravity setup is always selected explicitly. */
 export const SETUP_ALL_TARGETS = SETUP_TARGETS.filter(target => target !== "agy");
 export type SetupTarget = typeof SETUP_TARGETS[number];
 // Only recorded layout verification versions belong here; null means no version was recorded.
 const SETUP_VERIFIED_VERSIONS: Readonly<Record<SetupTarget, string | null>> = {
-  claude: null, codex: "0.165.0", kimi: null, pi: null, qwen: "0.26.1", jcode: "0.99.1", agy: null,
+  claude: null, codex: "0.165.0", kimi: null, pi: null, qwen: "0.26.1", jcode: "0.99.1", opencode: "1.18.35", agy: null,
 };
 interface ClientVersion { output: string | null; verified: string | null; matches: boolean | null }
 type Env = Readonly<Record<string, string | undefined>>;
@@ -145,6 +146,8 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     qwen: [join(qwen, "settings.json")],
     // Absolute JCODE_HOME spellings stay literal; unset uses the platform-home default.
     jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
+    // xdg-basedir: an absolute XDG_CONFIG_HOME, else ~/.config (OpenCode v1.18.35 packages/core/src/global.ts).
+    opencode: [join(env.XDG_CONFIG_HOME?.trim() && isAbsolute(env.XDG_CONFIG_HOME.trim()) ? resolve(env.XDG_CONFIG_HOME.trim()) : join(home, ".config"), "opencode", "opencode.json")],
     agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
@@ -158,7 +161,7 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
   return { env, home, paths, bun, entry, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
-  if (target === "kimi" || target === "jcode" || target === "agy") return null;
+  if (target === "kimi" || target === "jcode" || target === "opencode" || target === "agy") return null;
   if (target === "qwen") return [target, "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", bun, "--", "--smol", entry, "mcp"];
   return [target, "mcp", "add", ...(target === "claude" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
@@ -168,6 +171,13 @@ function assertJcodeHome(env: Env): void {
 function assertJcodeRuntime(c: ReturnType<typeof context>): void {
   assertJcodeHome(c.env);
   if ([c.bun, c.entry].some(value => value.includes("${"))) throw Error("Jcode interpolates environment placeholders in MCP command paths; setup cannot register this runtime exactly");
+}
+/** OpenCode merges config.json, opencode.json, then opencode.jsonc from its global directory, and env routes can replace it. */
+function assertOpencodeLayout(c: ReturnType<typeof context>, mode: SetupPlan["mode"]): void {
+  if (mode !== "undo") for (const key of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"]) if (c.env[key]?.trim()) throw Error(`OpenCode setup refuses ${key}: it routes configuration away from the global file this setup owns`);
+  const dir = dirname(c.paths.opencode[0]!);
+  for (const name of ["opencode.jsonc", "config.json"]) if (read(join(dir, name)).bytes !== null) throw Error(`OpenCode setup supports one strict-JSON global opencode.json; ${name} beside it is merged too and is not supported`);
+  if ([c.bun, c.entry].some(value => /\{(?:env|file):/.test(value))) throw Error("OpenCode substitutes {env:} and {file:} in configuration; setup cannot register this runtime exactly");
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
@@ -189,18 +199,19 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
-  if (target === "jcode" || target === "agy") return [];
+  if (target === "jcode" || target === "opencode" || target === "agy") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}${target === "pi" ? "" : " --json"}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
-const lifecycle = (target: SetupTarget) => target === "jcode" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+const lifecycle = (target: SetupTarget) => target === "jcode" || target === "opencode" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
-  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|agy|all [--apply|--undo]");
+  if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
   if (targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
+  if (targets.includes("opencode") && (target === "opencode" || available(c, "opencode", options))) assertOpencodeLayout(c, mode);
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
     const settings = json(read(c.paths.claude[1]!));
@@ -212,6 +223,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
   if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP only. Native saved sessions do not prove per-message project scope, so capture and ingest hooks are unavailable; no hook or config.toml is installed.");
+  if (targets.includes("opencode")) pluginNotes.push("OpenCode setup registers MCP only in the global strict-JSON opencode.json (mcp.amem, a local server started in the session's project directory). No plugin or ingest hook is installed: see docs/opencode.md for why transcripts are not ingested. A project opencode.json defining mcp.amem overrides this entry.");
   if (c.workspace) {
     pluginNotes.push(`Antigravity MCP is pinned to this repository only: ${c.workspace.root}. Restart the CLI/IDE and use one workspace; no global or plugin definitions are replaced, and same-name definitions elsewhere are unsupported. Native capture is unavailable; no hooks are installed. Only strict JSON is supported; JSONC is refused. Native TUI/IDE presence and live behavior are unverified; availability means this direct configuration operation is supported.`);
     if (!c.workspace.ignored) pluginNotes.push("WARNING: .agents/mcp_config.json is not Git-ignored; it contains absolute local paths. Setup will refuse it if it becomes tracked.");
@@ -222,7 +234,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
     const original = read(c.paths[target][0]!);
     const document: Record<string, unknown> = target === "agy" ? {} : target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
-    const hasAmem = target === "jcode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    const hasAmem = target === "jcode" || target === "opencode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
@@ -303,6 +315,7 @@ function restoreChange(value: Receipt, change: Change, index: number, live: Imag
 }
 function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
   if (target === "jcode") assertJcodeRuntime(c);
+  if (target === "opencode") assertOpencodeLayout(c, "apply");
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
   const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
@@ -361,6 +374,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     } else if (target === "jcode") {
       // Shared native pools use the daemon cwd; amem must bind the calling session's project.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], shared: false });
+    } else if (target === "opencode") {
+      // `opencode mcp add` is interactive for local servers and has no remove; edit the owned entry directly.
+      changes[0]!.after = putMcpRecord(target, changes[0]!.before, opencodeServer(c.bun, c.entry));
     } else {
       const document = json(changes[0]!.before), servers = document.mcpServers === undefined ? {} : record(document.mcpServers);
       servers.amem = { command: c.bun, args: ["--smol", c.entry, "mcp"] }; document.mcpServers = servers;

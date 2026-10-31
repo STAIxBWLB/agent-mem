@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runCli, type CliContext } from "../src/cli.ts";
 import { COMMANDS, parseCommand } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
-const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "agy", "all"] as const;
+const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "agy", "all"] as const;
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function put(file: string, value: string, mode = 0o600) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, value); chmodSync(file, mode); }
 function snapshot(root: string): Array<{ file: string; mode: number; bytes?: string }> {
@@ -47,7 +47,7 @@ test("default setup CLI previews every target with no commands, home writes or c
     const plan = JSON.parse(await runCli(["setup", target, "--json"], f.context));
     expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.filter(value => value !== "all" && value !== "agy") : [target]);
     for (const action of plan.actions) if (["claude", "codex", "pi"].includes(action.target)) expect(action.version.output).toBe(`${action.target} 0.0.0-fixture`);
-    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
+    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "opencode", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });
@@ -103,7 +103,7 @@ test("a native CLI without MCP administration is refused before free-form prompt
 test("all setup skips and reports absent CLIs while configuring the available client", async () => {
   const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
   const result = JSON.parse(await runCli(["setup", "all", "--apply", "--json"], f.context));
-  expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen", "jcode"]);
+  expect(result.applied).toEqual(["claude"]); expect(result.skipped.map((item: { target: string }) => item.target)).toEqual(["codex", "kimi", "pi", "qwen", "jcode", "opencode"]);
   expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
   expect(f.calls()).toHaveLength(1);
 });
