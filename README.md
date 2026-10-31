@@ -151,6 +151,23 @@ Open a review-only `MemoryStore` with `deferPromotions: true` to prevent unrelat
 
 Acceptance normalizes its note once, including timestamp, content ID and short-term expiry, then screens and appends that exact body. The final target-revision check and correction appends hold the same machine-local `mutation-lock.db` writer transaction used by this version's ordinary memory, import and sync writers. This lock is independent of the derived index, so an ordinary write still persists when SQLite is busy. External or older writers that edit segments without this lock do not participate in serialization. The logs remain authoritative after an interrupted acceptance; the next read refreshes the derived index.
 
+## Console (acon)
+
+`@staix/agent-mem/ui-plugin` is a plugin for the local agent console `acon` (STAIxBWLB/agent-console, contract api 1). It adds a Memory area with the panels Review, Search, Timeline, Work lists, Goals and Capacity, puts pending candidates (group `candidate`) and a capture capacity proposal (group `alert`) in the console inbox, and answers the console palette with memory search hits.
+
+```sh
+amem setup console           # preview
+amem setup console --apply   # write $AGENTHUB_HOME/console/plugins/amem.json
+amem setup console --undo    # remove it (only when it points at this install)
+```
+
+The manifest holds the absolute path and sha256 of `src/ui/plugin.ts`, in a 0700 directory and a 0600 file, as acon requires. acon refuses a module whose hash changed, so run `amem setup console --apply` again after upgrading amem. `setup all` does not include it.
+
+- Reads are screened. Search, Timeline and Work lists call the in-process `amem_search`, `amem_timeline` and `amem_work_state_read` handlers for the chosen project and forward every option the tool declares, so console search returns exactly the `amem_search` set for the same query. Goals and the review queue pass the configured policy; a candidate that fails it, or whose target fails it, is not shown (the panel counts it and points to `amem review walk`). The console never shows unscreened content, also not to the person. It runs in no repository, so a repository's `.amem/config` narrowing does not apply; the machine's `amem.config.json` does.
+- Review actions are the CLI's. Accept runs the same acceptance as `amem review accept` and writes the same note, edit-then-accept is `review walk`'s edit (the person's own note, then the candidate closed), reject is `review reject`. The console stamps the person as the actor (peer `person`). A privacy-screen hit refuses with a named reason and writes nothing. agent-mem keeps no reject reason, so a reason typed in the console is not recorded, and the reply says so.
+- Undo is offered for 10 seconds and stays bound to what that console just did: undoing an accept forgets the accepted note (an append-only forget op; a note a correction replaced shows again), undoing a reject makes the candidate pending again. A promotion has no undo. `merge_into` is not offered: the library has no merge operation.
+- Destructive forms (`gc`, `capacity_apply`, `project_forget`, `decay_apply`, `prune`) answer `needsConfirm` with the preview and `changes[]` and never write on the first call. The console's single-use confirm token carries the fingerprint back; the plugin recomputes the preview and writes only when it still matches. `prune` needs a generation home, as `amem prune` does.
+
 ## Shell completion
 
 Generate completion for `zsh`, `bash`, or `fish` with `amem completion <shell>`. Generation prints a script to stdout; it does not install files or edit shell configuration. The following commands configure shell completion.
