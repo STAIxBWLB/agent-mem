@@ -1,5 +1,6 @@
 /** Layer 1 only: pure complete public-pack proof, never publication or an active mask. */
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { reducePruneRows, validatePruneRow, pruneRowHash, type PruneRow, type PruneSourceRow } from "./prune.ts";
 import { decodeShardPack, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
@@ -47,6 +48,36 @@ function occurrence(input: unknown, witness = false): Occurrence {
   guard(typeof input.pack === "string" && input.pack.length === 140 && /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/.test(input.pack) && hex(input.blob, 40));
   return { pack: input.pack, blob: input.blob };
 }
+/** Check the portable JSON shape and exact encoded size before cloning unknown lineage.
+ * Iterative traversal bounds cycles, giant scalars and shared subtrees without a new depth ceiling. */
+function boundLineage(input: unknown, budget: number): void {
+  guard(budget >= 0);
+  const active = new WeakSet<object>(), stack: { value: unknown; exit?: boolean }[] = [{ value: input }];
+  const spend = (bytes: number) => { budget -= bytes; guard(budget >= 0); };
+  const stringBytes = (value: string) => { guard(value.length <= budget); return Buffer.byteLength(JSON.stringify(value), "utf8"); };
+  while (stack.length) {
+    const frame = stack.pop()!, value = frame.value;
+    if (frame.exit) { active.delete(value as object); continue; }
+    if (typeof value === "string") { spend(stringBytes(value)); continue; }
+    if (value === null || typeof value === "boolean") { spend(value === null || value === true ? 4 : 5); continue; }
+    if (typeof value === "number") { guard(Number.isFinite(value)); spend(JSON.stringify(value).length); continue; }
+    guard(value && typeof value === "object" && !types.isProxy(value) && !active.has(value));
+    const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+    guard(array ? prototype === Array.prototype : prototype === Object.prototype || prototype === null);
+    active.add(value); stack.push({ value, exit: true }); spend(2);
+    let count = 0;
+    if (array) { guard(value.length <= budget); if (value.length) spend(value.length - 1); }
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      const field = Object.getOwnPropertyDescriptor(value, key)!;
+      guard("value" in field && field.enumerable);
+      if (array) { const index = Number(key); guard(Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key); }
+      else spend(stringBytes(key) + 1 + (count ? 1 : 0));
+      count++; stack.push({ value: field.value });
+    }
+    if (array) guard(count === value.length); // JSON arrays have no holes or extra enumerable fields.
+  }
+}
 function candidate(input: unknown): Candidate {
   guard(object(input));
   guard(exact(input, ["schema", "realm", "prune", "pruneOccurrence", "witnesses", ...(Object.hasOwn(input, "lineage") ? ["lineage"] : [])]));
@@ -65,8 +96,18 @@ function candidate(input: unknown): Candidate {
     return { ...where, id: value.id, rowHash: value.rowHash };
   });
   guard(witnesses.length === needed.size);
-  const result: Candidate = { schema: input.schema, realm: selected, prune, pruneOccurrence: occurrence(input.pruneOccurrence), witnesses,
-    ...(Object.hasOwn(input, "lineage") ? { lineage: structuredClone(input.lineage) } : {}) };
+  const result: Candidate = { schema: input.schema, realm: selected, prune, pruneOccurrence: occurrence(input.pruneOccurrence), witnesses };
+  const baseBytes = Buffer.byteLength(canonicalJSON(result), "utf8");
+  guard(baseBytes <= PUBLIC_PRUNE_MANIFEST_MAX_BYTES);
+  const origin = Object.getOwnPropertyDescriptor(input, "lineage");
+  if (origin) {
+    guard("value" in origin);
+    const value: unknown = origin.value;
+    if (value !== undefined) {
+      boundLineage(value, PUBLIC_PRUNE_MANIFEST_MAX_BYTES - baseBytes - Buffer.byteLength(',"lineage":'));
+      result.lineage = structuredClone(value);
+    }
+  }
   guard(Buffer.byteLength(canonicalJSON(result), "utf8") <= PUBLIC_PRUNE_MANIFEST_MAX_BYTES);
   return result;
 }

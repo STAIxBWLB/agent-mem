@@ -45,12 +45,13 @@ function context(profile: BoundProfile, mutation: MutationHandle): { machine: st
   return { machine, sealHash, local, file: join(local, `publisher-boundary-${machine}.json`), log: join(profile.dir, "log", `${machine}.jsonl`) };
 }
 /** Streaming complete prefix and bounded line scan; no lifetime byte/row omission. */
-function inspect(log: string, end?: number, row?: PruneRow): { end: number; hash: string; found: boolean } {
+function inspect(log: string, end?: number, rows?: ReadonlyMap<string, { row: PruneRow; canonical: string }>): { end: number; hash: string; found: Set<string> } {
   const before = lstatSync(log, { throwIfNoEntry: false });
-  if (!before) { guard(end === undefined || end === 0); return { end: 0, hash: createHash("sha256").digest("hex"), found: false }; }
+  if (!before) { guard(end === undefined || end === 0); return { end: 0, hash: createHash("sha256").digest("hex"), found: new Set() }; }
   owned(before); const bound = end ?? before.size; guard(Number.isSafeInteger(bound) && bound >= 0 && bound <= before.size);
   const fd = openSync(log, constants.O_RDONLY | constants.O_NOFOLLOW), digest = createHash("sha256"), chunk = Buffer.alloc(65536);
-  let position = 0, lineStart = 0, line: number[] = [], found = false, older = false, last = -1, boundaryNewline = bound === 0;
+  let position = 0, lineStart = 0, line: number[] = [], last = -1, boundaryNewline = bound === 0;
+  const found = new Set<string>(), older = new Set<string>();
   try {
     guard(same(before, fstatSync(fd)));
     while (position < before.size) {
@@ -59,21 +60,27 @@ function inspect(log: string, end?: number, row?: PruneRow): { end: number; hash
       for (let i = 0; i < count; i++) {
         const byte = chunk[i]!; last = byte;
         if (position + i + 1 === bound) boundaryNewline = byte === 10;
-        if (row) {
+        if (rows) {
           if (byte === 10) {
             guard(line.length > 0);
             const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(line)));
-            if (lineStart < bound && value && typeof value === "object" && "id" in value && value.id === row.id) older = true;
-            if (lineStart >= bound && canonicalJSON(value) === canonicalJSON(row)) { validatePruneRow(value, row.generation, "synced"); found = true; }
+            const id = value && typeof value === "object" && "id" in value && typeof value.id === "string" ? value.id : undefined;
+            const candidate = id === undefined ? undefined : rows.get(id);
+            const canonical = lineStart >= bound ? canonicalJSON(value) : undefined;
+            if (candidate) {
+              if (lineStart < bound) older.add(candidate.row.id);
+              else if (canonical === candidate.canonical) { validatePruneRow(value, candidate.row.generation, "synced"); found.add(candidate.row.id); }
+            }
             line = []; lineStart = position + i + 1;
           } else { line.push(byte); guard(line.length <= 1024 * 1024); }
         }
       }
       position += count;
-      if (!row && position === before.size) break;
+      if (!rows && position === before.size) break;
     }
     guard(boundaryNewline && (before.size === 0 || last === 10) && same(before, fstatSync(fd)) && same(before, lstatSync(log)));
-    return { end: bound, hash: digest.digest("hex"), found: found && !older };
+    for (const id of older) found.delete(id);
+    return { end: bound, hash: digest.digest("hex"), found };
   } finally { closeSync(fd); }
 }
 function decode(value: Buffer): PublisherBoundaryV1 {
@@ -110,11 +117,23 @@ export function ensurePublisherBoundary(profile: BoundProfile, mutation: Mutatio
   linkSync(temp, ctx.file); fsyncDirectory(ctx.local); unlinkSync(temp); fsyncDirectory(ctx.local);
   return assertPublisherBoundary(profile, mutation);
 }
-export function publisherPruneLineage(profile: BoundProfile, mutation: MutationHandle, row: PruneRow): PublicPruneLineage | undefined {
-  const boundary = assertPublisherBoundary(profile, mutation);
-  if (row.machine !== boundary.machine || row.generation !== boundary.generation || row.placement !== "synced") return undefined;
-  validatePruneRow(row, boundary.generation, "synced");
-  const ctx = context(profile, mutation), proof = inspect(ctx.log, boundary.end, row);
+/** Verify one candidate set with one complete JSONL parse, independent of the candidate count. */
+export function publisherPruneLineages(profile: BoundProfile, mutation: MutationHandle, rows: readonly PruneRow[]): Map<string, PublicPruneLineage> {
+  const boundary = assertPublisherBoundary(profile, mutation), candidates = new Map<string, { row: PruneRow; canonical: string }>();
+  for (const row of rows) {
+    if (row.machine !== boundary.machine || row.generation !== boundary.generation || row.placement !== "synced") continue;
+    validatePruneRow(row, boundary.generation, "synced");
+    const canonical = canonicalJSON(row), previous = candidates.get(row.id);
+    guard(!previous || previous.canonical === canonical); candidates.set(row.id, { row, canonical });
+  }
+  const result = new Map<string, PublicPruneLineage>();
+  if (!candidates.size) return result;
+  const ctx = context(profile, mutation), proof = inspect(ctx.log, boundary.end, candidates);
   guard(proof.hash === boundary.prefixSha256); assertPublisherBoundary(profile, mutation);
-  return proof.found ? { kind: "post-seal", seal: boundary.sealHash, end: boundary.end } : undefined;
+  for (const id of proof.found) result.set(id, { kind: "post-seal", seal: boundary.sealHash, end: boundary.end });
+  return result;
+}
+/** Compatibility entry point; batch callers avoid rescanning once per original. */
+export function publisherPruneLineage(profile: BoundProfile, mutation: MutationHandle, row: PruneRow): PublicPruneLineage | undefined {
+  return publisherPruneLineages(profile, mutation, [row]).get(row.id);
 }

@@ -56,7 +56,7 @@ test("aggregate archive budget refuses the combined future view before evidence 
     return input.objects.reduce((sum, item) => sum + item.bytes.byteLength, 0) + Buffer.byteLength(canonicalJSON(value) + "\n") + Buffer.byteLength(canonicalJSON(set) + "\n");
   };
   const archive = join(f.dir, "public-prune-objects"); mkdirSync(archive, { mode: 0o700 });
-  const orphan = join(archive, "unregistered-capacity-fixture"), fd = openSync(orphan, "wx", 0o600); closeSync(fd);
+  const orphan = join(archive, "e".repeat(40) + ".git"), fd = openSync(orphan, "wx", 0o600); closeSync(fd);
   // Sparse orphan consumes accounting capacity without allocating a huge resident fixture.
   truncateSync(orphan, PUBLIC_PRUNE_REPLAY_MAX_BYTES - Math.max(cost(f.first.input), cost(f.second.input)));
   const before = files(f.dir);
@@ -75,7 +75,7 @@ test("binding drift, opaque token forgery and released/wrong-directory fences re
 });
 test("persist rechecks aggregate capacity and retained input integrity after preparation", () => {
   const f = fixture(), batch = f.prepare(), archive = join(f.dir, "public-prune-objects"); mkdirSync(archive, { mode: 0o700 });
-  const orphan = join(archive, "late-capacity-fixture"), fd = openSync(orphan, "wx", 0o600); closeSync(fd); truncateSync(orphan, PUBLIC_PRUNE_REPLAY_MAX_BYTES);
+  const orphan = join(archive, "d".repeat(40) + ".git"), fd = openSync(orphan, "wx", 0o600); closeSync(fd); truncateSync(orphan, PUBLIC_PRUNE_REPLAY_MAX_BYTES);
   const before = files(f.dir); expect(() => persistPublicPruneInputBatch(batch)).toThrow("resource"); expect(files(f.dir)).toEqual(before);
 });
 test("interrupted installation retries the identical complete batch without selector registration", () => {
@@ -100,4 +100,29 @@ test("descriptor helper reads strict declared canonical hashes without archive s
   writeFileSync(file, original.replace('"selectorRevision":', '"extra":true,"selectorRevision":'));
   expect(() => readPublicPruneInputDescriptor({ dir: f.dir, hash })).toThrow();
   expect(() => readPublicPruneInputDescriptor({ dir: f.dir, hash: "../escape" })).toThrow();
+});
+
+for (const stage of ["prepare", "persist"] as const) test(`batch ${stage} reclaims a sparse pre-link crash temp before capacity without registering evidence`, () => {
+  const f = fixture(), batch = stage === "persist" ? f.prepare() : undefined, folder = join(f.dir, "public-prune-objects"); mkdirSync(folder, { mode: 0o700 });
+  const temp = join(folder, ".pending-" + "a".repeat(32)), fd = openSync(temp, "wx", 0o600); closeSync(fd); truncateSync(temp, PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
+  const before = files(f.dir), prepared = batch ?? f.prepare();
+  if (stage === "prepare") {
+    const expected = { ...before }; delete expected["public-prune-objects/" + temp.slice(folder.length + 1)];
+    expect(files(f.dir)).toEqual(expected); // Preparation only reclaims staging, never writes candidates.
+  }
+  const result = persistPublicPruneInputBatch(prepared, { mutation: f.mutation });
+  expect(existsSync(temp)).toBe(false); expect(f.state.binding.inputSetHash).toBeNull(); expect(f.replay(result.inputSetHash).authoredPrunes).toBe(2);
+  expect(() => assertMutationHandle(f.mutation, f.dir)).not.toThrow();
+});
+
+test("batch cleanup refuses forged, wrong-directory and released handles without deleting staging", () => {
+  const f = fixture(), batch = f.prepare(), folder = join(f.dir, "public-prune-objects"); mkdirSync(folder, { mode: 0o700 });
+  const temp = join(folder, ".pending-" + "a".repeat(32)); writeFileSync(temp, "PRESERVE-WITHOUT-LIVE-MATCHING-HANDLE", { mode: 0o600 });
+  const options = { dir: f.dir, binding: f.state.binding, current: () => f.state.binding, inputs: [f.first.input] };
+  expect(() => preparePublicPruneInputBatch(options, (() => {}) as MutationHandle)).toThrow(); expect(existsSync(temp)).toBe(true);
+  const other = fixture(); expect(() => preparePublicPruneInputBatch(options, other.mutation)).toThrow(); expect(existsSync(temp)).toBe(true);
+  expect(() => persistPublicPruneInputBatch(batch, { mutation: other.mutation })).toThrow(); expect(existsSync(temp)).toBe(true);
+  f.mutation(); const before = files(f.dir);
+  expect(() => preparePublicPruneInputBatch(options, f.mutation)).toThrow(); expect(() => persistPublicPruneInputBatch(batch)).toThrow();
+  expect(files(f.dir)).toEqual(before); expect(readFileSync(temp, "utf8")).toBe("PRESERVE-WITHOUT-LIVE-MATCHING-HANDLE");
 });
