@@ -24,7 +24,8 @@ function rig(): { dir: string; base: string; person: { cwd: string; env: Record<
   return { dir, base, person: { cwd: dir, env: {}, stdinTTY: true } };
 }
 function capture(dir: string, project: string, rows: string[]): void {
-  const store = new CaptureStore({ home: dir, project });
+  // The fixed capture rows and their eviction clock share the same fixture timeline.
+  const store = new CaptureStore({ home: dir, project, now: () => Date.parse("2026-10-17T00:00:00.000Z") });
   rows.forEach((excerpt, i) => store.append({ project, agent: "kimi", event: "PostToolUse", excerpt, at: `2026-10-1${i}T00:00:00.000Z` }));
   store.close();
 }

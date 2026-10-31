@@ -14,7 +14,8 @@ function home(): string {
   return dir;
 }
 function capture(dir: string, opts: Partial<ConstructorParameters<typeof CaptureStore>[0]> = {}): CaptureStore {
-  const store = new CaptureStore({ home: dir, project: "proj", ...opts });
+  // Keep fixed spool/migration/cap timestamps inside their fixture clock; retention tests override it.
+  const store = new CaptureStore({ home: dir, project: "proj", now: () => Date.parse("2026-10-17T03:00:00.000Z"), ...opts });
   cleanup.push(() => store.close());
   return store;
 }
