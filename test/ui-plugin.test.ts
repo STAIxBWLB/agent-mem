@@ -2,7 +2,7 @@
 // `for await` over a Bun stream elsewhere in this program stops type-checking.
 /// <reference lib="dom.asynciterable" />
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -14,7 +14,7 @@ import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
+import { appendAlias, ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { consoleSetup } from "../src/setup-console.ts";
@@ -133,6 +133,13 @@ test("private brief copies refuse a live forget during projection and clean thei
     return brief;
   })).rejects.toThrow("recap source");
   expect(copy).toBeDefined(); expect(existsSync(copy!)).toBe(false);
+});
+
+test("Recap refuses a symlinked work log instead of claiming an empty complete section", async () => {
+  const f = fixture(), work = join(shardDir(f.base, f.project), "work"), external = join(f.root, "external-work-log");
+  mkdirSync(work, { recursive: true }); mkdirSync(external); symlinkSync(external, join(work, "log"), "dir");
+  const provider = await open(f.family), before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(snapshot.error).toBeDefined(); expect(snapshot.brief).toBeUndefined(); expect(tree(f.base)).toEqual(before);
 });
 
 const conf = fixture();

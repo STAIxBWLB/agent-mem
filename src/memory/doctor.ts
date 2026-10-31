@@ -168,11 +168,19 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
   const aliases = aliasedKeys(home, project), selection = readSelector(home).revision, layout = layoutOf(home), guard = guardScratch();
   let scratch: string | undefined, curated: MemoryStore | undefined;
   const budget: CopyBudget = { bytes: 0, verify: [] };
+  const inputDirectories = [join(home, "projects"), ...(layout === "split" ? [join(home, "user")] : [join(home, "log"), join(home, "local")]),
+    ...(layout === "generation" ? [join(home, "generations")] : []),
+    ...[project, ...aliases].flatMap(key => { const dir = shardDir(home, key); return [dir, join(dir, "work"), join(dir, "work", "log")]; })];
+  const checkDirectories = () => {
+    for (const dir of inputDirectories) { const stat = lstatSync(dir, { throwIfNoEntry: false }); if (stat && !stat.isDirectory()) throw Error("recap input is not a plain directory"); }
+  };
   const check = () => {
+    checkDirectories();
     if (readSelector(home).revision !== selection || layoutOf(home) !== layout || JSON.stringify(aliasedKeys(home, project)) !== JSON.stringify(aliases)) throw Error("recap binding changed");
     for (const verify of budget.verify!) verify();
   };
   try {
+    checkDirectories();
     scratch = mkdtempSync(join(tmpdir(), `amem-doctor-${process.pid}-`)); chmodSync(scratch, 0o700); guard.adopt(scratch);
     const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
     copyWork(options, workBase, budget);
