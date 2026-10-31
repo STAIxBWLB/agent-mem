@@ -1553,6 +1553,14 @@ export class MemoryStore {
     return { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length, segments, machine: this.machine };
   }
 
+  /**
+   * #188: counts only, for `amem doctor`. Forget operations in the index and, on a generation profile, prune rows.
+   * Masked entries stay in the local log and in sync history; nothing here reads or returns their text.
+   */
+  maskingCounts(): { forgets: number; prunes: number } {
+    const count = (sql: string) => { try { return Number((this.db.query(sql).get() as { n: number } | null)?.n ?? 0); } catch { return 0; } };
+    return { forgets: count("SELECT COUNT(*) AS n FROM ops WHERE op = 'forget'"), prunes: count("SELECT COUNT(*) AS n FROM generation_prunes") };
+  }
   /** The index's rows in a fixed order: what a rebuild must reproduce. */
   dump(): string {
     return JSON.stringify(["entries", "ops", "edges", "goals"].map((t) => this.db.query(`SELECT * FROM ${t} ORDER BY 1, 2`).all()));

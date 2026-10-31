@@ -43,6 +43,7 @@ import { usageReport, usageText } from "./memory/usage.ts";
 import { exportProject, type ProjectExportFormat } from "./memory/project-export.ts";
 import { importProject } from "./memory/project-import.ts";
 import { importExternalMemory, type ExternalMemorySource } from "./memory/external-import.ts";
+import { forgetNearby } from "./memory/forget-nearby.ts";
 import { searchAllProjects, vaultCandidatesAll } from "./memory/cross-project.ts";
 import { requireShard } from "./memory/curated-read.ts";
 import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility, type RepoView } from "./memory/repo-scope.ts";
@@ -926,7 +927,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   try {
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
-      onBridgeStatus: status => { receipt.bridgeStatus = status; } }));
+      onBridgeStatus: status => { receipt.bridgeStatus = status; },
+      // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
+      forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));
   } catch (error) {
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
     throw error;

@@ -14,6 +14,8 @@ import type { GoalPromotionReport } from "./goal-promotion.ts";
 export interface CommandNames { memory: string; goal: string }
 export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 
+import type { ForgetNearby } from "./forget-nearby.ts";
+import { forgetNearbyText } from "./forget-nearby.ts";
 export interface MemoryCommandOptions {
   /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
   person?: boolean;
@@ -35,6 +37,8 @@ export interface MemoryCommandOptions {
   importPolicy: () => (text: string) => boolean;
   /** Explicit person-status receipt; model-facing hosts omit this callback. */
   onBridgeStatus?: (status: { skippedRows: number } | undefined) => void;
+  /** #188: standalone CLI only. Lists same-project machine-local rows near a forgotten note (ids, counts). */
+  forgetNearby?: (note: { project: string; text: string; title: string | null }) => Promise<ForgetNearby>;
 }
 export interface GoalCommandOptions {
   /** Defaults to amem's own names. */
@@ -185,7 +189,12 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       case "demote": { const v = visibleTarget(store.get(rest[0] ?? fail(usage), project), rest[0]!); if (v.tier !== "long") return `${v.id.slice(0, 8)} is already short-term`; store.demote(v.id, actor, project); return `demoted ${v.id.slice(0, 8)}: it expires ${store.get(v.id, project)?.expiresAt ?? "with its short-term lifetime"}`; }
       case "forget": { const target = visibleTarget(store.get(rest[0] ?? fail(usage), project), rest[0]!);
         if (cliAttribution()?.actor === "agent") for (const member of store.forgetTargets(target.id, project)) visibleTarget(member, member.id);
-        const v = need(store.forget(target.id, actor, project), rest[0]!); return `forgot ${v.id.slice(0, 8)}${v.local ? "" : "; it stays in the sync remote's git history until a person rewrites it (docs/memory.md)"}`; }
+        const v = need(store.forget(target.id, actor, project), rest[0]!);
+        const remote = v.local ? "" : "; it stays in the sync remote's git history until a person rewrites it (docs/purge.md)";
+        const nearby = opts.forgetNearby ? await opts.forgetNearby({ project: target.project, text: target.text, title: target.title ?? null }).catch(() => undefined) : undefined;
+        // Hosts that do not opt in keep the existing single-line receipt (with or without --json).
+        if (json && opts.forgetNearby) return JSON.stringify({ forgot: v.id, local: !!v.local, ...(nearby ? { nearby } : {}) }, null, 2);
+        return [`forgot ${v.id.slice(0, 8)}${remote}`, ...(nearby ? forgetNearbyText(nearby) : [])].join("\n"); }
       case "supersede": {
         if (rest.length !== 2) fail(`usage: ${names.memory} supersede <old> <new>`);
         if (cliAttribution()?.actor === "agent") for (const id of rest) visibleTarget(store.get(id, project), id);
