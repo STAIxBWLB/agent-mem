@@ -311,6 +311,24 @@ Null-scope publications are never adopted, whether or not they carry a physical 
 
 Retirement metrics use `captureDrops` and the closed `captureDropReason` values `cwd_removed`, `undrainable_expired`, `scope_unknown`, `spool_full`, `project_archived` and `project_forgotten`. A body is retained when its numeric retirement receipt cannot be written. Bounded maintenance rotates its inspection slice so a healthy first slice cannot pin later removed records. Brief notices summarize the bounded rolling metric tail, not an all-time loss total.
 
+### Session and subagent attribution in capture (#173)
+
+Source fields, from the Claude Code hooks reference (common input fields) and a real payload recorded 2026-10-31 with Claude Code 2.1.316 (`claude -p` with an Explore subagent, PreToolUse and SessionStart hooks):
+
+- `session_id` is present on every hook event. A subagent's tool events carry the parent session's `session_id`; the recorded run had one distinct value across SessionStart, the main agent's `Agent` call and the subagent's `Read`.
+- `agent_id` (a 17-character string in the recorded run) and `agent_type` (`Explore`) appear on tool events (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`) fired inside a subagent or in-process teammate. The main agent's own events carry neither. `agent_type` alone also appears when a session starts with `claude --agent <name>`, so it is not a subagent marker; `agent_id` is.
+- `transcript_path` is present on every event and is never stored.
+
+Capture fields, both optional and absent on rows written before this change:
+
+- `session`: the first 16 hex characters of `sha256("amem-session\0" + session_id)`, only when `session_id` is a 1-256 character string. The raw id, the transcript path, `agent_id` and `agent_type` are not stored. The key groups rows by session on this machine; it is not a secret and not an authentication value.
+- `subagent: true` when `agent_id` is a non-empty string; otherwise the field is absent (never `false`).
+- Both are derived after the existing whole-input policy screen and pass the normalized-capture screen with every other field, so a denied input stores nothing. Normalization accepts only a 16-hex `session` and a literal `true` `subagent`, so a direct library caller cannot store a raw id.
+
+Readers: the native SessionStart brief and `sessionStartBrief()` skip `subagent: true` rows before selection. `amem_search`, `amem_timeline`, `amem_show` and CLI search keep them and expose the `subagent` field (CLI human search adds a `subagent` label).
+
+Compatibility rule: the capture shard gains two nullable columns (`session TEXT`, `subagent INTEGER`) by an idempotent `ALTER TABLE ... ADD COLUMN` on writable open; FTS bodies are unchanged, so incremental indexing still equals a full rebuild. The previously published reader (0.15.0, pinned as `@staix/agent-mem-v015`) opens, reads and appends to a shard holding the new columns; its rows read back without attribution. Hook-spool records are the exception. This version accepts 8 to 10 capture keys, but 0.15.0's decoder accepts exactly 8 and deletes any record it cannot verify (its envelope and schema checks leave no forward-compatible slot). A pending record staged by this version and drained by a 0.15.0 hook is therefore discarded without being misread or counted. Rule: every hook binary that writes into one memory home must run this version or later; upgrade them together, as for vault links. Curated v1 schemas, entry hashes and sync are unchanged; capture stays machine-local.
+
 ## Project lifecycle, gc and cross-project reads (#15 T5)
 
 - `lifecycle.jsonl` (memory home) holds `archive`, `unarchive` and `forget` ops under the shard schema string: local, never in a shared-v1 segment or a sync ref, so no existing reader sees a new operation kind. It is append-only, the latest op for a canonical key wins and `forget` is terminal, including against a line appended by hand. A log above 8 MiB is refused rather than read in part, because a half-read log could show a forgotten project as active.

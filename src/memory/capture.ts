@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
-import { normalizeCaptureFields, type CaptureFields } from "./capture-input.ts";
+import { captureAttribution, normalizeCaptureFields, SESSION_KEY, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, readShardDescriptor, resolveAlias, shardKeyHash } from "./shard.ts";
@@ -63,6 +63,8 @@ export interface CaptureInput extends CaptureFields { project: string }
 export interface CaptureRow {
   id: number; at: string; project: string; agent: string; event: string;
   tool: string | null; paths: string[]; status: string | null; excerpt: string;
+  /** #173 attribution, absent on older rows: a 16-hex session hash and the subagent marker. */
+  session?: string; subagent?: true;
 }
 export interface CaptureConfig { capMb: number; retentionDays: number }
 export interface CaptureOptions {
@@ -104,6 +106,7 @@ export type CaptureAppend = { id: number; already?: true } | { spooled: true };
 interface NormalizedCapture {
   at: string; project: string; agent: string; event: string;
   tool: string | null; paths: string[]; status: string | null; excerpt: string; bytes: number;
+  session?: string; subagent?: true;
   /** Entropy per spooled line, so two byte-identical hook events are two rows; a replayed line still dedupes. */
   nonce?: string;
 }
@@ -159,8 +162,23 @@ export function writeCaptureConfig(dir: string, config: Partial<CaptureConfig>):
 
 const lockError = (error: unknown): boolean => /lock|busy/i.test((error as Error)?.message ?? "");
 
-interface RawRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string; bytes: number }
-const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt });
+/**
+ * #173 migration, safe under concurrent first opens after an upgrade. Another writer can add a column between our
+ * table_info read and our ALTER; SQLite then reports "duplicate column name", which means the column exists. Lock
+ * and busy errors still propagate, so the constructor's contended path spools as before.
+ */
+export function addAttributionColumns(db: Database, beforeAlter?: (column: string) => void): void {
+  const has = () => new Set((db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(c => c.name));
+  for (const [column, type] of [["session", "TEXT"], ["subagent", "INTEGER"]] as const) {
+    if (has().has(column)) continue;
+    beforeAlter?.(column);
+    try { db.run(`ALTER TABLE rows ADD COLUMN ${column} ${type}`); }
+    catch (error) { if (!/duplicate column name/i.test((error as Error)?.message ?? "") || !has().has(column)) throw error; }
+  }
+}
+
+interface RawRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string; bytes: number; session?: string | null; subagent?: number | null }
+const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt, ...captureAttribution(r) });
 
 export class CaptureStore {
   readonly dir: string;
@@ -268,6 +286,8 @@ export class CaptureStore {
       db.run("CREATE UNIQUE INDEX IF NOT EXISTS rows_spool ON rows (spool_id) WHERE spool_id IS NOT NULL");
       db.run("CREATE INDEX IF NOT EXISTS rows_at ON rows (at)");
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
+      addAttributionColumns(db);
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
@@ -437,8 +457,8 @@ export class CaptureStore {
 
   /** The one place input becomes a row: caps fields, deny-filters paths, screens the excerpt, counts its bytes. */
   private normalize(input: CaptureInput): NormalizedCapture {
-    const { at, agent, event, tool, paths, status, excerpt, bytes } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text), this.caps);
-    return { at, project: input.project, agent, event, tool, paths, status, excerpt, bytes };
+    const { at, agent, event, tool, paths, status, excerpt, bytes, session, subagent } = normalizeCaptureFields(input, () => this.now(), text => this.screen(text), this.caps);
+    return { at, project: input.project, agent, event, tool, paths, status, excerpt, bytes, ...(session ? { session } : {}), ...(subagent ? { subagent } : {}) };
   }
 
   private spoolLine(row: NormalizedCapture, nonce = randomBytes(12).toString("hex")): string {
@@ -485,7 +505,8 @@ export class CaptureStore {
       && typeof row.agent === "string" && row.agent.length > 0 && typeof row.event === "string" && row.event.length > 0
       && (row.tool === null || typeof row.tool === "string") && Array.isArray(row.paths) && row.paths.every((p) => typeof p === "string")
       && (row.status === null || typeof row.status === "string") && typeof row.excerpt === "string"
-      && typeof row.bytes === "number" && Number.isFinite(row.bytes) && row.bytes >= 0;
+      && typeof row.bytes === "number" && Number.isFinite(row.bytes) && row.bytes >= 0
+      && (row.session === undefined || typeof row.session === "string" && SESSION_KEY.test(row.session)) && (row.subagent === undefined || row.subagent === true);
     candidates.sort((a, b) => a.name.localeCompare(b.name));
     for (const source of candidates) {
       if (budget <= 0 || byteBudget <= 0 || performance.now() - started >= SPOOL_MAX_MS) break;
@@ -557,8 +578,8 @@ export class CaptureStore {
     // it), so the replay check is a plain indexed lookup, never the statement's change count.
     if (spoolId !== null && this.db.query("SELECT 1 FROM rows WHERE spool_id = ?").get(spoolId)) return undefined;
     try {
-      const id = Number(this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(row.at, row.project, row.agent, row.event, row.tool, JSON.stringify(row.paths), row.status, row.excerpt, row.bytes, spoolId).lastInsertRowid);
+      const id = Number(this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id, session, subagent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(row.at, row.project, row.agent, row.event, row.tool, JSON.stringify(row.paths), row.status, row.excerpt, row.bytes, spoolId, row.session ?? null, row.subagent ? 1 : null).lastInsertRowid);
       this.addBytes(row.bytes);
       return id;
     } catch (error) {

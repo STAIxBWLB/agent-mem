@@ -748,7 +748,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
     const result = searchAllProjects(memoryHome(), words, { ...(options["--limit"] !== undefined ? { limit: Number(options["--limit"]) } : {}), includeArchived: options["--include-archived"] === true });
     if (options["--json"]) return JSON.stringify(result, null, 2);
-    const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}  ${hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
+    const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}${hit.capture!.subagent ? "  subagent" : ""}  ${hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
     return [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
   }
   if (sub === "search" && options["--include-archived"] === true) throw new Error("--include-archived only applies with --all-projects");
