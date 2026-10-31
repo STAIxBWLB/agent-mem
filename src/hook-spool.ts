@@ -3,7 +3,7 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
-import { normalizeCaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
+import { CAPTURE_MAX_EXCERPT, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -465,16 +465,25 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // F4: the person's configured caps apply at staging. Replay (`decoded`) re-normalizes with the built-in caps, which are the ceiling, so a record
   // staged under a tighter cap still verifies after the cap is raised or removed.
   const configured = loadAmemConfig(base, repoConfigRoot(cwd)).config;   // the repository's .amem/config narrows here too
+  const toolEvent = event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure";
+  const contentText = typeof content === "string" ? content : JSON.stringify(content) ?? "";
+  const excerpt = toolEvent
+    ? clipCaptureUtf8(toolCaptureExcerpt(toolInputLine(tool), contentText), Math.min(CAPTURE_MAX_EXCERPT, configured.excerptBytes ?? CAPTURE_MAX_EXCERPT))
+    : contentText;
+  // Screen the final bounded tool excerpt as well as the full native envelope above. A value assembled across
+  // fields is refused as a whole row, never replaced with a persisted redaction marker.
+  if (toolEvent && !await policy.screen({ cwd, excerpt })) return undefined;
   // #173: attribution. Only a fixed-width hash of the native session id is kept, never the id or transcript path;
   // a non-empty agent_id marks a subagent (or in-process teammate) event. Both are read from the already-screened input.
   const session = typeof value.session_id === "string" && value.session_id.length > 0 && value.session_id.length <= 256 ? hash(`amem-session\0${value.session_id}`).slice(0, 16) : undefined;
   const subagent = typeof value.agent_id === "string" && value.agent_id.length > 0;
   const capture = normalizeCaptureFields({ agent: "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
     ...(session ? { session } : {}), ...(subagent ? { subagent: true } : {}),
-    ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt: typeof content === "string" ? content : JSON.stringify(content) },
+    ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt },
     undefined,
-    (text: string) => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),   // the configured patterns redact the excerpt, as the store does
+    (text: string) => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),   // keep the normalizer's screen as well as the full envelope and bounded tool text screens
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, ...(configured.denyPaths.length ? { denyPaths: configured.denyPaths } : {}) });
+  if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
   const record: Record = { schema: SCHEMA, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
