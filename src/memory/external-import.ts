@@ -22,9 +22,11 @@ export interface ExternalImportResult {
   limitReached: boolean;
   skipped: { rules: number; policy: number; invalid: number; truncated: number };
   pending: PendingSummary;
+  /** Set only when no source layout exists: the absolute locations that were checked (#177). */
+  checked?: string[];
 }
 
-type SourceFile = { path: string; relative: string };
+type SourceFile = { path: string; relative: string; root?: string };
 type RawRecord = { text: string; title?: string; line?: number };
 type Discovery = { files: SourceFile[]; rules: number };
 
@@ -231,12 +233,22 @@ export async function importExternalMemory(opts: {
   const root = sourceRoot(source), project = resolveAlias(opts.base, opts.project), aliases = aliasedKeys(opts.base, project);
   const projectDirectory = opts.from === undefined && opts.source === "claude-auto" ? claudeProjectDirectory(opts.cwd ?? process.cwd()) : undefined;
   const discovery = root ? opts.source === "claude-auto" ? discoverClaude(root, projectDirectory) : discoverCodex(root) : { files: [], rules: 0 };
-  const result: ExternalImportResult = { source: opts.source, project, files: 0, read: 0, added: 0, queueFull: false, limitReached: false, skipped: { rules: discovery.rules, policy: 0, invalid: 0, truncated: 0 }, pending: { count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 } };
+  // #177: Codex memories v2 (default since 0.165.0) is the sibling root `memories_v2/`. Only the default location adds it;
+  // an explicit --from stays one root. v1 discovery, titles and order are unchanged; v2 titles carry a `memories_v2/` prefix.
+  const v2Source = opts.from === undefined && opts.source === "codex" ? join(dirname(source), "memories_v2") : undefined;
+  const v2Root = v2Source ? sourceRoot(v2Source) : undefined;
+  if (v2Root && discovery.files.length < EXTERNAL_IMPORT_LIMITS.maxFiles) {
+    const v2 = discoverCodex(v2Root);
+    discovery.rules += v2.rules;
+    for (const file of v2.files.slice(0, EXTERNAL_IMPORT_LIMITS.maxFiles - discovery.files.length)) discovery.files.push({ ...file, relative: `memories_v2/${file.relative}`, root: v2Root });
+  }
+  const result: ExternalImportResult = { source: opts.source, project, files: 0, read: 0, added: 0, queueFull: false, limitReached: false, skipped: { rules: discovery.rules, policy: 0, invalid: 0, truncated: 0 }, pending: { count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 },
+    ...(!root && !v2Root ? { checked: [source, ...(v2Source ? [v2Source] : [])] } : {}) };
   const store = new CandidateStore({ memoryDir: opts.base, reconcile: { canonical: project, aliases } });
   try {
     for (const file of discovery.files) {
       result.files++;
-      const input = readBounded(file.path, root!);
+      const input = readBounded(file.path, file.root ?? root!);
       if (!input) { result.skipped.invalid++; continue; }
       if (input.truncated) result.skipped.truncated++;
       for (const sourceRecord of records(file, input.text)) {
