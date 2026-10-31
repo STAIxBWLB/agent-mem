@@ -1,6 +1,6 @@
 {
   "name": "@staix/agent-mem",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Curated, shared memory for coding agents: append-only logs, a derived index, tiers and a typed graph.",
   "license": "MIT",
   "type": "module",
