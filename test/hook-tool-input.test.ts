@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stageHookCapture } from "../src/hook-spool.ts";
 import { toolInputLine } from "../src/memory/capture-input.ts";
@@ -77,4 +77,17 @@ test("private spans are stripped from each value before clipping and from old co
   const excerpt = pending(f).find(row => row.name === staged!.name)!.value.capture.excerpt;
   expect(excerpt).toContain("prefix  suffix\nresponse "); expect(excerpt).toContain(" tail");
   expect(excerpt).not.toContain("private-plan-"); expect(excerpt).not.toContain("<private");
+});
+
+test("the normalizer retains its configured screen if policy tightens after the envelope screen", async () => {
+  const f = fixture(); mkdirSync(f.base, { recursive: true });
+  const clone = globalThis.structuredClone;
+  const change = spyOn(globalThis, "structuredClone").mockImplementation(((...args: Parameters<typeof clone>) => {
+    writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["late-codename"] }));
+    return clone(...args);
+  }) as typeof clone);
+  try {
+    expect(await stageHookCapture("PostToolUse", { cwd: f.cwd, tool_input: { command: "late-codename lookup" } }, { cwd: f.cwd, base: f.base })).toBeUndefined();
+    expect(pending(f)).toEqual([]);
+  } finally { change.mockRestore(); }
 });
