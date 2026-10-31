@@ -2,6 +2,14 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.15.0
+
+- **Per-command help** (#165, PR #167). `amem <command> --help` prints that command's usage, description, options with their descriptions and subcommands (`amem review --help` shows `review` and its subcommands, not the default subcommand). `amem --help` and `amem help` output is unchanged; an unknown command with `--help` still prints the full list.
+- **Specific usage errors in agent-marked sessions** (#166, PR #169). A refusal decided from the parsed command alone now names the problem instead of the uniform line: the parser's message (`unknown command serch`, `unknown option --bogus`), a command that is not an agent read (with the agent read list), or the options an agent read accepts. These are decided before any store or file is opened and show no memory data. Failures after the store opens, administrative handler failures and receipt withholding keep the uniform message; exit codes are unchanged.
+- Inherited object names such as `toString`, `constructor` or `__proto__` given as a command now report `unknown command <name>` instead of failing with an internal TypeError (#168, PR #170).
+- Tests only: capture fixtures stay valid past the 90-day retention window, with a guard run under a clock advanced 180 days (PR #164).
+
+
 ## 0.14.0
 
 - **Opt-in v2 public prune view** (#15; PRs #155, #156, #157, #159). New `amem migrate --public-prune-view [--dry-run|--apply|--resume] [--json]` enables, for an active curated split, a forward-only v2 reader floor with a separate `index-v2.db` that keeps every native/local mask; deactivation is refused. Once activated, explicit `amem sync` publishes `shard-sync/v2` manifests and applies eligible complete same-realm public prunes from independently initialized generations, keeping each original prune ID, generation and attribution and leaving native logs and seals unchanged. The first v2 sync primes a private publisher boundary; only own prune rows appended after it receive `post-seal` lineage. `SyncResult.pruneApplication` reports transport, proof, projection, native application and held counts separately. Without activation, homes, wire formats and shared-v1/PruneRow hashes are unchanged, and no package export or runtime dependency is added.
