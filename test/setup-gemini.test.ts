@@ -81,6 +81,11 @@ test("GEMINI_CLI_HOME moves the settings file and must be absolute; $ placeholde
   expect(JSON.parse(text(join(elsewhere, ".gemini", "settings.json"))).mcpServers.amem.command).toBe(custom.options.bun);
   expect(existsSync(custom.settings)).toBe(false);
   for (const value of ["relative", "~/g"]) expect(() => planSetup("gemini", "preview", { ...custom.options, env: { ...custom.env, GEMINI_CLI_HOME: value } })).toThrow("absolute GEMINI_CLI_HOME");
+  // Only a selected gemini target refuses it: the shared context must not break other targets (claude preview/undo).
+  const other = { ...custom.options, env: { ...custom.env, GEMINI_CLI_HOME: "relative" } };
+  for (const mode of ["preview", "undo"] as const) expect(planSetup("claude", mode, other).actions.map(action => action.target)).toEqual(["claude"]);
+  expect(() => undoSetup(planSetup("claude", "undo", other), other)).not.toThrow();
+  expect(() => planSetup("gemini", "undo", other)).toThrow("absolute GEMINI_CLI_HOME");
   const placeholder = fixture(); placeholder.options.entry = join(placeholder.home, "$HOME", "amem.js");
   expect(() => placeholder.plan("apply")).toThrow("$VAR");
   expect(placeholder.calls).toEqual([]);

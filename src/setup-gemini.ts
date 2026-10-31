@@ -6,11 +6,19 @@ import { isAbsolute, join, resolve } from "node:path";
 // <home>/.gemini/config/mcp_config.json is a different client's and is never read or written here.
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** GEMINI_CLI_HOME replaces the home directory for all Gemini CLI state; it must be absolute for setup. */
+/**
+ * GEMINI_CLI_HOME replaces the home directory for all Gemini CLI state. Never throws: the shared setup context
+ * computes every target's paths, so a relative value falls back to the home here and is refused only by
+ * assertGeminiHome when gemini is actually selected.
+ */
 export function geminiSettingsPath(env: Env, home: string): string {
   const configured = env.GEMINI_CLI_HOME;
+  return join(configured && isAbsolute(configured) ? resolve(configured) : home, ".gemini", "settings.json");
+}
+/** A relative GEMINI_CLI_HOME would resolve against Gemini CLI's own cwd, so setup refuses it rather than guess. */
+export function assertGeminiHome(env: Env): void {
+  const configured = env.GEMINI_CLI_HOME;
   if (configured !== undefined && configured !== "" && !isAbsolute(configured)) throw Error("setup requires an absolute GEMINI_CLI_HOME; unset it to use the home directory");
-  return join(configured ? resolve(configured) : home, ".gemini", "settings.json");
 }
 /** Gemini CLI expands $VAR, ${VAR} and ${VAR:-default} inside settings strings (packages/cli/src/utils/envVarResolver.ts). */
 export function assertGeminiRuntime(bun: string, entry: string): void {

@@ -3,7 +3,7 @@ import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
-import { assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand, geminiSettingsPath } from "./setup-gemini.ts";
+import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand, geminiSettingsPath } from "./setup-gemini.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -228,6 +228,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   const c = context(options, targets.includes("agy") ? workspaceBinding(options) : undefined);
   if (mode !== "undo" && targets.includes("jcode")) assertJcodeRuntime(c);
   if (targets.includes("opencode") && (target === "opencode" || available(c, "opencode", options))) assertOpencodeLayout(c, mode);
+  if (targets.includes("gemini") && (target === "gemini" || available(c, "gemini", options))) assertGeminiHome(c.env);
   if (mode !== "undo" && targets.includes("gemini")) assertGeminiRuntime(c.bun, c.entry);
   const pluginNotes: string[] = [];
   if (targets.includes("claude")) {
@@ -338,6 +339,7 @@ function restoreChange(value: Receipt, change: Change, index: number, live: Imag
 function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): Prepared {
   if (target === "jcode") assertJcodeRuntime(c);
   if (target === "opencode") assertOpencodeLayout(c, "apply");
+  if (target === "gemini") assertGeminiHome(c.env);
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
   const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
