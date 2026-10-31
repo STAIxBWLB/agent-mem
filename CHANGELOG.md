@@ -2,8 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## 0.17.0
+## Unreleased
 
+- **Console Recap panel** (#194). On demand, shows the selected project's current SessionStart context with screened coverage, partial status, conservative token bound and generation time. It is a fresh machine-policy read from private scratch, not a stored copy of a previous session's injected brief; no repository section is available in the console and no hook output or capture data is added.
+
+## 0.17.0
 - **Console plugin for acon** (#158). `@staix/agent-mem/ui-plugin` is an agent-console api 1 plugin: a Memory area with Review, Search, Timeline, Work lists, Goals and Capacity panels, inbox items for pending candidates and a capture capacity proposal, and palette search. Reads use the screened MCP read handlers in process (console search equals `amem_search` for the same query); the review queue and goals pass the configured policy and hide what fails it. Accept, edit-then-accept and reject run the CLI's review operations as the person, with a 10-second undo (forget the accepted note, reopen a rejected candidate). `gc`, `capacity_apply`, `project_forget`, `decay_apply` and `prune` answer `needsConfirm` and write only on a matching confirmed fingerprint. New `amem setup console [--apply|--undo]` writes or removes `$AGENTHUB_HOME/console/plugins/amem.json` (module path and sha256, directory 0700, file 0600); `setup all` does not include it.
 - Library: `CandidateStore.reopen(id, { project, actor, restore? })` returns a rejected candidate to pending (a consolidation's lasting review identity is withdrawn with it); `restore` writes back a rejected candidate that retention already deleted, with its original time. `CandidateStore.projects()` lists projects with pending candidates. `planGc()` adds `trimRows` per shard, the unexpired rows that must go to fit the cap. No storage format, MCP tool or hook changes.
 - Development: `@staix/agent-console` is a dev dependency pinned to a GitHub commit, for the contract types and the conformance suite; `src/` still imports no package.
