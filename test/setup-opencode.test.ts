@@ -93,11 +93,20 @@ test("unsupported layouts are refused before any write: JSONC, merged siblings, 
   expect(existsSync(join(real, "opencode.json"))).toBe(false);
 });
 
-test("the config path follows an absolute XDG_CONFIG_HOME and otherwise ~/.config", () => {
+test("the config path uses an absolute XDG_CONFIG_HOME literally, ~/.config when unset or empty, and refuses a relative value", () => {
   const xdg = fixture(); const custom = join(xdg.home, "xdg");
   expect(planSetup("opencode", "preview", { ...xdg.options, env: { ...xdg.env, XDG_CONFIG_HOME: custom } }).actions[0]!.files).toEqual([join(custom, "opencode", "opencode.json")]);
-  for (const value of [undefined, "", "relative/xdg"]) {
+  // xdg-basedir does not trim: a trailing space names a different directory, and setup must follow it exactly.
+  const spacedHome = fixture(), spaced = join(spacedHome.home, "config ");
+  const spacedOptions = { ...spacedHome.options, env: { ...spacedHome.env, XDG_CONFIG_HOME: spaced } };
+  expect(planSetup("opencode", "preview", spacedOptions).actions[0]!.files).toEqual([`${spaced}/opencode/opencode.json`]);
+  applySetup(planSetup("opencode", "apply", spacedOptions), spacedOptions);
+  expect(existsSync(`${spaced}/opencode/opencode.json`)).toBe(true); expect(existsSync(join(spacedHome.home, "config", "opencode", "opencode.json"))).toBe(false);
+  for (const value of [undefined, ""]) {
     const env = { ...xdg.env, XDG_CONFIG_HOME: value };
     expect(planSetup("opencode", "preview", { ...xdg.options, env }).actions[0]!.files).toEqual([join(xdg.home, ".config", "opencode", "opencode.json")]);
+  }
+  for (const value of ["relative/xdg", " ", "~/cfg"]) {
+    for (const mode of ["preview", "apply", "undo"] as const) expect(() => planSetup("opencode", mode, { ...xdg.options, env: { ...xdg.env, XDG_CONFIG_HOME: value } })).toThrow("absolute XDG_CONFIG_HOME");
   }
 });

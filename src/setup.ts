@@ -146,8 +146,8 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     qwen: [join(qwen, "settings.json")],
     // Absolute JCODE_HOME spellings stay literal; unset uses the platform-home default.
     jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
-    // xdg-basedir: an absolute XDG_CONFIG_HOME, else ~/.config (OpenCode v1.18.35 packages/core/src/global.ts).
-    opencode: [join(env.XDG_CONFIG_HOME?.trim() && isAbsolute(env.XDG_CONFIG_HOME.trim()) ? resolve(env.XDG_CONFIG_HOME.trim()) : join(home, ".config"), "opencode", "opencode.json")],
+    // xdg-basedir 5.1.0: XDG_CONFIG_HOME verbatim when set and non-empty, else ~/.config (OpenCode v1.18.35 packages/core/src/global.ts).
+    opencode: [join(opencodeConfigRoot(env, home), "opencode", "opencode.json")],
     agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
   };
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
@@ -165,6 +165,16 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
   if (target === "qwen") return [target, "mcp", "add", "--scope", "user", "--transport", "stdio", "amem", bun, "--", "--smol", entry, "mcp"];
   return [target, "mcp", "add", ...(target === "claude" ? ["--scope", "user", "--transport", "stdio"] : []), "amem", "--", bun, "--smol", entry, "mcp"];
 }
+/**
+ * OpenCode 1.18.35 resolves its config root with xdg-basedir 5.1.0, which uses XDG_CONFIG_HOME verbatim when set
+ * (no trim) and falls back to ~/.config only when it is unset or empty. A relative value would resolve against
+ * OpenCode's own cwd, so setup refuses it rather than guess. An absolute value keeps its literal spelling.
+ */
+function opencodeConfigRoot(env: Env, home: string): string {
+  const value = env.XDG_CONFIG_HOME;
+  // A relative value is refused in assertOpencodeLayout; the path here only has to be well-formed for inventory.
+  return value === undefined || value === "" || !isAbsolute(value) ? join(home, ".config") : value;
+}
 function assertJcodeHome(env: Env): void {
   if (env.JCODE_HOME !== undefined && !isAbsolute(env.JCODE_HOME)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
 }
@@ -174,6 +184,8 @@ function assertJcodeRuntime(c: ReturnType<typeof context>): void {
 }
 /** OpenCode merges config.json, opencode.json, then opencode.jsonc from its global directory, and env routes can replace it. */
 function assertOpencodeLayout(c: ReturnType<typeof context>, mode: SetupPlan["mode"]): void {
+  const xdg = c.env.XDG_CONFIG_HOME;
+  if (xdg !== undefined && xdg !== "" && !isAbsolute(xdg)) throw Error("OpenCode setup requires an absolute XDG_CONFIG_HOME; unset it to use ~/.config");
   if (mode !== "undo") for (const key of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"]) if (c.env[key]?.trim()) throw Error(`OpenCode setup refuses ${key}: it routes configuration away from the global file this setup owns`);
   const dir = dirname(c.paths.opencode[0]!);
   for (const name of ["opencode.jsonc", "config.json"]) if (read(join(dir, name)).bytes !== null) throw Error(`OpenCode setup supports one strict-JSON global opencode.json; ${name} beside it is merged too and is not supported`);
