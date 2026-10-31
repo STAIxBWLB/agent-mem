@@ -19,7 +19,7 @@ if (!globalThis[installed]) {
       if (Array.isArray(command) && command[0] === process.execPath) {
         const env = options?.env ?? process.env;
         return native(command, { ...options, env: { ...env,
-          BUN_OPTIONS: `${env.BUN_OPTIONS ?? ''} --preload=${JSON.stringify(import.meta.path)}`,
+          BUN_OPTIONS: `${env.BUN_OPTIONS ?? ''} --preload=${import.meta.path}`,
         } });
       }
       return native(command, options);
