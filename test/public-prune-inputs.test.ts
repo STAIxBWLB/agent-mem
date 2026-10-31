@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +9,8 @@ import { entryId, type Entry } from "../src/memory/store.ts";
 import { persistPublicPruneInput, preparePublicPruneInput, reducePublicPruneInputs, validatePublicPruneInputSet,
   PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, PUBLIC_PRUNE_REPLAY_MAX_BYTES, type PublicPruneBinding, type PublicPruneInputRegistration, type PublicPrunePersistPhase } from "../src/memory/public-prune-inputs.ts";
 import { publicPruneGraph, rawGitObject } from "./fixtures/public-prune-graph.ts";
+import { acquireMutation, type MutationHandle } from "../src/memory/mutation.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const done of cleanups.splice(0).reverse()) done(); });
@@ -246,10 +249,52 @@ test("R14 a copied historical hold cannot become an input even when its hash is 
 test("R21 archive capacity counts unregistered storage and refuses without publishing or evicting", () => {
   const f = fixture(), old = f.register(null);
   const base = join(f.dir, "public-prune-objects"); mkdirSync(base, { mode: 0o700 });
-  const orphan = join(base, ".orphan-resource"), plan = f.prepare();
+  const orphan = join(base, "f".repeat(40) + ".git"), plan = f.prepare();
   writeFileSync(orphan, "", { mode: 0o600 }); truncateSync(orphan, PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
   const before = files(f.dir);
   expect(() => persistPublicPruneInput(plan)).toThrow("public prune input resource");
   expect(files(f.dir)).toEqual(before); expect(lstatSync(orphan).size).toBe(PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
   expect(f.state.binding.inputSetHash).toBe(old.inputSetHash); expect(f.replay().targets.size).toBe(0);
+});
+
+for (const kind of ["object", "input", "set"] as const) test(`R16 a single-link ${kind} crash temp is reclaimed before sparse byte capacity accounting`, () => {
+  const f = fixture(), previous = f.register(null), plan = f.prepare();
+  const folder = join(f.dir, kind === "object" ? "public-prune-objects" : kind === "input" ? "public-prune-inputs" : "public-prune-input-sets");
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const temp = join(folder, ".pending-" + "a".repeat(32)); writeFileSync(temp, "", { mode: 0o600 }); truncateSync(temp, PUBLIC_PRUNE_REPLAY_MAX_BYTES + 1);
+  expect(lstatSync(temp).nlink).toBe(1);
+  const result = persistPublicPruneInput(plan); expect(existsSync(temp)).toBe(false);
+  expect(f.state.binding.inputSetHash).toBe(previous.inputSetHash); expect(f.replay().targets.size).toBe(0);
+  f.commit(result); expect(f.replay().targets.has(f.graph.note.id)).toBe(true);
+});
+
+for (const bad of ["wrong name", "wrong mode", "wrong owner"] as const) test(`R16 ${bad} anywhere in the archive refuses before reclaiming another legitimate temp`, () => {
+  const f = fixture(), plan = f.prepare(), objects = join(f.dir, "public-prune-objects"), inputs = join(f.dir, "public-prune-inputs");
+  mkdirSync(objects, { mode: 0o700 }); mkdirSync(inputs, { mode: 0o700 });
+  const valid = join(objects, ".pending-" + "a".repeat(32)), invalid = join(inputs, bad === "wrong name" ? ".pending-NOT-LOWERHEX" : ".pending-" + "b".repeat(32));
+  writeFileSync(valid, "UNREGISTERED-VALID-TEMP", { mode: 0o600 }); writeFileSync(invalid, "UNREGISTERED-INVALID-TEMP", { mode: 0o600 });
+  if (bad === "wrong mode") chmodSync(invalid, 0o644);
+  const original = fs.lstatSync, uid = process.getuid!(), invalidPath = realPath(invalid);
+  const owner = bad === "wrong owner" ? spyOn(fs, "lstatSync").mockImplementation(((...args: unknown[]) => {
+    const value = Reflect.apply(original, fs, args);
+    return args[0] === invalidPath && value ? new Proxy(value, { get(target, key) {
+      if (key === "uid") return uid + 1;
+      const field = Reflect.get(target, key, target); return typeof field === "function" ? field.bind(target) : field;
+    } }) : value;
+  }) as typeof fs.lstatSync) : undefined;
+  try { expect(() => persistPublicPruneInput(plan)).toThrow("public prune input unavailable"); }
+  finally { owner?.mockRestore(); }
+  expect(readFileSync(valid, "utf8")).toBe("UNREGISTERED-VALID-TEMP"); expect(readFileSync(invalid, "utf8")).toBe("UNREGISTERED-INVALID-TEMP");
+  expect(readdirSync(objects)).toEqual([valid.slice(objects.length + 1)]);
+});
+
+test("R16 forged and released mutation handles cannot reclaim even a valid crash temp", () => {
+  const f = fixture(), plan = f.prepare(), folder = join(f.dir, "public-prune-objects"); mkdirSync(folder, { mode: 0o700 });
+  const temp = join(folder, ".pending-" + "a".repeat(32)); writeFileSync(temp, "STAGING-NOT-AUTHORITY", { mode: 0o600 });
+  expect(() => persistPublicPruneInput(plan, { mutation: (() => {}) as MutationHandle })).toThrow(); expect(existsSync(temp)).toBe(true);
+  const released = acquireMutation(f.dir)!; released();
+  expect(() => persistPublicPruneInput(plan, { mutation: released })).toThrow(); expect(readFileSync(temp, "utf8")).toBe("STAGING-NOT-AUTHORITY");
+  const genuine = acquireMutation(f.dir)!;
+  try { persistPublicPruneInput(plan, { mutation: genuine }); expect(existsSync(temp)).toBe(false); }
+  finally { genuine(); }
 });

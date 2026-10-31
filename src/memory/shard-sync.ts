@@ -1,4 +1,4 @@
-import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage } from "./prune-publisher-lineage.ts";
+import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineages } from "./prune-publisher-lineage.ts";
 import { verifyPublicPruneWitness, type PublicPruneWitnessV1 } from "./public-prune-witness.ts";
 import { readPublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
 import { advancePublicPruneView } from "./public-prune-advance.ts";
@@ -657,8 +657,11 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
           assertPublisherBoundary(target.store.profile,target.mutation!);
           const occurrences=new Map<string,{pack:string;blob:string}>();
           for(const [path,bytes] of files)if(PACK.test(path))for(const row of decodeShardPack(path,bytes,target.realm,target.generation))if(!occurrences.has(row.id))occurrences.set(row.id,{pack:path,blob:createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")});
-          for(const row of target.rows.values())if(row.op==="prune"&&row.generation===target.generation&&!target.fetched.has(row.id)&&![...target.manifests.values()].some(item=>item.row.id===row.id)){
-            const lineage=publisherPruneLineage(target.store.profile,target.mutation!,row);if(!lineage)continue;
+          const manifested=new Set([...target.manifests.values()].map(item=>item.row.id));
+          const candidates=[...target.rows.values()].filter((row):row is PruneRow=>row.op==="prune"&&row.generation===target.generation&&!target.fetched.has(row.id)&&!manifested.has(row.id));
+          const lineages=candidates.length?publisherPruneLineages(target.store.profile,target.mutation!,candidates):undefined;
+          for(const row of candidates){
+            const lineage=lineages?.get(row.id);if(!lineage)continue;
             const own=occurrences.get(row.id);if(!own)refuse("original prune occurrence unavailable");
             const needed=new Map<string,string>();for(const entry of row.targets)for(const ref of [entry,entry.basis])needed.set(ref.id,ref.rowHash);
             const witnesses=[...needed].sort(([a],[b])=>a<b?-1:1).map(([id,rowHash])=>{const location=occurrences.get(id);if(!location)refuse("public witness occurrence unavailable");return{...location,id,rowHash};});

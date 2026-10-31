@@ -217,23 +217,30 @@ function replay(input: Omit<PublicPruneReplayInput, "dir">, load: Loader): Publi
 export function reducePublicPruneInputs(input: PublicPruneReplayInput): PublicPruneProjection {
   return protectedCall(() => { const dir = rootDir(input.dir); return replay(input, (kind, id) => read(dir, kind, id)); });
 }
-/** A crash after link, before temp unlink, leaves two names. Recover only that
- * exact complete pair under the kernel writer fence; external hardlinks refuse. */
-function recoverLinkedTemps(dir: string): void {
+/** Reclaim only private staging names under the real writer fence. Validate the
+ * complete inventory first; a final name is never discarded or repaired. */
+function recoverLinkedTemps(dir: string, mutation: MutationHandle): void {
+  assertMutationHandle(mutation, dir);
+  const actions: { base: string; baseStat: Stats; temp: string; stat: Stats; final?: string }[] = [];
+  const pendingName = (name: string) => name.length === 41 && /^\.pending-[a-f0-9]{32}$/.exec(name)?.[0] === name;
   for (const kind of Object.keys(folders) as Kind[]) {
     const base = join(dir, folders[kind]); if (!lstatSync(base, { throwIfNoEntry: false })) continue;
-    folder(dir, kind); const names = readdirSync(base); guard(names.length <= ARCHIVE_FILES_MAX, "resource");
+    folder(dir, kind); const baseStat = lstatSync(base), names = readdirSync(base); guard(names.length <= ARCHIVE_FILES_MAX, "resource");
     const inodes = new Map<string, { name: string; stat: Stats }[]>();
     for (const name of names) {
+      const pending = pendingName(name), id = name.slice(0, kind === "object" ? 40 : 64);
+      guard(pending || filename(kind, id) === name);
       const stat = lstatSync(join(base, name)); guard(stat.nlink === 1 || stat.nlink === 2); privateStat(stat, false, stat.nlink);
       const key = `${stat.dev}:${stat.ino}`, entries = inodes.get(key) ?? []; entries.push({ name, stat }); inodes.set(key, entries);
     }
     for (const entries of inodes.values()) {
-      const pending = entries.find(item => item.name.length === 41 && /^\.pending-[a-f0-9]{32}$/.exec(item.name)?.[0] === item.name);
-      // ponytail: single-link crash temps count toward the 256 MiB capacity ceiling;
-      // future maintenance may reclaim them under this writer fence, never committed proof.
-      if (!pending || pending.stat.nlink === 1) continue;
-      guard(entries.length === 2); const final = entries.find(item => item !== pending); guard(final && final.stat.nlink === 2);
+      const pending = entries.find(item => pendingName(item.name));
+      if (entries[0]!.stat.nlink === 1) {
+        guard(entries.length === 1);
+        if (pending) actions.push({ base, baseStat, temp: join(base, pending.name), stat: pending.stat });
+        continue;
+      }
+      guard(pending && entries.length === 2); const final = entries.find(item => item !== pending); guard(final && final.stat.nlink === 2);
       const id = final.name.slice(0, kind === "object" ? 40 : 64); guard(filename(kind, id) === final.name);
       const file = join(base, final.name), temp = join(base, pending.name), fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
@@ -246,9 +253,25 @@ function recoverLinkedTemps(dir: string): void {
           guard(hashJSON(value) === id);
         }
         for (const name of [file, temp]) { const named = lstatSync(name); privateStat(named, false, 2); guard(named.dev === opened.dev && named.ino === opened.ino && named.size === opened.size && named.mtimeMs === opened.mtimeMs); }
-        unlinkSync(temp); fsyncDirectory(base);
+        actions.push({ base, baseStat, temp, stat: opened, final: file });
       } finally { closeSync(fd); }
     }
+  }
+  // Single-link temps can be arbitrarily incomplete, including sparse crash files.
+  // They carry no membership and are neither read into memory nor charged as proof.
+  for (const action of actions) {
+    assertMutationHandle(mutation, dir);
+    const parent = lstatSync(action.base); privateStat(parent, true); guard(parent.dev === action.baseStat.dev && parent.ino === action.baseStat.ino);
+    const links = action.final ? 2 : 1, fd = openSync(action.temp, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(fd); privateStat(opened, false, links);
+      guard(opened.dev === action.stat.dev && opened.ino === action.stat.ino && opened.size === action.stat.size && opened.mtimeMs === action.stat.mtimeMs && opened.ctimeMs === action.stat.ctimeMs);
+      for (const name of action.final ? [action.final, action.temp] : [action.temp]) {
+        const named = lstatSync(name); privateStat(named, false, links);
+        guard(named.dev === opened.dev && named.ino === opened.ino && named.size === opened.size && named.mtimeMs === opened.mtimeMs && named.ctimeMs === opened.ctimeMs);
+      }
+      assertMutationHandle(mutation, dir); unlinkSync(action.temp); fsyncDirectory(action.base);
+    } finally { closeSync(fd); }
   }
 }
 function capacity(dir: string, writes: Map<string, { kind: Kind; id: string; bytes: Buffer }>): void {
@@ -288,7 +311,7 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
     // The shared SQLite lock is an ownership fence, never an archive or membership source.
     for (const suffix of ["", "-wal", "-shm", "-journal"]) { const stat = lstatSync(join(dir, "mutation-lock.db" + suffix), { throwIfNoEntry: false }); if (stat) privateStat(stat); }
     const release = options.mutation ?? acquireMutation(dir); guard(release); assertMutationHandle(release, dir); try {
-      current(); assertMutationHandle(release, dir); recoverLinkedTemps(dir); current(); const previous = expected.inputSetHash;
+      current(); assertMutationHandle(release, dir); recoverLinkedTemps(dir, release); current(); const previous = expected.inputSetHash;
       const members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, (kind, id) => read(dir, kind, id)).inputs : [];
       const inputHash = prepared.input && hashJSON(prepared.input), includes = inputHash !== undefined && members.includes(inputHash);
       const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration,
@@ -387,7 +410,8 @@ function batchOverlay(batch: PreparedBatch): { writes: Map<string, ArchiveWrite>
   capacity(batch.dir, writes);
   return { writes, result: { inputSetHash: previous, previous: expected.inputSetHash, ...(lastInputHash ? { inputHash: lastInputHash } : {}) } };
 }
-/** Preflight all future candidates before transport publication; this call writes no evidence. */
+/** Preflight all future candidates before transport publication. This writes no
+ * evidence, but may reclaim strict unregistered crash temps under the supplied fence. */
 export function preparePublicPruneInputBatch(options: {
   dir: string; binding: PublicPruneBinding; current: () => PublicPruneBinding; inputs: NonNullable<PublicPruneInputOptions["input"]>[];
 }, mutation: MutationHandle): PublicPruneInputBatch {
@@ -408,6 +432,7 @@ export function preparePublicPruneInputBatch(options: {
       }
       batch.inputs.push(prepared); batchCurrent(batch, mutation);
     }
+    recoverLinkedTemps(dir, mutation); batchCurrent(batch, mutation);
     batchOverlay(batch); batchCurrent(batch, mutation);
     const token = Object.freeze({}) as PublicPruneInputBatch; batches.set(token, batch); return token;
   });
@@ -418,7 +443,7 @@ export function persistPublicPruneInputBatch(batch: PublicPruneInputBatch, optio
 }): PublicPruneInputRegistration {
   return protectedCall(() => {
     const prepared = batches.get(batch); guard(prepared); const mutation = options?.mutation ?? prepared.mutation;
-    batchCurrent(prepared, mutation); recoverLinkedTemps(prepared.dir); batchCurrent(prepared, mutation);
+    batchCurrent(prepared, mutation); recoverLinkedTemps(prepared.dir, mutation); batchCurrent(prepared, mutation);
     const { writes, result } = batchOverlay(prepared); batchCurrent(prepared, mutation);
     for (const item of writes.values()) {
       batchCurrent(prepared, mutation); write(prepared.dir, item.kind, item.id, item.bytes, options?.observe); batchCurrent(prepared, mutation);
