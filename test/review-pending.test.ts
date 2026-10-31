@@ -15,7 +15,8 @@ import { realPath } from "../src/memory/platform.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 // agent-mem#40 F7 / AC4: the brief says how many candidates wait, `amem review` walks them, and no candidate expires without having been shown.
-const DAY = 86400_000, START = Date.parse("2026-10-01T00:00:00.000Z");
+// Rows are seeded at START while the CLI reads the real clock, so START is the run time: a fixed date expires them 30 days later.
+const DAY = 86400_000, START = Date.now();
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 function rig() {
