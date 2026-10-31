@@ -14,7 +14,8 @@ import { lifecycleResolver } from "./lifecycle.ts";
  * or rewritten (#13 AC5, #15 D7). An archived project is still bounded (cold shards shrink first); a forgotten one is skipped, never opened.
  */
 
-export interface GcShardPlan { key: string; state: "active" | "archived"; rows: number; bytes: number; capMb: number; retentionDays: number; expiredRows: number; overCap: boolean }
+/** `trimRows`: unexpired rows, oldest first, that must go for the shard to fit its cap once the expired ones are gone. `evict()` removes them in whole batches. */
+export interface GcShardPlan { key: string; state: "active" | "archived"; rows: number; bytes: number; capMb: number; retentionDays: number; expiredRows: number; overCap: boolean; trimRows: number }
 export interface GcShardResult { key: string; expired: number; trimmed: number; batches: number; remainingOverCap: boolean }
 export interface GcSkip { key: string; reason: string }
 export interface GcResult { dryRun: boolean; shards: GcShardResult[]; skipped: GcSkip[] }
@@ -26,15 +27,16 @@ export function planGc(base: string, opts: { now?: () => number } = {}): GcShard
   for (const shard of walkShards(base)) {
     const state = stateOf(shard.key);
     if (state === "forgotten") continue;
-    let rows = 0, bytes = 0, expiredRows = 0, capMb = 0, retentionDays = 0;
+    let rows = 0, bytes = 0, expiredRows = 0, capMb = 0, retentionDays = 0, trimRows = 0;
     for (const dir of shard.machineDirs) {
       const config = readCaptureConfig(dir, base);
       capMb = config.capMb; retentionDays = config.retentionDays;
-      const stats = captureShardStats(dir);
+      const stats = captureShardStats(dir), cutoff = new Date(now() - config.retentionDays * 24 * 3600_000).toISOString();
       rows += stats.rows; bytes += stats.bytes;
-      expiredRows += expiredIn(dir, new Date(now() - config.retentionDays * 24 * 3600_000).toISOString());
+      expiredRows += expiredIn(dir, cutoff);
+      trimRows += trimIn(dir, cutoff, config.capMb * 1024 * 1024);
     }
-    out.push({ key: shard.key, state, rows, bytes, capMb, retentionDays, expiredRows, overCap: capMb > 0 && bytes > capMb * 1024 * 1024 });
+    out.push({ key: shard.key, state, rows, bytes, capMb, retentionDays, expiredRows, overCap: capMb > 0 && bytes > capMb * 1024 * 1024, trimRows });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -45,6 +47,21 @@ function expiredIn(dir: string, cutoff: string): number {
     const db = new Database(join(dir, "capture.db"), { readonly: true });
     try { db.run("PRAGMA busy_timeout = 3000"); return (db.query("SELECT COUNT(*) AS n FROM rows WHERE at < ?").get(cutoff) as { n: number }).n; }
     finally { db.close(); }
+  } catch { return 0; }
+}
+
+/** Each machine directory has its own cap (evict() runs per store): the unexpired rows, oldest first, that must go to fit it. Read-only. */
+function trimIn(dir: string, cutoff: string, capBytes: number): number {
+  if (capBytes <= 0 || !existsSync(join(dir, "capture.db"))) return 0;
+  try {
+    const db = new Database(join(dir, "capture.db"), { readonly: true });
+    try {
+      db.run("PRAGMA busy_timeout = 3000");
+      const kept = db.query("SELECT bytes FROM rows WHERE at >= ? ORDER BY at, id").all(cutoff) as { bytes: number }[];
+      let left = kept.reduce((sum, row) => sum + row.bytes, 0), n = 0;
+      for (const row of kept) { if (left <= capBytes) break; left -= row.bytes; n++; }
+      return n;
+    } finally { db.close(); }
   } catch { return 0; }
 }
 

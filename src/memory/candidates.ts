@@ -264,16 +264,32 @@ export class CandidateStore {
       if (candidate.input.kind === "consolidation") this.retainConsolidationReviews();
     }).immediate();
   }
-  /** Undo of a reject: the rejected candidate is pending again. Only a rejected one; an accepted one is undone by forgetting its note. */
-  reopen(id: string, context: { project: string; actor: "person" | "agent" }): void {
+  /**
+   * Undo of a reject: the rejected candidate is pending again. Only a rejected one; an accepted one is undone by forgetting its note.
+   * Retention deletes a decided candidate older than 30 days on the next open, so a caller offering undo passes the candidate it rejected as
+   * `restore`: when the row is already gone it is written back as pending with its original time, after the same identity and hash checks as a read.
+   */
+  reopen(id: string, context: { project: string; actor: "person" | "agent"; restore?: Candidate }): void {
     validActor(context.actor);
+    if (!candidateId(id) || !text(context.project, 400)) throw new Error("invalid candidate identity");
     this.db.transaction(() => {
-      const candidate = this.get(id, context.project);
-      if (!candidate) throw new Error("candidate unavailable");
-      if (candidate.status !== "rejected") throw new Error("only a rejected candidate can be reopened");
-      this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'rejected'").run(id, this.scope(context.project));
+      // No prune here: it would delete the very row this undoes.
+      const row = this.db.query("SELECT * FROM candidates WHERE id = ? AND project IN (SELECT value FROM json_each(?))").get(id, this.scope(context.project)) as Parameters<CandidateStore["decode"]>[0] | null;
+      const candidate = row ? this.decode(row) : undefined, restore = context.restore;
+      if (candidate) {
+        if (candidate.status !== "rejected") throw new Error("only a rejected candidate can be reopened");
+        this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND status = 'rejected'").run(id);
+      } else {
+        if (!restore || restore.id !== id || !(JSON.parse(this.scope(context.project)) as string[]).includes(restore.input.project)) throw new Error("candidate unavailable");
+        validate(restore.input);
+        if (hash({ schema: "agent-mem.candidate/v1", input: restore.input }) !== id) throw new Error("candidate content hash mismatch");
+        const at = Date.parse(restore.createdAt);
+        if (!Number.isFinite(at)) throw new Error("invalid candidate time");
+        this.db.query("INSERT INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, restore.input.project, restore.input.kind, canonical(restore.input), at);
+      }
+      const input = candidate?.input ?? restore!.input;
       // The lasting review identity would make a later proposal of the same consolidation a no-op; the decision is withdrawn.
-      if (candidate.input.kind === "consolidation") this.db.query("DELETE FROM consolidation_reviews WHERE id = ?").run(id);
+      if (input.kind === "consolidation") this.db.query("DELETE FROM consolidation_reviews WHERE id = ?").run(id);
     }).immediate();
   }
   /** Projects with candidates waiting for review, as stored (an alias key is not resolved here). */

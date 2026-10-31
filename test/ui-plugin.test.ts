@@ -12,6 +12,7 @@ import { scanPlugins } from "../node_modules/@staix/agent-console/src/plugins.ts
 import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
+import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { ensureShardDescriptor } from "../src/memory/shard.ts";
 import { MemoryStore } from "../src/memory/store.ts";
@@ -43,10 +44,15 @@ function fixture() {
   return { root, family, base, project, noteId, memory, fail };
 }
 const open = (family: string) => plugin.open({ home: family, log: () => {} });
-/** Every file below the home with its size and mtime: a write anywhere changes it. SQLite's `-shm` read-lock index changes on any open and holds no data. */
+/**
+ * Every file below the home with its size and mtime: a write anywhere changes it. Two SQLite sidecars hold no data and are left out: `-shm`
+ * (the read-lock index, touched by any open) and an empty `-wal`. A read-only reader of a WAL database recreates an empty `-wal` when the
+ * last writer's close removed it, which Linux SQLite does and macOS's does not (Ubuntu CI, run 41240923573). A committed write either leaves
+ * frames in a non-empty `-wal` or, checkpointed on close, changes the database file itself; both still show here.
+ */
 function tree(dir: string): string[] {
   const out: string[] = [];
-  const walk = (d: string) => { for (const name of readdirSync(d).sort()) { const p = join(d, name), s = lstatSync(p); if (s.isDirectory()) walk(p); else if (!name.endsWith("-shm")) out.push(`${p} ${s.size} ${s.mtimeMs}`); } };
+  const walk = (d: string) => { for (const name of readdirSync(d).sort()) { const p = join(d, name), s = lstatSync(p); if (s.isDirectory()) walk(p); else if (!name.endsWith("-shm") && !(name.endsWith("-wal") && s.size === 0)) out.push(`${p} ${s.size} ${s.mtimeMs}`); } };
   walk(dir); return out;
 }
 const noteOf = (base: string, id: string, project: string) => { const store = new MemoryStore({ memoryDir: base, screen: () => "skip" }); try { return store.get(id, project); } finally { store.close(); } };
@@ -178,4 +184,75 @@ test("amem setup console writes the manifest acon verifies, and undo removes it"
   expect(consoleSetup("apply", env).change).toBe("unchanged");
   expect(JSON.parse(await runCli(["setup", "console", "--undo", "--json"], { env }))).toMatchObject({ change: "remove" });
   expect(existsSync(file)).toBe(false);
+});
+
+/** An empty family home under a fresh temp root, with the root's own project key. */
+function bare() {
+  const root = mkdtempSync(join(tmpdir(), "amem-console-")); roots.push(root);
+  const family = join(root, "hub"), base = join(family, "memory");
+  mkdirSync(base, { recursive: true });
+  return { root, family, base, project: memoryProjectKey(root) };
+}
+
+test("Codex P2 (plugin.ts:392): a confirmed prune applies the previewed plan on the first confirmation", async () => {
+  const f = bare(), now = Date.now() - 10_000;
+  const store = new MemoryStore({ memoryDir: f.base, now: () => now });
+  const id = store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "finding", peer: "person", source: "person", text: "synthetic expired target", about: [], expires: new Date(now + 1000).toISOString() });
+  store.close();
+  process.env.AMEM_HOME = f.base;
+  await runCli(["migrate", "--generation", "a".repeat(32), "--apply", "--json"], { cwd: f.root, env: {} });
+  delete process.env.AMEM_HOME;
+  const provider = await open(f.family), input = { action: "prune", project: f.project, cutoff: new Date().toISOString() };
+  const preview = await provider.action(input) as { needsConfirm?: true; fingerprint: string; changes: unknown[] };
+  expect(preview).toMatchObject({ ok: false, needsConfirm: true });
+  expect(preview.changes).toHaveLength(1);
+  await Bun.sleep(5); // a new plan made now would carry a different authoring time and seal
+  expect(await provider.action({ ...input, confirmed: true, fingerprint: preview.fingerprint })).toEqual({ ok: true, message: "Pruned: 1 rows" });
+  const after = new MemoryStore({ memoryDir: f.base });
+  try { expect(after.get(id)).toBeUndefined(); } finally { after.close(); }
+  // The kept plan is used once: confirming the same fingerprint again previews instead of applying.
+  expect(await provider.action({ ...input, confirmed: true, fingerprint: preview.fingerprint })).toMatchObject({ ok: false, needsConfirm: true });
+});
+
+test("Codex P2 (plugin.ts:132): a shared home with one curated note lists its project, and Search returns the note", async () => {
+  const f = bare(), store = new MemoryStore({ memoryDir: f.base });
+  store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "Shared store discovery reaches the console", about: [] });
+  store.close();
+  const provider = await open(f.family);
+  const found = await provider.snapshot({ after: 0, panel: "find", q: "discovery" });
+  expect(found).toMatchObject({ projects: [f.project], project: f.project });
+  expect((found.hits as unknown[]).length).toBe(1);
+  expect(await provider.snapshot({ after: 0, panel: "find", project: f.project, q: "discovery" })).toMatchObject({ project: f.project });
+  expect(((await provider.snapshot({ after: 0, panel: "search", q: "discovery" })).hits as unknown[]).length).toBe(1);
+});
+
+test("Codex P2 (plugin.ts:338): a gc preview of a shard over its cap names the rows trimming would remove", async () => {
+  const f = bare(), store = new CaptureStore({ memoryDir: f.base, project: f.project, retentionDays: 100_000, capMb: 100_000 });
+  const start = Date.now() - 3_600_000;
+  for (let i = 0; i < 1000; i++) store.append({ project: f.project, agent: "kimi", event: "PostToolUse", excerpt: `row ${i} ${"z".repeat(1500)}`, at: new Date(start + i * 1000).toISOString() });
+  const machineDir = store.dir; store.close();
+  writeCaptureConfig(machineDir, { capMb: 1, retentionDays: 90 });
+  const provider = await open(f.family), before = tree(f.base);
+  const preview = await provider.action({ action: "gc" }) as { needsConfirm?: true; preview: string[]; changes: { op: string; note?: string }[]; warnings?: string[] };
+  expect(preview.needsConfirm).toBe(true);
+  const trimmed = Number(/(\d+) trimmed to fit 1 MB/.exec(preview.changes[0]?.note ?? "")?.[1]);
+  expect(trimmed).toBeGreaterThan(0);
+  expect(trimmed).toBeLessThan(1000);
+  expect(preview.changes[0]).toMatchObject({ op: "delete" });
+  expect(preview.preview[0]).toContain(`${trimmed} oldest unexpired row(s) over the 1 MB cap`);
+  expect(preview.warnings?.[0]).toContain("whole batches of 256");
+  expect(tree(f.base)).toEqual(before);
+});
+
+test("Codex P2 (plugin.ts:440): reject then undo restores a 31-day-old unshown candidate that retention deletes once rejected", async () => {
+  const f = fixture(), created = Date.now() - 31 * 86_400_000;
+  const old = new CandidateStore({ memoryDir: f.base, now: () => created });
+  const id = old.put({ project: f.project, kind: "memory", text: "An old unshown candidate keeps its place" }, "public");
+  old.close();
+  const provider = await open(f.family);
+  expect(await provider.action({ action: "reject", id, project: f.project })).toMatchObject({ ok: true, undo: { action: "reject_undo" } });
+  expect(statusOf(f.base, id, f.project)).toBeUndefined(); // the next open's retention removed the decided 31-day-old row
+  expect(await provider.action({ action: "reject_undo", id, project: f.project })).toEqual({ ok: true, message: "Reject undone; the candidate is pending again" });
+  const after = new CandidateStore({ memoryDir: f.base });
+  try { expect(after.get(id, f.project)).toMatchObject({ status: "pending", createdAt: new Date(created).toISOString() }); } finally { after.close(); }
 });

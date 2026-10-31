@@ -16,7 +16,7 @@ import { readCatalogFresh } from "../memory/catalog.ts";
 import { configuredPolicy, configuredPolicyOptions } from "../memory/config.ts";
 import { openCuratedForRead, requireShard } from "../memory/curated-read.ts";
 import { applyDecay, assertExactDecayForget, decayPreview, DECAY_DEFAULT_DAYS, readDecayCounters } from "../memory/decay-review.ts";
-import { gcText, runGc } from "../memory/gc.ts";
+import { gcText, planGc, runGc } from "../memory/gc.ts";
 import { memoryHome } from "../memory/home.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "../memory/lifecycle.ts";
 import { hasFailLabel, noteAdd, parseFailTemplate } from "../memory/note-add.ts";
@@ -51,7 +51,7 @@ const asset = (name: string) => readFileSync(new URL(name, import.meta.url), "ut
 const VERSION = (JSON.parse(asset("../../package.json")) as { version: string }).version;
 /** agent-mem#143: actions from the console are the person's; the console is never an agent session's surface. */
 const ACTOR = "person" as const;
-const UNDO_MS = 60_000;
+const UNDO_MS = 60_000, PLAN_MS = 120_000, PLAN_MAX = 16;
 const ACTIONS = ["accept", "reject", "edit_accept", "accept_undo", "reject_undo", "gc", "capacity_apply", "project_forget", "decay_apply", "prune"];
 const str = (v: unknown): string | undefined => typeof v === "string" && v.trim() ? v : undefined;
 const sha = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
@@ -123,20 +123,35 @@ export const plugin = {
       try { return run(store); } finally { store.close(); }
     };
 
+    /** Projects with notes in an unsplit (shared-v1 or generation) home: that store is one file set for every project, with no shard per project. */
+    function sharedStoreProjects(): string[] {
+      if (existsSync(join(base, "shards.json")) || !["log", "local", "generations"].some(dir => existsSync(join(base, dir)))) return [];
+      const store = new MemoryStore({ memoryDir: base, deferPromotions: true });
+      // ponytail: reads every live note on each snapshot; keep a per-index-revision cache if a large shared home makes polls slow.
+      try { return [...new Set(store.list({ limit: Number.MAX_SAFE_INTEGER }).map(view => view.project))]; } finally { store.close(); }
+    }
     // ponytail: the catalog scan walks every shard on each snapshot; cache it by shard mtimes if polls get slow on a large home.
     function projects(): string[] {
       if (!existsSync(base)) return [];
       const keys = new Set<string>(), waiting = new Set<string>();
       try { for (const p of readCatalogFresh(base)) keys.add(p.key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
+      try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
     let chosen: string | undefined;
+    /** An active project whose curated store holds a note of its own, also when no listing source named it. */
+    const exists = (key: string) => {
+      if (projectState(base, key) !== "active") return false;
+      const store = openCuratedForRead(base, key);
+      try { return !!store?.list({ project: key, limit: 1 }).some(view => view.project === key); } finally { store?.close(); }
+    };
     const pick = (args: Args, list: string[]) => {
-      const asked = str(args.project);
-      if (asked && list.includes(resolveAlias(base, asked))) chosen = resolveAlias(base, asked);
+      const asked = str(args.project), key = asked ? resolveAlias(base, asked) : undefined;
+      if (key && !list.includes(key) && existsSync(base) && exists(key)) list.push(key);
+      if (key && list.includes(key)) chosen = key;
       return chosen && list.includes(chosen) ? chosen : list[0];
     };
 
@@ -251,7 +266,10 @@ export const plugin = {
     }
 
     // Undo stays bound to what this console just did: an accepted or edited note to forget, a rejection to withdraw.
-    const undo = new Map<string, { kind: "accept" | "reject"; project: string; noteId?: string; reopen?: boolean; until: number }>();
+    // A rejected candidate is held here too: retention may delete it before the undo arrives, and reopen() writes it back from this copy.
+    const undo = new Map<string, { kind: "accept" | "reject"; project: string; noteId?: string; reopen?: boolean; candidate?: Candidate; until: number }>();
+    // Previewed prune plans by seal, for the console's confirm window (60 s) plus slack; bounded by the console's own confirm limit.
+    const prunePlans = new Map<string, { plan: ReturnType<typeof planPrune>; project: string; cutoff: string; until: number }>();
     function candidateFor(args: Args): Found | string {
       const id = str(args.id);
       if (!id || !/^[a-f0-9]{64}$/.test(id)) return "a full 64-character candidate id is required";
@@ -308,7 +326,7 @@ export const plugin = {
         return /privacy policy/.test(errorText(e)) ? refusal({ text, ...title }, p) : { ok: false, error: errorText(e) };
       } finally { store.close(); }
       withCandidates(project, c => c.reject(id, { project, actor: ACTOR, verdict: "public" }));
-      undo.set(id, { kind: "accept", project, noteId, reopen: true, until: Date.now() + UNDO_MS });
+      undo.set(id, { kind: "accept", project, noteId, reopen: true, candidate, until: Date.now() + UNDO_MS });
       return { ok: true, message: `Saved your edit as note ${noteId.slice(0, 8)}; the candidate is closed`, noteId, undo: { action: "accept_undo", id, project } };
     }
     function undoFor(args: Args, kind: "accept" | "reject") {
@@ -332,9 +350,12 @@ export const plugin = {
       if (!existsSync(base)) return { ok: false, error: "no memory home yet" };
       switch (input.action) {
         case "gc": {
-          const plan = runGc(base, { dryRun: true });
-          const blocked = gate(input, sha(plan), { verb: "Evict capture rows", preview: gcText(plan).split("\n"),
-            changes: plan.shards.filter(s => s.expired > 0).map(s => ({ op: "delete", target: `capture rows of ${s.key}`, note: `${s.expired} expired` })) });
+          // gc both expires rows and trims the oldest unexpired rows of a shard over its cap: the preview names both.
+          const plan = planGc(base), acting = plan.filter(s => s.expiredRows > 0 || s.trimRows > 0);
+          const blocked = gate(input, sha(plan), { verb: "Evict capture rows",
+            preview: acting.length ? acting.map(s => `${s.key}: ${s.expiredRows} expired row(s)${s.trimRows ? `, ${s.trimRows} oldest unexpired row(s) over the ${s.capMb} MB cap` : ""}`) : ["nothing to evict"],
+            changes: acting.map(s => ({ op: "delete", target: `capture rows of ${s.key}`, note: [s.expiredRows ? `${s.expiredRows} expired` : "", s.trimRows ? `${s.trimRows} trimmed to fit ${s.capMb} MB` : ""].filter(Boolean).join(", ") })),
+            ...(acting.some(s => s.trimRows) ? { warnings: ["Trimming removes unexpired capture rows, oldest first, in whole batches of 256; one run may stop before the shard fits."] } : {}) });
           return blocked ?? { ok: true, message: gcText(runGc(base)).split("\n").slice(0, 3).join("; ") };
         }
         case "capacity_apply": {
@@ -386,10 +407,19 @@ export const plugin = {
           const store = openCurated(base, project, { deferPromotions: true }, false);
           try {
             const auth = { project, actor: ACTOR, authorize: () => true }, port = store.prunePort();
+            // A plan carries its authoring time inside the seal, so a new plan never matches the previewed one. The confirmed call applies
+            // the very plan the person saw; applyPrune rechecks it against the current home and refuses a stale one.
+            const kept = typeof input.fingerprint === "string" ? prunePlans.get(input.fingerprint) : undefined;
+            for (const [seal, entry] of prunePlans) if (entry.until < Date.now()) prunePlans.delete(seal);
+            if (input.confirmed === true && kept && kept.until >= Date.now() && kept.project === project && kept.cutoff === cutoff) {
+              prunePlans.delete(kept.plan.seal);
+              return { ok: true, message: `Pruned: ${applyPrune(port, JSON.stringify(kept.plan), auth).completed.length} rows` };
+            }
             const plan = planPrune(port, { cutoff }, auth);
-            const blocked = gate(input, plan.seal, { verb: "Prune expired notes", preview: pruneText(plan).split("\n"),
-              changes: plan.rows.map(r => ({ op: "log", target: `${r.placement} prune row`, note: `${r.payload.targets.length} targets` })) });
-            return blocked ?? { ok: true, message: `Pruned: ${applyPrune(port, JSON.stringify(plan), auth).completed.length} rows` };
+            if (prunePlans.size >= PLAN_MAX) prunePlans.delete(prunePlans.keys().next().value!);
+            prunePlans.set(plan.seal, { plan, project, cutoff, until: Date.now() + PLAN_MS });
+            return { ok: false, needsConfirm: true, fingerprint: plan.seal, verb: "Prune expired notes", preview: pruneText(plan).split("\n"),
+              changes: plan.rows.map(r => ({ op: "log", target: `${r.placement} prune row`, note: `${r.payload.targets.length} targets` })) };
           } finally { store.close(); }
         }
       }
@@ -430,14 +460,14 @@ export const plugin = {
               if (input.action === "accept") return await accept(found);
               if (input.action === "edit_accept") return editAccept(found, str(args.text));
               withCandidates(found.project, c => c.reject(found.id, { project: found.project, actor: ACTOR, verdict: "public" }));
-              undo.set(found.id, { kind: "reject", project: found.project, until: Date.now() + UNDO_MS });
+              undo.set(found.id, { kind: "reject", project: found.project, candidate: found.candidate, until: Date.now() + UNDO_MS });
               // agent-mem stores no reject reason (no new storage, #158 non-goals); the reply says so instead of dropping it silently.
               return { ok: true, message: str(args.reason) ? "Rejected; agent-mem keeps no reject reason, so it was not recorded" : "Rejected", undo: { action: "reject_undo", id: found.id, project: found.project } };
             }
             case "reject_undo": {
               const entry = undoFor(args, "reject");
               if (!entry) return { ok: false, error: "nothing to undo for this candidate" };
-              withCandidates(entry.project, c => c.reopen(entry.id, { project: entry.project, actor: ACTOR }));
+              withCandidates(entry.project, c => c.reopen(entry.id, { project: entry.project, actor: ACTOR, ...(entry.candidate ? { restore: entry.candidate } : {}) }));
               return { ok: true, message: "Reject undone; the candidate is pending again" };
             }
             case "accept_undo": {
@@ -447,7 +477,7 @@ export const plugin = {
               const store = openCurated(base, entry.project, { deferPromotions: true });
               try { if (!store.forget(entry.noteId, ACTOR, entry.project, true)) return { ok: false, error: "the accepted note is no longer available" }; }
               finally { store.close(); }
-              if (entry.reopen) withCandidates(entry.project, c => c.reopen(entry.id, { project: entry.project, actor: ACTOR }));
+              if (entry.reopen) withCandidates(entry.project, c => c.reopen(entry.id, { project: entry.project, actor: ACTOR, ...(entry.candidate ? { restore: entry.candidate } : {}) }));
               return { ok: true, message: entry.reopen ? "Undone; the note is forgotten and the candidate is pending again" : "Undone; the accepted note is forgotten" };
             }
             case "gc": case "capacity_apply": case "project_forget": case "decay_apply": case "prune": return await destructive(args);
