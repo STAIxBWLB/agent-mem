@@ -32,11 +32,11 @@ function fixture() {
   const native: NonNullable<SetupContext["native"]> = (argv, stagedEnv, cwd) => {
     calls.push({ argv: [...argv], env: { ...stagedEnv }, cwd });
     expect(stagedEnv.HOME).toBe(cwd); expect(cwd).not.toBe(home); expect(realPath(cwd)).toBe(cwd);
-    const target = argv[0] as SetupTarget, remove = argv[2] === "remove", marker = argv.indexOf("--"), launch = target === "qwen" ? [argv[marker - 1], ...argv.slice(marker + 1)] : argv.slice(marker + 1);
-    expect(["claude", "codex", "pi", "qwen"]).toContain(target);
+    const target = argv[0] as SetupTarget, remove = argv[2] === "remove", marker = argv.indexOf("--"), launch = target === "qwen" || target === "gemini" ? [argv[marker - 1], ...argv.slice(marker + 1)] : argv.slice(marker + 1);
+    expect(["claude", "codex", "pi", "qwen", "gemini"]).toContain(target);
     expect(argv.slice(1, 3)).toEqual(["mcp", remove ? "remove" : "add"]);
     const file = target === "claude" ? stagedEnv.CLAUDE_CONFIG_DIR ? join(stagedEnv.CLAUDE_CONFIG_DIR, ".claude.json") : join(cwd, ".claude.json")
-      : target === "codex" ? join(stagedEnv.CODEX_HOME!, "config.toml") : target === "qwen" ? join(stagedEnv.QWEN_HOME!, "settings.json") : join(stagedEnv.PI_CODING_AGENT_DIR!, "mcp.json");
+      : target === "codex" ? join(stagedEnv.CODEX_HOME!, "config.toml") : target === "qwen" ? join(stagedEnv.QWEN_HOME!, "settings.json") : target === "gemini" ? join(stagedEnv.GEMINI_CLI_HOME!, ".gemini", "settings.json") : join(stagedEnv.PI_CODING_AGENT_DIR!, "mcp.json");
     if (target === "codex") {
       const document = existsSync(file) ? Bun.TOML.parse(text(file)) as Record<string, any> : {};
       document.mcp_servers ??= {};
@@ -148,6 +148,9 @@ function seedOtherFiles(f: ReturnType<typeof fixture>) {
   put(f.file("pi"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } } }) + "\n", 0o640);
   put(f.file("qwen"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } }, hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "existing-qwen" }] }] }, ui: { theme: "keep" } }) + "\n", 0o640);
   put(f.file("jcode"), '{ "servers": {"other":{"command":"other-server","args":["keep"]}}, "unrelated": {"keep":true} }\n', 0o640);
+  // Gemini CLI settings beside an Antigravity file that setup must never touch.
+  put(f.file("gemini"), JSON.stringify({ mcpServers: { other: { command: "other-server", args: ["keep"] } }, ui: { theme: "keep" } }) + "\n", 0o640);
+  put(join(dirname(f.file("gemini")), "config", "mcp_config.json"), '{"mcpServers":{"antigravity":{"command":"keep"}}}\n', 0o640);
   put(f.file("opencode"), '{ "$schema": "https://opencode.ai/config.json", "mcp": {"other":{"command":"other-server","args":["keep"]}}, "model": "keep" }\n', 0o640);
   const rules = ["AGENTS.md", "CLAUDE.md", ".claude/rules/keep.md", ".codex/rules/keep.rules", ".pi/agent/extensions/keep.ts"].map(name => join(f.home, name));
   for (const rule of rules) put(rule, "unrelated user content\n", 0o640);
@@ -253,7 +256,7 @@ test.skipIf(process.env.AMEM_CODEX_NATIVE_SMOKE !== "1")("real Codex isolated em
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
   expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(SETUP_ALL_TARGETS.length);
-  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" || action.target === "opencode" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
+  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" || action.target === "opencode" || action.target === "gemini" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, json: true, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
@@ -262,8 +265,8 @@ test("setup preview inventories every target without commands, files or confirma
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
   expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
-  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen"]);
-  for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(call.argv[0] === "qwen" ? [f.bun, "--", "--smol", f.entry, "mcp"] : ["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
+  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen", "gemini"]);
+  for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(call.argv[0] === "qwen" || call.argv[0] === "gemini" ? [f.bun, "--", "--smol", f.entry, "mcp"] : ["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
   for (const target of SETUP_ALL_TARGETS) {
     const receipt = f.receipt(target), action = plan.actions.find(row => row.target === target)!;
     expect(receipt).toMatchObject({ version: 1, target, phase: "applied" }); expect(receipt.changes.map(change => change.path)).toEqual(action.files);
@@ -320,11 +323,11 @@ test("undo restores original bytes, modes and missing files without touching unr
 });
 test("existing amem registration is removed before add while other MCP entries survive", () => {
   const f = fixture(); seedOtherFiles(f);
-  for (const target of ["claude", "pi", "qwen"] as const) { const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.amem = { command: "old-amem", args: ["old"] }; put(file, JSON.stringify(document)); }
+  for (const target of ["claude", "pi", "qwen", "gemini"] as const) { const file = f.file(target), document = JSON.parse(text(file)); document.mcpServers.amem = { command: "old-amem", args: ["old"] }; put(file, JSON.stringify(document)); }
   put(f.file("codex"), text(f.file("codex")) + '\n[mcp_servers.amem]\ncommand = "old-amem"\nargs = ["old"]\n');
   const before = [...SETUP_ALL_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image);
   applySetup(f.plan("all", "apply"), f.options);
-  expect(f.calls.map(call => [call.argv[0], call.argv[2]])).toEqual([["claude", "remove"], ["claude", "add"], ["codex", "remove"], ["codex", "add"], ["pi", "remove"], ["pi", "add"], ["qwen", "remove"], ["qwen", "add"]]);
+  expect(f.calls.map(call => [call.argv[0], call.argv[2]])).toEqual([["claude", "remove"], ["claude", "add"], ["codex", "remove"], ["codex", "add"], ["pi", "remove"], ["pi", "add"], ["qwen", "remove"], ["qwen", "add"], ["gemini", "remove"], ["gemini", "add"]]);
   expect(f.calls[0]?.argv).toEqual(["claude", "mcp", "remove", "--scope", "user", "amem"]);
   for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).other).toEqual({ command: "other-server", args: ["keep"] });
   undoSetup(f.plan("all", "undo"), f.options); expect([...SETUP_ALL_TARGETS].flatMap(target => f.plan(target).actions[0]!.files).map(image)).toEqual(before);
@@ -333,7 +336,7 @@ test("runSetup explicit apply and undo need no TTY and never invoke legacy confi
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home); let confirmations = 0;
   const legacyContext = { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; throw Error("legacy confirmation callback must not run"); } };
   expect(JSON.parse(await runSetup("all", "apply", { ...legacyContext, json: true }))).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
-  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen"]);
+  expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen", "gemini"]);
   expect(JSON.parse(await runSetup("all", "undo", { ...legacyContext, json: true }))).toEqual({ restored: [...SETUP_ALL_TARGETS] });
   expect(confirmations).toBe(0); expect(existsSync(f.receiptFile("claude"))).toBe(false);
   expect(snapshot(f.home).filter(row => row.name !== "memory" && row.name !== "memory/setup")).toEqual(before);

@@ -1,29 +1,43 @@
-# Gemini CLI integration findings
+# Gemini CLI contract
 
-Investigation for #176, started 2026-10-31. This is a partial discovery record; setup and ingest are not implemented yet.
-
-## Installed client
-
-- The installed `gemini --version` reports `0.53.1`.
-- `/opt/homebrew/bin/gemini` points to the installed `@google/gemini-cli/bundle/gemini.js` package.
-- Read-only help confirms `gemini mcp add`, `remove`, `list`, `enable` and `disable`.
-- `gemini mcp add --help` advertises `--scope user|project` (default project), stdio/SSE/HTTP transports, environment entries and a timeout. `remove --help` also accepts user or project scope.
-- Only version/help commands were run. No real configuration, native registration, session content or instruction file was changed.
+Investigation and setup contract for #176 (Gemini CLI target), recorded 2026-10-31. Started from codex's discovery checkpoint (`00a68ab`, recorded against 0.53.1); the installed client has since moved, so everything below is re-pinned to the installed `gemini --version` **0.61.0** and to source tag [`google-gemini/gemini-cli@v0.61.0`](https://github.com/google-gemini/gemini-cli/tree/v0.61.0) (commit `bb523741c7429a44d03e964bc124c7c92df59d5f`), read through the GitHub API. Only `--help`/`--version`, the local settings file's key names and one local transcript's record key names were read. The native `mcp add`/`remove` commands were run only in a scratch `HOME`/`GEMINI_CLI_HOME`. No session content, credential or instruction file (`GEMINI.md`) was opened or changed.
 
 ## Configuration boundary
 
-Gemini CLI uses `mcpServers` in user `~/.gemini/settings.json` or project `.gemini/settings.json`; its native MCP add command selects between them with `--scope`. Project settings override user settings. These paths are documented in the official [MCP guide](https://geminicli.com/docs/tools/mcp-server/#adding-a-server-gemini-mcp-add) and [configuration reference](https://geminicli.com/docs/reference/configuration/#settings-files).
+- User settings: `<home>/.gemini/settings.json`, where `<home>` is `GEMINI_CLI_HOME` when set, else the OS home directory ([`packages/core/src/utils/paths.ts` homedir](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/core/src/utils/paths.ts), [`packages/core/src/config/storage.ts` getGlobalSettingsPath](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/core/src/config/storage.ts)). Workspace settings: `<project>/.gemini/settings.json`. System settings and defaults files can be redirected with `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`.
+- MCP servers live under `mcpServers.<name>` with `command` and `args` for stdio servers.
+- Settings are read through `strip-json-comments`, and the native writer preserves comments (`updateSettingsFilePreservingFormat`). Strings in settings expand `$VAR`, `${VAR}` and `${VAR:-default}` ([`packages/cli/src/utils/envVarResolver.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/cli/src/utils/envVarResolver.ts)).
+- **Antigravity is a different client.** `~/.gemini/config/mcp_config.json` (and `~/.gemini/antigravity*`) belong to Antigravity; Gemini CLI does not read them for MCP. amem setup never reads or writes them, and `amem setup agy` stays repository-scoped.
 
-The Antigravity registration at `~/.gemini/config/mcp_config.json` is a different client configuration. It is outside this target's ownership. Existing `amem setup agy` remains repository-scoped; see [P5 ownership](p5-cutover.md).
+## Native MCP commands
 
-Native registration in an isolated HOME, unrelated-byte preservation and undo behavior have not been tested yet.
+`gemini mcp add|remove|list|enable|disable` exist. `add <name> <commandOrUrl> [args...]` and `remove <name>` take `--scope user|project` (default `project`; `project` is refused when the cwd is the home directory) and `--transport stdio|sse|http` ([`packages/cli/src/commands/mcp/add.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/cli/src/commands/mcp/add.ts), [`remove.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/cli/src/commands/mcp/remove.ts)). Arguments after `--` are appended to `args`.
+
+Observed in a scratch `HOME`/`GEMINI_CLI_HOME` with 0.61.0: `gemini mcp add --scope user --transport stdio amem <bun> -- --smol <entry> mcp` writes `mcpServers.amem = { "command": <bun>, "args": ["--smol", <entry>, "mcp"] }` and keeps unrelated keys (and comments) in `settings.json`; `gemini mcp remove --scope user amem` deletes only that entry and leaves `"mcpServers": {}`.
+
+## Setup decision
+
+`amem setup gemini` uses the native registration path, like Claude, Codex, Pi and Qwen:
+
+- The native `gemini mcp add --scope user` runs in a private staging directory used as `HOME` and `GEMINI_CLI_HOME`, with the system settings paths redirected into it. A prior `amem` entry is removed with `gemini mcp remove --scope user amem` first. Only the produced server record is taken; every unrelated setting comes from the original file, and setup refuses if the native run changed any other MCP server.
+- It owns only `mcpServers.amem`. Preview by default; `--apply`/`--undo` with a private receipt in `<memory-home>/setup/gemini.json`; idempotent re-apply; undo restores the original bytes when the file is untouched, otherwise removes only the managed entry and refuses if that entry was edited.
+- Refused before any native call: settings that are not strict JSON (comments are valid for Gemini CLI but setup's byte-preserving restore needs strict JSON); a relative `GEMINI_CLI_HOME`; a Bun or entry path containing `$` (Gemini expands it); symlinked config paths.
+- No hook and no instruction file (`GEMINI.md`) is installed or edited. `setup all` includes Gemini; when `gemini` is not on `PATH` it is reported and skipped.
+- The verified layout version is 0.61.0; setup reports a different installed version as advisory.
+
+Live check on this Mac (2026-10-31): with the real `gemini` 0.61.0 and a scratch `HOME` holding a settings file and an Antigravity `config/mcp_config.json`, `amem setup gemini --apply` added exactly the planned server and kept the other server and `ui` key; `--undo` restored the original bytes exactly; the Antigravity file was unchanged.
 
 ## Hooks
 
-The official [hook reference](https://geminicli.com/docs/hooks/reference/) describes settings-file hooks, including SessionStart and SessionEnd; input is JSON on stdin, with JSON output and exit-code semantics. The full installed event list, payload fields and hook invocation behavior still need read-only verification before any capture hook is installed.
+Settings-file hooks exist for `BeforeTool`, `AfterTool`, `BeforeAgent`, `Notification`, `AfterAgent`, `SessionStart`, `SessionEnd`, `PreCompress`, `BeforeModel`, `AfterModel` and `BeforeToolSelection`; input on stdin carries `session_id`, `transcript_path` and `cwd` ([`packages/core/src/hooks/types.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/core/src/hooks/types.ts)). A `SessionEnd` hook would be the natural trigger for an ingest, but setup installs none because the transcripts are not eligible (below).
 
-## Transcript eligibility remains unresolved
+## Transcripts: not ingested
 
-The pinned [0.53.1 recording types](https://github.com/google-gemini/gemini-cli/blob/v0.53.1/packages/core/src/services/chatRecordingTypes.ts) declare message ids, timestamps, content and message type. Project hash and session identity are conversation-level fields; no per-message working-directory/project field appears in the inspected message type. The pinned [recording service](https://github.com/google-gemini/gemini-cli/blob/v0.53.1/packages/core/src/services/chatRecordingService.ts) has JSONL/rewind/metadata record handling, but its cursor and origin semantics have not yet been fully inspected against the installed bundle and local file shapes.
+Sessions are JSONL at `<home>/.gemini/tmp/<project-id>/chats/session-<time>-<id8>.jsonl` (subagents nested under the parent session id), written by [`packages/core/src/services/chatRecordingService.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/core/src/services/chatRecordingService.ts). The first record is session metadata (`sessionId`, `projectHash`, `startTime`, `kind`); message records are `{ id, timestamp, content, type, ... }` ([`chatRecordingTypes.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/packages/core/src/services/chatRecordingTypes.ts)).
 
-No ingest eligibility decision has been made. A readable file and a current hook cwd alone are not evidence of the historical origin of every message. Remaining discovery includes the installed writer/storage/project-registry code, bounded local schema inspection without printing message content, cursor behavior under rewinds or replacements, and per-message origin provenance.
+`amem ingest gemini` is not provided:
+
+- **No per-message origin.** Message records carry no `cwd`; origin exists only at file level (`projectHash` and the project directory key), and `/dir add` can widen a session to several directories (`directories`). Native ingest elsewhere in amem requires a per-message origin, the same reason Jcode and OpenCode are setup-only.
+- **No stable cursor.** The file is not append-only history: `rewindTo` appends a `{"$rewindTo": <messageId>}` record that deletes every later message on load, and resuming a session whose file cannot be reloaded rewrites the whole file through a temporary file and rename. A byte or line cursor would replay or keep rewound content.
+
+Upgrade path: a reader that replays `$rewindTo`/`$set` records like the native loader and treats a whole session as one origin, once amem accepts session-level origin for a session bound to one project directory.
