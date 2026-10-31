@@ -10,6 +10,7 @@ import { persistPublicPruneInput, preparePublicPruneInput, reducePublicPruneInpu
   PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, PUBLIC_PRUNE_REPLAY_MAX_BYTES, type PublicPruneBinding, type PublicPruneInputRegistration, type PublicPrunePersistPhase } from "../src/memory/public-prune-inputs.ts";
 import { publicPruneGraph, rawGitObject } from "./fixtures/public-prune-graph.ts";
 import { acquireMutation, type MutationHandle } from "../src/memory/mutation.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const done of cleanups.splice(0).reverse()) done(); });
@@ -273,10 +274,10 @@ for (const bad of ["wrong name", "wrong mode", "wrong owner"] as const) test(`R1
   const valid = join(objects, ".pending-" + "a".repeat(32)), invalid = join(inputs, bad === "wrong name" ? ".pending-NOT-LOWERHEX" : ".pending-" + "b".repeat(32));
   writeFileSync(valid, "UNREGISTERED-VALID-TEMP", { mode: 0o600 }); writeFileSync(invalid, "UNREGISTERED-INVALID-TEMP", { mode: 0o600 });
   if (bad === "wrong mode") chmodSync(invalid, 0o644);
-  const original = fs.lstatSync, uid = process.getuid!();
+  const original = fs.lstatSync, uid = process.getuid!(), invalidPath = realPath(invalid);
   const owner = bad === "wrong owner" ? spyOn(fs, "lstatSync").mockImplementation(((...args: unknown[]) => {
     const value = Reflect.apply(original, fs, args);
-    return args[0] === invalid && value ? new Proxy(value, { get(target, key) {
+    return args[0] === invalidPath && value ? new Proxy(value, { get(target, key) {
       if (key === "uid") return uid + 1;
       const field = Reflect.get(target, key, target); return typeof field === "function" ? field.bind(target) : field;
     } }) : value;
