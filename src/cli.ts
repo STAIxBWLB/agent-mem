@@ -22,7 +22,7 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
-import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
+import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
@@ -579,8 +579,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           const revision = JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent = commandBinding(memoryHome(), project);
           if (rows.some(candidate => candidate.status === "pending")) overlapStore ??= openCuratedForRead(memoryHome(), project);
           const sourceCurrent = overlapStore?.beginRecallRead();
-          const hinted = [];
-          for (const candidate of rows) hinted.push({ ...candidate, overlaps: await overlapsFor(candidate) });
+          const overlaps = overlapStore ? await candidateOverlapsBatch(rows, overlapStore, { project, policy: policyOf,
+            policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent }) : rows.map(() => []);
+          const hinted = rows.map((candidate, index) => ({ ...candidate, overlaps: overlaps[index]! }));
           assertCurrent(); sourceCurrent?.();
           if (JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) !== revision) throw Error("overlap policy changed");
           return JSON.stringify(hinted, null, 2);

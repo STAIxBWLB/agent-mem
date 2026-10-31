@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
-import { CandidateStore } from "../src/memory/candidates.ts";
-import { candidateOverlaps } from "../src/memory/candidate-overlaps.ts";
+import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
+import { candidateOverlaps, candidateOverlapsBatch } from "../src/memory/candidate-overlaps.ts";
 import { overlapWords, wordOverlap } from "../src/memory/consolidation-clusters.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "../src/memory/policy.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -68,6 +68,27 @@ test("selection scans beyond a page, screens before the top-three limit and brea
   expect(await f.hints(f.put(), { denyPaths: ["private/"] })).toEqual(visible.sort().slice(0, 3).map(id => ({ id, title: f.store.get(id, f.project)!.title, score: 1 })));
 });
 
+test("a candidate batch screens each live project note once, including repeated promotion targets", async () => {
+  const f = fixture(), publicIds = Array.from({ length: 4 }, (_, i) => f.note(prose, { title: `visible-${i}` }));
+  const hidden = f.note(prose, { peer: "host-only" }); f.note(prose, { project: "different-project", scope: "shared" });
+  const candidates = Array.from({ length: 12 }, (_, i) => f.put(`${prose} candidate${i}`));
+  const target = f.store.get(publicIds[0]!, f.project)!;
+  for (const goalId of ["e".repeat(32), "f".repeat(32)]) candidates.push(f.sidecar.get(f.sidecar.put({ project: f.project, kind: "promotion",
+    target: { id: target.id, revision: candidateTargetRevision(target) }, goalId }, "public"), f.project)!);
+  const screens = new Map<string, number>(), policy = createStandalonePolicy({ host: { screen: async value => {
+    const row = value as { id: string }; screens.set(row.id, (screens.get(row.id) ?? 0) + 1);
+    return !JSON.stringify(value).includes("host-only");
+  } } });
+  const result = await candidateOverlapsBatch(candidates, f.store, { project: f.project, policy: () => policy, policyVersion: () => "stable" });
+  expect([...screens.keys()].sort()).toEqual([...publicIds, hidden].sort());
+  expect([...screens.values()]).toEqual(Array(5).fill(1));
+  expect(result).toHaveLength(candidates.length);
+  for (const hints of result) {
+    expect(hints.map(row => row.id)).toEqual([...publicIds].sort().slice(0, 3));
+    expect(JSON.stringify(hints)).not.toContain(hidden);
+  }
+});
+
 for (const mutation of ["policy", "source"] as const) test(`a ${mutation} change during policy await refuses stale hints`, async () => {
   const f = fixture(), old = f.note(prose), replacement = f.note("orchards require seasonal irrigation"), candidate = f.put(); let revision = "before", changed = false;
   const policy = createStandalonePolicy({ host: { screen: async value => {
@@ -85,9 +106,14 @@ test("JSON listing adds only overlaps, and walk prints each hint before the unch
   const f = fixture(), exact = f.note(prose, { title: "Lease boundary" }), hidden = f.note(prose, { about: ["path:private/hidden.ts"] }), candidate = f.put();
   process.env.AMEM_HOME = f.base;
   writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ denyPaths: ["private/"] }));
+  f.put(`${prose} related`);
   const context = { cwd: f.root, env: {}, stdinTTY: true }, original = f.sidecar.list({ project: f.project }), before = f.store.dump();
-  const output = await runCli(["review", "list", "--json"], context), rows = JSON.parse(output);
-  expect(rows[0].overlaps).toEqual([{ id: exact, title: "Lease boundary", score: 1 }]);
+  const readPage = MemoryStore.prototype.readPage; let pages = 0, output: string;
+  MemoryStore.prototype.readPage = function(this: MemoryStore, window) { if (window.project === f.project) pages++; return readPage.call(this, window); };
+  try { output = await runCli(["review", "list", "--json"], context); } finally { MemoryStore.prototype.readPage = readPage; }
+  const rows = JSON.parse(output);
+  expect(rows).toHaveLength(2); expect(pages).toBe(2); // One nonempty page and its end, for both candidates together.
+  expect(rows.find((row: { id: string }) => row.id === candidate.id).overlaps).toEqual([{ id: exact, title: "Lease boundary", score: 1 }]);
   expect(JSON.stringify(rows.map(({ overlaps, ...previous }: { overlaps: unknown }) => previous), null, 2)).toBe(JSON.stringify(original, null, 2));
   expect(output).not.toContain(hidden); expect(f.store.dump()).toBe(before);
   const lines: string[] = [];
