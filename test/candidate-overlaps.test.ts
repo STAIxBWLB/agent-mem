@@ -22,14 +22,15 @@ const prose = "transaction leases protect atomic storage writes";
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "amem-overlaps-")); roots.push(root);
   const base = join(root, "memory"), project = memoryProjectKey(root);
-  const store = new MemoryStore({ memoryDir: base, deferPromotions: true }), sidecar = new CandidateStore({ memoryDir: base });
+  let now = Date.parse("2026-10-31T00:00:00.000Z");
+  const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => now }), sidecar = new CandidateStore({ memoryDir: base });
   close.push(() => store.close(), () => sidecar.close());
   const note = (text: string, options: { title?: string; project?: string; about?: string[]; peer?: string; scope?: "project" | "shared" } = {}) =>
     store.note({ op: "note", project: options.project ?? project, scope: options.scope ?? "project", tier: "long", kind: "finding", peer: options.peer ?? "person", source: "person", text, about: options.about ?? [], ...(options.title ? { title: options.title } : {}) });
   const put = (text = prose) => sidecar.get(sidecar.put({ project, kind: "memory", text }, "public"), project)!;
   const hints = (candidate = put(), policy: StandalonePolicyOptions = {}) => candidateOverlaps(candidate, store,
     { project, policy: () => createStandalonePolicy(policy), policyVersion: () => JSON.stringify({ denyPaths: policy.denyPaths, piiPatterns: policy.piiPatterns }) });
-  return { root, base, project, store, sidecar, note, put, hints };
+  return { root, base, project, store, sidecar, note, put, hints, advance: (ms: number) => { now += ms; } };
 }
 
 test("duplicate and related notes use consolidate's deterministic measure without deciding the candidate", async () => {
@@ -49,10 +50,11 @@ test("duplicate and related notes use consolidate's deterministic measure withou
 test("superseded, expired, forgotten, foreign shared and screened notes reveal neither ids nor counts", async () => {
   const f = fixture(), safe = f.note(prose), old = f.note(prose, { title: "obsolete" }), replacement = f.note("orchards require seasonal irrigation");
   f.store.supersede(old, replacement, "person", f.project);
-  const expired = f.note(prose, { title: "expired" }); f.store.demote(expired, "person", f.project, "2000-01-01T00:00:00.000Z");
+  const expired = f.note(prose, { title: "expired" }); f.store.demote(expired, "person", f.project, new Date(f.store.readNow() + 1000).toISOString());
   const forgotten = f.note(prose, { title: "forgotten" }); f.store.forget(forgotten, "person", f.project);
   const foreign = f.note(prose, { project: "different-project", scope: "shared" });
   const hidden = f.note(prose, { about: ["path:private/hidden.ts"] });
+  f.advance(2000);
   const result = await f.hints(f.put(), { denyPaths: ["private/"] });
   expect(result).toEqual([{ id: safe, title: null, score: 1 }]);
   for (const id of [old, expired, forgotten, foreign, hidden]) expect(JSON.stringify(result)).not.toContain(id);
