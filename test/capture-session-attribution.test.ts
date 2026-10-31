@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 import { pathToFileURL } from "node:url";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
-import { CaptureStore } from "../src/memory/capture.ts";
+import { addAttributionColumns, CaptureStore } from "../src/memory/capture.ts";
 import { normalizeCaptureFields } from "../src/memory/capture-input.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 
@@ -98,6 +98,27 @@ test("older rows without the columns read unchanged, and the shard gains the col
     reopened.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "post-173 row", session: "0123456789abcdef", subagent: true });
     expect(reopened.rows({ project: f.project }).at(-1)).toMatchObject({ session: "0123456789abcdef", subagent: true });
   } finally { reopened.close(); }
+});
+
+test("two first opens after upgrade migrate concurrently: a column added between schema read and ALTER is tolerated", async () => {
+  const f = fixture();
+  const first = new CaptureStore({ memoryDir: f.base, project: f.project }), file = join(first.dir, "capture.db");
+  first.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "pre-upgrade row" }); first.close();
+  const legacy = new Database(file); legacy.run("ALTER TABLE rows DROP COLUMN session"); legacy.run("ALTER TABLE rows DROP COLUMN subagent"); legacy.close();
+  // Writer A has read table_info (no columns); writer B's ALTERs land before each of A's ALTERs.
+  const a = new Database(file), b = new Database(file);
+  try {
+    addAttributionColumns(a, column => { b.run(`ALTER TABLE rows ADD COLUMN ${column} ${column === "session" ? "TEXT" : "INTEGER"}`); });
+    const names = (a.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(c => c.name);
+    expect(names.filter(name => name === "session" || name === "subagent").sort()).toEqual(["session", "subagent"]);
+  } finally { a.close(); b.close(); }
+  // Both real opens now succeed and see the old row unchanged.
+  const one = new CaptureStore({ memoryDir: f.base, project: f.project }), two = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { expect(one.rows({ project: f.project }).map(row => row.excerpt)).toEqual(["pre-upgrade row"]); expect(two.rows({ project: f.project })).toHaveLength(1); }
+  finally { one.close(); two.close(); }
+  // A non-duplicate failure still surfaces.
+  const broken = new Database(":memory:"); broken.run("CREATE TABLE rows (id INTEGER)");
+  try { expect(() => addAttributionColumns(broken, () => { broken.run("DROP TABLE rows"); })).toThrow(); } finally { broken.close(); }
 });
 
 test("FTS indexes are the same after incremental appends and a full rebuild", async () => {

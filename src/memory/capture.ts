@@ -162,6 +162,21 @@ export function writeCaptureConfig(dir: string, config: Partial<CaptureConfig>):
 
 const lockError = (error: unknown): boolean => /lock|busy/i.test((error as Error)?.message ?? "");
 
+/**
+ * #173 migration, safe under concurrent first opens after an upgrade. Another writer can add a column between our
+ * table_info read and our ALTER; SQLite then reports "duplicate column name", which means the column exists. Lock
+ * and busy errors still propagate, so the constructor's contended path spools as before.
+ */
+export function addAttributionColumns(db: Database, beforeAlter?: (column: string) => void): void {
+  const has = () => new Set((db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(c => c.name));
+  for (const [column, type] of [["session", "TEXT"], ["subagent", "INTEGER"]] as const) {
+    if (has().has(column)) continue;
+    beforeAlter?.(column);
+    try { db.run(`ALTER TABLE rows ADD COLUMN ${column} ${type}`); }
+    catch (error) { if (!/duplicate column name/i.test((error as Error)?.message ?? "") || !has().has(column)) throw error; }
+  }
+}
+
 interface RawRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string; bytes: number; session?: string | null; subagent?: number | null }
 const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt, ...captureAttribution(r) });
 
@@ -272,9 +287,7 @@ export class CaptureStore {
       db.run("CREATE INDEX IF NOT EXISTS rows_at ON rows (at)");
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
-      const columns = new Set((db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(c => c.name));
-      if (!columns.has("session")) db.run("ALTER TABLE rows ADD COLUMN session TEXT");
-      if (!columns.has("subagent")) db.run("ALTER TABLE rows ADD COLUMN subagent INTEGER");
+      addAttributionColumns(db);
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
