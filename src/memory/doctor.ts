@@ -57,6 +57,8 @@ export interface DoctorReport {
     duplicates: Section; stale: Section; candidates: Section; capture: Section; brief: Section; index: Section; readers: Section; policy: Section; cadence: Section;
     /** Added after v1 shipped (#132); additive, so the schema stays amem.doctor/v1. */
     drops: Section;
+    /** #188, additive: present only when the project's curated logs hold forget or prune operations. Informational; status is always ok. */
+    masked?: Section;
   };
 }
 
@@ -64,6 +66,13 @@ const worst = (values: SectionStatus[]): SectionStatus => values.includes("atten
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200);
 const unavailable = (reason: string): Section => ({ status: "unavailable", reason });
 const skipped = (reason: string): Section => ({ status: "skipped", reason });
+/** #188: counts only, from the curated copy the doctor already opened. Never raises attention by itself. */
+function maskedSection(curated: MemoryStore | undefined): { masked?: Section } {
+  if (!curated) return {};
+  const { forgets, prunes } = curated.maskingCounts();
+  if (!forgets && !prunes) return {};
+  return { masked: { status: "ok", forgets, prunes, note: "masked entries stay in the local log and in sync history; see docs/purge.md" } };
+}
 const ids = (list: string[]): string[] => list.slice(0, MAX_IDS).map(id => id.slice(0, 8));
 const regularDir = (path: string): boolean => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };
 const regularFile = (path: string): boolean => { try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; } };
@@ -422,7 +431,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let sections: DoctorReport["sections"];
   try {
     await tick();
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options) };
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), ...maskedSection(curated) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
@@ -432,6 +441,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
   index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence", drops: "recent capture drops",
+  masked: "forgotten or pruned entries (informational)",
 };
 
 function sectionDetail(name: string, detail: Record<string, unknown>, s: Style): string[] {
