@@ -12,6 +12,7 @@
     "bun": ">=1.4.2"
   },
   "devDependencies": {
+    "@staix/agent-console": "github:STAIxBWLB/agent-console#952e962",
     "@types/bun": "^1.3.0",
     "typescript": "^5.8.0",
     "@staix/agent-mem-v1": "npm:@staix/agent-mem@0.1.1",
@@ -24,7 +25,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./platform": "./src/memory/platform.ts"
+    "./platform": "./src/memory/platform.ts",
+    "./ui-plugin": "./src/ui/plugin.ts"
   },
   "bin": {
     "amem": "bin/amem.js"

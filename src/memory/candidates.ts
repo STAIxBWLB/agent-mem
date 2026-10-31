@@ -264,6 +264,22 @@ export class CandidateStore {
       if (candidate.input.kind === "consolidation") this.retainConsolidationReviews();
     }).immediate();
   }
+  /** Undo of a reject: the rejected candidate is pending again. Only a rejected one; an accepted one is undone by forgetting its note. */
+  reopen(id: string, context: { project: string; actor: "person" | "agent" }): void {
+    validActor(context.actor);
+    this.db.transaction(() => {
+      const candidate = this.get(id, context.project);
+      if (!candidate) throw new Error("candidate unavailable");
+      if (candidate.status !== "rejected") throw new Error("only a rejected candidate can be reopened");
+      this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'rejected'").run(id, this.scope(context.project));
+      // The lasting review identity would make a later proposal of the same consolidation a no-op; the decision is withdrawn.
+      if (candidate.input.kind === "consolidation") this.db.query("DELETE FROM consolidation_reviews WHERE id = ?").run(id);
+    }).immediate();
+  }
+  /** Projects with candidates waiting for review, as stored (an alias key is not resolved here). */
+  projects(): string[] {
+    return (this.db.query("SELECT DISTINCT project FROM candidates WHERE status IN ('pending', 'accepting') ORDER BY project").all() as { project: string }[]).map(row => row.project);
+  }
   accept(id: string, context: CandidateAcceptance): CandidateAcceptanceResult {
     validActor(context.actor); publicOnly(context.verdict);
     if (realPath(context.store.profile.home) !== realPath(this.dir) || typeof context.policy !== "function") throw new Error("candidate acceptance requires its memory store and a current host policy");

@@ -271,7 +271,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const { definition, options, rawArgs: args } = parsed;
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "setup") {
-    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--apply|--undo]");
+    if (parsed.positionals[0] === "console") {
+      const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
+      const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", result = consoleSetup(mode, context.env ?? process.env);
+      return options["--json"] === true ? JSON.stringify(result, null, 2) : consoleSetupText(result, mode);
+    }
     const { runSetup } = await import("./setup.ts");
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
