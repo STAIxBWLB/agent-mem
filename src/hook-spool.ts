@@ -470,9 +470,6 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   const excerpt = toolEvent
     ? clipCaptureUtf8(toolCaptureExcerpt(toolInputLine(tool), contentText), Math.min(CAPTURE_MAX_EXCERPT, configured.excerptBytes ?? CAPTURE_MAX_EXCERPT))
     : contentText;
-  // Screen the final bounded tool excerpt as well as the full native envelope above. A value assembled across
-  // fields is refused as a whole row, never replaced with a persisted redaction marker.
-  if (toolEvent && !await policy.screen({ cwd, excerpt })) return undefined;
   // #173: attribution. Only a fixed-width hash of the native session id is kept, never the id or transcript path;
   // a non-empty agent_id marks a subagent (or in-process teammate) event. Both are read from the already-screened input.
   const session = typeof value.session_id === "string" && value.session_id.length > 0 && value.session_id.length <= 256 ? hash(`amem-session\0${value.session_id}`).slice(0, 16) : undefined;
@@ -483,6 +480,8 @@ export async function stageHookCapture(event: string, input: unknown, options: O
     undefined,
     (text: string) => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),   // keep the normalizer's screen as well as the full envelope and bounded tool text screens
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, ...(configured.denyPaths.length ? { denyPaths: configured.denyPaths } : {}) });
+  // The unchanged normalizer screen and final whole-capture policy also cover the joined input/content.
+  // Enriched tool rows are refused rather than persisting the normalizer's redaction marker.
   if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");

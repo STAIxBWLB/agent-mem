@@ -130,7 +130,7 @@ test("collapsed capture rows remain reachable through timeline and show", async 
   const mcp = createMemoryMcp({ cwd: root, base, project });
   try {
     const search = await mcp.tools.amem_search({ query: text, limit: 10 }) as { hits: { source: string; capture?: { id: number; event: string } }[] };
-    expect(search.hits.filter(hit => hit.source === "capture").map(hit => hit.capture!.id)).toEqual([ids[1]]);
+    expect(search.hits.filter(hit => hit.source === "capture").map(hit => hit.capture!.id)).toEqual([ids[1]!]);
     expect(search.hits.find(hit => hit.source === "capture")?.capture?.event).toBe("Stop");
     const timeline = await mcp.tools.amem_timeline({ limit: 20 }) as { ref: string }[];
     for (const id of ids) expect(timeline.map(row => row.ref)).toContain(`capture:${id}`);
@@ -145,7 +145,7 @@ test("captureSearch reads a legacy database with no session attribution column",
   try {
     db.run("CREATE TABLE rows (id INTEGER PRIMARY KEY, at TEXT NOT NULL, project TEXT NOT NULL, agent TEXT NOT NULL, event TEXT NOT NULL, tool TEXT, paths TEXT NOT NULL, status TEXT, excerpt TEXT NOT NULL, bytes INTEGER NOT NULL, spool_id TEXT)");
     db.run("CREATE VIRTUAL TABLE fts USING fts5(body)");
-    db.run("INSERT INTO rows (id, at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (1, ?, ?, ?, ?, NULL, '[]', NULL, ?, 1, NULL)").run(new Date(now).toISOString(), project, "claude", "PostToolUse", text);
+    db.query("INSERT INTO rows (id, at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id) VALUES (1, ?, ?, ?, ?, NULL, '[]', NULL, ?, 1, NULL)").run(new Date(now).toISOString(), project, "claude", "PostToolUse", text);
     db.query("INSERT INTO fts (rowid, body) VALUES (1, ?)").run(text);
   } finally { db.close(); }
   expect(captureSearch(dir, text, 1)).toMatchObject([{ row: { id: 1, excerpt: text } }]);
