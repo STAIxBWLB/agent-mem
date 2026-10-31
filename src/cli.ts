@@ -22,6 +22,8 @@ import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions 
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
+import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
+import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
@@ -481,7 +483,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (sub === "walk" && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("review walk prints each candidate and asks about it, so stdout must be a terminal (not redirected to a file or a pipe)");
     if (sub === "walk" && actor === "agent") throw Error("Memory operation unavailable or refused; no partial result is shown.");
     const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
+    let overlapStore: MemoryStore | undefined;
     try {
+      const overlapsFor = async (candidate: import("./memory/candidates.ts").Candidate) => {
+        if (candidate.status !== "pending") return [];
+        overlapStore ??= openCuratedForRead(memoryHome(), project);
+        if (!overlapStore) return [];
+        return candidateOverlaps(candidate, overlapStore, { project, policy: policyOf,
+          policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent: commandBinding(memoryHome(), project) });
+      };
       const candidatePermitted = (candidate: import("./memory/candidates.ts").Candidate): boolean => {
         if (actor !== "agent") return true;
         const policy = policyOf();
@@ -533,6 +543,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           assertWalkCurrent();
           if (!candidatePermitted(candidate)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
           lines.push(`${index + 1}/${rows.length}  ${candidate.id.slice(0, 12)}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${terminalSafe(body(candidate))}`);
+          for (const overlap of await overlapsFor(candidate)) lines.push(`  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`);
           assertWalkCurrent();
           markShown(base, scope, Date.now(), [candidate.id]);     // after the write: shown means the person could read it
           const answer = ((await ask("[a]ccept [e]dit [r]eject [s]kip [q]uit: ")) ?? "q").trim().toLowerCase()[0] ?? "s";
@@ -564,7 +575,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           ...(options["--kind"] ? { kind: options["--kind"] as CandidateFilter["kind"] } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
         // AC4, "shown" means the person read the candidate's content, and the list cannot know that: it prints an id, a kind and a date (no content), it is run by scripts and cron, and
         // `--json` may be piped to a program. So `review list` stamps nothing, exactly like the hook; only `review walk`, which prints each candidate before it asks, does.
-        return options["--json"] ? JSON.stringify(rows, null, 2) : rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
+        if (options["--json"]) {
+          const revision = JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent = commandBinding(memoryHome(), project);
+          if (rows.some(candidate => candidate.status === "pending")) overlapStore ??= openCuratedForRead(memoryHome(), project);
+          const sourceCurrent = overlapStore?.beginRecallRead();
+          const hinted = [];
+          for (const candidate of rows) hinted.push({ ...candidate, overlaps: await overlapsFor(candidate) });
+          assertCurrent(); sourceCurrent?.();
+          if (JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) !== revision) throw Error("overlap policy changed");
+          return JSON.stringify(hinted, null, 2);
+        }
+        return rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
       }
       if (sub === "reject") {
         candidates.reject(id!, { project, actor, verdict: "public" });
@@ -585,7 +606,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ${candidate.input.kind === "promotion" ? "promoted" : "ordinary"} note ${result.noteId}`;
       } finally { store.close(); }
-    } finally { candidates.close(); }
+    } finally { overlapStore?.close(); candidates.close(); }
   }
   if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
     if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");

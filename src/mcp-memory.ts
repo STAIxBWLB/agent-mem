@@ -8,7 +8,8 @@ import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
-import { CandidateStore, acceptedCorrectionText, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { CandidateStore, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
@@ -145,7 +146,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (!current || current.id !== id || current.supersededBy || current.project !== project) return unavailable();
       return current;
     };
-    const propose = async (input: CandidateInput, target?: View): Promise<{ id: string }> => {
+    const propose = async (input: CandidateInput, target?: View, includeOverlaps = false): Promise<{ id: string; overlaps?: string[] }> => {
       if (input.kind === "correction" && acceptedCorrectionText(input).length > 4000) return unavailable();
       const revision = target && candidateTargetRevision(target);
       const currentPolicy = () => createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
@@ -154,10 +155,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       check();
       if (!await currentPolicy().screen(complete)) unavailable();
       check();
+      const overlaps = includeOverlaps ? (await candidateOverlaps(candidates.get(candidateInputId(input), project) ?? { status: "pending", input }, store,
+        { project, policy: currentPolicy, policyVersion: policyRevisionForCall, assertCurrent: check })).map(row => row.id) : undefined;
       // Config can tighten while the host screen awaits. Its synchronous check fences the final append.
       if (!currentPolicy().screenStandalone(complete)) unavailable();
       check();
-      return { id: candidates.put(input, "public") };
+      return { id: candidates.put(input, "public"), ...(overlaps === undefined ? {} : { overlaps }) };
     };
     const tools: McpHandlers = {
       async amem_evidence(args) {
@@ -289,9 +292,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         if (structured.some(key => args[key] !== undefined)) {
           if (kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
           const evidenceRefs = args.evidenceRefs.map(value => typeof value === "string" && value.trim() && value.length <= 400 && !value.includes("\0") ? value : unavailable());
-          return propose({ project, kind: "fail", approach: textOf(args, "approach")!, symptom: textOf(args, "symptom")!, cause: textOf(args, "cause")!, evidenceRefs, retryWhen: textOf(args, "retryWhen")! });
+          return propose({ project, kind: "fail", approach: textOf(args, "approach")!, symptom: textOf(args, "symptom")!, cause: textOf(args, "cause")!, evidenceRefs, retryWhen: textOf(args, "retryWhen")! }, undefined, true);
         }
-        return propose({ project, kind: "memory", text: textOf(args, "text")!, ...(args.title === undefined ? {} : { title: textOf(args, "title")! }), noteKind: kind as "decision" | "finding" | "contract" | "fail" });
+        return propose({ project, kind: "memory", text: textOf(args, "text")!, ...(args.title === undefined ? {} : { title: textOf(args, "title")! }), noteKind: kind as "decision" | "finding" | "contract" | "fail" }, undefined, true);
       },
       async amem_correct(args) {
         bound(args, ["id", "proposedText", "reason", "kind"]); guard();
