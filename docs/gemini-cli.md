@@ -22,6 +22,7 @@ Observed in a scratch `HOME`/`GEMINI_CLI_HOME` with 0.61.0: `gemini mcp add --sc
 - The native `gemini mcp add --scope user` runs in a private staging directory used as `HOME` and `GEMINI_CLI_HOME`, with the system settings paths redirected into it. A prior `amem` entry is removed with `gemini mcp remove --scope user amem` first. Only the produced server record is taken; every unrelated setting comes from the original file, and setup refuses if the native run changed any other MCP server.
 - It owns only `mcpServers.amem`. Preview by default; `--apply`/`--undo` with a private receipt in `<memory-home>/setup/gemini.json`; idempotent re-apply; undo restores the original bytes when the file is untouched, otherwise removes only the managed entry and refuses if that entry was edited.
 - Refused before any native call: settings that are not strict JSON (comments are valid for Gemini CLI but setup's byte-preserving restore needs strict JSON); a relative `GEMINI_CLI_HOME`; a Bun or entry path containing `$` (Gemini expands it); symlinked config paths.
+- A workspace `<project>/.gemini/settings.json` that defines `mcpServers.amem` overrides the user entry; setup does not inspect or edit workspace files.
 - No hook and no instruction file (`GEMINI.md`) is installed or edited. `setup all` includes Gemini; when `gemini` is not on `PATH` it is reported and skipped.
 - The verified layout version is 0.61.0; setup reports a different installed version as advisory.
 
