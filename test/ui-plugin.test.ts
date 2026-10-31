@@ -71,27 +71,23 @@ test("Recap matches a direct brief under machine policy and leaves the memory ho
   writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["recap-denied-token"] }));
   const direct = await briefModule.sessionStartBrief({ cwd: f.base, base: f.base, project: f.project, repository: false, policy: configuredPolicyOptions(f.base) });
   const provider = await open(f.family);
-  try {
-    const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
-    expect(snapshot.error).toBeUndefined(); expect(snapshot.brief).toEqual(direct);
-    expect(snapshot.repoAbsent).toBe(true); expect(direct.coverage).not.toHaveProperty("repo");
-    expect(new Date(String(snapshot.generatedAt)).toISOString()).toBe(snapshot.generatedAt);
-    expect(JSON.stringify(snapshot)).not.toContain("recap-denied-token");
-    expect(direct.context).toContain("recap work marker"); expect(direct.context).toContain("recap capture marker");
-    expect(direct.tokens).toBe(Buffer.byteLength(direct.context));
-    expect(tree(f.base)).toEqual(before);
-    expect(plugin.manifest.panels.map(panel => panel.id).slice(0, 3)).toEqual(["review", "recap", "find"]);
-  } finally { await provider.close(); }
+  const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(snapshot.error).toBeUndefined(); expect(snapshot.brief).toEqual(direct);
+  expect(snapshot.repoAbsent).toBe(true); expect(direct.coverage).not.toHaveProperty("repo");
+  expect(new Date(String(snapshot.generatedAt)).toISOString()).toBe(String(snapshot.generatedAt));
+  expect(JSON.stringify(snapshot)).not.toContain("recap-denied-token");
+  expect(direct.context).toContain("recap work marker"); expect(direct.context).toContain("recap capture marker");
+  expect(direct.tokens).toBe(Buffer.byteLength(direct.context));
+  expect(tree(f.base)).toEqual(before);
+  expect(plugin.manifest.panels.map(panel => panel.id).slice(0, 3)).toEqual(["review", "recap", "find"]);
 });
 
 test("Recap cold read creates no live lease or work index beyond ordinary console reads", async () => {
   const f = fixture(), provider = await open(f.family);
-  try {
-    await provider.snapshot({ after: 0, panel: "goals", project: f.project });
-    const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
-    expect(snapshot.error).toBeUndefined(); expect((snapshot.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
-    expect(tree(f.base)).toEqual(before);
-  } finally { await provider.close(); }
+  await provider.snapshot({ after: 0, panel: "goals", project: f.project });
+  const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(snapshot.error).toBeUndefined(); expect((snapshot.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
+  expect(tree(f.base)).toEqual(before);
 });
 
 test("only Recap snapshots compute the SessionStart brief", async () => {
@@ -103,19 +99,17 @@ test("only Recap snapshots compute the SessionStart brief", async () => {
     expect(calls).not.toHaveBeenCalled();
     expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
     expect(calls).toHaveBeenCalledTimes(1);
-  } finally { calls.mockRestore(); await provider.close(); }
+  } finally { calls.mockRestore(); }
 });
 
 test("Recap omits repository narrowing even when the home is inside a repository config boundary", async () => {
   const f = fixture(); mkdirSync(join(f.root, ".git")); mkdirSync(join(f.root, ".amem"));
   writeFileSync(join(f.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["screened amem search index"], briefBytes: 256 }));
   const provider = await open(f.family);
-  try {
-    const snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
-    const brief = snapshot.brief as briefModule.BriefResult;
-    expect(snapshot.error).toBeUndefined(); expect(brief.context).toContain("screened amem search index");
-    expect(brief.tokens).toBeGreaterThan(256); expect(brief.coverage).not.toHaveProperty("repo");
-  } finally { await provider.close(); }
+  const snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  const brief = snapshot.brief as briefModule.BriefResult;
+  expect(snapshot.error).toBeUndefined(); expect(brief.context).toContain("screened amem search index");
+  expect(brief.tokens).toBeGreaterThan(256); expect(brief.coverage).not.toHaveProperty("repo");
 });
 
 test("private brief copies refuse a live forget during projection and clean their scratch store", async () => {
