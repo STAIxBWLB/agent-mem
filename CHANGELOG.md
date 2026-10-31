@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Claude tool capture prepends a deterministic, screened tool-input line (512 UTF-8 bytes, within the total excerpt cap). Selected-project capture recall refills the existing capture slots with a fixed conversational-event weight and one best row per session, preserving the curated cohort; timeline/show retain every row. Capture schema and existing rows are unchanged (#196).
+
 ## 0.17.0
 
 - **Console plugin for acon** (#158). `@staix/agent-mem/ui-plugin` is an agent-console api 1 plugin: a Memory area with Review, Search, Timeline, Work lists, Goals and Capacity panels, inbox items for pending candidates and a capture capacity proposal, and palette search. Reads use the screened MCP read handlers in process (console search equals `amem_search` for the same query); the review queue and goals pass the configured policy and hide what fails it. Accept, edit-then-accept and reject run the CLI's review operations as the person, with a 10-second undo (forget the accepted note, reopen a rejected candidate). `gc`, `capacity_apply`, `project_forget`, `decay_apply` and `prune` answer `needsConfirm` and write only on a matching confirmed fingerprint. New `amem setup console [--apply|--undo]` writes or removes `$AGENTHUB_HOME/console/plugins/amem.json` (module path and sha256, directory 0700, file 0600); `setup all` does not include it.

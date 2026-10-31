@@ -132,8 +132,8 @@ test("collapsed capture rows remain reachable through timeline and show", async 
     const search = await mcp.tools.amem_search({ query: text, limit: 10 }) as { hits: { source: string; capture?: { id: number; event: string } }[] };
     expect(search.hits.filter(hit => hit.source === "capture").map(hit => hit.capture!.id)).toEqual([ids[1]!]);
     expect(search.hits.find(hit => hit.source === "capture")?.capture?.event).toBe("Stop");
-    const timeline = await mcp.tools.amem_timeline({ limit: 20 }) as { ref: string }[];
-    for (const id of ids) expect(timeline.map(row => row.ref)).toContain(`capture:${id}`);
+    const timeline = await mcp.tools.amem_timeline({ limit: 20 }) as { source?: string; capture?: { id: number } }[];
+    for (const id of ids) expect(timeline.filter(row => row.source === "capture").map(row => row.capture!.id)).toContain(id);
     for (const id of ids) expect(await mcp.tools.amem_show({ id: `capture:${id}` })).not.toBeNull();
   } finally { mcp.close(); }
 });
