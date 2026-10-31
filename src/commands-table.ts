@@ -167,7 +167,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
         options[token] = value;
       } else options[token] = true;
     } else if (definition.commands) {
-      const child: CommandDefinition | undefined = definition.commands[token];
+      const child: CommandDefinition | undefined = Object.hasOwn(definition.commands, token) ? definition.commands[token] : undefined;
       if (!child) throw new Error(`unknown command ${[...path, token].join(" ")}`);
       commandIndexes.add(i);
       definition = { ...definition, ...child }; path.push(token);
