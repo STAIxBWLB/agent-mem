@@ -489,8 +489,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (candidate.status !== "pending") return [];
         overlapStore ??= openCuratedForRead(memoryHome(), project);
         if (!overlapStore) return [];
-        return candidateOverlaps(candidate, overlapStore, { project, policy: policyOf,
-          policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent: commandBinding(memoryHome(), project) });
+        const assertCurrent = commandBinding(memoryHome(), project); assertCurrent();
+        const overlaps = await candidateOverlaps(candidate, overlapStore, { project, policy: policyOf,
+          policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) });
+        assertCurrent(); return overlaps;
       };
       const candidatePermitted = (candidate: import("./memory/candidates.ts").Candidate): boolean => {
         if (actor !== "agent") return true;
@@ -579,8 +581,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           const revision = JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent = commandBinding(memoryHome(), project);
           if (rows.some(candidate => candidate.status === "pending")) overlapStore ??= openCuratedForRead(memoryHome(), project);
           const sourceCurrent = overlapStore?.beginRecallRead();
+          // Project identity can require Git processes: fence it around the whole read, not once per note.
+          // The helper still checks source and policy revisions after every awaited screen.
+          assertCurrent();
           const overlaps = overlapStore ? await candidateOverlapsBatch(rows, overlapStore, { project, policy: policyOf,
-            policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), assertCurrent }) : rows.map(() => []);
+            policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) }) : rows.map(() => []);
           const hinted = rows.map((candidate, index) => ({ ...candidate, overlaps: overlaps[index]! }));
           assertCurrent(); sourceCurrent?.();
           if (JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) !== revision) throw Error("overlap policy changed");

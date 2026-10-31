@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -133,6 +133,21 @@ test("remember adds only public overlap ids after full-row host screening and st
   expect(result.overlaps).toEqual([safe]); expect(Object.keys(result)).toEqual(["id", "overlaps"]);
   for (const id of [hidden, foreign]) expect(JSON.stringify(result)).not.toContain(id);
   expect(f.sidecar.get(result.id, f.project)?.status).toBe("pending"); expect(f.store.dump()).toBe(before);
+});
+
+test("JSON list retains the whole-command home binding fence across its shared pass", async () => {
+  const f = fixture(); f.note(prose); const candidate = f.put(), before = f.store.dump();
+  process.env.AMEM_HOME = f.base;
+  const other = join(f.root, "other-memory"); mkdirSync(other);
+  const readPage = MemoryStore.prototype.readPage; let changed = false;
+  MemoryStore.prototype.readPage = function(this: MemoryStore, window) {
+    const page = readPage.call(this, window);
+    if (!changed && window.project === f.project && page.rows.length) { changed = true; process.env.AMEM_HOME = other; }
+    return page;
+  };
+  try { await expect(runCli(["review", "list", "--json"], { cwd: f.root, env: {} })).rejects.toThrow("binding changed"); }
+  finally { MemoryStore.prototype.readPage = readPage; process.env.AMEM_HOME = f.base; }
+  expect(changed).toBe(true); expect(f.store.dump()).toBe(before); expect(f.sidecar.get(candidate.id, f.project)?.status).toBe("pending");
 });
 
 test("remember never appends when policy tightens while overlap notes are screened", async () => {
