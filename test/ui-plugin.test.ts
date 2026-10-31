@@ -1,7 +1,7 @@
 // The agent-console contract references the DOM lib; its ReadableStream then needs DOM's async-iterable part, or
 // `for await` over a Bun stream elsewhere in this program stops type-checking.
 /// <reference lib="dom.asynciterable" />
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,9 @@ import { ensureShardDescriptor } from "../src/memory/shard.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { consoleSetup } from "../src/setup-console.ts";
 import { plugin } from "../src/ui/plugin.ts";
+import * as briefModule from "../src/session-brief.ts";
+import { configuredPolicyOptions } from "../src/memory/config.ts";
+import { withBriefSnapshot } from "../src/memory/doctor.ts";
 
 // The local contract copy in src/ui/plugin.ts must satisfy the real api 1 contract.
 const typed: ConsolePlugin = plugin;
@@ -57,6 +60,75 @@ function tree(dir: string): string[] {
 }
 const noteOf = (base: string, id: string, project: string) => { const store = new MemoryStore({ memoryDir: base, screen: () => "skip" }); try { return store.get(id, project); } finally { store.close(); } };
 const statusOf = (base: string, id: string, project: string) => { const c = new CandidateStore({ memoryDir: base }); try { return c.get(id, project)?.status; } finally { c.close(); } };
+
+test("Recap matches a direct brief under machine policy and leaves the memory home unchanged", async () => {
+  const f = fixture(), hidden = new MemoryStore({ memoryDir: f.base });
+  hidden.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "recap-denied-token", about: [] }); hidden.close();
+  const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+  capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "recap capture marker" }); capture.close();
+  const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
+  try { await mcp.tools.amem_work_state_write({ list: "recap-work", fields: { task: "recap work marker", status: "doing" } }); } finally { mcp.close(); }
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["recap-denied-token"] }));
+  const direct = await briefModule.sessionStartBrief({ cwd: f.base, base: f.base, project: f.project, repository: false, policy: configuredPolicyOptions(f.base) });
+  const provider = await open(f.family);
+  try {
+    const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(snapshot.error).toBeUndefined(); expect(snapshot.brief).toEqual(direct);
+    expect(snapshot.repoAbsent).toBe(true); expect(direct.coverage).not.toHaveProperty("repo");
+    expect(new Date(String(snapshot.generatedAt)).toISOString()).toBe(snapshot.generatedAt);
+    expect(JSON.stringify(snapshot)).not.toContain("recap-denied-token");
+    expect(direct.context).toContain("recap work marker"); expect(direct.context).toContain("recap capture marker");
+    expect(direct.tokens).toBe(Buffer.byteLength(direct.context));
+    expect(tree(f.base)).toEqual(before);
+    expect(plugin.manifest.panels.map(panel => panel.id).slice(0, 3)).toEqual(["review", "recap", "find"]);
+  } finally { await provider.close(); }
+});
+
+test("Recap cold read creates no live lease or work index beyond ordinary console reads", async () => {
+  const f = fixture(), provider = await open(f.family);
+  try {
+    await provider.snapshot({ after: 0, panel: "goals", project: f.project });
+    const before = tree(f.base), snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(snapshot.error).toBeUndefined(); expect((snapshot.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
+    expect(tree(f.base)).toEqual(before);
+  } finally { await provider.close(); }
+});
+
+test("only Recap snapshots compute the SessionStart brief", async () => {
+  const f = fixture(), provider = await open(f.family), calls = spyOn(briefModule, "sessionStartBrief");
+  try {
+    for (const panel of [...plugin.manifest.panels.filter(panel => panel.id !== "recap").map(panel => panel.id), "inbox", "search"]) {
+      await provider.snapshot({ after: 0, panel, project: f.project, q: "console" });
+    }
+    expect(calls).not.toHaveBeenCalled();
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect(calls).toHaveBeenCalledTimes(1);
+  } finally { calls.mockRestore(); await provider.close(); }
+});
+
+test("Recap omits repository narrowing even when the home is inside a repository config boundary", async () => {
+  const f = fixture(); mkdirSync(join(f.root, ".git")); mkdirSync(join(f.root, ".amem"));
+  writeFileSync(join(f.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["screened amem search index"], briefBytes: 256 }));
+  const provider = await open(f.family);
+  try {
+    const snapshot = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    const brief = snapshot.brief as briefModule.BriefResult;
+    expect(snapshot.error).toBeUndefined(); expect(brief.context).toContain("screened amem search index");
+    expect(brief.tokens).toBeGreaterThan(256); expect(brief.coverage).not.toHaveProperty("repo");
+  } finally { await provider.close(); }
+});
+
+test("private brief copies refuse a live forget during projection and clean their scratch store", async () => {
+  const f = fixture(); let copy: string | undefined;
+  await expect(withBriefSnapshot(f.base, f.project, async measureOnly => {
+    copy = measureOnly.curated?.profile.home;
+    const brief = await briefModule.sessionStartBrief({ cwd: f.base, base: f.base, project: f.project, repository: false, measureOnly });
+    const store = new MemoryStore({ memoryDir: f.base });
+    try { store.forget(f.noteId, "person", f.project); } finally { store.close(); }
+    return brief;
+  })).rejects.toThrow("recap source");
+  expect(copy).toBeDefined(); expect(existsSync(copy!)).toBe(false);
+});
 
 const conf = fixture();
 registerConsoleConformance(typed, { home: conf.family, destructive: [

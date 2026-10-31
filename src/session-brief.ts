@@ -17,6 +17,8 @@ import type { MemoryStore, View } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
 export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
+  /** Repository-less hosts use only machine policy and omit the repo section, even if their home lies inside a repository. */
+  repository?: false;
   /** Host-only monotonic budget probe. The native hook still owns the hard child deadline. */
   timeRemaining?: () => number;
   /** Host-only parent CLI path: precomputed owned process identity and zero-wait stores. */
@@ -26,7 +28,7 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
   /** Test seam for the pending-candidate line's clock. */
   now?: () => number;
   /**
-   * `amem doctor` only (F15): size the brief without writing to the memory home. No reader lease is taken. The caller supplies the two sections that would otherwise
+   * Read-only diagnostic/console projection: build the brief without writing to the memory home. No reader lease is taken. The caller supplies the two sections that would otherwise
    * open a store read-write: `curated` is a store opened on a private copy of the logs (absent: the project has no curated notes, an empty complete section) and
    * `workBase` is a private base holding a copy of the project's and its aliases' work logs (absent: the work section is `unavailable`, never claimed complete).
    * The capture section opens this machine's capture database read-only, and only when it exists.
@@ -104,7 +106,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
   try {
     if (options.nativeSession && typeof options.timeRemaining !== "function") return result;
     const cwdForConfig = options.cwd, baseForConfig = canonicalPath(options.base ?? memoryHome());
-    const configuredBrief = loadAmemConfig(baseForConfig, repoConfigRoot(cwdForConfig)).config.briefBytes;
+    const configuredBrief = loadAmemConfig(baseForConfig, options.repository === false ? undefined : repoConfigRoot(cwdForConfig)).config.briefBytes;
     // A caller's explicit budget wins over the default; the person's configured budget can only lower either.
     const maximum = Math.min(options.maxTokens ?? DEFAULT_TOKENS, configuredBrief ?? Number.MAX_SAFE_INTEGER);
     if (!Number.isSafeInteger(maximum) || maximum < 1) return result;
@@ -112,7 +114,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const requested = options.project ?? memoryProjectKey(cwd, { repositoryIsolation: true }), project = resolveAlias(base, requested);
     // #15 T5: a project the person archived or forgot yields no brief at all, before any lease, store or screen is opened.
     if (projectState(base, project) !== "active") return result;
-    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
+    const policy = createStandalonePolicy(configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy)), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
     const selection = readSelector(base).revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
@@ -138,7 +140,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const coverage: BriefResult["coverage"] = { work: "complete", curated: "complete", capture: "complete" };
     // #15 T4: the bound repository's `.amem/log.jsonl`, only when the repository IS this project (AC3). The `lstat` probe comes FIRST and on every path (the SessionStart
     // worker builds this brief without `nativeSession`): a repository with no `.amem/log.jsonl` at or above the cwd costs a few syscalls and no git process.
-    const repoRoot = !repoLogNearby(cwd) ? undefined : options.projectFromCwd ? nearestRepoRootWithLog(cwd) : boundRepoRoot(cwd, base, project);
+    const repoRoot = options.repository === false || !repoLogNearby(cwd) ? undefined : options.projectFromCwd ? nearestRepoRootWithLog(cwd) : boundRepoRoot(cwd, base, project);
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
