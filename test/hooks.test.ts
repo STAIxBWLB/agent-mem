@@ -75,7 +75,8 @@ for (const event of hookEvents) test(`actual CLI hook ${event} accepts agent mar
   expect(metric).toBeDefined(); expect(Number.isFinite(metric?.wallMs)).toBe(true); expect(metric!.wallMs!).toBeGreaterThanOrEqual(0);
   expect(Number.isFinite(metric?.rssMB)).toBe(true); expect(metric!.rssMB!).toBeGreaterThan(0);
   expect(readMetrics(f.base).filter(row => row.kind === "hook")).toHaveLength(1);
-  const rows = replayThroughHooks(f, [{ event, excerpt }]);
+  const expectedExcerpt = ["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(event) ? `src/public.ts\n${excerpt}` : excerpt;
+  const rows = replayThroughHooks(f, [{ event, excerpt: expectedExcerpt }]);
   expect(rows.every(row => Buffer.byteLength(row.excerpt) <= 8000 && row.paths.length <= 32)).toBe(true);
 });
 

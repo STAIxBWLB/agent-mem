@@ -314,7 +314,7 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     const hookOutput = await cli(["hook", "PostToolUse"], JSON.stringify({ session_id: "installed-smoke", hook_event_name: "PostToolUse", cwd: projectDir, tool_name: "Read", tool_input: { file_path: "public.txt" }, tool_response: HOOK_MARKER }));
     assertPostToolUseOutput(hookOutput); verifyRules();
     requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
-    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
+    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: `public.txt\n${HOOK_MARKER}` });
     requireSmoke(readFileSync(nativeCalls, "utf8") === registrations, "installed MCP or hook unexpectedly invoked a native coding client");
     const networkCalls = join(home, "network-calls"), networkTripwire = join(app, "ingest-network-tripwire.ts");
     writeFileSync(networkTripwire, `import {appendFileSync} from 'node:fs';import {createRequire} from 'node:module';
