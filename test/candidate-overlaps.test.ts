@@ -112,7 +112,7 @@ test("remember never appends when policy tightens while overlap notes are screen
   const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, policy: { host: { screen: async value => {
     if ((value as { id?: string }).id === safe) writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ denyPaths: ["public/"] }));
     return true;
-  } } }); close.push(mcp.close);
+  } } } }); close.push(mcp.close);
   await expect(mcp.tools.amem_remember({ text: prose })).rejects.toThrow();
   expect(f.sidecar.list({ project: f.project })).toEqual([]);
 });
