@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -64,7 +64,8 @@ test("AC1: a failed tool call is a PostToolUseFailure row carrying the error, ne
   runJcode(f, postTool(f.cwd, { JCODE_HOOK_STATUS: "error", JCODE_HOOK_ERROR: "jcode fixture failure message" }));
   settle(f, f.cwd, f.project, rows => rows.some(row => row.event === "PostToolUseFailure"));
   const failed = rowsOf(f, f.project).filter(row => row.event === "PostToolUseFailure");
-  expect(failed).toHaveLength(1); expect(failed[0]!.status).toBe("failed"); expect(failed[0]!.excerpt).toBe("jcode fixture failure message");
+  // #196: tool rows lead with the screened tool-input line (here the edited path), then the error text.
+  expect(failed).toHaveLength(1); expect(failed[0]!.status).toBe("failed"); expect(failed[0]!.excerpt).toBe(`${join(f.cwd, "src", "a.ts")}\njcode fixture failure message`);
 });
 
 test("AC2: missing, relative or non-directory cwd, unknown events, oversized fields and malformed input append nothing and exit 0 quietly", () => {
@@ -94,6 +95,20 @@ test("AC2: missing, relative or non-directory cwd, unknown events, oversized fie
   expect(jcodeHookCapture(turnEnd(outside, "outside"))).toBeUndefined();
   expect(spooled(f)).toEqual([]);
   expect(rowsOf(f, f.project).some(row => row.excerpt.includes("outside any project"))).toBe(false);
+});
+
+test("a linked worktree (`.git` is a file) is a project: its rows land in the main checkout's project", () => {
+  const f = fixture();
+  const commit = Bun.spawnSync(["git", "-C", f.cwd, "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "--allow-empty", "-qm", "base"], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  expect(commit.exitCode).toBe(0);
+  const tree = join(f.root, "worktree-b");
+  expect(Bun.spawnSync(["git", "-C", f.cwd, "worktree", "add", "-q", tree], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 3000 }).exitCode).toBe(0);
+  expect(lstatSync(join(tree, ".git")).isFile()).toBe(true);
+  const cwd = realPath(tree);
+  expect(jcodeHookCapture(turnEnd(cwd, "x"))?.cwd).toBe(cwd);
+  expect(runJcode(f, turnEnd(cwd, "jcode text from a linked worktree"), cwd).exitCode).toBe(0);
+  settle(f, cwd, f.project, rows => rows.some(row => row.excerpt === "jcode text from a linked worktree"));
+  expect(rowsOf(f, f.project).filter(row => row.excerpt === "jcode text from a linked worktree" && row.agent === "jcode")).toHaveLength(1);
 });
 
 test("the jcode mapping reads only the environment contract and never a prompt", () => {
