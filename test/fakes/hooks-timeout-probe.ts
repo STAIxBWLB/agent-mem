@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { hookCapturePending } from "../../src/hook-spool.ts";
 import { readMetrics } from "../../src/memory/metrics.ts";
+import { measuredHookRss } from "../../scripts/hook-rss-check.ts";
 import { hookFixture } from "./hooks-fixture.ts";
 import { hookProcessObserver } from "./hooks-process-observer.ts";
 
@@ -45,7 +46,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
     const cliRssMB = result.resourceUsage.maxRSS / 1048576;
     check(metric && Number.isFinite(metric.rssMB) && metric.rssMB! > 0 && cliRssMB > 0, "timeout metrics unavailable");
-    return { event, wallMs, rssMB: Math.max(cliRssMB, metric.rssMB!), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
+    return { event, wallMs, ...measuredHookRss(metric, cliRssMB), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
   } finally {
     // Only a fresh PID/group/command match from this probe can be signalled on failure.
     for (const nativePid of nativePids.filter(alive)) {
