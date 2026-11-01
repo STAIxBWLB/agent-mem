@@ -45,11 +45,11 @@ test("bounded hook writer drains older spool rows before admitting a newer row",
     writeFileSync(join(spool, "spool-00000001.jsonl"), Array.from({ length: 100 }, (_, i) => JSON.stringify({ at, project: f.project, agent: "claude", event: "Stop", tool: null, paths: [], status: null, excerpt: `old ${i}`, bytes: 10, nonce: String(i) })).join("\n") + "\n");
     const store = new CaptureStore({ memoryDir: f.base, project: f.project, hookBudget: () => 1000 });
     try {
-      expect(() => store.append(row(f.project, "newest"), { receipt: "newest" })).toThrow("backlog deferred");
+      expect(() => store.append(row(f.project, "newest"), { receipt: "b".repeat(64) })).toThrow("backlog deferred");
       expect(store.stats().rows).toBe(32);
-      expect(() => store.append(row(f.project, "newest"), { receipt: "newest" })).toThrow("backlog deferred");
+      expect(() => store.append(row(f.project, "newest"), { receipt: "b".repeat(64) })).toThrow("backlog deferred");
       expect(store.stats().rows).toBe(64);
-      expect(() => store.append(row(f.project, "newest"), { receipt: "newest" })).toThrow("backlog deferred");
+      expect(() => store.append(row(f.project, "newest"), { receipt: "b".repeat(64) })).toThrow("backlog deferred");
       store.append(row(f.project, "newest"), { receipt: "b".repeat(64) });
       expect(store.rows().map(r => r.excerpt)).toEqual([...Array.from({ length: 100 }, (_, i) => `old ${i}`), "newest"]);
     } finally { store.close(); }
@@ -64,5 +64,20 @@ test("bounded hook writer refuses an expired budget and defers legacy migration"
     finally { store.close(); }
     mkdirSync(join(f.base, "capture")); writeFileSync(join(f.base, "capture", "capture.db"), "legacy fixture");
     expect(() => new CaptureStore({ memoryDir: f.base, project: f.project, hookBudget: () => 1000 })).toThrow("migration deferred");
+  } finally { f.close(); }
+});
+
+test("bounded hook eviction converges in small batches and preserves ordinary maintenance", () => {
+  const f = hookFixture();
+  try {
+    const seed = new CaptureStore({ memoryDir: f.base, project: f.project, now: () => 0, retentionDays: 90 });
+    for (let i = 0; i < 300; i++) seed.append({ ...row(f.project, `expired ${i}`), at: new Date(0).toISOString() });
+    seed.close();
+    const bounded = new CaptureStore({ memoryDir: f.base, project: f.project, hookBudget: () => 1000, now: () => 200 * 86400000 });
+    try { const removed = bounded.evict(); expect(removed.expired).toBe(128); expect(bounded.stats().rows).toBe(172); }
+    finally { bounded.close(); }
+    const ordinary = new CaptureStore({ memoryDir: f.base, project: f.project, now: () => 200 * 86400000 });
+    try { expect(ordinary.evict().expired).toBe(172); expect(ordinary.stats().rows).toBe(0); }
+    finally { ordinary.close(); }
   } finally { f.close(); }
 });
