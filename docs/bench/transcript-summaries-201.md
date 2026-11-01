@@ -14,7 +14,7 @@ CPU=1 with an owned CPU hog reproduced the progress guard: a first Title was com
 
 Per the reviewer ruling, the harness permits at most **N=8 additional invocations** per logical workload. Every call, including every resumption, is timed and included in the unchanged R2 gates. Zero progress requires an explicit stop reason; backwards or over-256-KiB progress and unknown RSS still fail. All 3 normal or 103 burst summary keys must be durable by that bound. A bounded library replay, with the same HOME privacy binding as the real CLI, then verifies exactly one stored row per summary; it launches no additional hook invocation.
 
-The production source measured at `5bfcbe1` passed 382 physical transcript samples on the first group attempt. The maximum observed follow-up count was 7. Subsequent changes only strengthen fixture HOME restoration on failure and add a negative-control regression. Final delivery-head checks and CPU=1 results are reported in the PR after these document bytes are frozen.
+The production source measured at `5bfcbe1` passed 382 physical transcript samples on the first group attempt. The maximum observed follow-up count was 7. Subsequent changes strengthen fixture HOME restoration on failure, preserve independently bound summary admission after metadata refusal, retain a committed offset across later deadline-only progress, and add negative-control regressions. Final delivery-head checks and CPU=1 results are reported in the PR after these document bytes are frozen.
 
 | Workload | Logical workloads | Actual calls | Resume calls | Wall p95, ms | Peak RSS, MB |
 |---|---:|---:|---:|---:|---:|
@@ -93,6 +93,6 @@ The numeric receipt preserves the original public S/M no-loss results and all pr
 
 ## Limits
 
-Each invocation reads at most 256 KiB. The native caller allocates at most 60 ms for scanning with a 20 ms publication reserve inside the existing deadline. Incomplete lines wait; a line exceeding the ceiling is skipped through its newline and counted once as `transcript_line_bound`. Existing policy structural bounds may refuse a large summary before clipping. A full spool stops cursor progress at the unadmitted row; later final hooks retry the tail. A busy cursor or failed transcript read leaves ordinary capture available.
+Each invocation reads at most 256 KiB. The owned worker allocates at most 60 ms for scanning, retaining 20 ms for cursor commit and drain inside its existing deadline. Incomplete lines wait; a line exceeding the ceiling is skipped through its newline and counted once as `transcript_line_bound`. Existing policy structural bounds may refuse a large summary before clipping. A full spool stops cursor progress at the unadmitted row; later final hooks retry the tail. A busy cursor or failed transcript read leaves ordinary capture available.
 
 Private cursor databases contain hashes and file/offset/timestamp metadata, never transcript paths, raw session identifiers or summary text. They have a 1 MiB bound. Stable byte positions distinguish untimed A-B-A title transitions while full-file rotation/copy receipts remain idempotent; arbitrary historical rewrites that move identical untimed lines have no intrinsic stable source ID. Capture row schema, hashes and paths are unchanged. Summary rows use shared format 3; ordinary Claude rows remain format 2.

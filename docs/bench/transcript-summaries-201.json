@@ -3601,9 +3601,9 @@
     }
   },
   "nativeFirstTimingFix": {
-    "sourceCommit": "b4f5b8f919f2330e6be9917567dc9430bd6a18a4",
+    "sourceCommit": "461d63b95bf8f2447683f40198ebd837b883d56c",
     "measuredProductionCommit": "5bfcbe199967",
-    "subsequentChanges": "Harness HOME restoration on failure and additional regression only; production source identical.",
+    "subsequentChanges": "Harness HOME restoration on failure; metadata-refusal scan preserves independently bound pending summaries; monotonic progress retains offset across later deadline-only frames; final regressions cover both.",
     "normalRawDirectory": "/home/dev/tmp/amem-201/resume-bound-home/",
     "logicalRunsPerGroup": 40,
     "maxAdditionalInvocations": 8,
@@ -4265,6 +4265,14 @@
       {
         "raw": "resume-bound-home/",
         "outcome": "35focused pass,382physical transcript samples and ordinary hook suite pass on firstattempts; all summaries replay uniquely under correctHOME."
+      },
+      {
+        "raw": "progress-final-focus/",
+        "outcome": "Typecheck identified unresolved project union after refusal exit; narrowed through existing never-returning stop assignment."
+      },
+      {
+        "raw": "progress-final-focus-fixed/",
+        "outcome": "23focused tests,0fail106assertions; includes metadata-refusal/replay, lateprogress-offset, forcedreap knownRSS and malformedprogress failclosed."
       }
     ]
   }
