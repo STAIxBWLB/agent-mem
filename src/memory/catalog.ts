@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { indexFileName } from "./index-file.ts";
 import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
@@ -48,7 +49,7 @@ function curatedStats(base: string, hash: string, key: string, captured: boolean
   if (!existsSync(join(dir, "generation.json")) && !existsSync(join(dir, "generation-seal.json"))) return { entries: 0, lastAt: null };
   const store = openShardStore({ memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore" });
   try {
-    const db = new Database(join(dir, store.profile.foreignPruneFormat ? "index-v2.db" : "index.db"), { readonly: true });
+    const db = new Database(join(dir, indexFileName(!!store.profile.foreignPruneFormat)), { readonly: true });
     try {
       db.run("PRAGMA busy_timeout = 0");
       const row = db.query("SELECT COUNT(*) AS n, MAX(at) AS last FROM entries WHERE scope = 'project' AND project = ?" + (store.profile.foreignPruneFormat ? " AND id NOT IN (SELECT id FROM generation_targets)" : "")).get(key) as { n: number; last: string | null };

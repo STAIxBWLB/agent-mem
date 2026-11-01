@@ -44,6 +44,7 @@ const MARKED_READ_INVENTORY: readonly MarkedReadInventoryRow[] = [
   { path: "completion", mode: "emit shell completion", outcome: "static", detail: "no memory home access" },
   { path: "help", mode: "print help", outcome: "static", detail: "no memory home access" },
   { path: "version", mode: "print version", outcome: "static", detail: "no memory home access" },
+  { path: "manifest", mode: "print package, MCP tools and commands", outcome: "static", detail: "no memory home access" },
   { path: "hook", mode: "context-only event", outcome: "capture", detail: "unchanged fail-open capture hook" },
   { path: "ingest", mode: "native transcript capture", outcome: "capture", detail: "unchanged capture-only intake" },
 

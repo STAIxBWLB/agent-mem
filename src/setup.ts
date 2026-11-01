@@ -34,6 +34,8 @@ interface DirectoryIdentity { dev: number; ino: number }
 interface Receipt { createdDirectory?: DirectoryIdentity; version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
   env?: Env; bun?: string; entry?: string; stdinTTY?: boolean; cwd?: string;
+  /** `--root`: an absolute amem install root to register instead of the running one (#199). Ignored when `entry` is given. */
+  root?: string;
   /** @deprecated Retained for source compatibility; explicit apply/undo modes do not prompt. */
   confirm?: (plan: SetupPlan) => Promise<boolean>;
   /** Host-only race fixture, called after temporary-file fsync and before the final comparison/rename. */
@@ -42,7 +44,7 @@ export interface SetupContext {
   native?: (argv: readonly string[], env: Env, cwd: string) => void;
 }
 export interface SetupPlan {
-  targets: SetupTarget[]; mode: "preview" | "apply" | "undo";
+  targets: SetupTarget[]; mode: "preview" | "apply" | "undo"; root?: InstallRoot;
   actions: { target: SetupTarget; version?: ClientVersion; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
 }
@@ -132,14 +134,46 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const { paths, legacyPaths, redirects } = resolveSetupPaths(env, home, workspace?.root);
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
-  const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
+  const install = options.entry === undefined && options.root !== undefined ? installRoot(options.root) : undefined;
+  const entry = options.entry ?? (install ? join(install.path, "bin", "amem.js") : fileURLToPath(new URL("../bin/amem.js", import.meta.url)));
   if (!bun || !isAbsolute(bun) || !isAbsolute(entry)) throw Error("setup needs a PATH-resolved absolute Bun runtime and an absolute installed entry");
   // The trusted native fixture may use a temporary package; ordinary CLI installation must outlive bunx's cache.
   if (!options.native) {
     const roots = [resolve(tmpdir()), realPath(tmpdir())], entries = [resolve(entry), realPath(entry)];
     if (roots.some(root => entries.some(file => { const part = relative(root, file); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); }))) throw Error("setup refuses a temporary package entry; install amem in a persistent location first");
   }
-  return { env, home, paths, legacyPaths, redirects, bun, entry, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
+  return { env, home, paths, legacyPaths, redirects, bun, entry, root: install, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
+}
+export interface InstallRoot { path: string; version: string }
+const PACKAGE_JSON_MAX = 64 * 1024;
+/**
+ * An amem install root to register, such as `<install>/releases/<version>/` (#199). It is resolved to its real path, so a `current` link
+ * registers the release it names, and replacing another install never changes what the registered hooks and MCP server load. The root must
+ * hold a regular `package.json` named `@staix/agent-mem` (read on one non-following, non-blocking descriptor, at most 64 KiB) and a regular
+ * `bin/amem.js`.
+ */
+export function installRoot(root: string): InstallRoot {
+  if (!isAbsolute(root)) throw Error("setup --root must be an absolute path");
+  const refused = (why: string) => Error(`setup --root ${root}: ${why}`);
+  let path: string;
+  try { path = realPath(root); } catch { throw refused("not found"); }
+  let fd: number;
+  try { fd = openSync(join(path, "package.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { throw refused("no readable package.json"); }
+  let text: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > PACKAGE_JSON_MAX) throw refused("package.json is not a regular file of at most 64 KiB");
+    const data = Buffer.alloc(PACKAGE_JSON_MAX + 1); let size = 0, n: number;
+    while (size < data.length && (n = readSync(fd, data, size, data.length - size, null)) > 0) size += n;
+    if (size > PACKAGE_JSON_MAX) throw refused("package.json is not a regular file of at most 64 KiB");
+    text = data.subarray(0, size).toString("utf8");
+  } finally { closeSync(fd); }
+  let pkg: unknown;
+  try { pkg = JSON.parse(text); } catch { throw refused("package.json is not JSON"); }
+  const { name, version } = (pkg && typeof pkg === "object" ? pkg : {}) as { name?: unknown; version?: unknown };
+  if (name !== "@staix/agent-mem" || typeof version !== "string") throw refused("not an @staix/agent-mem install root");
+  if (!lstatSync(join(path, "bin", "amem.js"), { throwIfNoEntry: false })?.isFile()) throw refused("no regular bin/amem.js");
+  return { path, version };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi" || target === "jcode" || target === "opencode" || target === "agy") return null;
@@ -225,9 +259,10 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     pluginNotes.push(`Antigravity MCP is pinned to this repository only: ${c.workspace.root}. Restart the CLI/IDE and use one workspace; no global or plugin definitions are replaced, and same-name definitions elsewhere are unsupported. Native capture is unavailable; no hooks are installed. Only strict JSON is supported; JSONC is refused. Native TUI/IDE presence and live behavior are unverified; availability means this direct configuration operation is supported.`);
     if (!c.workspace.ignored) pluginNotes.push("WARNING: .agents/mcp_config.json is not Git-ignored; it contains absolute local paths. Setup will refuse it if it becomes tracked.");
   }
+  if (c.root) pluginNotes.push(`Registers the install root ${c.root.path} (amem ${c.root.version}) for hooks and MCP; current registrations change only on --apply.`);
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
-  return { targets, mode, actions: targets.map(target => {
+  return { targets, mode, ...(c.root ? { root: c.root } : {}), actions: targets.map(target => {
     const prior = receipt(c, target, false), files = mode === "undo" && prior ? prior.changes.map(change => change.path) : c.paths[target];
     for (const file of files) read(file);
     if (mode === "undo" && prior?.changes.some((change, index) => change.path !== c.paths[target][index])) {

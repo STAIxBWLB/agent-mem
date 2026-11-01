@@ -1,3 +1,4 @@
+import { assertFormatFloor } from "./formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync } from "node:fs";
@@ -131,6 +132,7 @@ export class WorkListStore {
       || !Number.isSafeInteger(this.busyTimeoutMs) || this.busyTimeoutMs < 0 || this.busyTimeoutMs > 3000) throw new Error("invalid work-list budget");
     this.checkBudget();
     const base = canonicalPath(options.base);
+    assertFormatFloor(base, "work-lists");
     this.project = options.exact === true ? options.project : resolveAlias(base, options.project);
     regular(join(base, "projects"), true); regular(shardDir(base, this.project), true);
     this.checkBudget();

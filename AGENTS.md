@@ -44,6 +44,8 @@
 - Preserve segment, `machine.json` and `sync.lock` paths.
 - Never rewrite a log line. Express every change as a new entry.
 - Keep `index.db` derived only from rows; incremental indexing must equal a full rebuild. Retain the golden regression.
+- Name the curated index file only through `indexFileName` in `src/memory/index-file.ts`; when the index tables change, bump `INDEX_VERSION` there and never rename a released file in place (#199).
+- Never write `formats.json` from code: a format floor is raised by a person (`docs/contracts.md` §Versions on one machine).
 - Resolve paths through `realPath` in `src/memory/platform.ts`, not direct `realpathSync` calls; preserve the Bun backslash-path workaround.
 - Keep deny, hardened git and process identity implementations single-sourced in `src/memory/platform.ts`.
 

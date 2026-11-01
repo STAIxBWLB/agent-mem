@@ -10,7 +10,7 @@ import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
-import { serveMcp, writeConfirmed } from "./mcp.ts";
+import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./memory/vault.ts";
@@ -28,7 +28,7 @@ import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelect
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
-import { commandHelp, parseCommand } from "./commands-table.ts";
+import { COMMANDS, commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
@@ -180,6 +180,16 @@ class CliPartialApplyError extends Error {
   }
 }
 
+/**
+ * `amem manifest`: what this install serves, read by installers (dotfiles#320) without a compiled list. A tool is a plain name, or
+ * `{ name, readOnly: true }` when its MCP annotation says it changes nothing. No memory data, so it needs no home.
+ */
+export function manifest() {
+  return { name: "@staix/agent-mem", version: VERSION,
+    mcp: { server: "amem", tools: MCP_TOOLS.map(tool => tool.annotations.readOnlyHint ? { name: tool.name, readOnly: true as const } : tool.name) },
+    commands: Object.keys(COMMANDS) };
+}
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   // Native capture and the MCP server retain their existing surfaces and attribution.
   if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
@@ -228,8 +238,17 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     throw error;
   });
 }
+/**
+ * Every lazily imported module outside the CLI-only commands (relative to this file), loaded at `amem mcp` start (#199). A later `import()`
+ * then hits the module cache, so an install replaced in place under a running server never mixes two versions in one process.
+ * `test/coexistence.test.ts` fails when a new lazy import is neither listed here nor named there as CLI-only.
+ */
+export const MCP_PRELOAD = ["./memory/store.ts", "./memory/capture.ts", "./memory/sync.ts", "./memory/shard-sync.ts", "./memory/public-prune-advance.ts"] as const;
+// The boundary check admits only literal specifiers, so the list above is spelled out again here; the test compares the two.
+const preloadMcp = () => Promise.all([import("./memory/store.ts"), import("./memory/capture.ts"), import("./memory/sync.ts"), import("./memory/shard-sync.ts"), import("./memory/public-prune-advance.ts")]);
 async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
   if (argv.length === 1 && argv[0] === "mcp") {
+    await preloadMcp();
     const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
@@ -260,6 +279,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   try {
     parsed = parseCommand(argv);
     if (parsed.path[0] === "version") return `amem ${VERSION}`;
+    if (parsed.path[0] === "manifest") return JSON.stringify(manifest(), null, parsed.options["--json"] === true ? undefined : 2);
     if (parsed.path[0] === "completion") {
       if (parsed.positionals.length !== 1) throw new Error("usage: amem completion zsh|bash|fish");
       return completionScript(parsed.positionals[0]!);
@@ -271,15 +291,18 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const { definition, options, rawArgs: args } = parsed;
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "setup") {
-    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--apply|--undo]");
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply|--undo]");
     if (parsed.positionals[0] === "console") {
       const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
-      const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", result = consoleSetup(mode, context.env ?? process.env);
+      const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";
+      const root = typeof options["--root"] === "string" ? (await import("./setup.ts")).installRoot(options["--root"]).path : undefined;
+      const result = root === undefined ? consoleSetup(mode, context.env ?? process.env) : consoleSetup(mode, context.env ?? process.env, join(root, "src", "ui", "plugin.ts"));
       return options["--json"] === true ? JSON.stringify(result, null, 2) : consoleSetupText(result, mode);
     }
     const { runSetup } = await import("./setup.ts");
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
+      ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}),
       ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context),
     });
   }

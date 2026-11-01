@@ -25,8 +25,10 @@ export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
   consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after explicit acceptance", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
-  setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs, or the acon console plugin manifest (console); apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all", "console"] }] },
+  setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs, or the acon console plugin manifest (console); apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
+    "--root": { description: "Register this absolute install root (such as <install>/releases/<version>/, resolved to its real path) instead of the running one", value: "path" } }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all", "console"] }] },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
+  manifest: { description: "Describe this install: package name, version, MCP server and tools (read-only ones marked), commands", options: json },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
   ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi", "qwen"] }] },
   "vault-candidates": { description: "List screened durable curated vault candidates (per project, or across projects)", options: { ...json, "--limit": text("Maximum candidates per project (1..100)"),

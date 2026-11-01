@@ -1,3 +1,4 @@
+import { assertFormatFloor } from "./formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -210,6 +211,7 @@ export class CaptureStore {
     const maxReadRows = opts.maxReadRows ?? 128;
     if (this.readOnly && (!Number.isSafeInteger(maxReadRows) || maxReadRows < 1 || maxReadRows >= Number.MAX_SAFE_INTEGER)) throw new Error("invalid capture read row bound");
     this.base = opts.memoryDir ?? memoryBase(opts.home);
+    assertFormatFloor(this.base, "capture");
     const machine = opts.machine ?? (this.readOnly ? this.existingMachine() : machineId(this.base).id);
     if (this.readOnly && !/^[a-f0-9]{16}$/.test(machine)) throw new Error("capture machine identity unavailable");
     this.requestedKey = opts.project;

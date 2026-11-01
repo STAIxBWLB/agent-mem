@@ -1,4 +1,6 @@
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { indexFileName } from "./index-file.ts";
+import { assertFormatFloor } from "./formats.ts";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -207,7 +209,7 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
 
 /** A snapshot of the live shared-v1 index (a read-only connection, so no checkpoint, no lease), or false when there is none. */
 function snapshotIndex(live: string, to: string): boolean {
-  const file = join(live, "index.db");
+  const file = join(live, indexFileName(false));
   if (!regularFile(file)) return false;
   const forms: (() => Database)[] = [
     () => new Database(file, { readonly: true }),
@@ -440,7 +442,11 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
  * a lone signal waits at most one call for the signal handler, which then removes the scratch copy and ends doctor.
  */
 export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
-export function doctorReport(options: DoctorOptions): Promise<DoctorReport> { return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options)); }
+export function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
+  // Doctor reads every surface below, live or through a scratch copy: a floor on any of them refuses the whole report before anything is read (#199 AC5).
+  for (const surface of ["curated", "capture", "candidates", "work-lists"] as const) assertFormatFloor(options.home, surface);
+  return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options));
+}
 async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let scratch: string | undefined, unguard: (() => void) | undefined;
   let duplicates: Section, stale: Section, index: Section;
@@ -464,7 +470,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       } else {
         const home = join(scratch, "home"); mkdirSync(home, { mode: 0o700 });
         copyCurated(options, layout, home, budget);
-        const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, "index.db"));
+        const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, indexFileName(false)));
         curated = options.openCurated(home);
         const rows = curated.list({ project: options.project, limit: LIST_ALL });
         await tick();
