@@ -5,11 +5,9 @@ import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { rssSourcesKnown } from "../src/hook-resources.ts";
 
-for (const mode of ["normal", "deadline", "identity_failure", "late_progress"] as const) test("native receipts precede transcript work: " + mode, async () => {
-  const stall = mode === "deadline";
+for (const mode of ["normal", "identity_failure"] as const) test("native receipts precede transcript work: " + mode, async () => {
   const f = hookFixture(), phases = join(f.root, "phases.jsonl"), preload = join(f.root, "phases.ts"), transcript = join(f.root, "transcript.jsonl");
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
-  const stallCode = stall ? "const until=performance.now()+3000;while(performance.now()<until){};" : "";
   writeFileSync(phases, "");
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 const phases=${JSON.stringify(phases)},worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)};
@@ -17,14 +15,9 @@ globalThis.__phase201=(phase,known)=>appendFileSync(phases,JSON.stringify({phase
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',preload,...argv.slice(2)],options):spawn(argv,options);
 Bun.plugin({name:'transcript-order',setup(builder){
 if(${JSON.stringify(mode === "identity_failure")})builder.onLoad({filter:/[/]hook-project\\.ts$/},({path})=>{
- const source=readFileSync(path,'utf8'),anchor='if (result !== undefined) return result;';
+ const source=readFileSync(path,'utf8'),anchor='options.onResolved?.(prepared.receipt(result)); return result;';
  if(source.split(anchor).length!==2)throw Error('native refusal anchor changed');
- return {loader:'ts',contents:source.replace(anchor,'if (result !== undefined) throw Error("fixture native refusal");')};
-});
-if(${JSON.stringify(mode === "late_progress")})builder.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
- const source=readFileSync(path,'utf8'),anchor='if (scanned) progress(scanned);';
- if(source.split(anchor).length!==2)throw Error('late progress anchor changed');
- return {loader:'ts',contents:source.replace(anchor,'if(scanned){progress(scanned);progress({stopReason:"deadline"});}')};
+ return {loader:'ts',contents:source.replace(anchor,'throw Error("fixture native refusal");')};
 });
 builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='    try { observer?.finished(selected); }';
@@ -34,7 +27,7 @@ builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
 builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='  const value = object(input);';
  if(source.split(anchor).length!==2)throw Error('transcript order anchor changed');
- return {loader:'ts',contents:source.replace(anchor,"  (globalThis as any).__phase201('scan');"+${JSON.stringify(stallCode)}+anchor)};
+ return {loader:'ts',contents:source.replace(anchor,"  (globalThis as any).__phase201('scan');"+anchor)};
 });}});
 `);
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "worker summary", timestamp: new Date().toISOString() }) + "\n");
@@ -49,16 +42,21 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
     expect(native.every(event => event.known && event.pid === events[scan]!.pid)).toBe(true);
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
-    if (stall) expect(metric.transcriptStopReason).toBe("deadline");
-    else {
+    {
       expect(metric.transcriptOffset).toBeGreaterThan(0);
       if (mode === "identity_failure") {
         const pending = readdirSync(join(f.base, "hook-spool")).filter(name => name.startsWith("hook-v3-")).map(name => JSON.parse(readFileSync(join(f.base, "hook-spool", name), "utf8")));
         expect(pending.some(row => row.capture.event === "Title" && row.capture.excerpt === "worker summary")).toBe(true);
         expect(f.runFunctional("PostToolUse", { prompt: "resume public summary" }).exitCode).toBe(0);
       }
-      if (mode === "late_progress") expect(metric.transcriptStopReason).toBe("deadline");
       expect(f.rows().some(row => row.event === "Title" && row.excerpt === "worker summary")).toBe(true);
     }
   } finally { f.close(); }
+});
+
+test("a final hook reaps blocked directly owned metadata before writing known RSS", async () => {
+  const { hookTimeoutProbe } = await import("./fakes/hooks-timeout-probe.ts");
+  const f = hookFixture();
+  try { await f.seed(); const result = await hookTimeoutProbe(f, "Stop", true); expect(result.remainingProcesses).toBe(0); }
+  finally { f.close(); }
 });

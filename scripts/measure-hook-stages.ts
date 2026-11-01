@@ -43,10 +43,10 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
  }else if(path.endsWith('/session-brief-worker.ts')){
   contents="globalThis.__amemHookStage('entry');"+contents;
   mark('const options = JSON.parse','input-start');mark('if (!Number.isFinite(options.deadlineAt)','input-done');
-  mark('const policy = createStandalonePolicy','policy-start');mark('const expectedScope = hookCaptureScope','scope-start');
-  mark('let project: string;','scope-done');mark('try { project = resolveAlias','project-start');mark('let captured = false;','project-done');
-  mark('const { sessionStartBrief } = await import','brief-import-start');mark('const result = await sessionStartBrief','brief-import-done');
-  mark('await emit({ ...result, captured','brief-done');
+  mark('const expectedScope = hookCaptureScope','scope-start');
+  mark('const project = resolveAlias','project-start');mark('let captured = false;','project-done');
+  mark('const { CaptureStore } = await import','capture-import');
+  mark('await emit({ context: "", captured','capture-done');
  }else if(path.endsWith('/hook-project.ts')){
   mark('const cwd = realPath','git-path-start');mark('if (scope !== undefined && (!scope','git-path-done');
   mark('const validity = scope === undefined ? undefined : hookCaptureScope','project-validity-start');mark('const dir = join(base','project-validity-done');

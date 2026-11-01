@@ -146,3 +146,19 @@ test("SessionStart publication defers stale-temp maintenance until a maintenance
   resolveHookProject({ ...binding(f), maintainCache: true });
   expect(existsSync(stale)).toBe(false);
 });
+
+test("parent identity receipt is ephemeral and rejects changed bindings without another native query", async () => {
+  const { resolveHookProjectAsync, acceptHookProjectReceipt } = await import("../src/hook-project.ts");
+  const f = fixture(); await f.seed();
+  let receipt: import("../src/hook-project.ts").HookProjectReceipt | undefined;
+  const options = binding(f);
+  expect(await resolveHookProjectAsync({ ...options, prefetch: true, onResolved: value => { receipt = value; } }, { rssKB: 0, rawRssKB: 0 })).toBe(f.project);
+  expect(receipt).toBeDefined();
+  rmSync(join(f.base, "hook-project"), { recursive: true, force: true });
+  expect(acceptHookProjectReceipt(receipt, options)).toBe(f.project);
+  for (const change of [{ cwd: f.root }, { base: f.root }, { scope: "different" }, { binary: "different" }, { project: "" }, { extra: true }]) {
+    expect(() => acceptHookProjectReceipt({ ...receipt, ...change }, options)).toThrow("receipt changed");
+  }
+  writeFileSync(join(f.cwd, ".git", "HEAD"), "invalid HEAD\n");
+  expect(() => acceptHookProjectReceipt(receipt, options)).toThrow();
+});

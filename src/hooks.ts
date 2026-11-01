@@ -92,7 +92,8 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value:
 
 /** Native handles always belong to the CLI that writes the metric, never a killable worker. */
 async function parentProject(options: HookOptions, base: string, deadline: number) {
-  const cwd = realPath(options.cwd), scope = hookCaptureScope(cwd, base);
+  const cwd = realPath(options.cwd);
+  const scope = hookCaptureScope(cwd, base);
   const usage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, rssSources: emptyRssSources() };
   let project: string | undefined, receipt: HookProjectReceipt | undefined;
   try {
@@ -221,10 +222,10 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
 }
 
 /** A transcript final hook uses one Bun image, with only directly owned native helpers. */
-async function transcriptInParent(input: unknown, options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string) {
+async function transcriptInParent(input: unknown, options: HookOptions, base: string, deadline: number, pending: PendingHookCapture) {
   const metadata = await parentProject(options, base, deadline - WORKER_CLEANUP_MS);
   const { cwd, scope, project, usage } = metadata;
-  const remaining = () => deadline - performance.now();
+  const captureRemaining = () => deadline - performance.now();
   const result = { context: unavailable, captured: false, valid: false, rssKB: usage.rssKB, rawRssKB: usage.rawRssKB,
     rssSources: usage.rssSources, transcript: undefined as HookTranscriptProgress | undefined };
   try {
@@ -234,12 +235,12 @@ async function transcriptInParent(input: unknown, options: HookOptions, base: st
         result.transcript = await scanHookTranscriptTail(input, { ...options, cwd, base, deadline: Math.min(deadline - 20, performance.now() + 60) });
       }
     } catch { /* Ordinary durable capture remains independent of transcript failure. */ }
-    if (project === undefined || scope === undefined || remaining() < 8) return result;
+    if (project === undefined || scope === undefined || captureRemaining() < 8) return result;
     const { CaptureStore } = await import("./memory/capture.ts");
     let store: InstanceType<typeof CaptureStore> | undefined;
     try {
-      const drained = await drainHookCaptures({ ...options, cwd, base, project: resolveAlias(base, project), expectedScope: scope, timeRemaining: remaining }, (row, receipt) => {
-        store ??= new CaptureStore({ memoryDir: base, project: resolveAlias(base, project), cwd, busyTimeoutMs: 0, hookBudget: remaining });
+      const drained = await drainHookCaptures({ ...options, cwd, base, project: resolveAlias(base, project), expectedScope: scope, timeRemaining: captureRemaining }, (row, receipt) => {
+        store ??= new CaptureStore({ memoryDir: base, project: resolveAlias(base, project), cwd, busyTimeoutMs: 0, hookBudget: captureRemaining });
         return store.append({ ...row, project: store.key }, { receipt });
       });
       result.captured = drained.captured.includes(pending.name);
@@ -254,7 +255,7 @@ async function transcriptInParent(input: unknown, options: HookOptions, base: st
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
   const work = (pending: PendingHookCapture) => event === "Stop" || event === "SessionEnd"
-    ? transcriptInParent(input, options, base, deadline, pending, event)
+    ? transcriptInParent(input, options, base, deadline, pending)
     : hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);
   let result: Awaited<ReturnType<typeof work>> | undefined;
   let pending: PendingHookCapture | undefined;

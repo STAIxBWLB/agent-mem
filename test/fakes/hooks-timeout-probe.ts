@@ -14,7 +14,7 @@ function check(condition: unknown, reason: string): asserts condition { if (!con
 
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
-export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse", functional: boolean) {
+export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean) {
   const observer = hookProcessObserver(f.root, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
   let nativePids: number[] = [], groups: number[] = [];
   try {
@@ -23,7 +23,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       ? f.runFunctional(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` })
       : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
     const wallMs = performance.now() - start, workers = observer.read();
-    check(workers.length === (event === "SessionStart" ? 3 : 1), "timeout probe did not observe every owned child");
+    check(workers.length === (event === "SessionStart" ? 3 : 2), "timeout probe did not observe every owned child");
     groups = workers.map(worker => worker.pid);
     check(workers.every(worker => worker.detached), "timeout child did not own its process group");
     check(existsSync(observer.entered) && existsSync(observer.nativePidFile), "timeout fixture did not reach its owned blocking command");
