@@ -2,7 +2,7 @@ import { measuredHookRss } from "./hook-rss-check.ts";
 /** Every real hook call, including bounded resumptions, is an R2 sample. */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
@@ -132,7 +132,17 @@ async function measure() {
         maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssPass: peakRssMB < 100 };
     });
     return { groups, samples };
-  } finally { f.close(); }
+  } finally {
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      const rows = ["Stop", "SessionEnd", "StopBurst"].map(event => {
+        const values = samples.filter(row => row.event === event).map(row => row.rssMB).sort((a, b) => a - b);
+        const median = values.length ? ((values[Math.floor((values.length - 1) / 2)]! + values[Math.floor(values.length / 2)]!) / 2).toFixed(2) : "-";
+        return "| " + event + " | " + values.length + " | " + median + " | " + (values.at(-1)?.toFixed(2) ?? "-") + " |";
+      });
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\nCandidate transcript owned-image RSS (partial if the gate fails)\n\n| Event | Source-known calls | Median MB | Max MB |\n|---|---:|---:|---:|\n" + rows.join("\n") + "\n");
+    }
+    f.close();
+  }
 }
 const result = await budgetGroup("transcript-hooks", measure, report => ({ wallPass: report.groups.every(row => row.wallPass), rssPass: report.groups.every(row => row.rssPass) }));
 console.log(JSON.stringify(result, null, 2));
