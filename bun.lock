@@ -12,6 +12,7 @@
         "@staix/agent-mem-v013": "npm:@staix/agent-mem@0.13.0",
         "@staix/agent-mem-v015": "npm:@staix/agent-mem@0.15.0",
         "@staix/agent-mem-v017": "npm:@staix/agent-mem@0.17.0",
+        "@staix/agent-mem-v018": "npm:@staix/agent-mem@0.18.0",
         "@staix/agent-mem-v02": "npm:@staix/agent-mem@0.2.0",
         "@staix/agent-mem-v1": "npm:@staix/agent-mem@0.1.1",
         "@types/bun": "^1.3.0",
@@ -33,6 +34,8 @@
     "@staix/agent-mem-v015": ["@staix/agent-mem@0.15.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-onoLv8e7NlD+zKdt/6OpAIt2JJm7Oajcgq1K5bVSaMv++24DHodeCmtd9UM0AXAl0fZvjoLVcmhbyAeV5uhI2A=="],
 
     "@staix/agent-mem-v017": ["@staix/agent-mem@0.17.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-ALMLDodu8vRPw+h55thnsiwXAKRMxBZb6bN/SZBLwk+Jpx/Yn2kFETowjCjlMEvFPOpxqJvx+3xdx04ZPdc+9Q=="],
+
+    "@staix/agent-mem-v018": ["@staix/agent-mem@0.18.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-lmA4urCYnWv0tLJA4I5ZgbC2ayC7Fqx8SlyQtD73fJe26bJX4rMZ6PJM4NDvR5Q+qDo4S+FeVDCnawbdaeaAMQ=="],
 
     "@staix/agent-mem-v02": ["@staix/agent-mem@0.2.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-18rqJ1U7ALQ3Brtu8Kv6AQWK4dDPHQ9EZEDP8/Y1ghcO84giueme7qJOD/RBsEJmKYpT5XoOXrRrcxDiBiUOMQ=="],
 

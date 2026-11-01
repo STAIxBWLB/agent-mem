@@ -1,6 +1,6 @@
 /** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
 export const INDEX_VERSION = 3; // 3: suggest, confirm and reject ops (an older index skipped them)
-/** The version that released 0.14.0 through 0.17.0 build into the unversioned names below; it keeps them so this release shares their warm index. */
+/** The version that released 0.14.0 through 0.18.0 build into the unversioned names below; it keeps them so this release shares their warm index. */
 const SHARED_INDEX_VERSION = 3;
 
 /**

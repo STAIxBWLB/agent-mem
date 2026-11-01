@@ -38,14 +38,14 @@ test("a newer version's index beside this one is neither opened nor dropped, and
   expect(userVersion(future)).toBe(INDEX_VERSION + 1); expect(readFileSync(future).length).toBeGreaterThanOrEqual(futureBytes.length);
 });
 
-test("this release and the published 0.17.0 share the version-3 index without a rebuild", async () => {
-  const home = mkdtempSync(join(tmpdir(), "amem-index-v017-")); roots.push(home);
-  const v017 = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v017/src/memory/store.ts")).href;
+test("this release and the published 0.18.0 (N-1) share the version-3 index without a rebuild", async () => {
+  const home = mkdtempSync(join(tmpdir(), "amem-index-v018-")); roots.push(home);
+  const v018 = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018/src/memory/store.ts")).href;
   const run = (code: string) => { const result = Bun.spawnSync([process.execPath, "-e", code], { env: { ...process.env, AMEM_HOME: home }, stdout: "pipe", stderr: "pipe" });
     expect(result.stderr.toString()).toBe(""); expect(result.exitCode).toBe(0); return result.stdout.toString(); };
-  run(`const { MemoryStore } = await import(${JSON.stringify(v017)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)}, screen: () => "keep" }); s.note(${JSON.stringify(note("shared by 0.17.0"))}); s.close();`);
+  run(`const { MemoryStore } = await import(${JSON.stringify(v018)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)}, screen: () => "keep" }); s.note(${JSON.stringify(note("shared by 0.18.0"))}); s.close();`);
   const ours = join(home, indexFileName(false)), schema = schemaVersion(ours);
   const mine = new MemoryStore({ memoryDir: home, screen: () => "keep" }); try { mine.note(note("shared by this release")); } finally { mine.close(); }
-  expect(run(`const { MemoryStore } = await import(${JSON.stringify(v017)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)} }); console.log(s.list({ project: "p" }).length); s.close();`).trim()).toBe("2");
+  expect(run(`const { MemoryStore } = await import(${JSON.stringify(v018)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)} }); console.log(s.list({ project: "p" }).length); s.close();`).trim()).toBe("2");
   expect(schemaVersion(ours)).toBe(schema);
 });
