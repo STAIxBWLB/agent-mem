@@ -35,7 +35,10 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
     }, (row, receipt) => store.append(row, { receipt }));
     const rows = store.rows({ project: f.project, limit: 1000 }).filter(row => row.session === digest && summary(row));
     if (rows.length !== expected.size || new Set(rows.map(key)).size !== expected.size || rows.some(row => !expected.has(key(row)))) {
-      throw Error("transcript summary replay lost or duplicated a row");
+      const counts = new Map<string, number>(); for (const row of rows) counts.set(key(row), (counts.get(key(row)) ?? 0) + 1);
+      throw Error("transcript summary replay lost or duplicated a row: " + JSON.stringify({ stored: rows.length, unique: counts.size, expected: expected.size,
+        duplicateCounts: [...counts].filter(([, count]) => count > 1).map(([value, count]) => ({ key: createHash("sha256").update(value).digest("hex"), count })),
+        missing: [...expected].filter(value => !counts.has(value)).map(value => createHash("sha256").update(value).digest("hex")), durable: durable(f, digest).size }));
     }
   } finally { store.close(); }
 }
