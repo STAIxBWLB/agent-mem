@@ -123,6 +123,20 @@
         "status": "ok",
         "unreadable": "number"
       },
+      "setup": {
+        "checked": "number",
+        "entries": [
+          {
+            "entry": "string",
+            "expectedFile": "string",
+            "file": "string",
+            "kind": "string",
+            "reason": "string",
+            "target": "string"
+          }
+        ],
+        "status": "attention"
+      },
       "stale": {
         "checked": "number",
         "examples": [
@@ -246,6 +260,12 @@
         "stale": "number",
         "status": "ok",
         "unreadable": "number"
+      },
+      "setup": {
+        "checked": "number",
+        "entries": [],
+        "reason": "string",
+        "status": "skipped"
       },
       "stale": {
         "reason": "string",
