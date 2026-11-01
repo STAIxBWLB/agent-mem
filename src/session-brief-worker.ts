@@ -52,7 +52,7 @@ if (import.meta.main) {
     stop();
   };
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; deadlineAt: number; ownedGroup: boolean };
+    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; transcript?: unknown; deadlineAt: number; ownedGroup: boolean };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
@@ -70,6 +70,16 @@ if (import.meta.main) {
     catch {
       if (expectedScope !== undefined) quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
       project = stop();
+    }
+    if ((event === "Stop" || event === "SessionEnd") && options.transcript !== undefined) {
+      try {
+        const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+        // Metadata helpers have been reaped and their numeric receipts sent before scanning.
+        // ponytail: retain the 60 ms scan cap and 20 ms publication reserve; upgrade
+        // to deadline-aware storage operations rather than widening the hook budget.
+        await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
+          deadline: Math.min(performance.now() + remaining() - 20, performance.now() + 60) });
+      } catch { /* A transcript failure must not discard the ordinary hook capture. */ }
     }
     let captured = false;
     // Normal SessionStart keeps the parent's durable stage for later replay and spends

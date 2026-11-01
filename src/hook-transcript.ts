@@ -61,7 +61,7 @@ function privateDirectory(dir: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("transcript cursor unavailable");
   chmodSync(dir, 0o700);
 }
-function cursorDatabase(file: string, dev: string, ino: string): Database {
+function cursorDatabase(file: string, dev: string, ino: string, size: number): Database {
   const fd = openSync(file, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const stat = fstatSync(fd), named = lstatSync(file);
@@ -76,10 +76,12 @@ function cursorDatabase(file: string, dev: string, ino: string): Database {
   const db = new Database(file);
   try {
     db.run("PRAGMA busy_timeout = 0");
-    db.run("CREATE TABLE IF NOT EXISTS fallback (digest TEXT PRIMARY KEY, at TEXT NOT NULL)");
-    db.run("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL, dev TEXT NOT NULL, ino TEXT NOT NULL, size INTEGER NOT NULL, title TEXT NOT NULL, at TEXT NOT NULL, readStart INTEGER NOT NULL, readAt TEXT NOT NULL, skipping INTEGER NOT NULL CHECK(skipping IN (0,1)))");
-    // Persist the fallback read time before publication: crash/replay uses the same timestamp.
-    db.query("INSERT OR IGNORE INTO cursor VALUES (1,0,?,?,0,'','',0,?,0)").run(dev, ino, new Date().toISOString());
+    db.transaction(() => {
+      db.run("CREATE TABLE IF NOT EXISTS fallback (digest TEXT PRIMARY KEY, at TEXT NOT NULL)");
+      db.run("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL, dev TEXT NOT NULL, ino TEXT NOT NULL, size INTEGER NOT NULL, title TEXT NOT NULL, at TEXT NOT NULL, readStart INTEGER NOT NULL, readAt TEXT NOT NULL, skipping INTEGER NOT NULL CHECK(skipping IN (0,1)))");
+      // One durable initialization commit; persist fallback time and known identity before publication.
+      db.query("INSERT OR IGNORE INTO cursor VALUES (1,0,?,?,?,'','',0,?,0)").run(dev, ino, size, new Date().toISOString());
+    }).immediate();
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -104,7 +106,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const stat = fstatSync(fd), named = lstatSync(value.transcript_path);
     if (!stat.isFile() || stat.nlink !== 1 || named.isSymbolicLink() || stat.dev !== named.dev || stat.ino !== named.ino) return;
     const dir = join(base, "hook-transcripts"); privateDirectory(dir);
-    db = cursorDatabase(join(dir, `${session}.db`), String(stat.dev), String(stat.ino)); db.run("BEGIN IMMEDIATE");
+    db = cursorDatabase(join(dir, `${session}.db`), String(stat.dev), String(stat.ino), stat.size); db.run("BEGIN IMMEDIATE");
     let cursor = db.query("SELECT * FROM cursor WHERE id=1").get() as Cursor;
     if (!Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || !Number.isSafeInteger(cursor.size) || cursor.size < 0 || cursor.at !== "" && !timestamp(cursor.at)
       || !Number.isSafeInteger(cursor.readStart) || cursor.readStart < 0 || !timestamp(cursor.readAt) || ![0, 1].includes(cursor.skipping) || !/^(?:[a-f0-9]{64})?$/.test(cursor.title)) throw new Error("transcript cursor unavailable");

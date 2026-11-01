@@ -92,13 +92,13 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value:
 
 /** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
   // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
-  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
+  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
@@ -209,23 +209,14 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
  * publication; this path uses one helper too, and the current normalized event stays pending. */
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
-  if ((event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input) {
-    try {
-      const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
-      // Leave ordinary capture publication time even when a tail contains many summaries.
-      // ponytail: scan work gets at most 60 ms with a 20 ms admission reserve; upgrade
-      // to deadline-aware individual storage operations rather than widening R2.
-      await scanHookTranscriptTail(input, { ...options, base, deadline: Math.min(deadline - 20, performance.now() + 60) });
-    }
-    catch { /* A transcript failure must not discard the ordinary hook capture. */ }
-  }
+  const transcript = (event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input ? input : undefined;
   let result: Awaited<ReturnType<typeof hookWorker>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
   catch (error) {
     if (!(error instanceof HookSpoolFull)) throw error;
     const cwd = realPath(options.cwd);
-    result = await hookWorker({ ...options, cwd }, base, deadline, { name: "", receipt: "", cwd }, event);
+    result = await hookWorker({ ...options, cwd }, base, deadline, { name: "", receipt: "", cwd }, event, transcript);
     try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
     catch (retryError) {
       // A concurrent publisher can refill the soft tier. Capture admission cannot discard
@@ -235,7 +226,7 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
     }
   }
   if (!pending) return result ? { ...result, pending: false } : undefined;
-  result ??= await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);
+  result ??= await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript);
   return { ...result, pending: !result.captured };
 }
 
