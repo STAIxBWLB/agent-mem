@@ -121,8 +121,9 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
       new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
     ]);
     if (!answer || !answer[1]) return result;
-    const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown };
+    const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
     if (parsed.complete !== true) return result;
+    if (parsed.rssTelemetryValid !== true) tracker.invalidate();
     if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
     if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
     result.captured = parsed.captured === true; result.valid = parsed.valid === true;

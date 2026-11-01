@@ -28,7 +28,8 @@ async function readOptions(): Promise<string> {
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
 if (import.meta.main) {
   let owned = false;
-  const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { /* A missing receipt remains unknown to the parent. */ } };
+  let rssTelemetryValid = true;
+  const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   let nativeId = 0;
   const nativeUsage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, observe: () => {
@@ -36,6 +37,7 @@ if (import.meta.main) {
     return { started: pid => frame([1, id, pid]), finished: value => frame([2, id, value.kb, value.rawKB, rssSourceCode(value), 0]) };
   } };
   const stop = (): never => {
+    if (!rssTelemetryValid) frame([4]);
     const self = hookRssReading(); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
     // This leader is still alive in the detached group created by hookWorker.
     // Native Git uses a separate owned async supervisor with its own native watchdog;
@@ -44,7 +46,7 @@ if (import.meta.main) {
     process.exit(0);
   };
   const emit = async (result: unknown) => {
-    const body = JSON.stringify({ ...(result as object), complete: true });
+    const body = JSON.stringify({ ...(result as object), complete: true, rssTelemetryValid });
     const rssKB = hookPeakRssKB() + nativeUsage.rssKB;
     await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
     stop();
