@@ -4289,9 +4289,18 @@
       {
         "raw": "native-first-final-n24-cpu1/",
         "outcome": "84focused pass486assertions;779transcriptcalls659resumes,max21followups,firstp95132.62ms/allp95128.14ms,peak87.47MB,unknown0;ordinaryR2/R1/packpass. Reviewer replacedN24margin withprogressfloor,3stallrule,N64hangguard."
+      },
+      {
+        "raw": "final-progress-n64-{normal,cpu1}/",
+        "outcome": "Head4315493: normal405/CPU1 712 actual calls, firstp95 116.57/133.03ms, allp95 115.13/128.15ms, peak85.75/84.86MB, maxfollowups9/18, maxreason-onlystreak0/1, unknown0. All zero-summary calls independently verified deadline/full before firstuncommittedstage boundary; latest strictguard rerun reported inPR."
       }
     ],
     "finalMaxAdditionalInvocations": 64,
-    "progressFloor": "Each call adds a new durable summary or names cap/deadline/spool_full;3consecutive reason-only calls failstall."
+    "progressFloor": "Each call adds a new durable summary, or names deadline/spool_full before the first uncommitted summary can finish;cap alone cannot excuse zero. Committed prefixes are durable;3reason-only calls failstall. N64 is only a hangguard.",
+    "supersededThroughputBounds": [
+      8,
+      16,
+      24
+    ]
   }
 }

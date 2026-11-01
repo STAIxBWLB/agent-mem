@@ -52,7 +52,7 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 }
 async function measure() {
   let f = hookFixture();
-  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; stopReason?: string })[] = [];
+  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= RUNS; logicalRun++) {
@@ -62,15 +62,24 @@ async function measure() {
         JSON.stringify({ type: "system", subtype: "away_summary", timestamp: at, content: marker }),
         JSON.stringify({ type: "user", isCompactSummary: true, timestamp: at, message: { content: marker } })];
       const expected = new Set(["Title", "Recap", "Compact"].map(event => key({ event, excerpt: marker })));
+      const summaryEnds = new Map<string, number>();
+      let summaryEnd = Buffer.byteLength(lines[0]!) + 1;
+      for (const [index, event] of ["Title", "Recap", "Compact"].entries()) {
+        summaryEnd += Buffer.byteLength(lines[index + 1]!) + 1;
+        summaryEnds.set(key({ event, excerpt: marker }), summaryEnd);
+      }
       if (event === "StopBurst") for (let index = 0; index < 100; index++) {
         const title = marker + " revision " + index;
         lines.push(JSON.stringify({ type: "ai-title", aiTitle: title })); expected.add(key({ event: "Title", excerpt: title }));
+        summaryEnd += Buffer.byteLength(lines[lines.length - 1]!) + 1;
+        summaryEnds.set(key({ event: "Title", excerpt: title }), summaryEnd);
       }
       const prefix = lines.join("\n") + "\n", ordinary = JSON.stringify({ type: "assistant", timestamp: at, text: "x".repeat(800) }) + "\n";
       writeFileSync(transcript, prefix + ordinary.repeat(Math.ceil((HOOK_TRANSCRIPT_BYTES - Buffer.byteLength(prefix)) / ordinary.length)));
       const digest = createHash("sha256").update("amem-session\0" + session).digest("hex").slice(0, 16);
       const file = join(f.base, "hook-transcripts", digest + ".db");
       let previous = 0, previousSummaries = 0, reasonOnlyStreak = 0, complete = false;
+      let previousAvailable = new Set<string>();
       for (let followUp = 0; followUp <= MAX_FOLLOW_UPS; followUp++) {
         Bun.gc(true);
         const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
@@ -91,15 +100,18 @@ async function measure() {
         try { available = durable(f, digest); }
         catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, logicalRun, followUp, wallMs, offset, ...rss })); throw error; }
         const durableSummaries = [...expected].filter(value => available.has(value)).length, newSummaries = durableSummaries - previousSummaries;
+        const firstUncommittedSummaryEnd = [...summaryEnds].find(([value]) => !previousAvailable.has(value))?.[1];
         reasonOnlyStreak = newSummaries > 0 ? 0 : reasonOnlyStreak + 1;
-        const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, newSummaries, durableSummaries, reasonOnlyStreak, ...(stopReason ? { stopReason } : {}) };
+        const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
-          || newSummaries < 0 || (newSummaries === 0 || offset === previous) && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")) {
+          || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
+          || newSummaries === 0 && (!["deadline", "spool_full"].includes(stopReason ?? "") || firstUncommittedSummaryEnd === undefined || offset >= firstUncommittedSummaryEnd)
+          || [...summaryEnds].some(([value, end]) => end <= offset && !available.has(value))) {
           throw Error("transcript budget scan progress unavailable: " + JSON.stringify(sample));
         }
         if (reasonOnlyStreak >= 3) throw Error("transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample));
-        previous = offset; previousSummaries = durableSummaries;
+        previous = offset; previousSummaries = durableSummaries; previousAvailable = available;
         if ([...expected].every(value => available.has(value))) { complete = true; break; }
       }
       if (!complete) throw Error("transcript summaries not durable within " + MAX_FOLLOW_UPS + " follow-up invocations");
