@@ -29,9 +29,11 @@ function durable(f: ReturnType<typeof hookFixture>, digest: string) {
 async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, expected: ReadonlySet<string>) {
   const previousHome = process.env.HOME;
   // Replay under the same HOME binding that admitted this fixture's real CLI records.
-  process.env.HOME = f.env.HOME;
-  const store = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+  let closeStore: (() => void) | undefined;
   try {
+    process.env.HOME = f.env.HOME;
+    const store = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+    closeStore = () => store.close();
     // No additional hook calls: replay only already-durable receipts to verify idempotence.
     for (let pass = 0; pass < Math.ceil(expected.size / 32) + 1; pass++) await drainHookCaptures({
       cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000,
@@ -43,7 +45,10 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
         duplicateCounts: [...counts].filter(([, count]) => count > 1).map(([value, count]) => ({ key: createHash("sha256").update(value).digest("hex"), count })),
         missingCount: [...expected].filter(value => !counts.has(value)).length, durable: durable(f, digest).size }));
     }
-  } finally { store.close(); if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
+  } finally {
+    try { closeStore?.(); }
+    finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
+  }
 }
 async function measure() {
   let f = hookFixture();
