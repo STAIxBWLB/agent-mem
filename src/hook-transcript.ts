@@ -9,9 +9,6 @@ import { HookSpoolFull, stageTranscriptCapture } from "./hook-spool.ts";
 import { appendMetrics } from "./memory/metrics.ts";
 
 export const HOOK_TRANSCRIPT_BYTES = 256 * 1024;
-// ponytail: eight summary admissions bound repeated policy/spool allocation per hook.
-// Upgrade with a shared, binding-checked batch publication path if measured demand needs more.
-const MAX_SUMMARIES = 8;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 type SummaryEvent = "Title" | "Recap" | "Compact";
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
@@ -123,7 +120,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
-    let start = 0, summaries = 0;
+    let start = 0;
     while (start < length && performance.now() < options.deadline) {
       const newline = bytes.indexOf(10, start);
       if (cursor.skipping) {
@@ -149,8 +146,6 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       if (summary) {
         const title = summary.event === "Title" ? hash(summary.text) : "";
         if (!title || title !== cursor.title) {
-          if (summaries === MAX_SUMMARIES) break;
-          summaries++;
           try {
             let at = summary.at ?? cursor.at;
             if (!at) {

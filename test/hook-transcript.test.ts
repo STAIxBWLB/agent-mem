@@ -143,12 +143,3 @@ test("a parent alias cannot hide a configured denied transcript location", async
   expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
   expect(await f.drain()).toHaveLength(0);
 });
-
-test("a summary burst yields after eight admissions and resumes without dropping or duplicating rows", async () => {
-  const f = fixture();
-  f.add(...Array.from({ length: 20 }, (_, index) => ({ type: "system", subtype: "away_summary", timestamp: at, content: `burst summary ${index}` })));
-  await f.scan(); expect(await f.drain()).toHaveLength(8);
-  await f.scan(); expect(await f.drain()).toHaveLength(16);
-  await f.scan(); const rows = await f.drain();
-  expect(rows).toHaveLength(20); expect(new Set(rows.map(row => row.excerpt)).size).toBe(20);
-});
