@@ -86,6 +86,8 @@ export interface CaptureOptions {
   maxReadRows?: number;
   /** Host-only optional brief: retain the newest maxReadRows ids, with explicit partial coverage. */
   recentReadRows?: boolean;
+  /** Hook-only bounded writer: cold migration/index rebuilds defer; maintenance shares this remaining budget. */
+  hookBudget?: () => number;
   /** Excerpt screen; defaults to the built-in secret screen. A host passes its stricter policy. */
   screen?: (text: string) => boolean;
   /** Caps a caller may lower (F4); the built-in caps and the person's configured caps are the ceiling, so a larger value is ignored (a host can tighten, never loosen). */
@@ -199,6 +201,7 @@ export class CaptureStore {
   /** Set when the schema setup itself met the lock: appends spool without touching the database again. */
   private contended = false;
   private readonly readOnly: boolean;
+  private readonly hookBudget?: () => number;
   private recentReadIds?: number[];
   /** True when the optional recent snapshot excludes older capture rows. */
   readonly recentReadTruncated: boolean = false;
@@ -207,6 +210,8 @@ export class CaptureStore {
     if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
     if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
     this.readOnly = opts.readOnly === true;
+    if (opts.hookBudget !== undefined && (typeof opts.hookBudget !== "function" || this.readOnly)) throw new Error("invalid capture hook budget");
+    this.hookBudget = opts.hookBudget;
     if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("invalid capture read-only option");
     if (opts.recentReadRows !== undefined && (typeof opts.recentReadRows !== "boolean" || !this.readOnly)) throw new Error("recent capture rows require a read-only store");
     const maxReadRows = opts.maxReadRows ?? 128;
@@ -278,6 +283,8 @@ export class CaptureStore {
       this.migrated = 0;
       return;
     }
+    // ponytail: the unpublished pre-shard migration is unbounded. Ordinary worker/CLI opens own it.
+    if (this.hookBudget && existsSync(join(this.base, "capture", "capture.db"))) throw new Error("capture migration deferred");
     const db = new Database(file, { create: true });
     this.db = db;
     try { chmodSync(file, 0o600); } catch { /* best effort */ }
@@ -297,7 +304,7 @@ export class CaptureStore {
       if (!lockError(error)) { db.close(); throw error; }
       this.contended = true; // R2: the hook spools and exits instead of waiting out another writer
     }
-    this.migrated = this.contended ? 0 : this.migrateLegacy();
+    this.migrated = this.contended || this.hookBudget ? 0 : this.migrateLegacy();
   }
 
   private existingMachine(): string {
@@ -377,13 +384,34 @@ export class CaptureStore {
   /** External-content FTS5 over the excerpts, kept in sync by triggers, so capture search needs no catch-up pass. */
   private ensureFts(): void {
     if (!fts5Available()) return; // the R5 fallback: capture rows are stored, search skips this tier
-    const had = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get();
-    this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(body, content='rows', content_rowid='id')");
-    this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ai AFTER INSERT ON rows BEGIN INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
-    this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ad AFTER DELETE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); END");
-    this.db.run("CREATE TRIGGER IF NOT EXISTS rows_au AFTER UPDATE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
-    // Rows written before FTS existed (or before a platform gained it) are indexed once; triggers keep it level.
-    if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (rowid, body) SELECT id, excerpt FROM rows");
+    const build = () => {
+      const had = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get();
+      if (this.hookBudget && !had && (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n > 128) throw new Error("capture cold index deferred");
+      this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(body, content='rows', content_rowid='id')");
+      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ai AFTER INSERT ON rows BEGIN INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
+      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ad AFTER DELETE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); END");
+      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_au AFTER UPDATE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
+      // Rows written before FTS existed (or before a platform gained it) are indexed once; triggers keep it level.
+      if (!had && (this.db.query("SELECT COUNT(*) AS n FROM rows").get() as { n: number }).n > 0) this.db.run("INSERT INTO fts (rowid, body) SELECT id, excerpt FROM rows");
+    };
+    if (this.hookBudget) this.db.transaction(build).immediate(); else build();
+  }
+
+  private workWindow(maximum: number): number {
+    if (!this.hookBudget) return maximum;
+    const remaining = this.hookBudget();
+    return Number.isFinite(remaining) ? Math.max(0, Math.min(maximum, remaining - 8)) : 0;
+  }
+
+  private pendingSpool(): boolean {
+    if ([SPOOL, DRAINING].some(name => existsSync(join(this.dir, name)))) return true;
+    const directory = join(this.dir, SPOOL_DIR);
+    if (!existsSync(directory)) return false;
+    const reader = opendirSync(directory);
+    try {
+      for (let n = 0; n < 256; n++) { const entry = reader.readSync(); if (!entry) return false; if (segmentName.test(entry.name)) return true; }
+      return true; // An uninspected tail cannot certify FIFO completion.
+    } finally { reader.closeSync(); }
   }
 
   private mcpReady = false;
@@ -431,6 +459,7 @@ export class CaptureStore {
    */
   append(input: CaptureInput, options: CaptureAppendOptions = {}): CaptureAppend {
     this.writable();
+    if (this.hookBudget && this.workWindow(1) <= 0) throw new Error("capture hook deadline");
     const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
     if (!str(input.project, 400) || !str(input.agent, 64) || !str(input.event, 64)) throw new Error("capture rows need a project, an agent and an event");
     if (input.at !== undefined && (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at)))) throw new Error("capture row time must be a parseable time string");
@@ -446,6 +475,7 @@ export class CaptureStore {
     }
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
+      if (this.hookBudget && this.pendingSpool()) { this.evict(); throw new Error("capture backlog deferred"); }
       // The row and its running byte count commit or roll back together: a lock after the INSERT cannot spool a duplicate.
       const result = this.db.transaction((): CaptureAppend => {
         const id = this.insertRow(row, spoolId);
@@ -490,9 +520,10 @@ export class CaptureStore {
    */
   drain(): { drained: number; skipped: number } {
     this.writable();
-    let budget = CAPTURE_DRAIN_MAX_LINES, byteBudget = SPOOL_MAX_BYTES, drained = 0, skipped = 0;
+    let budget = this.hookBudget ? SPOOL_MAX_FILES : CAPTURE_DRAIN_MAX_LINES, byteBudget = SPOOL_MAX_BYTES, drained = 0, skipped = 0;
     if (this.contended) return { drained, skipped };
     const started = performance.now();
+    const window = this.workWindow(SPOOL_MAX_MS);
     const directory = join(this.dir, SPOOL_DIR);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const candidates: { file: string; name: string; offset: number; skip: boolean }[] = [];
@@ -519,7 +550,7 @@ export class CaptureStore {
       && (row.session === undefined || typeof row.session === "string" && SESSION_KEY.test(row.session)) && (row.subagent === undefined || row.subagent === true);
     candidates.sort((a, b) => a.name.localeCompare(b.name));
     for (const source of candidates) {
-      if (budget <= 0 || byteBudget <= 0 || performance.now() - started >= SPOOL_MAX_MS) break;
+      if (budget <= 0 || byteBudget <= 0 || performance.now() - started >= window) break;
       const file = join(directory, `${source.name}.offset-${source.offset}${source.skip ? "-skip" : ""}.draining-${randomBytes(12).toString("hex")}`);
       try { renameSync(source.file, file); } catch { continue; } // another drainer claimed this exact name
       let bytes: Buffer, size: number;
@@ -608,21 +639,23 @@ export class CaptureStore {
     this.writable();
     if (this.contended) return { expired: 0, trimmed: 0 };
     const start = performance.now();
-    const expired = this.evictWhere("at < ?", [new Date(this.now() - this.retentionDays * 24 * 3600_000).toISOString()], start);
+    const window = this.workWindow(CAPTURE_EVICT_MAX_MS);
+    const expired = this.evictWhere("at < ?", [new Date(this.now() - this.retentionDays * 24 * 3600_000).toISOString()], start, window);
     const capBytes = this.capMb * 1024 * 1024;
     let trimmed = 0;
-    while (this.bytes() > capBytes && performance.now() - start < CAPTURE_EVICT_MAX_MS) {
-      const removed = this.evictWhere("1 = 1", [], start);
+    while (this.bytes() > capBytes && performance.now() - start < window) {
+      const removed = this.evictWhere("1 = 1", [], start, window);
       if (!removed.rows) break;
       trimmed += removed.rows;
     }
     return { expired: expired.rows, trimmed };
   }
 
-  private evictWhere(where: string, bind: string[], start: number): { rows: number; bytes: number } {
+  private evictWhere(where: string, bind: string[], start: number, window: number): { rows: number; bytes: number } {
     let rows = 0, bytes = 0;
-    for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && performance.now() - start < CAPTURE_EVICT_MAX_MS; batch++) {
-      const old = this.db.query(`SELECT id, bytes FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number; bytes: number }[];
+    const batchRows = this.hookBudget ? SPOOL_MAX_FILES : CAPTURE_EVICT_BATCH_ROWS;
+    for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && performance.now() - start < window; batch++) {
+      const old = this.db.query(`SELECT id, bytes FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, batchRows) as { id: number; bytes: number }[];
       if (!old.length) break;
       const removedBytes = old.reduce((sum, r) => sum + r.bytes, 0);
       // Deleting rows and adjusting the running size is atomic too; a lock cannot leave a permanently stale counter.
@@ -632,7 +665,7 @@ export class CaptureStore {
       }).immediate();
       rows += old.length;
       bytes += removedBytes;
-      if (old.length < CAPTURE_EVICT_BATCH_ROWS) break;
+      if (old.length < batchRows) break;
     }
     return { rows, bytes };
   }

@@ -13,6 +13,8 @@ import { hookNative, type HookNativeUsage } from "./hook-native.ts";
 const SCHEMA = "agent-mem.hook-project/v1", CACHE_BYTES = 4096, CACHE_CWDS = 128;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 interface Binding { schema: typeof SCHEMA; cwd: string; scope: string; validity: string; binary: string; project: string }
+/** One-invocation parent/child transport, not an authentication token or a reusable cache. */
+export interface HookProjectReceipt { cwd: string; base: string; scope: string; validity?: string; binary: string; project: string }
 function read(file: string): Binding | undefined {
   let fd: number | undefined;
   try {
@@ -104,7 +106,21 @@ function prepareHookProject(options: ResolverOptions) {
     }
     checkDeadline();
   };
-  return { binary, verifyBinary, resolve(gitRead: ProjectGitRead, assertComplete?: () => void): string {
+  return { binary, verifyBinary,
+    receipt(project: string): HookProjectReceipt | undefined {
+      verify();
+      return scope === undefined ? undefined : { cwd, base, scope, validity, binary: binary.revision, project };
+    },
+    accept(value: unknown): string {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("project receipt unavailable");
+      const receipt = value as HookProjectReceipt;
+      if (Object.keys(receipt).some(key => !["cwd", "base", "scope", "validity", "binary", "project"].includes(key))
+        || receipt.cwd !== cwd || receipt.base !== base || receipt.scope !== scope || scope === undefined
+        || receipt.validity !== validity || receipt.binary !== binary.revision || typeof receipt.project !== "string"
+        || !receipt.project || Buffer.byteLength(receipt.project) > 64 * 1024 || /[\p{Cc}]/u.test(receipt.project)) throw new Error("project receipt changed");
+      verify(); return receipt.project;
+    },
+    resolve(gitRead: ProjectGitRead, assertComplete?: () => void): string {
     checkDeadline();
     if (hit && cached) {
       assertComplete?.(); verify();
@@ -129,6 +145,11 @@ export function resolveHookProject(options: ResolverOptions): string {
   return prepared.resolve(options.gitRead ?? hookGit(options.timeRemaining, prepared.binary.file), options.assertComplete);
 }
 
+/** Revalidate a fresh result delivered by our parent, without launching a native child. */
+export function acceptHookProjectReceipt(value: unknown, options: ResolverOptions): string {
+  return prepareHookProject(options).accept(value);
+}
+
 /** A local key's superproject chain depends on outer Git indexes. Cache only ordinary
  * standalone roots; linked/submodule/local nested layouts retain the native resolver. */
 function cacheableLocal(cwd: string, project: string): boolean {
@@ -147,7 +168,7 @@ function cacheableLocal(cwd: string, project: string): boolean {
 
 /** Replay the shared synchronous resolver only after every requested native read is known.
  * A suspended/partially resolved pass can never publish a cache entry or return a guessed key. */
-export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean; prefetch?: boolean }, usage: HookNativeUsage): Promise<string> {
+export async function resolveHookProjectAsync(options: { cwd: string; base: string; scope?: string; timeRemaining: () => number; maintainCache?: boolean; prefetch?: boolean; onResolved?: (receipt: HookProjectReceipt | undefined) => void }, usage: HookNativeUsage): Promise<string> {
   const reads = new Map<string, ReturnType<ProjectGitRead>>();
   const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: options.base };
   const prepared = prepareHookProject({ ...options, env });
@@ -179,7 +200,7 @@ export async function resolveHookProjectAsync(options: { cwd: string; base: stri
           needed ??= { key, args }; throw suspended;
         }, () => { if (needed) throw suspended; });
       } catch (error) { failure = error; }
-      if (!needed) { if (failure) throw failure; if (result !== undefined) return result; throw suspended; }
+      if (!needed) { if (failure) throw failure; if (result !== undefined) { options.onResolved?.(prepared.receipt(result)); return result; } throw suspended; }
       const request = needed as { key: string; args: string[] };
       const demanded = query(request.args);
       // A native read is requested only on a real cache miss. Prefetch the portable
