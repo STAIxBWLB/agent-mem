@@ -35,3 +35,9 @@ test("real large worker allocations and malformed telemetry cannot yield a budge
   const invalid = new HookWorkerRss(100); invalid.frame([0]); self(invalid); invalid.frame([1, 65, 101]);
   expect(rssSourcesKnown(invalid.finish(128 * 1024, "linux").rssSources)).toBe(false);
 });
+
+test("a worker's unknown native source is not promoted into known platform rusage", () => {
+  const t = new HookWorkerRss(100); t.frame([0]); start(t, 1, 101);
+  t.frame([2, 1, 35000, 35000, 3, 0]); self(t);
+  expect(rssSourcesKnown(t.finish(128 * 1024, "darwin").rssSources)).toBe(false);
+});

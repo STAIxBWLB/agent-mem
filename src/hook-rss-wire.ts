@@ -63,7 +63,7 @@ export class HookWorkerRss {
     const native = new Map<number, HookRssReading>();
     for (const [id, value] of this.native) {
       const given = value.result;
-      const selected = selectHookRss(platform,
+      const selected = given && !given.known && !value.image?.hwmKB && !value.image?.virtualKB ? given : selectHookRss(platform,
         Math.max(value.image?.hwmKB ?? 0, given?.source === "VmHWM" ? given.kb : 0), given?.rawKB ?? 0,
         Math.max(value.image?.virtualKB ?? 0, given?.source === "VmPeak-bound" ? given.kb : 0));
       native.set(id, selected); sources.push(rssSource(selected));
