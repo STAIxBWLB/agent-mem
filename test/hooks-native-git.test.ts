@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hookGit } from "../src/hook-git.ts";
@@ -38,39 +38,76 @@ test("native Git intake refuses exhausted budgets and oversized or invalid outpu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Git output overflow cannot leave the hook worker's owned native descendant alive", async () => {
+test("parent-owned native Git overflow reaps its descendant and retains the staged capture", async () => {
   const { hookFixture } = await import("./fakes/hooks-fixture.ts");
-  const { readFileSync, existsSync } = await import("node:fs");
-  const f = hookFixture(), bin = join(f.root, "bin"), pidFile = join(f.root, "native.pid"); mkdirSync(bin);
-  let pid: number | undefined;
-  const alive = () => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
-  try {
-    writeFileSync(join(bin, "git"), `#!/bin/sh\n/bin/sleep 30 >/dev/null 2>&1 &\necho $! > '${pidFile}'\n'${process.execPath}' -e 'process.stdout.write("x".repeat(70000))'\n`, { mode: 0o700 });
-    const { stageHookCapture } = await import("../src/hook-spool.ts");
-    const priorHome = process.env.HOME;
-    let pending: Awaited<ReturnType<typeof stageHookCapture>>;
-    try {
-      process.env.HOME = f.env.HOME;
-      pending = await stageHookCapture("PostToolUse", { prompt: "overflow retention fixture" }, { cwd: f.cwd, base: f.base });
-    } finally { if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome; }
-    expect(pending).toBeDefined();
-    // Test the worker's overflow/reaper after a real staged intake, independently of
-    // two cold Bun boots reaching Git within the production hook's 140 ms budget.
-    // Actual executable R1/R2 and native deadline tests retain their original bounds.
-    const child = Bun.spawn([process.execPath, "--smol", join(import.meta.dir, "../src/session-brief-worker.ts")], {
-      cwd: f.cwd, env: { PATH: `${bin}:${f.env.PATH}`, HOME: f.env.HOME, AMEM_HOME: f.base }, detached: true,
-      stdin: Buffer.from(JSON.stringify({ cwd: f.cwd, base: f.base, current: pending!.name, event: "PostToolUse", maxTokens: 1200, ownedGroup: true, deadlineAt: performance.timeOrigin + performance.now() + 1000 })), stdout: "pipe", stderr: "pipe",
+  const { hookCapturePending } = await import("../src/hook-spool.ts");
+  const { hookProcessObserver } = await import("./fakes/hooks-process-observer.ts");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const f = hookFixture(), observer = hookProcessObserver(f.root), bin = join(f.root, "bin"), pidFile = join(f.root, "native.pid"); mkdirSync(bin);
+  const fakeGitPath = join(bin, "git");
+  let native: { pid: number; argv: string[] }[] = [], descendants: { supervisor: number; pid: number }[] = [];
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } };
+  const group = (pid: number): number | undefined => {
+    const result = Bun.spawnSync(["/bin/ps", "-p", String(pid), "-o", "pgid="], { stdout: "pipe", stderr: "ignore" });
+    return result.exitCode === 0 ? Number(result.stdout.toString().trim()) : undefined;
+  };
+  const members = (pgid: number): number[] => {
+    const result = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+    if (result.exitCode !== 0) throw new Error("process table unavailable");
+    return result.stdout.toString().split("\n").flatMap(line => {
+      const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+      return match && Number(match[2]) === pgid ? [Number(match[1])] : [];
     });
-    let exited = false;
-    const exit = child.exited.then(code => { exited = true; return code; });
-    const kill = () => { if (!exited) try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } };
-    const timeout = setTimeout(kill, 1500);
-    try { await Promise.all([exit, new Response(child.stdout).text(), new Response(child.stderr).text()]); }
-    finally { clearTimeout(timeout); kill(); await exit; }
+  };
+  try {
+    writeFileSync(fakeGitPath, `#!/bin/sh\n/bin/sleep 30 >/dev/null 2>&1 & child=$!\nprintf '%s %s\\n' "$PPID" "$child" >> '${pidFile}'\n'${process.execPath}' -e 'process.stdout.write("x".repeat(70000))'\n`, { mode: 0o700 });
+    const hooks = join(import.meta.dir, "../src/hooks.ts"), functional = join(f.root, "parent-native-overflow.ts");
+    writeFileSync(functional, `import { hookMain } from ${JSON.stringify(hooks)};const output=await hookMain(["PostToolUse"],performance.now(),{deadlineMs:1000});if(output)console.log(output);`, { mode: 0o600 });
+    const payload = { hook_event_name: "PostToolUse", cwd: f.cwd, session_id: "native-overflow-retained", tool_response: "overflow retention fixture" };
+    const result = Bun.spawnSync([process.execPath, "--smol", functional], { cwd: f.cwd,
+      env: { ...f.env, PATH: bin + ":" + f.env.PATH, BUN_OPTIONS: `--preload=${observer.preload}` },
+      stdin: Buffer.from(JSON.stringify(payload)), stdout: "pipe", stderr: "pipe", timeout: 5000 });
+    expect(result.exitCode).toBe(0); expect(result.stdout.length).toBe(0);
+    const receipts = observer.read().filter(row => row.kind === "native" && row.argv.includes(fakeGitPath));
+    expect(receipts.length).toBeGreaterThan(0); expect(receipts.every(row => row.detached)).toBe(true);
+    native = receipts.map(row => ({ pid: row.pid, argv: row.argv }));
     expect(existsSync(pidFile)).toBe(true);
-    pid = Number(readFileSync(pidFile, "utf8")); expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+    descendants = readFileSync(pidFile, "utf8").trim().split("\n").filter(Boolean).map(line => {
+      const [supervisor, pid] = line.split(/\s+/).map(Number); return { supervisor: supervisor!, pid: pid! };
+    });
+    expect(descendants.length).toBeGreaterThan(0);
+    expect(descendants.every(row => native.some(owner => owner.pid === row.supervisor))).toBe(true);
     const until = performance.now() + 500;
-    while (alive() && performance.now() < until) await Bun.sleep(10);
-    expect(alive()).toBe(false); expect(f.rows()).toHaveLength(0);
-  } finally { if (alive()) try { process.kill(pid!, "SIGKILL"); } catch { /* Only this fixture's recorded descendant. */ } f.close(); }
+    while ([...native.map(row => row.pid), ...descendants.map(row => row.pid)].some(alive) && performance.now() < until) await Bun.sleep(10);
+    expect(native.every(row => !alive(row.pid) && members(row.pid).length === 0)).toBe(true);
+    expect(descendants.every(row => !alive(row.pid))).toBe(true);
+
+    const spool = join(f.base, "hook-spool"), pending = [spool, join(spool, ".capacity")].flatMap(dir =>
+      existsSync(dir) ? readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)).map(name => ({ name, value: JSON.parse(readFileSync(join(dir, name), "utf8")) })) : []);
+    const retained = pending.filter(row => row.value.capture?.event === "PostToolUse" && row.value.capture?.excerpt === payload.tool_response);
+    expect(retained).toHaveLength(1); expect(hookCapturePending(f.base, retained[0]!.name)).toBe(true); expect(f.rows().some(row => row.excerpt === payload.tool_response)).toBe(false);
+
+    const runHook = (value: unknown, env: NodeJS.ProcessEnv) => Bun.spawnSync([process.execPath, "--smol", functional], { cwd: f.cwd, env,
+      stdin: Buffer.from(JSON.stringify(value)), stdout: "pipe", stderr: "pipe", timeout: 5000 });
+    const healthy = runHook({ hook_event_name: "PostToolUse", cwd: f.cwd, session_id: "native-overflow-healthy", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: "healthy follow-up" }, f.env);
+    expect(healthy.exitCode).toBe(0);
+    expect(f.rows().filter(row => row.excerpt === payload.tool_response)).toHaveLength(1);
+    expect(hookCapturePending(f.base, retained[0]!.name)).toBe(false);
+  } finally {
+    const cleanupNative = native.length ? native : observer.read().filter(row => row.kind === "native" && row.argv.includes(fakeGitPath)).map(row => ({ pid: row.pid, argv: row.argv }));
+    const cleanupChildren = descendants.length ? descendants : existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim().split("\n").filter(Boolean).map(line => {
+      const [supervisor, pid] = line.split(/\s+/).map(Number); return { supervisor: supervisor!, pid: pid! };
+    }) : [];
+    for (const child of cleanupChildren) if (alive(child.pid) && group(child.pid) === child.supervisor) {
+      const current = Bun.spawnSync(["/bin/ps", "-p", String(child.pid), "-o", "comm="], { stdout: "pipe", stderr: "ignore", timeout: 1000 });
+      if (current.exitCode === 0 && /(?:^|\/)sleep$/.test(current.stdout.toString().trim())) try { process.kill(child.pid, "SIGKILL"); } catch { /* Only the recorded fixture sleep. */ }
+    }
+    for (const owner of cleanupNative) if (members(owner.pid).length) {
+      const marker = owner.argv[4];
+      const current = Bun.spawnSync(["/bin/ps", "-ww", "-p", String(owner.pid), "-o", "pgid=,command="], { stdout: "pipe", stderr: "ignore", timeout: 1000 });
+      const command = current.stdout.toString(), pgid = Number(command.trim().split(/\s+/, 1)[0]);
+      if (marker && current.exitCode === 0 && pgid === owner.pid && command.includes("amem-hook-native") && command.includes(marker)) try { process.kill(-owner.pid, "SIGKILL"); } catch { /* Only a recorded native supervisor group. */ }
+    }
+    f.close();
+  }
 }, 5000);
