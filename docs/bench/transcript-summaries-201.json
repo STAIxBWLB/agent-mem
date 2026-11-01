@@ -4,7 +4,7 @@
   "baselineCommit": "5d4ce38b9622f9561a38ad718d7d540055d4800b",
   "platform": "linux",
   "bun": "1.4.2",
-  "integrationStatus": "awaiting #208",
+  "integrationStatus": "blocked on #208 merge and AC4 burst RSS",
   "sourceIdentity": {
     "memoryTree": "fb84115c74c0017863f25d6ac19d0a21cee51368",
     "blobs": {
@@ -233,569 +233,10 @@
               "rssPass": true
             }
           ],
-          "samples": [
-            {
-              "event": "Stop",
-              "run": 1,
-              "wallMs": 103.293598,
-              "rssMB": 78.75,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 2,
-              "wallMs": 85.03843599999999,
-              "rssMB": 71.75,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 3,
-              "wallMs": 86.23557699999998,
-              "rssMB": 70,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 4,
-              "wallMs": 84.72861599999999,
-              "rssMB": 71.75,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 5,
-              "wallMs": 86.47256800000002,
-              "rssMB": 70,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 6,
-              "wallMs": 85.37363600000003,
-              "rssMB": 71.75,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 7,
-              "wallMs": 84.23051299999997,
-              "rssMB": 71.75,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 8,
-              "wallMs": 86.96302200000002,
-              "rssMB": 68.25,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 9,
-              "wallMs": 85.59237399999995,
-              "rssMB": 70,
-              "offset": 262099
-            },
-            {
-              "event": "Stop",
-              "run": 10,
-              "wallMs": 83.77495700000009,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 11,
-              "wallMs": 87.61612999999988,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 12,
-              "wallMs": 81.1249180000002,
-              "rssMB": 68.25,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 13,
-              "wallMs": 82.33906999999999,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 14,
-              "wallMs": 82.78504500000008,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 15,
-              "wallMs": 84.63661200000001,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 16,
-              "wallMs": 82.44869699999981,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 17,
-              "wallMs": 87.21632299999987,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 18,
-              "wallMs": 85.94355500000006,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 19,
-              "wallMs": 84.95980799999984,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 20,
-              "wallMs": 83.69478400000003,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 21,
-              "wallMs": 83.60066800000004,
-              "rssMB": 68.25,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 22,
-              "wallMs": 83.20412099999999,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 23,
-              "wallMs": 84.3748499999997,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 24,
-              "wallMs": 84.31239700000015,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 25,
-              "wallMs": 84.77605600000015,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 26,
-              "wallMs": 83.75284599999986,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 27,
-              "wallMs": 85.10864200000015,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 28,
-              "wallMs": 85.50458299999991,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 29,
-              "wallMs": 86.15434000000005,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 30,
-              "wallMs": 86.27405699999963,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 31,
-              "wallMs": 87.67841000000044,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 32,
-              "wallMs": 86.86025900000004,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 33,
-              "wallMs": 87.95202300000028,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 34,
-              "wallMs": 84.78738500000009,
-              "rssMB": 73.5,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 35,
-              "wallMs": 85.8011590000001,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 36,
-              "wallMs": 85.99389299999984,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 37,
-              "wallMs": 87.347397,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 38,
-              "wallMs": 88.70535399999972,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 39,
-              "wallMs": 86.567681,
-              "rssMB": 70,
-              "offset": 262102
-            },
-            {
-              "event": "Stop",
-              "run": 40,
-              "wallMs": 85.60196399999995,
-              "rssMB": 71.75,
-              "offset": 262102
-            },
-            {
-              "event": "SessionEnd",
-              "run": 1,
-              "wallMs": 86.9433039999999,
-              "rssMB": 68.25,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 2,
-              "wallMs": 86.83253000000013,
-              "rssMB": 73.5,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 3,
-              "wallMs": 86.63772699999981,
-              "rssMB": 68.25,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 4,
-              "wallMs": 83.05812999999989,
-              "rssMB": 70,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 5,
-              "wallMs": 85.40244099999973,
-              "rssMB": 71.75,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 6,
-              "wallMs": 82.2892780000002,
-              "rssMB": 70,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 7,
-              "wallMs": 85.4813180000001,
-              "rssMB": 71.75,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 8,
-              "wallMs": 85.68877500000053,
-              "rssMB": 70,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 9,
-              "wallMs": 84.84326099999998,
-              "rssMB": 66.5,
-              "offset": 262117
-            },
-            {
-              "event": "SessionEnd",
-              "run": 10,
-              "wallMs": 87.79524700000002,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 11,
-              "wallMs": 90.42530399999941,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 12,
-              "wallMs": 90.18296999999984,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 13,
-              "wallMs": 85.05587100000048,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 14,
-              "wallMs": 84.81197400000019,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 15,
-              "wallMs": 86.22969100000046,
-              "rssMB": 73.5,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 16,
-              "wallMs": 87.63100200000008,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 17,
-              "wallMs": 87.41921199999979,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 18,
-              "wallMs": 86.11312400000043,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 19,
-              "wallMs": 84.80392099999972,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 20,
-              "wallMs": 87.70718000000033,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 21,
-              "wallMs": 85.49300900000071,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 22,
-              "wallMs": 87.66171099999974,
-              "rssMB": 68.25,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 23,
-              "wallMs": 87.79645999999957,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 24,
-              "wallMs": 85.3774540000004,
-              "rssMB": 73.5,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 25,
-              "wallMs": 85.25747899999988,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 26,
-              "wallMs": 86.37574800000039,
-              "rssMB": 73.5,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 27,
-              "wallMs": 86.63891700000022,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 28,
-              "wallMs": 86.40104699999938,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 29,
-              "wallMs": 84.17274100000031,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 30,
-              "wallMs": 86.14361299999928,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 31,
-              "wallMs": 91.67217900000014,
-              "rssMB": 68.25,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 32,
-              "wallMs": 87.1170030000003,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 33,
-              "wallMs": 87.37226699999974,
-              "rssMB": 70,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 34,
-              "wallMs": 86.91191299999991,
-              "rssMB": 73.5,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 35,
-              "wallMs": 88.27297499999986,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 36,
-              "wallMs": 88.94865899999968,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 37,
-              "wallMs": 86.00529800000004,
-              "rssMB": 68.25,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 38,
-              "wallMs": 85.5760650000002,
-              "rssMB": 71.75,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 39,
-              "wallMs": 87.86109800000031,
-              "rssMB": 68.25,
-              "offset": 262120
-            },
-            {
-              "event": "SessionEnd",
-              "run": 40,
-              "wallMs": 84.11108499999955,
-              "rssMB": 70,
-              "offset": 262120
-            }
-          ]
-        }
+          "sampleCount": 80,
+          "samplesAtOrAboveLimit": []
+        },
+        "rawSamplesFile": "measure-transcript-budget-5a1ee36.log"
       }
     ],
     "measure-hooks-budget": [
@@ -1062,5 +503,337 @@
       "exitCode": 130,
       "note": "Publication helper changed the diagnostic source anchor. Assertions and limits unchanged; corrected focused suite passed at 5a1ee36."
     }
-  ]
+  ],
+  "laterResourceAttempts": [
+    {
+      "commit": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+      "note": "Fixed 100-title cold-home workload; no retries or discarded samples. Accounting source for the single 101.5MB peak was not component-traced.",
+      "attempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "transcript-hooks",
+          "attempt": 1,
+          "outcome": "rss-miss",
+          "before": {
+            "cpuMs": 10.121931,
+            "spawnMs": 12.890549999999998,
+            "ioMs": 2.598368999999998,
+            "ioSamplesMs": [
+              3.4795389999999955,
+              2.5004239999999953,
+              2.598368999999998
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.966764000000694,
+            "spawnMs": 13.170396999999866,
+            "ioMs": 2.2417119999990973,
+            "ioSamplesMs": [
+              2.5821930000001885,
+              2.09343600000102,
+              2.2417119999990973
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall",
+          "result": {
+            "groups": [
+              {
+                "event": "Stop",
+                "runs": 40,
+                "wallP95Ms": 87.4520980000002,
+                "peakRssMB": 82.25,
+                "wallPass": true,
+                "rssPass": true
+              },
+              {
+                "event": "SessionEnd",
+                "runs": 40,
+                "wallP95Ms": 88.59036799999922,
+                "peakRssMB": 77,
+                "wallPass": true,
+                "rssPass": true
+              },
+              {
+                "event": "StopBurst",
+                "runs": 40,
+                "wallP95Ms": 117.71020700000008,
+                "peakRssMB": 101.5,
+                "wallPass": true,
+                "rssPass": false
+              }
+            ],
+            "sampleCount": 120,
+            "samplesAtOrAboveLimit": [
+              {
+                "event": "StopBurst",
+                "run": 34,
+                "wallMs": 117.63546600000154,
+                "rssMB": 101.5,
+                "offset": 2617
+              }
+            ]
+          },
+          "rawSamplesFile": "transcript-ea5fc73.log"
+        }
+      ]
+    },
+    {
+      "commit": "04df65e78dd0",
+      "experiment": "Eight admissions per invocation; did not resolve RSS gate and was reverted.",
+      "attempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "transcript-hooks",
+          "attempt": 1,
+          "outcome": "rss-miss",
+          "before": {
+            "cpuMs": 11.812013000000004,
+            "spawnMs": 13.971718000000003,
+            "ioMs": 2.693415999999999,
+            "ioSamplesMs": [
+              4.391273999999996,
+              2.5050430000000006,
+              2.693415999999999
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 12.009243000000424,
+            "spawnMs": 13.76451199999974,
+            "ioMs": 2.4993070000000444,
+            "ioSamplesMs": [
+              2.5027159999990545,
+              2.185281000000032,
+              2.4993070000000444
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall",
+          "result": {
+            "groups": [
+              {
+                "event": "Stop",
+                "runs": 40,
+                "wallP95Ms": 92.02789400000006,
+                "peakRssMB": 78.75,
+                "wallPass": true,
+                "rssPass": true
+              },
+              {
+                "event": "SessionEnd",
+                "runs": 40,
+                "wallP95Ms": 93.31035100000008,
+                "peakRssMB": 77,
+                "wallPass": true,
+                "rssPass": true
+              },
+              {
+                "event": "StopBurst",
+                "runs": 40,
+                "wallP95Ms": 112.64678900000035,
+                "peakRssMB": 129.5,
+                "wallPass": true,
+                "rssPass": false
+              }
+            ],
+            "sampleCount": 120,
+            "samplesAtOrAboveLimit": [
+              {
+                "event": "StopBurst",
+                "run": 5,
+                "wallMs": 112.29673299999922,
+                "rssMB": 101.5,
+                "cliRssMB": 48.84375,
+                "productionRssMB": 101.5,
+                "rawProductionRssMB": 85.59375,
+                "offset": 664
+              },
+              {
+                "event": "StopBurst",
+                "run": 6,
+                "wallMs": 112.64901999999893,
+                "rssMB": 129.5,
+                "cliRssMB": 48.84375,
+                "productionRssMB": 129.5,
+                "rawProductionRssMB": 85.59375,
+                "offset": 664
+              },
+              {
+                "event": "StopBurst",
+                "run": 9,
+                "wallMs": 112.64678900000035,
+                "rssMB": 105,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 105,
+                "rawProductionRssMB": 87.28125,
+                "offset": 664
+              },
+              {
+                "event": "StopBurst",
+                "run": 11,
+                "wallMs": 112.54763099999946,
+                "rssMB": 127.75,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 127.75,
+                "rawProductionRssMB": 87.28125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 13,
+                "wallMs": 110.01467100000082,
+                "rssMB": 103.25,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 103.25,
+                "rawProductionRssMB": 89.03125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 15,
+                "wallMs": 109.55870699999832,
+                "rssMB": 110.25,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 110.25,
+                "rawProductionRssMB": 90.78125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 16,
+                "wallMs": 110.29020499999933,
+                "rssMB": 126,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 126,
+                "rawProductionRssMB": 85.53125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 17,
+                "wallMs": 111.57286900000145,
+                "rssMB": 108.5,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 108.5,
+                "rawProductionRssMB": 90.78125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 18,
+                "wallMs": 108.77485400000114,
+                "rssMB": 103.25,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 103.25,
+                "rawProductionRssMB": 89.03125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 24,
+                "wallMs": 107.61859600000025,
+                "rssMB": 103.25,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 103.25,
+                "rawProductionRssMB": 87.28125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 31,
+                "wallMs": 108.00041899999997,
+                "rssMB": 103.25,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 103.25,
+                "rawProductionRssMB": 87.28125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 33,
+                "wallMs": 109.42813999999998,
+                "rssMB": 122.5,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 122.5,
+                "rawProductionRssMB": 85.53125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 34,
+                "wallMs": 107.40617600000041,
+                "rssMB": 101.5,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 101.5,
+                "rawProductionRssMB": 87.28125,
+                "offset": 672
+              },
+              {
+                "event": "StopBurst",
+                "run": 40,
+                "wallMs": 109.50672900000063,
+                "rssMB": 126,
+                "cliRssMB": 50.53125,
+                "productionRssMB": 126,
+                "rawProductionRssMB": 87.28125,
+                "offset": 672
+              }
+            ]
+          },
+          "rawSamplesFile": "transcript-04df65e.log"
+        }
+      ]
+    }
+  ],
+  "standardGate": {
+    "commit": "cd6038a340df8105bbd8f18fdd418c36fbe6059a",
+    "typecheck": "pass",
+    "boundary": "pass",
+    "tests": {
+      "passed": 2375,
+      "skipped": 7,
+      "failed": 0,
+      "assertions": 39045
+    },
+    "packDryRun": "pass"
+  },
+  "currentResourceState": {
+    "productionSourceEquivalentTo": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+    "state": "blocked",
+    "thresholdsUnchanged": true,
+    "accountingUnchanged": true,
+    "note": "Original burst peak 101.5MB; bounded-admission experiment still failed at129.5MB, with CLI<=50.54MB and raw production<=90.79MB for its failed samples. These readings do not prove the exact accounting cause. No retry-until-green or accounting change was made.",
+    "pending": [
+      "#208 merge and integration",
+      "final combined standard/resource gates",
+      "reviewer private AC6 replay"
+    ]
+  },
+  "acceptanceStatus": "incomplete",
+  "functionalChecksAfterStandard": {
+    "commit": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+    "typecheck": "pass",
+    "boundary": "pass",
+    "focusedTests": 24,
+    "failed": 0,
+    "note": "Current production src tree and transcript test file are byte-identical to this head after withdrawing the eight-admission experiment."
+  }
 }
