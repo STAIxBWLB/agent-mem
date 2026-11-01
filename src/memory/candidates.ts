@@ -1,3 +1,4 @@
+import { assertFormatFloor } from "./formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
@@ -146,6 +147,7 @@ export class CandidateStore {
     if (options.reconcile?.aliases.length) this.reconcile = { canonical: options.reconcile.canonical, aliases: [...options.reconcile.aliases] };
     if (options.memoryDir !== undefined && options.home !== undefined) throw new Error("choose a home or an exact memory directory");
     this.dir = options.memoryDir ?? (options.home === undefined ? memoryHome() : join(options.home, "memory"));
+    assertFormatFloor(this.dir, "candidates");
     this.now = options.now ?? Date.now;
     mkdirSync(this.dir, { recursive: true, mode: 0o700 }); chmodSync(this.dir, 0o700);
     this.path = join(this.dir, "candidates.db");

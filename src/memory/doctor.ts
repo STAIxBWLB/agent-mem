@@ -1,4 +1,6 @@
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { indexFileName } from "./index-file.ts";
+import { assertFormatFloor } from "./formats.ts";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -207,7 +209,7 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
 
 /** A snapshot of the live shared-v1 index (a read-only connection, so no checkpoint, no lease), or false when there is none. */
 function snapshotIndex(live: string, to: string): boolean {
-  const file = join(live, "index.db");
+  const file = join(live, indexFileName(false));
   if (!regularFile(file)) return false;
   const forms: (() => Database)[] = [
     () => new Database(file, { readonly: true }),
@@ -446,6 +448,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let duplicates: Section, stale: Section, index: Section;
   let curated: MemoryStore | undefined, workBase: string | undefined, copyFailed: string | undefined;
   try {
+    assertFormatFloor(options.home, "curated");
     let layout: Layout | undefined;
     try { layout = layoutOf(options.home); } catch (error) { throw new Error(`the memory profile cannot be read: ${message(error)}`); }
     sweepStaleScratch();
@@ -464,7 +467,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       } else {
         const home = join(scratch, "home"); mkdirSync(home, { mode: 0o700 });
         copyCurated(options, layout, home, budget);
-        const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, "index.db"));
+        const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, indexFileName(false)));
         curated = options.openCurated(home);
         const rows = curated.list({ project: options.project, limit: LIST_ALL });
         await tick();

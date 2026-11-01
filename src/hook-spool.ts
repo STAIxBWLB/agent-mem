@@ -1,3 +1,4 @@
+import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +30,10 @@ export interface PendingHookCapture { name: string; cwd: string; receipt: string
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
 interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true }
 const directory = (base: string) => join(base, "hook-spool");
+/** A hook below the home's hook-spool floor (#199 AC5) stages, drains and maintains nothing; it still never denies a native action. */
+function belowFloor(base: string): boolean {
+  try { assertFormatFloor(base, "hook-spool"); return false; } catch (error) { if (error instanceof FormatFloorError) return true; throw error; }
+}
 function physicalRoot(cwd: string): string {
   const stat = lstatSync(cwd);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook root unavailable");
@@ -462,7 +467,7 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
 
 /** Only screened normalized capture fields are retained, never the native input envelope. */
 export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {
-  if (!(HOOK_EVENTS as readonly string[]).includes(event) || options.policy?.host) return undefined;
+  if (!(HOOK_EVENTS as readonly string[]).includes(event) || options.policy?.host || belowFloor(options.base)) return undefined;
   const policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
   if (!await policy.screen(input)) return undefined;
   const value = structuredClone(input) as {[key: string]: unknown};
@@ -543,6 +548,7 @@ export function hookCapturePending(base: string, name: string): boolean {
 export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number },
   append: (input: CaptureInput, receipt: string) => CaptureAppend): Promise<{ captured: string[]; blocked: number }> {
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), stamp = hookCaptureScope(cwd, base), captured: string[] = [];
+  if (belowFloor(base)) return { captured, blocked: 1 };
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
   // F4: the configured policy applies at drain too. `options.policy` carries it, so the anchored line below (a test diagnostic matches its exact text) stays as it was.
   options = { ...options, policy: configuredPolicyOptions(base, cwd, options.policy) };

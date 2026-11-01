@@ -1,4 +1,5 @@
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
+import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -145,7 +146,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   check(dir, true);
   for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
   for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
-  for (const database of ["index.db", "index-v2.db", "search.db", "mutation-lock.db"]) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+  for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */

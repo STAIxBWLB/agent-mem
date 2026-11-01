@@ -59,6 +59,8 @@ amem setup all --undo
 
 Claude receives its seven bounded hooks. Codex, Kimi and Qwen receive SessionEnd incremental ingest; Pi receives a session_shutdown extension. [Codex's native `/hooks` review](https://learn.chatgpt.com/docs/hooks) remains a pending person step: setup never grants or bypasses hook trust. Native registration requires a CLI exposing `mcp` administration (Claude, Codex, Pi and Qwen are checked through their help before any registration command); current Kimi Code uses its documented config files. `setup all` skips and reports missing CLIs; an individual missing target refuses. Setup does not download tools or start a resident worker.
 
+To keep several releases side by side, install each under its own root (for example `<install>/releases/<version>/`) and register one with `amem setup <target> --root <abs path> --apply`. The root is resolved to its real path, so a `current` link registers the release it names, and replacing another install never changes what the registered hooks and MCP server load. `amem manifest --json` prints the version, the MCP tools (read-only ones as `{ name, readOnly: true }`) and the commands of an install. See [versions on one machine](docs/contracts.md#versions-on-one-machine-199).
+
 For a Claude Code plugin installation instead of direct setup registration:
 
 ```sh
@@ -163,7 +165,7 @@ amem setup console --apply   # write $AGENTHUB_HOME/console/plugins/amem.json
 amem setup console --undo    # remove it (only when it points at this install)
 ```
 
-The manifest holds the absolute path and sha256 of `src/ui/plugin.ts`, in a 0700 directory and a 0600 file, as acon requires. acon refuses a module whose hash changed, so run `amem setup console --apply` again after upgrading amem. `setup all` does not include it.
+The manifest holds the absolute path and sha256 of `src/ui/plugin.ts` (of the `--root` install root when given), in a 0700 directory and a 0600 file, as acon requires. acon refuses a module whose hash changed, so run `amem setup console --apply` again after upgrading amem. `setup all` does not include it.
 
 - Reads are screened. Search, Timeline and Work lists call the in-process `amem_search`, `amem_timeline` and `amem_work_state_read` handlers for the chosen project and forward every option the tool declares, so console search returns exactly the `amem_search` set for the same query. Goals and the review queue pass the configured policy; a candidate that fails it, or whose target fails it, is not shown (the panel counts it and points to `amem review walk`). The console never shows unscreened content, also not to the person. It runs in no repository, so a repository's `.amem/config` narrowing does not apply; the machine's `amem.config.json` does.
 - Recap computes the current SessionStart brief only on its own panel snapshots, using machine policy. Curated and work inputs use bounded private scratch copies; capture is read-only, and no live reader lease is taken. It shows the full context, coverage, partial status, token upper bound and generation time; it is not a stored copy of a prior session's injected brief. The console has no repository binding, so the repository section is absent. No recap or new capture field is stored in the memory home.

@@ -1,4 +1,6 @@
+import { assertFormatFloor } from "./formats.ts";
 import { readPublicPruneView } from "./public-prune-view.ts";
+import { INDEX_VERSION, indexFileName } from "./index-file.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import { cliAttribution } from "./cli-attribution.ts";
 import { Database } from "bun:sqlite";
@@ -77,8 +79,6 @@ export type Entry = NoteEntry | OpEntry | GoalEntry;
 export const GOAL_STATES = ["open", "active", "blocked", "done", "dropped"] as const;
 export type GoalState = (typeof GOAL_STATES)[number];
 export const DEFAULT_LEASE_MS = 4 * 3600_000;
-/** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
-const INDEX_VERSION = 3; // 3: suggest, confirm and reject ops (an older index skipped them)
 export const SUGGESTED = ["contradicts", "same_topic"] as const;
 export type Suggested = (typeof SUGGESTED)[number];
 export interface Suggestion { id: string; at: string; from: string; to: string; rel: Suggested; status: "suggested" | "confirmed" | "rejected" }
@@ -233,6 +233,7 @@ export class MemoryStore {
     this.reconcile = opts.reconcile && opts.reconcile.aliases.length ? { canonical: opts.reconcile.canonical, aliases: [...opts.reconcile.aliases] } : undefined;
     if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
     const home = bootstrap?.profile.home ?? opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+    assertFormatFloor(home, "curated");
     if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
@@ -253,7 +254,7 @@ export class MemoryStore {
     if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home, this.profile.sharded ? {scope:"shard"} : {});
     let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
     try {
-      const indexFile = join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db");
+      const indexFile = join(this.dir, indexFileName(!!this.profile.foreignPruneFormat));
       if (this.profile.foreignPruneFormat) for (const suffix of ["", "-wal", "-shm", "-journal"]) {
         const stat = lstatSync(indexFile + suffix, {throwIfNoEntry:false});
         if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.())) throw new Error("v2 index path unavailable");
@@ -280,7 +281,7 @@ export class MemoryStore {
       // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
       this.searchIndex = openedSearch = new SearchIndex(this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
       this.memoryBaseDir = home;
-      try { chmodSync(join(this.dir, this.profile.foreignPruneFormat ? "index-v2.db" : "index.db"), 0o600); } catch { /* best effort */ }
+      try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
         apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work),
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
@@ -1633,6 +1634,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
   if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
   const home = opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
+  assertFormatFloor(home, "curated");
   assertCuratedShardPaths(home, opts);
   // Lifecycle refusal must remain before admission creates any lease/fence file.
   if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);

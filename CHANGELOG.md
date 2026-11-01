@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **Versions coexist on one machine** (#199, change 6 and AC4-AC5). `amem manifest --json` prints `{ name, version, mcp: { server, tools }, commands }`; a tool is a plain name, or `{ name, readOnly: true }` for the nine read-only MCP tools, so an installer can grant a new read-only tool without a new release of its own (dotfiles#320). `amem setup <target> --root <abs path>` registers the hooks and MCP server (and, for `console`, the acon plugin) of that install root, resolved to its real path, such as `<install>/releases/<version>/`; the root must hold `package.json` named `@staix/agent-mem` and `bin/amem.js`, and without `--root` nothing changes. `amem mcp` loads every module its handlers can load lazily at start, so a release replaced under a running server never mixes two versions in one process. The derived curated index is named per `INDEX_VERSION` (`indexFileName`): version 3 keeps `index.db` and `index-v2.db`, and a later version builds its own file instead of dropping another version's. A person can append `{ surface, minReader, since }` records to `formats.json` in the memory home; a release below a floor refuses that surface (`curated`, `capture`, `hook-spool`, `candidates`, `work-lists`, `sync`, or `home` for all) with `code: "format_floor"` before it writes anything, and hooks below it capture nothing without denying. amem never writes the file.
+- **Compatibility with N-1 (0.18.0):** hook spool, unchanged (format 2, as 0.18.0 writes and drains); shards, unchanged; candidates, unchanged; indexes, unchanged names and `INDEX_VERSION` 3, so 0.18.0 and this version share one warm index (`test/index-per-version.test.ts`); sync, unchanged. 0.18.0 does not read `formats.json`, so a floor binds only this version and later ones, and its `amem setup` has no `--root` (a root registered here stays until changed).
+
 ## 0.18.0
 
 - Setup recognizes Orca-managed Claude/Codex homes and writes the durable personal source, preserving profile Claude MCP and byte-exact undo. Doctor reports applied-registration/path drift and missing Codex hook trust records without configuration contents; setup never grants hook trust (#202).

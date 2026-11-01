@@ -2,6 +2,7 @@
  * Checkpoints are fault seams after intent, shard marker, selector and intent removal.
  * A caller resumes an interrupted operation from its immutable direct-profile journal. */
 import { createHash } from "node:crypto";
+import { indexFileName } from "./index-file.ts";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON, readSelector, withProfileLock, writeProfileJSON, type BoundProfile } from "./generation.ts";
@@ -105,7 +106,7 @@ function immutable(file: string, text: string): void {
   linkSync(temp, file); fsyncDirectory(base); unlinkSync(temp); fsyncDirectory(base);
 }
 function syncIndex(profile: BoundProfile): void {
-  const file = join(profile.dir, "index-v2.db"); owned(file); const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = join(profile.dir, indexFileName(true)); owned(file); const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); } fsyncDirectory(profile.dir);
 }
 function nextProfile(realm: Realm, intent: Intent): BoundProfile {

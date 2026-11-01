@@ -1,3 +1,4 @@
+import { assertFormatFloor } from "./formats.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, type BigIntStats } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, sep } from "node:path";
@@ -284,6 +285,7 @@ function captureShardSyncBinding(store: MemoryStore, selection: boolean): string
 }
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  assertFormatFloor(store.profile.home, "sync");
   if (store.profile.sharded) {
     try {
       // Refresh only through the existing proved monotone profile rebind before pinning this attempt.
