@@ -52,7 +52,7 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 }
 async function measure() {
   let f = hookFixture();
-  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
+  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= RUNS; logicalRun++) {
@@ -87,24 +87,31 @@ async function measure() {
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
           exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
         if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("transcript budget hook unavailable");
-        let offset = 0;
+        const stopReason = metric.transcriptStopReason;
+        let offset = 0, offsetSource: "cursor" | "uncreated" | "rollback_pending" = "uncreated";
         if (existsSync(file)) {
           const db = new Database(file, { readonly: true });
-          try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; } finally { db.close(); }
+          try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; offsetSource = "cursor"; }
+          catch (error) {
+            if ((error as { code?: string }).code !== "SQLITE_READONLY_ROLLBACK" || stopReason !== "deadline" || metric.transcriptOffset !== undefined) throw error;
+            // This serial fixture has one offset-advancing transaction per call. Do not
+            // heal its hot journal here: the next measured hook owns the recovery cost.
+            offset = previous; offsetSource = "rollback_pending";
+          } finally { db.close(); }
         }
         let rss: ReturnType<typeof measuredHookRss>;
         try { rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576); }
         catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, logicalRun, followUp, wallMs, offset, metric })); throw error; }
-        const stopReason = metric.transcriptStopReason;
         let available: Set<string>;
         try { available = durable(f, digest); }
         catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, logicalRun, followUp, wallMs, offset, ...rss })); throw error; }
         const durableSummaries = [...expected].filter(value => available.has(value)).length, newSummaries = durableSummaries - previousSummaries;
         const firstUncommittedSummaryEnd = [...summaryEnds].find(([value]) => !previousAvailable.has(value))?.[1];
         reasonOnlyStreak = newSummaries > 0 ? 0 : reasonOnlyStreak + 1;
-        const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
+        const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, offsetSource, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
+          || metric.transcriptOffset !== undefined && metric.transcriptOffset !== offset
           || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
           || newSummaries === 0 && (!["deadline", "spool_full"].includes(stopReason ?? "") || firstUncommittedSummaryEnd === undefined || offset >= firstUncommittedSummaryEnd)
           || [...summaryEnds].some(([value, end]) => end <= offset && !available.has(value))) {
