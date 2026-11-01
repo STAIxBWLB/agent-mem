@@ -70,7 +70,10 @@ test("a deadline after one summary commits its prefix and resumes the remaining 
   const stopAfterFirst = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args: Parameters<typeof stage>) => {
     const result = await stage(...args); options.deadline = -1; return result;
   });
-  try { await scanHookTranscriptTail(f.input, options); expect(stopAfterFirst).toHaveBeenCalledTimes(1); }
+  try {
+    const progress = await scanHookTranscriptTail(f.input, options);
+    expect(stopAfterFirst).toHaveBeenCalledTimes(1); expect(progress?.stopReason).toBe("deadline");
+  }
   finally { stopAfterFirst.mockRestore(); }
   const file = readdirSync(join(f.base, "hook-transcripts")).find(name => name.endsWith(".db"))!;
   const db = new Database(join(f.base, "hook-transcripts", file), { readonly: true });
@@ -94,7 +97,7 @@ test("an invocation stops at the byte ceiling and leaves an incomplete line for 
   const f = fixture(), ordinary = JSON.stringify({ type: "assistant", text: "x".repeat(1000) }) + "\n";
   appendFileSync(f.transcript, ordinary.repeat(Math.ceil(HOOK_TRANSCRIPT_BYTES / ordinary.length)));
   f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "after bounded tail" });
-  await f.scan(); expect(await f.drain()).toHaveLength(0);
+  expect((await f.scan())?.stopReason).toBe("cap"); expect(await f.drain()).toHaveLength(0);
   await f.scan(); expect(await f.drain()).toHaveLength(1);
   appendFileSync(f.transcript, '{"type":"ai-title","aiTitle":"later title"'); await f.scan(); expect(await f.drain()).toHaveLength(1);
   appendFileSync(f.transcript, '}\n'); await f.scan(); expect(await f.drain()).toHaveLength(2);

@@ -1,61 +1,96 @@
 import { measuredHookRss } from "./hook-rss-check.ts";
-/** #201: real CLI final hooks with a fresh 256 KiB transcript tail per run, including summary bursts.
- * Run beside the unchanged R1/R2 harness; every physical sample is printed, never discarded.
- */
+/** Every real hook call, including bounded resumptions, is an R2 sample. */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { budgetGroup } from "./budget-attempt.ts";
 
-const RUNS = 40, p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
+const RUNS = 40, MAX_FOLLOW_UPS = 8;
+const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
+const key = (row: { event: string; excerpt: string }) => JSON.stringify([row.event, row.excerpt]);
+const summary = (row: { event: string }) => ["Title", "Recap", "Compact"].includes(row.event);
+function durable(f: ReturnType<typeof hookFixture>, digest: string) {
+  const stored = f.rows().filter(row => row.session === digest && summary(row));
+  if (new Set(stored.map(key)).size !== stored.length) throw Error("duplicate stored transcript summary");
+  const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(dir => existsSync(dir) ? readdirSync(dir)
+    .filter(name => /^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name))
+    .flatMap(name => {
+      const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      return value.capture?.session === digest && summary(value.capture) ? [value.capture as { event: string; excerpt: string }] : [];
+    }) : []);
+  return new Set([...stored, ...pending].map(key));
+}
+async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, expected: ReadonlySet<string>) {
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+  try {
+    // No additional hook calls: replay only already-durable receipts to verify idempotence.
+    for (let pass = 0; pass < Math.ceil(expected.size / 32) + 1; pass++) await drainHookCaptures({
+      cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000,
+    }, (row, receipt) => store.append(row, { receipt }));
+    const rows = store.rows({ project: f.project, limit: 1000 }).filter(row => row.session === digest && summary(row));
+    if (rows.length !== expected.size || new Set(rows.map(key)).size !== expected.size || rows.some(row => !expected.has(key(row)))) {
+      throw Error("transcript summary replay lost or duplicated a row");
+    }
+  } finally { store.close(); }
+}
 async function measure() {
   let f = hookFixture();
-  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; wallMs: number; offset: number })[] = [];
+  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; stopReason?: string })[] = [];
   try {
     await f.seed();
-    for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let run = 1; run <= RUNS; run++) {
-      // Each burst is a cold independent home; its finite pending queue cannot
-      // make the next sample's admission depend on an earlier unfinished tail.
+    for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= RUNS; logicalRun++) {
       if (event === "StopBurst") { f.close(); f = hookFixture(); await f.seed(); }
-      const transcript = join(f.root, "transcript.jsonl");
-      const session = `${event}-${run}`, at = new Date().toISOString(), marker = `summary ${session}`;
+      const transcript = join(f.root, "transcript.jsonl"), session = event + "-" + logicalRun, at = new Date().toISOString(), marker = "summary " + session;
       const lines = [JSON.stringify({ type: "assistant", timestamp: at }), JSON.stringify({ type: "ai-title", aiTitle: marker }),
         JSON.stringify({ type: "system", subtype: "away_summary", timestamp: at, content: marker }),
         JSON.stringify({ type: "user", isCompactSummary: true, timestamp: at, message: { content: marker } })];
-      // All three kinds plus an ordinary tail at the maximum read size. No fixture setup enters timing.
-      const requiredPrefix = lines.join("\n") + "\n";
-      if (event === "StopBurst") for (let index = 0; index < 100; index++) lines.push(JSON.stringify({ type: "ai-title", aiTitle: `${marker} revision ${index}` }));
+      const expected = new Set(["Title", "Recap", "Compact"].map(event => key({ event, excerpt: marker })));
+      if (event === "StopBurst") for (let index = 0; index < 100; index++) {
+        const title = marker + " revision " + index;
+        lines.push(JSON.stringify({ type: "ai-title", aiTitle: title })); expected.add(key({ event: "Title", excerpt: title }));
+      }
       const prefix = lines.join("\n") + "\n", ordinary = JSON.stringify({ type: "assistant", timestamp: at, text: "x".repeat(800) }) + "\n";
       writeFileSync(transcript, prefix + ordinary.repeat(Math.ceil((HOOK_TRANSCRIPT_BYTES - Buffer.byteLength(prefix)) / ordinary.length)));
-      Bun.gc(true);
-      const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
-      const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
-      const digest = createHash("sha256").update(`amem-session\0${session}`).digest("hex").slice(0, 16);
-      const file = join(f.base, "hook-transcripts", `${digest}.db`);
-      if (result.exitCode !== 0 || result.stdout.length || !metric || !existsSync(file)) throw Error("transcript budget hook did not scan");
-      const db = new Database(file, { readonly: true });
-      let offset: number;
-      try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; } finally { db.close(); }
-      if (!(offset >= Buffer.byteLength(requiredPrefix) && offset <= HOOK_TRANSCRIPT_BYTES)) throw Error(`transcript budget scan progress unavailable: ${JSON.stringify({ event, run, offset, required: Buffer.byteLength(requiredPrefix), wallMs, metric })}`);
-      const captured = f.rows().filter(row => row.session === digest);
-      const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(dir => existsSync(dir) ? readdirSync(dir).filter(name => /^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)).flatMap(name => {
-        const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
-        return value.capture?.session === digest ? [value.capture] : [];
-      }) : []);
-      for (const kind of ["Title", "Recap", "Compact"]) if (![...captured, ...pending].some(row => row.event === kind && row.excerpt === marker)) throw Error(`missing scanned ${kind}`);
-      let rss: ReturnType<typeof measuredHookRss>;
-      try { rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576); }
-      catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, run, wallMs, offset, metric })); throw error; }
-      const sample = { event, run, wallMs, ...rss, offset };
-      samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+      const digest = createHash("sha256").update("amem-session\0" + session).digest("hex").slice(0, 16);
+      const file = join(f.base, "hook-transcripts", digest + ".db");
+      let previous = 0, complete = false;
+      for (let followUp = 0; followUp <= MAX_FOLLOW_UPS; followUp++) {
+        Bun.gc(true);
+        const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
+        const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+        if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("transcript budget hook unavailable");
+        let offset = 0;
+        if (existsSync(file)) {
+          const db = new Database(file, { readonly: true });
+          try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; } finally { db.close(); }
+        }
+        let rss: ReturnType<typeof measuredHookRss>;
+        try { rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576); }
+        catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, logicalRun, followUp, wallMs, offset, metric })); throw error; }
+        const stopReason = metric.transcriptStopReason;
+        const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, ...(stopReason ? { stopReason } : {}) };
+        samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+        if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
+          || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")) {
+          throw Error("transcript budget scan progress unavailable: " + JSON.stringify(sample));
+        }
+        previous = offset;
+        const available = durable(f, digest);
+        if ([...expected].every(value => available.has(value))) { complete = true; break; }
+      }
+      if (!complete) throw Error("transcript summaries not durable within " + MAX_FOLLOW_UPS + " follow-up invocations");
+      await verifyReplay(f, digest, expected);
     }
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
       const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
-      return { event, runs: rows.length, wallP95Ms, peakRssMB, wallPass: wallP95Ms < 150, rssPass: peakRssMB < 100 };
+      return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
+        maxFollowUps: MAX_FOLLOW_UPS, wallP95Ms, peakRssMB, wallPass: wallP95Ms < 150, rssPass: peakRssMB < 100 };
     });
     return { groups, samples };
   } finally { f.close(); }

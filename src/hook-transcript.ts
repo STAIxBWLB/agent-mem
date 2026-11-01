@@ -8,6 +8,7 @@ import { configuredPolicyOptions } from "./memory/config.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { HookSpoolFull, stageTranscriptCapture } from "./hook-spool.ts";
 import { appendMetrics } from "./memory/metrics.ts";
+import type { HookTranscriptProgress } from "./hook-contract.ts";
 
 export const HOOK_TRANSCRIPT_BYTES = 256 * 1024;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -87,9 +88,10 @@ function cursorDatabase(file: string, dev: string, ino: string, size: number): D
 }
 
 /** Private per-session transaction serializes screens and cursor advancement. No path or raw id is persisted. */
-export async function scanHookTranscriptTail(input: unknown, options: Options): Promise<void> {
+export async function scanHookTranscriptTail(input: unknown, options: Options): Promise<HookTranscriptProgress | undefined> {
   const value = object(input);
-  if (!value || options.policy?.host || typeof value.transcript_path !== "string" || typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256 || performance.now() >= options.deadline) return;
+  if (!value || options.policy?.host || typeof value.transcript_path !== "string" || typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256) return;
+  if (performance.now() >= options.deadline) return { stopReason: "deadline" };
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   assertFormatFloor(base, "hook-spool");
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return;
@@ -124,7 +126,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
-    let start = 0;
+    let start = 0, stopReason: HookTranscriptProgress["stopReason"];
     while (start < length && performance.now() < options.deadline) {
       const newline = bytes.indexOf(10, start);
       if (cursor.skipping) {
@@ -166,7 +168,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
           } catch (error) {
             // Advance only through durable/refused rows; a full spool retries this line
             // after the ordinary hook worker drains earlier publications.
-            if (error instanceof HookSpoolFull) break;
+            if (error instanceof HookSpoolFull) { stopReason = "spool_full"; break; }
             throw error;
           }
         }
@@ -175,9 +177,12 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
     }
+    if (!stopReason && start < length && performance.now() >= options.deadline) stopReason = "deadline";
+    if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";
     assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
     db.run("COMMIT");
+    return { offset: cursor.offset + start, ...(stopReason ? { stopReason } : {}) };
   } finally {
     try { if (db) { try { db.run("ROLLBACK"); } catch { /* Already committed. */ } db.close(); } } finally { closeSync(fd); }
   }

@@ -12,7 +12,7 @@ import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 
-import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
 const HANDLER_MS = 140;
@@ -68,13 +68,14 @@ async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefi
 }
 const publicBefore = async (policy: MemoryPolicy, value: unknown, deadline: number) => await before(policy.screen(value), deadline) === true;
 
-async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void): Promise<string | undefined> {
+async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void): Promise<string | undefined> {
   const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
   let length = 0, pending = "", body = "";
   const line = (text: string) => {
     if (!text) return;
-    const value = JSON.parse(text) as { rss?: unknown };
+    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown };
     if (onRss && Object.hasOwn(value, "rss")) onRss(value.rss);
+    else if (onTranscript && Object.hasOwn(value, "transcript")) onTranscript(value.transcript);
     else { if (body) throw new Error("worker output bound"); body = text; }
   };
   try {
@@ -92,9 +93,9 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value:
 
 /** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
-  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
+  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, ...(transcript !== undefined && !options.policy?.host ? { transcript: { stopReason: "deadline" as const } } : {}) };
   const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
   // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
@@ -104,8 +105,11 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
   let exited = false;
   const tracker = new HookWorkerRss(child.pid);
-  const output = boundedOutput(child.stdout, value => tracker.frame(value));
-  const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources() };
+  const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
+  const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
+    if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
+    result.transcript = value;
+  });
   const exit = child.exited.then(code => { exited = true; return code; });
   const stop = () => {
     if (exited) return;
@@ -118,7 +122,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   try {
     const answer = await Promise.race([
       Promise.all([exit, output]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+      new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
     ]);
     if (!answer || !answer[1]) return result;
     const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
@@ -236,6 +240,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   const deadline = started + handlerMs(host);
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false, dropped = false;
   let childSources = emptyRssSources();
+  let transcriptProgress: HookTranscriptProgress | undefined;
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
@@ -245,6 +250,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
     if (!result) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     captured = result.captured; pending = result.pending; dropped = "dropped" in result && result.dropped === true;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources();
+    transcriptProgress = "transcript" in result ? result.transcript : undefined;
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
@@ -252,7 +258,8 @@ export async function runHook(event: string, input: unknown, options: HookOption
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
     if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
-      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
+      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
@@ -262,6 +269,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
+  let transcriptProgress: HookTranscriptProgress | undefined;
   try {
     if (args.length !== 1) return "";
     if (args[0] === "jcode") {
@@ -289,6 +297,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + deadlineMs - 3);
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
+      transcriptProgress = "transcript" in result ? result.transcript : undefined;
       if (!result.valid || args[0] !== "SessionStart") return "";
       return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
@@ -299,7 +308,8 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     try {
       const self = hookRssReading();
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
-        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
+        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
+        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }

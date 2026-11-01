@@ -6,7 +6,7 @@ import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import type { HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
-import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -30,6 +30,7 @@ if (import.meta.main) {
   let owned = false;
   let rssTelemetryValid = true;
   const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
+  const progress = (transcript: HookTranscriptProgress) => { try { writeSync(1, JSON.stringify({ transcript }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   let nativeId = 0;
   const nativeUsage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, observe: () => {
@@ -56,8 +57,9 @@ if (import.meta.main) {
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
-    if (remaining() <= 0) stop();
-    setTimeout(stop, remaining()).unref();
+    const deadlineStop = () => { if (options.transcript !== undefined) progress({ stopReason: "deadline" }); stop(); };
+    if (remaining() <= 0) deadlineStop();
+    setTimeout(deadlineStop, remaining()).unref();
     const policy = createStandalonePolicy(configuredPolicyOptions(options.base!, options.cwd, options.policy)), event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!);
@@ -78,8 +80,9 @@ if (import.meta.main) {
         // Ordinary capture is already durable. Use the same 60 ms scan cap inside the
         // existing worker deadline; its parent still reserves 25 ms for cleanup/metrics.
         // ponytail: upgrade to deadline-aware storage operations rather than widening R2.
-        await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
+        const scanned = await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
           deadline: Math.min(performance.now() + remaining(), performance.now() + 60) });
+        if (scanned) progress(scanned);
       } catch { /* A transcript failure must not discard the ordinary hook capture. */ }
     }
     let captured = false;

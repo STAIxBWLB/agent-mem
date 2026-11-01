@@ -38,6 +38,10 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
     expect(native.every(event => event.known && event.pid === events[scan]!.pid)).toBe(true);
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
-    if (!stall) expect(f.rows().some(row => row.event === "Title" && row.excerpt === "worker summary")).toBe(true);
+    if (stall) expect(metric.transcriptStopReason).toBe("deadline");
+    else {
+      expect(metric.transcriptOffset).toBeGreaterThan(0);
+      expect(f.rows().some(row => row.event === "Title" && row.excerpt === "worker summary")).toBe(true);
+    }
   } finally { f.close(); }
 });
