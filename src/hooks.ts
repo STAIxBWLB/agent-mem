@@ -102,7 +102,7 @@ async function parentProject(options: HookOptions, base: string, deadline: numbe
   return { cwd, scope, project, receipt, usage };
 }
 
-/** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
+/** Only capture work uses a short-lived owned child; native handles remain in this CLI.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
 async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;

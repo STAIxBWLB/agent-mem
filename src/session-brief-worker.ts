@@ -32,8 +32,7 @@ if (import.meta.main) {
     if (!rssTelemetryValid) frame([4]);
     const self = hookRssReading(); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
     // This leader is still alive in the detached group created by hookWorker.
-    // Native Git uses a separate owned async supervisor with its own native watchdog;
-    // a blocked Git cannot prevent this worker's JS deadline from firing.
+    // Native Git is owned and reaped by the CLI parent, never by this worker.
     if (owned) try { process.kill(-process.pid, "SIGKILL"); } catch { /* No group exists in a direct, non-owned invocation. */ }
     process.exit(0);
   };
@@ -57,9 +56,8 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     const project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining }));
     let captured = false;
-    // Normal SessionStart keeps the parent's durable stage for later replay and spends
-    // its short-lived worker on context. An empty current name is mandatory full-tier recovery.
-    if (expectedScope !== undefined && (event !== "SessionStart" || !options.current)) {
+    // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
+    if (expectedScope !== undefined) {
       const { CaptureStore } = await import("./memory/capture.ts");
       let store: CaptureStore | undefined;
       try {
