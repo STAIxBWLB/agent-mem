@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanHookTranscriptTail, transcriptSummary, HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
@@ -132,4 +132,14 @@ test("title timestamp carry ignores nested timestamps in ordinary tool data", as
   f.add({ type: "assistant", message: { tool_input: { timestamp: "2000-01-01T00:00:00.000Z" } }, timestamp: at },
     { type: "ai-title", aiTitle: "correct predecessor time" });
   await f.scan(); expect((await f.drain())[0]?.at).toBe(at);
+});
+
+test("a parent alias cannot hide a configured denied transcript location", async () => {
+  const f = fixture(), blocked = join(f.root, "restricted-transcripts"), alias = join(f.root, "public-alias");
+  mkdirSync(blocked); symlinkSync(blocked, alias, "dir");
+  writeFileSync(join(blocked, "native.jsonl"), JSON.stringify({ type: "system", subtype: "away_summary", timestamp: at, content: "denied origin recap" }) + "\n");
+  await scanHookTranscriptTail({ ...f.input, transcript_path: join(alias, "native.jsonl") },
+    { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, policy: { denyPaths: ["restricted-transcripts"] } });
+  expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
+  expect(await f.drain()).toHaveLength(0);
 });

@@ -92,7 +92,11 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   if (!await policy.screen(value)) return;
   const session = hash(`amem-session\0${value.session_id}`).slice(0, 16);
-  const fd = openSync(value.transcript_path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (lstatSync(value.transcript_path).isSymbolicLink()) throw new Error("transcript unavailable");
+  const transcript = realPath(value.transcript_path);
+  // Parent aliases must not hide a configured deny path behind an allowed spelling.
+  if (!await policy.screen({ transcript_path: transcript })) return;
+  const fd = openSync(transcript, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let db: Database | undefined;
   try {
     const stat = fstatSync(fd), named = lstatSync(value.transcript_path);
@@ -115,7 +119,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const bytes = Buffer.alloc(Math.min(HOOK_TRANSCRIPT_BYTES, Math.max(0, stat.size - cursor.offset)));
     const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
-    if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino) return;
+    if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
     let start = 0;
     while (start < length && performance.now() < options.deadline) {
       const newline = bytes.indexOf(10, start);
