@@ -13,7 +13,7 @@ import { budgetGroup } from "./budget-attempt.ts";
 const RUNS = 40, p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 async function measure() {
   let f = hookFixture();
-  const samples: { event: string; run: number; wallMs: number; rssMB: number; offset: number }[] = [];
+  const samples: { event: string; run: number; wallMs: number; rssMB: number; cliRssMB: number; productionRssMB: number; rawProductionRssMB: number | null; offset: number }[] = [];
   try {
     await f.seed();
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let run = 1; run <= RUNS; run++) {
@@ -46,8 +46,10 @@ async function measure() {
         return value.capture?.session === digest ? [value.capture] : [];
       }) : []);
       for (const kind of ["Title", "Recap", "Compact"]) if (![...captured, ...pending].some(row => row.event === kind && row.excerpt === marker)) throw Error(`missing scanned ${kind}`);
-      const rssMB = Math.max(result.resourceUsage.maxRSS / 1048576, metric.rssMB ?? Infinity);
-      const sample = { event, run, wallMs, rssMB, offset }; samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+      const cliRssMB = result.resourceUsage.maxRSS / 1048576, productionRssMB = metric.rssMB ?? Infinity;
+      const rssMB = Math.max(cliRssMB, productionRssMB);
+      const sample = { event, run, wallMs, rssMB, cliRssMB, productionRssMB, rawProductionRssMB: metric.rawRssMB ?? null, offset };
+      samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
     }
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
       const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
