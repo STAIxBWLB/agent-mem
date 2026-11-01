@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
-import { combineRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
+import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
 import { stageHookCapture, hookCaptureScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
@@ -250,7 +250,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
     if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
-      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), childSources), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
@@ -297,7 +297,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     try {
       const self = hookRssReading();
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
-        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), childSources), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
+        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }

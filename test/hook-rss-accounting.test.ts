@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { combineRssSources, rssSource, rssSourcesKnown, selectHookRss, validRssSources } from "../src/hook-resources.ts";
+import { combineRssSources, countedRssSources, rssSource, rssSourcesKnown, selectHookRss, validRssSources } from "../src/hook-resources.ts";
 
 test("a missing or zero image peak never turns inherited raw RSS into known telemetry", () => {
   for (const peak of [undefined, 0, NaN, -1]) {
@@ -29,4 +29,10 @@ test("provenance keeps a single unknown component visible through aggregation", 
 test("peak virtual size provides an explicitly named conservative image bound when RSS telemetry is zero", () => {
   expect(selectHookRss("linux", 0, 128 * 1024, 2672)).toEqual({ kb: 2672, rawKB: 128 * 1024, source: "VmPeak-bound", known: true });
   expect(selectHookRss("linux", 0, 128 * 1024, 256 * 1024).kb).toBe(256 * 1024);
+});
+
+test("a known parent cannot hide a counted child with missing source metadata", () => {
+  const parent = rssSource(selectHookRss("linux", 35000, 128000));
+  expect(rssSourcesKnown(combineRssSources(parent, countedRssSources(2048)))).toBe(false);
+  expect(rssSourcesKnown(combineRssSources(parent, countedRssSources(0)))).toBe(true);
 });

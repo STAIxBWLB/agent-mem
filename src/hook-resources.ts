@@ -40,6 +40,11 @@ export function combineRssSources(...values: (HookRssSources | undefined)[]): Ho
   for (const value of values) if (value) for (const key of Object.keys(result) as (keyof HookRssSources)[]) result[key] += value[key];
   return result;
 }
+export function countedRssSources(kb: number, value?: HookRssSources): HookRssSources {
+  const result = combineRssSources(value);
+  if (kb > 0 && Object.values(result).every(count => count === 0)) result.unavailable++;
+  return result;
+}
 export function validRssSources(value: unknown): value is HookRssSources {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>, keys = Object.keys(emptyRssSources());
