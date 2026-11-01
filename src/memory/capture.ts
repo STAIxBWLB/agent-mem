@@ -291,7 +291,7 @@ export class CaptureStore {
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
       addAttributionColumns(db);
-      this.ensureBriefSummaryIndex();
+      this.ensureBriefSummaryIndex(true);
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
@@ -390,11 +390,8 @@ export class CaptureStore {
   private briefReady = false;
   private prepareBriefSummaryIndex(): void {
     if (this.readOnly || this.briefReady) return;
-    try {
-      this.ensureBriefSummaryIndex();
-      this.db.transaction(() => this.completeBriefSummaryIndex()).immediate();
-      this.briefReady = true;
-    } catch { /* Optional derived coverage remains partial; query engines remain independent. */ }
+    try { this.ensureBriefSummaryIndex(false); this.briefReady = true; }
+    catch { /* Optional summary coverage remains partial; query engines remain independent. */ }
   }
   /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
   private ensureMcpFts(): boolean {
@@ -650,69 +647,33 @@ export class CaptureStore {
     return rows.map(toRow);
   }
 
-  /** Summary metadata is derived; old writers maintain it through SQLite triggers too. */
-  private ensureBriefSummaryIndex(): void {
-    this.db.transaction(() => {
-      const had = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='brief_summaries_v1' AND type='table'").get();
-      this.db.run("CREATE TABLE IF NOT EXISTS brief_summaries_v1 (id INTEGER PRIMARY KEY, at TEXT NOT NULL, project TEXT NOT NULL)");
-      // A new table is empty. Rebuilding a missing index on a populated table is off-hook work.
-      if (!had) this.db.run("CREATE INDEX brief_summaries_v1_recent ON brief_summaries_v1(project, at, id)");
-      const eligible = "new.event IN ('Recap','Compact') AND (new.subagent IS NULL OR new.subagent != 1)";
-      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_brief_ai AFTER INSERT ON rows WHEN ${eligible} BEGIN INSERT OR REPLACE INTO brief_summaries_v1 VALUES(new.id,new.at,new.project); END`);
-      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_brief_ad AFTER DELETE ON rows BEGIN DELETE FROM brief_summaries_v1 WHERE id=old.id; END");
-      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_brief_au AFTER UPDATE ON rows BEGIN DELETE FROM brief_summaries_v1 WHERE id=old.id; INSERT INTO brief_summaries_v1 SELECT new.id,new.at,new.project WHERE ${eligible}; END`);
-      const get = (key: string) => (this.db.query("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | null)?.value;
-      if (get("brief-v1-max") === undefined) {
-        const max = (this.db.query("SELECT id FROM rows ORDER BY id DESC LIMIT 1").get() as { id: number } | null)?.id ?? 0;
-        this.db.query("INSERT INTO meta(key,value) VALUES ('brief-v1-max',?),('brief-v1-through','0')").run(String(max));
-      }
-      const max = Number(get("brief-v1-max")), through = Number(get("brief-v1-through"));
-      if (![max, through].every(value => Number.isSafeInteger(value) && value >= 0) || through > max) throw new Error("capture summary metadata unavailable");
-      if (through >= max) return;
-      // ponytail: at most 128 legacy metadata rows per writer-open; complete history is
-      // filled only by the existing off-hook MCP index path, never a hook table scan.
-      const page = this.db.query("SELECT id,at,project,event,subagent FROM rows WHERE id>? AND id<=? ORDER BY id LIMIT 128")
-        .all(through, max) as { id: number; at: string; project: string; event: string; subagent: number | null }[];
-      const insert = this.db.query("INSERT OR REPLACE INTO brief_summaries_v1 VALUES (?,?,?)");
-      for (const row of page) if (["Recap", "Compact"].includes(row.event) && row.subagent !== 1) insert.run(row.id, row.at, row.project);
-      this.db.query("UPDATE meta SET value=? WHERE key='brief-v1-through'").run(String(page.at(-1)?.id ?? max));
-    }).immediate();
-  }
-
-  private completeBriefSummaryIndex(): void {
-    this.db.run("CREATE INDEX IF NOT EXISTS brief_summaries_v1_recent ON brief_summaries_v1(project,at,id)");
-    const max = Number((this.db.query("SELECT value FROM meta WHERE key='brief-v1-max'").get() as { value: string }).value);
-    const through = Number((this.db.query("SELECT value FROM meta WHERE key='brief-v1-through'").get() as { value: string }).value);
-    if (through < max) {
-      this.db.query("INSERT OR REPLACE INTO brief_summaries_v1 SELECT id,at,project FROM rows WHERE id>? AND id<=? AND event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)").run(through, max);
-      this.db.query("UPDATE meta SET value=? WHERE key='brief-v1-through'").run(String(max));
+  /** Generic SQLite index maintenance also covers older writers sharing this file. */
+  private ensureBriefSummaryIndex(bounded: boolean): void {
+    if (this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_summaries_v1' AND type='index'").get()) return;
+    if (bounded) {
+      const count = (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n;
+      if (count > 128) return;
     }
+    this.db.run("CREATE INDEX IF NOT EXISTS rows_brief_summaries_v1 ON rows(project,at,id) WHERE event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)");
   }
 
-  /** At most 33 indexed bodies plus 33 recent fallback bodies; no full tool-history scan. */
+  /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */
   readBriefSummaries(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
     this.checkReadBinding();
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief summary limit");
-    const indexed = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='brief_summaries_v1_recent' AND type='index'").get();
-    let partial = true;
-    let rows: RawRow[] = [];
+    const indexed = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_summaries_v1' AND type='index'").get();
+    let rows: RawRow[], partial = false;
     if (indexed) {
-      const meta = this.db.query("SELECT key,value FROM meta WHERE key IN ('brief-v1-max','brief-v1-through')").all() as { key: string; value: string }[];
-      const values = new Map(meta.map(row => [row.key, Number(row.value)]));
-      const max = values.get("brief-v1-max"), through = values.get("brief-v1-through");
-      partial = !Number.isSafeInteger(max) || !Number.isSafeInteger(through) || max! < 0 || through! < 0 || max !== through;
-      rows = this.db.query("SELECT r.* FROM brief_summaries_v1 AS b INDEXED BY brief_summaries_v1_recent JOIN rows AS r ON r.id=b.id WHERE b.project=? AND r.project=b.project AND r.event IN ('Recap','Compact') AND (r.subagent IS NULL OR r.subagent != 1) ORDER BY b.at DESC,b.id DESC LIMIT ?")
+      rows = this.db.query("SELECT * FROM rows INDEXED BY rows_brief_summaries_v1 WHERE project=? AND event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1) ORDER BY at DESC,id DESC LIMIT ?")
         .all(this.key, limit + 1) as RawRow[];
-    }
-    if (partial) {
+    } else {
+      // ponytail: a large legacy store stays partial within128 rows until an off-hook
+      // query builds the partial index; never scan or build the history on a hook.
       const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
       const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
-      const recent = this.db.query(`SELECT * FROM (SELECT * FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 128) WHERE project=? AND event IN ('Recap','Compact')${subagent} ORDER BY at DESC,id DESC LIMIT ?`)
+      rows = this.db.query(`SELECT * FROM (SELECT * FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 128) WHERE project=? AND event IN ('Recap','Compact')${subagent} ORDER BY at DESC,id DESC LIMIT ?`)
         .all(this.key, limit + 1) as RawRow[];
-      const sentinel = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all();
-      partial = sentinel.length > 128;
-      rows = [...new Map([...rows, ...recent].map(row => [row.id, row])).values()];
-      rows.sort((a, b) => b.at.localeCompare(a.at) || b.id - a.id);
+      partial = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all().length > 128;
     }
     return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
   }
