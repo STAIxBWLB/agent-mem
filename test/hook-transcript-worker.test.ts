@@ -55,7 +55,7 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
       if (mode === "identity_failure") {
         const pending = readdirSync(join(f.base, "hook-spool")).filter(name => name.startsWith("hook-v3-")).map(name => JSON.parse(readFileSync(join(f.base, "hook-spool", name), "utf8")));
         expect(pending.some(row => row.capture.event === "Title" && row.capture.excerpt === "worker summary")).toBe(true);
-        expect(f.runFunctional("PostToolUse").exitCode).toBe(0);
+        expect(f.runFunctional("PostToolUse", { prompt: "resume public summary" }).exitCode).toBe(0);
       }
       if (mode === "late_progress") expect(metric.transcriptStopReason).toBe("deadline");
       expect(f.rows().some(row => row.event === "Title" && row.excerpt === "worker summary")).toBe(true);
