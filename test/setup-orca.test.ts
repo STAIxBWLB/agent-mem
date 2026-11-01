@@ -7,7 +7,7 @@ import { setup202Rig } from "./fakes/setup-202.ts";
 
 const rigs: ReturnType<typeof setup202Rig>[] = [];
 afterEach(() => { for (const rig of rigs.splice(0)) rig.close(); });
-const rig = () => { const r = setup202Rig(); rigs.push(r); return r; };
+const rig = (bun?: string) => { const r = setup202Rig(bun); rigs.push(r); return r; };
 
 for (const target of ["claude", "codex"] as const) test(`Orca ${target} publishes the durable personal source and undo restores exact bytes`, () => {
   const r = rig(), data = join(r.home, "Library", "Application Support", "orca");
@@ -75,7 +75,9 @@ for (const target of ["claude", "codex"] as const) test(`old Orca ${target} rece
 test("ordinary Claude/Codex setup plans and file bytes match the pre-redirect golden", () => {
   const golden = JSON.parse(readFileSync(new URL("./fixtures/setup-non-orca-202.json", import.meta.url), "utf8"));
   for (const target of ["claude", "codex"] as const) for (const custom of [false, true]) {
-    const r = rig();
+    // The native seam never executes this binary. Pin its shape so the production
+    // version-specific-runtime warning does not depend on the test runner's install path.
+    const r = rig("/fixture/stable-runtime/bin/bun");
     if (custom) r.env[target === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = join(r.home, "custom config");
     const plan = planSetup(target, "preview", r.options), normalized = JSON.parse(r.normalize(JSON.stringify(plan)));
     expect({ plan: normalized, text: r.normalize(setupPlanText(plan)) }).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].preview);
