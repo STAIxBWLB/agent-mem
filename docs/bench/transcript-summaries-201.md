@@ -1,53 +1,76 @@
 # Transcript summaries: verification boundary
 
-Issue #201 captures Claude Code's existing titles, recaps and compaction summaries. It adds no model call or tokens. Delivery is incomplete: the later burst workload exceeds the RSS gate, task 80 / PR #208 integration is pending, and the private 70-query replay (AC6) belongs to the reviewer and was not accessed by the implementer.
+Issue #201 captures Claude Code's existing titles, recaps and compaction summaries without a model call, network request or additional model tokens. The source measurement head is `e5a2ef1744590e5678a28f0cf5c57dbede7c642b`, rebased onto main `202e46b`, including #208's format-3 spool and #198's RSS accounting. The private 70-query replay (AC6) belongs to the reviewer and was not accessed by the implementer. Hosted CI and native-client acceptance are separate from these dgx02 fixture checks.
 
-## Public retrieval no-loss gate
+[The numeric receipt](transcript-summaries-201.json) retains the final physical summary samples, runner probes, earlier receipt and all subsequent attempts. Raw logs and public retrieval reports are on the dgx02 development-container home volume under `/home/dev/tmp/amem-201/`. No resource failure or withdrawn design is treated as a passing acceptance run.
 
-At `5a1ee36ce2462543f48b49feacd90b7efd979f69`, both complete public LongMemEval datasets finished all 500 questions, with zero failures and 30 abstentions each. The unchanged comparator's 42 strict no-loss comparisons passed per dataset. Every reported aggregate and per-type metric equals the baseline at `5d4ce38b9622f9561a38ad718d7d540055d4800b`; maximum absolute delta is 0. No target gain or adoption claim follows.
+## Partial-index design choice
 
-Dataset identities and commands are in [longmemeval.md](longmemeval.md). [The numeric receipt](transcript-summaries-201.json) records dataset hashes, aggregates, resource results and source identities. Raw reports stay outside the repository at `/home/dev/tmp/amem-201/` on the dgx02 development-container home volume.
+A controlled probe used the same 500,001-row capture store (50,000,123 declared row bytes, 68,300,800 physical database bytes). With no summary, brief generation took 4.545 ms using the partial index and 11.313 ms using the bounded fallback. One-time partial-index construction took 32.938 ms. With an older recap outside the recent window, the indexed brief took 4.642 ms and rendered the recap; the fallback took 4.267 ms and could not reach it. Raw evidence: `partial-index-comparison/result.json`.
 
-These are pre-integration measurements. The public harness seeds ordinary user/assistant rows directly, without summary rows; it checks retrieval compatibility. Focused tests check the new summary ordering, timestamp, screening, cursor and brief behavior. Later hook-path and brief-quota corrections are separate from this benchmark head. The final integration must verify that the portable-memory tree, MCP search implementation and four harness files retain the recorded object identities.
+The final implementation uses the simpler ordinary partial index, `rows_brief_summaries_v1`, over project/time/id for main-session Recap/Compact rows. The custom derived summary table and its triggers were withdrawn. Existing FTS infrastructure is unchanged. A published 0.18.0 writer test verifies that ordinary SQLite index maintenance keeps the summary view current.
+
+A hook may create the partial index only when a bounded count sees at most 128 rows. The count and creation share one immediate transaction, preventing a concurrent older writer from making that decision stale. Large legacy stores use at most 128 recent rows, report partial coverage, and defer index construction to an off-hook capture query. Native brief reads never build an index. Indexed reads load at most 33 summary bodies. The one-time 32.938 ms build is characterized separately and is not hidden inside the hook gate.
 
 ## Resource measurements
 
-The same committed head passed the unchanged ordinary R1/R2 and MCP R3 harnesses on their first group attempts, without stalled samples or optional-worker deferrals. Ordinary R1 reaped all 96 observed invocations and children. R3 idle/peak RSS were 36.73/174.67 MB; its separate large capture-volume run peaked at 100.95 MB. These are Linux/Bun 1.4.2 fixture measurements, not native-client acceptance or a performance improvement claim.
+The final source passed the unchanged R1/R2 and R3 harnesses on their first group attempts. There were no stalled samples, retries or optional-worker deferrals. R1 observed and reaped 136 invocations and 136 owned children. Ordinary R2 includes the real jcode hook path added by #208.
 
-`bun scripts/measure-transcript-budget.ts` measures 40 actual Stop and 40 actual SessionEnd CLI invocations. Each sees a fresh 256 KiB tail containing all three summary kinds. It verifies cursor progress and durable summary capture outside the timed invocation, prints every physical sample, and uses the existing runner-probe retry policy and unchanged limits (p95 below 150 ms, peak below 100 MB).
+`bun scripts/measure-transcript-budget.ts` measures 40 Stop, 40 SessionEnd and 40 cold-home burst invocations. Each sees a fresh 256 KiB tail containing all three summary kinds; the burst adds 100 distinct titles. Cursor progress and durable capture are checked outside the timed invocation. Every physical sample names its RSS provenance. Thresholds, global deadlines and retry policy are unchanged: wall p95 below 150 ms and peak RSS below 100 MB.
 
-| Final hook | Runs | Wall p95, ms | Peak RSS, MB |
+| Hook workload | Runs | Wall p95, ms | Peak RSS, MB |
 |---|---:|---:|---:|
-| Stop | 40 | 87.95 | 78.75 |
-| SessionEnd | 40 | 90.18 | 73.50 |
+| Stop | 40 | 97.30 | 80.50 |
+| SessionEnd | 40 | 98.10 | 80.50 |
+| Stop burst | 40 | 119.45 | 73.50 |
+| Ordinary plain | 40 | 79.53 | 77.86 |
+| Contended spool/exit | 15 | 77.98 | 71.75 |
+| SessionStart | 20 | 63.92 | 44.61 |
+| SessionStart repository log | 20 | 67.66 | 45.50 |
+| Drain | 1 | 81.32 | 71.75 |
+| jcode | 40 | 77.15 | 71.75 |
 
-The initial `f5510a8` run also passed typecheck, boundary, 22 focused/tripwire tests and the 80-invocation summary budget; its peak was 99.75 MB. The initial stdout receipt and the later complete numeric receipt are distinct runs. No resource failure is discarded.
+Linux RSS uses the merged #198 production-owned-images measurement and fails closed for unknown provenance. Coverage is `images: bun+supervisor; descendants: not measured`. Raw combined RSS and outer CLI wait4 RSS remain diagnostics. These figures are not whole-process-tree measurements. The remaining coverage spelling, descendant characterization and literal post-merge-main ten-run series belong to task 83.
 
-## Later burst guardrail
+R3 idle/peak RSS were 36.75/157.60 MB; its separate large capture-volume run peaked at 103.96 MB, under the unchanged 100 MB idle / 200 MB peak limits. Raw final reports: `final-acceptance/measure-transcript-budget.log`, `measure-hooks-budget.log` and `measure-mcp-budget.log`.
 
-A later workload adds 100 distinct title revisions after the three initial summaries, in 40 fresh memory homes. The native caller uses a 60 ms scan deadline with a 20 ms publication reserve. Unprocessed rows remain at the cursor. Each sample now reports CLI wait4 RSS, production combined RSS and raw combined RSS; resource thresholds and retry policy remain unchanged.
+## Public retrieval no-loss gate
 
-| Head | Stop p95 / peak | SessionEnd p95 / peak | Burst p95 / peak | Outcome |
-|---|---:|---:|---:|---|
-| `ea5fc73` | 87.45 ms / 82.25 MB | 88.59 ms / 77 MB | 117.71 ms / 101.50 MB | RSS miss |
-| `04df65e` | 92.03 ms / 78.75 MB | 93.31 ms / 77 MB | 112.65 ms / 129.50 MB | RSS miss |
+The public LongMemEval S and M datasets each contain 500 questions. The unchanged comparator uses strict BM25 controls against baseline `5d4ce38b9622f9561a38ad718d7d540055d4800b`. Dataset hashes and commands are in [longmemeval.md](longmemeval.md), with identities also retained in the historical numeric receipt. Final reports and comparisons are recorded under `final-acceptance/`. Their completion and no-loss verdict are included in the PR delivery report, after these documentation bytes were frozen.
 
-The second head tested an eight-admission ceiling. It did not resolve the RSS gate and that extra ceiling was withdrawn. Its 14 over-limit samples had CLI RSS at most 50.54 MB and raw production RSS at most 90.79 MB, while recorded production RSS reached 129.50 MB. The exact accounting cause remains unconfirmed; #198 covers that work. Production RSS accounting was not changed, and the budget helper did not retry either RSS miss.
+The public harness seeds ordinary user/assistant rows directly, without summary rows. It checks retrieval compatibility; focused tests establish summary ranking and brief selection. No target gain, private replay result or adoption claim follows from public no-loss results.
 
-The current production source is byte-identical to `ea5fc73`. Both failed attempts, group probes, outlier samples and raw log filenames are retained in the numeric receipt. The complete physical sample streams remain in `transcript-ea5fc73.log` and `transcript-04df65e.log`. AC4 remains unmet.
+## Functional and standard checks
 
-## Functional checks
+At the final source head, typecheck and boundary passed, and 43 focused tests passed with 280 assertions. Coverage includes all three native summary shapes; timestamp carry; repeated titles and A-B-A transitions; incremental reads; rotation/truncation; deterministic receipts; envelope/text screens before caps; denied canonical paths; private spans and subagents; oversized and incomplete lines; actual CLI hooks and offline tripwires; format floors; 0.18.0 maintenance coexistence; summary weighting; brief byte quotas and legacy byte invariance.
 
-At `5a1ee36`, typecheck, boundary and 59 focused/backlog/compatibility/tripwire tests passed. At `cd6038a`, typecheck and 18 tests across the two changed files passed, including the added brief-byte-quota and canonical deny-alias regressions.
+An additional 19 focused tests (103 assertions) cover the partial index, published older writers, real legacy schemas, no-FTS substring queries, concurrent index admission and the CLI/MCP lazy-import boundary. Final standard-gate results are reported with the delivery head; source-measurement logs remain under `e5a2ef1/`.
 
-Coverage includes native timestamps and top-level predecessor carry; repeated titles; incremental reads; rotation and truncation; content receipts and untimed fallback stability; full envelope/text screens before excerpt caps; private spans and subagents; denied canonical source paths; incomplete/oversized lines; actual final hooks; offline tripwires; summary weighting and legacy brief invariance.
+## Retained attempt history
 
-A full run at `d925e3b` was stopped after two numeric test-instrumentation anchor failures caused by extracting the common publication helper. The diagnostic's source anchor was corrected, retaining assertions, timeouts and limits; the corrected focused run passed. Its partial log is retained as `full-test.log`.
+The numeric receipt preserves the original public S/M no-loss results and all pre-integration resource data, including both burst RSS failures. It also names every later suite and diagnostic directory.
 
-At `cd6038a`, the full suite passed: 2,375 tests, 7 skipped, zero failures, 39,045 assertions; boundary printed `boundary: OK`, and `npm pack --dry-run` passed. At `ea5fc73`, typecheck, boundary and 24 focused/tripwire tests passed after adding the native scan deadline. The withdrawn eight-admission experiment also passed its 25 focused tests but failed R2 as recorded above.\n\nIntegration with task 80 / PR #208, final combined gates, hosted CI and the reviewer's private replay remain unverified. No parallel v3 PR has been published, following the reviewer's integration ruling.
+| Head or directory | Outcome and disposition |
+|---|---|
+| `f5510a8`, `5a1ee36`, `cd6038a` | Earlier focused, standard and resource passes; inherited evidence, superseded by integrated checks |
+| `d925e3b` | Full run stopped after two numeric source-anchor failures; corrected diagnostic anchors, unchanged assertions/timeouts |
+| `ea5fc73` | Burst 117.71 ms / 101.50 MB, RSS failure before #198 |
+| `04df65e` | Eight-admission experiment, burst 112.65 ms / 129.50 MB, 14 over-limit samples; ceiling withdrawn |
+| `integrated/` | Integrated focused and summary R2 pass, before final cursor/index corrections |
+| `9094ad0` | One equal-time ordering test assertion failed; corrected to verify count/idempotence |
+| `b09a488/` | Focused pass; 500,001-row residual scan 128.595 ms motivated indexed lookup |
+| `59c554f` | One older-writer fixture lacked project identity; fixture corrected |
+| `legacy-index-fixed/` | Focused and summary R2 pass with custom summary table/triggers; design withdrawn |
+| `acceptance/` | Summary R2 failed closed on one unavailable provenance count at 76.109 MB; no retry, later gates did not run; trigger design withdrawn |
+| `partial-index-comparison/` | Controlled comparison above selected the ordinary partial index |
+| `partial-index/` | Focused and summary R2 pass on the selected design before the atomic small-store guard |
+| `partial-acceptance/` | Focused, ordinary R2, R3 and complete S no-loss pass; M stopped at 170/500 when the guard changed source, not accepted as complete |
+| `partial-full/` | 2,420 pass / 7 skip / 3 fail; legacy-schema fixtures and CLI-only allowlist corrected, assertions/deadlines retained |
+| `atomic-index/` | Generic test-spy typing error corrected |
+| `e5a2ef1/`, `final-acceptance/` | Final source checks, physical samples and complete retrieval reports |
 
 ## Limits
 
-Each invocation reads at most 256 KiB, with the native caller's scan deadline and publication reserve described above. An incomplete line waits; a line exceeding that ceiling is skipped through its newline and counted once as `transcript_line_bound`. The existing standalone-policy structural bounds can refuse a large summary before clipping. A full spool stops cursor progress at the unadmitted row; ordinary hook capture can drain the backlog, and a later final hook retries the tail. A busy cursor or failed transcript read does not prevent ordinary hook capture.
+Each invocation reads at most 256 KiB. The native caller allocates at most 60 ms for scanning with a 20 ms publication reserve inside the existing deadline. Incomplete lines wait; a line exceeding the ceiling is skipped through its newline and counted once as `transcript_line_bound`. Existing policy structural bounds may refuse a large summary before clipping. A full spool stops cursor progress at the unadmitted row; later final hooks retry the tail. A busy cursor or failed transcript read leaves ordinary capture available.
 
-Private cursors contain hashes and file/offset/timestamp metadata, never transcript paths, raw session identifiers or summary text. Their SQLite files have a 1 MiB bound; an oversized cursor refuses further scans. Capture logs, schema and paths are unchanged. Summary rows use the shared format-3 spool contract; ordinary Claude rows remain format 2.
+Private cursor databases contain hashes and file/offset/timestamp metadata, never transcript paths, raw session identifiers or summary text. They have a 1 MiB bound. Stable byte positions distinguish untimed A-B-A title transitions while full-file rotation/copy receipts remain idempotent; arbitrary historical rewrites that move identical untimed lines have no intrinsic stable source ID. Capture row schema, hashes and paths are unchanged. Summary rows use shared format 3; ordinary Claude rows remain format 2.
