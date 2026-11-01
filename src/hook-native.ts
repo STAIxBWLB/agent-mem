@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { combineRssSources, processImageRssKB, rssSource, selectHookRss, type HookRssSources } from "./hook-resources.ts";
+import { combineRssSources, processImageMemory, rssSource, selectHookRss, type HookRssSources } from "./hook-resources.ts";
 
 export interface HookNativeUsage { rssKB: number; rawRssKB: number; rssSources?: HookRssSources }
 // One native supervisor, with a native sleep watchdog rather than another Bun boot.
@@ -10,7 +10,7 @@ const SUPERVISOR = [
   // Fixed ps plus the unguessable invocation marker guards an externally killed/reused
   // leader too. Normal completion never exits the leader before its group is reaped.
   'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
-  'rss() { [ -r "/proc/$leader/status" ] || return 0; while read -r key value unit rest; do case "$key" in VmHWM:) printf "%s:RSS:%s\\n" "$marker" "$value" >&2; break ;; esac; done < "/proc/$leader/status"; }',
+  "rss() { [ -r \"/proc/$leader/status\" ] || return 0; trap '' PIPE; hwm=0; virtual=0; while read -r key value unit rest; do case \"$key\" in VmPeak:) virtual=$value ;; VmHWM:) hwm=$value; break ;; esac; done < \"/proc/$leader/status\"; printf \"%s:RSS:%s:%s\\n\" \"$marker\" \"$hwm\" \"$virtual\" >&2; trap - PIPE; }",
   'reap() { if owned; then rss; kill -KILL "-$leader"; fi; }',
   '[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125',
   'trap reap EXIT HUP INT TERM',
@@ -29,7 +29,7 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   const child = Bun.spawn(["/bin/sh", "-c", SUPERVISOR, "amem-hook-native", marker, String(remaining / 1000), ...argv],
     { env, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let exited = false, ownPeak = 0;
-  let reportedPeak = 0, receiptValid = true;
+  let reportedPeak = 0, reportedVirtual = 0, ownVirtual = 0, receiptValid = true;
   const rssReader = child.stderr.getReader();
   // A separate numeric channel survives a late parent read after the watchdog exits.
   // Command stderr remains discarded, as before; only the fixed supervisor writes here.
@@ -45,9 +45,11 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
           const newline = pending.indexOf("\n"); if (newline < 0) break;
           const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
           const prefix = `${marker}:RSS:`, value = line.startsWith(prefix) ? line.slice(prefix.length) : "";
-          const peak = /^\d+$/.test(value) ? Number(value) : 0;
-          if (Number.isSafeInteger(peak) && peak > 0) reportedPeak = Math.max(reportedPeak, peak);
-          else receiptValid = false;
+          const fields = /^(\d+):(\d+)$/.exec(value);
+          const peak = fields ? Number(fields[1]) : -1, virtual = fields ? Number(fields[2]) : -1;
+          if (Number.isSafeInteger(peak) && peak >= 0 && Number.isSafeInteger(virtual) && virtual >= 0) {
+            reportedPeak = Math.max(reportedPeak, peak); reportedVirtual = Math.max(reportedVirtual, virtual);
+          } else receiptValid = false;
         }
       }
       if (pending) receiptValid = false;
@@ -57,7 +59,8 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   const exit = child.exited.then(code => { exited = true; return code; });
   const stop = () => {
     if (exited) return;
-    ownPeak = Math.max(ownPeak, processImageRssKB(child.pid) ?? 0);
+    const image = processImageMemory(child.pid);
+    ownPeak = Math.max(ownPeak, image.hwmKB ?? 0); ownVirtual = Math.max(ownVirtual, image.virtualKB ?? 0);
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already exited */ } }
   };
   const reader = child.stdout.getReader();
@@ -102,7 +105,7 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     try { child.stdin.end(); } catch { /* pipe closed with the owned leader */ }
     await reader.cancel().catch(() => {}); reader.releaseLock();
     const raw = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-    const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw);
+    const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw, Math.max(ownVirtual, receiptValid ? reportedVirtual : 0));
     usage.rawRssKB = Math.max(usage.rawRssKB, raw);
     usage.rssKB = Math.max(usage.rssKB, selected.kb);
     usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));

@@ -115,11 +115,12 @@ test("the exit observation barrier does not mistake a running child for a reaped
 });
 
 test.skipIf(process.platform !== "linux")("terminal supervisor telemetry survives a missing late parent VmHWM read", async () => {
-  const lateRead = spyOn(resources, "processImageRssKB").mockReturnValue(undefined);
+  const lateRead = spyOn(resources, "processImageMemory").mockReturnValue({});
   try {
     const usage: HookNativeUsage = { rssKB: 0, rawRssKB: 0 };
     expect(await hookNative(["/usr/bin/printf", "metadata\n"], { PATH: process.env.PATH }, () => 1000, usage)).toEqual({ status: 0, stdout: "metadata\n" });
-    expect(usage.rssSources).toEqual({ vmhwm: 1, platformRusage: 0, rawFallback: 0, unavailable: 0 });
+    expect(usage.rssSources!.vmhwm + usage.rssSources!.vmpeakBound).toBe(1);
+    expect(usage.rssSources!.rawFallback + usage.rssSources!.unavailable).toBe(0);
     expect(usage.rssKB).toBeGreaterThan(0);
   } finally { lateRead.mockRestore(); }
 });

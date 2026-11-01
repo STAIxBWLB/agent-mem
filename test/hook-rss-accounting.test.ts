@@ -25,3 +25,8 @@ test("provenance keeps a single unknown component visible through aggregation", 
   expect(validRssSources({ ...known, extra: 1 })).toBe(false);
   expect(validRssSources(known)).toBe(true);
 });
+
+test("peak virtual size provides an explicitly named conservative image bound when RSS telemetry is zero", () => {
+  expect(selectHookRss("linux", 0, 128 * 1024, 2672)).toEqual({ kb: 2672, rawKB: 128 * 1024, source: "VmPeak-bound", known: true });
+  expect(selectHookRss("linux", 0, 128 * 1024, 256 * 1024).kb).toBe(256 * 1024);
+});
