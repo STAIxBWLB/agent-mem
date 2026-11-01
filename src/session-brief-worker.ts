@@ -75,10 +75,11 @@ if (import.meta.main) {
       try {
         const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
         // Metadata helpers have been reaped and their numeric receipts sent before scanning.
-        // ponytail: retain the 60 ms scan cap and 20 ms publication reserve; upgrade
-        // to deadline-aware storage operations rather than widening the hook budget.
+        // Ordinary capture is already durable. Use the same 60 ms scan cap inside the
+        // existing worker deadline; its parent still reserves 25 ms for cleanup/metrics.
+        // ponytail: upgrade to deadline-aware storage operations rather than widening R2.
         await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
-          deadline: Math.min(performance.now() + remaining() - 20, performance.now() + 60) });
+          deadline: Math.min(performance.now() + remaining(), performance.now() + 60) });
       } catch { /* A transcript failure must not discard the ordinary hook capture. */ }
     }
     let captured = false;

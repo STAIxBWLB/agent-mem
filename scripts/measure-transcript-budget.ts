@@ -40,14 +40,16 @@ async function measure() {
       const db = new Database(file, { readonly: true });
       let offset: number;
       try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; } finally { db.close(); }
-      if (!(offset >= Buffer.byteLength(requiredPrefix) && offset <= HOOK_TRANSCRIPT_BYTES)) throw Error("transcript budget scan progress unavailable");
+      if (!(offset >= Buffer.byteLength(requiredPrefix) && offset <= HOOK_TRANSCRIPT_BYTES)) throw Error(`transcript budget scan progress unavailable: ${JSON.stringify({ event, run, offset, required: Buffer.byteLength(requiredPrefix), wallMs, metric })}`);
       const captured = f.rows().filter(row => row.session === digest);
       const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(dir => existsSync(dir) ? readdirSync(dir).filter(name => /^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)).flatMap(name => {
         const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
         return value.capture?.session === digest ? [value.capture] : [];
       }) : []);
       for (const kind of ["Title", "Recap", "Compact"]) if (![...captured, ...pending].some(row => row.event === kind && row.excerpt === marker)) throw Error(`missing scanned ${kind}`);
-      const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576);
+      let rss: ReturnType<typeof measuredHookRss>;
+      try { rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576); }
+      catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, run, wallMs, offset, metric })); throw error; }
       const sample = { event, run, wallMs, ...rss, offset };
       samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
     }
