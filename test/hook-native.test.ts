@@ -4,7 +4,54 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { hookNative, hookProcessSignature, type HookNativeUsage } from "../src/hook-native.ts";
 import * as resources from "../src/hook-resources.ts";
+import { HookWorkerRss, rssSourceCode } from "../src/hook-rss-wire.ts";
 import { processSignature } from "../src/memory/platform.ts";
+
+for (const heldPipe of ["stderr", "stdout"] as const) test(`Darwin native rusage reaches its observer before held ${heldPipe} teardown`, async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!, spawn = Bun.spawn;
+  const kill = spyOn(process, "kill").mockImplementation(() => true);
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  let releaseExit!: (code: number) => void, releasePipe!: () => void, closeStderr!: () => void;
+  const exited = new Promise<number>(resolve => { releaseExit = resolve; });
+  const pipe = new Promise<void>(resolve => { releasePipe = resolve; });
+  const tracker = new HookWorkerRss(100); tracker.frame([0]); tracker.frame([3, 35000, 35000, 2]);
+  const received: resources.HookRssReading[] = [];
+  const usage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, observe: () => {
+    tracker.frame([1, 1, 0]);
+    return { started: pid => tracker.frame([1, 1, pid]), finished: reading => {
+      received.push(reading); tracker.frame([2, 1, reading.kb, reading.rawKB, rssSourceCode(reading), 0]);
+    } };
+  } };
+  Object.assign(Bun, { spawn(argv: string[]) {
+    const marker = argv[4]!;
+    return { pid: 101, exited, resourceUsage: () => ({ maxRSS: 64 * 1024 }), stdin: { end() {} }, kill() {},
+      stdout: new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(`\n${marker}:ARMED\nmetadata\n${marker}:0\n`));
+        if (heldPipe === "stderr") controller.close();
+      }, cancel: () => heldPipe === "stdout" ? pipe : undefined }),
+      stderr: new ReadableStream<Uint8Array>({ start(controller) {
+        closeStderr = () => controller.close(); if (heldPipe === "stdout") controller.close();
+      } }),
+    };
+  } });
+  const work = hookNative(["fixture"], {}, () => 1000, usage);
+  try {
+    expect(received).toEqual([]);
+    expect(resources.rssSourcesKnown(tracker.finish(35000, "darwin").rssSources)).toBe(false);
+    releaseExit(0); await exited;
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ kb: 64, rawKB: 64, source: "platform-rusage", known: true });
+    expect(usage.rssSources).toMatchObject({ platformRusage: 1, unavailable: 0 });
+    expect(tracker.finish(35000, "darwin").rssSources).toMatchObject({ platformRusage: 2, unavailable: 0 });
+    if (heldPipe === "stderr") closeStderr(); else releasePipe();
+    expect(await work).toEqual({ status: 0, stdout: "metadata\n" });
+    expect(received).toHaveLength(1);
+    expect(usage.rssSources).toMatchObject({ platformRusage: 1, unavailable: 0 });
+  } finally {
+    releaseExit(0); if (heldPipe === "stderr" && received.length === 0) closeStderr(); releasePipe();
+    await work.catch(() => {}); Bun.spawn = spawn; kill.mockRestore(); Object.defineProperty(process, "platform", platform);
+  }
+});
 
 function existsPid(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
