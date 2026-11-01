@@ -17,12 +17,13 @@ const DEFAULT_TIER_WEIGHT = 0.9;
 // ponytail: fixed 1.25x ceiling for conversational capture, not a learned relevance model.
 // Raise it only with fresh S/M no-loss and private-capture evidence; curated tier factors stay unchanged.
 export const CAPTURE_CONVERSATION_WEIGHT = 1.25;
+const CONVERSATIONAL_CAPTURE_EVENTS = ["Stop", "UserPromptSubmit", "Title", "Recap", "Compact"] as const;
 export function captureEventWeight(event: string): number {
-  return event === "Stop" || event === "UserPromptSubmit" ? CAPTURE_CONVERSATION_WEIGHT : 1;
+  return (CONVERSATIONAL_CAPTURE_EVENTS as readonly string[]).includes(event) ? CAPTURE_CONVERSATION_WEIGHT : 1;
 }
 /** Only fixed internal SQL identifiers are supplied by callers; event values remain stored data. */
 export function captureEventWeightSql(eventColumn: string): string {
-  return `(CASE WHEN ${eventColumn} IN ('Stop', 'UserPromptSubmit') THEN ${CAPTURE_CONVERSATION_WEIGHT} ELSE 1.0 END)`;
+  return `(CASE WHEN ${eventColumn} IN (${CONVERSATIONAL_CAPTURE_EVENTS.map(event => `'${event}'`).join(", ")}) THEN ${CAPTURE_CONVERSATION_WEIGHT} ELSE 1.0 END)`;
 }
 const TIER_FACTOR: ScoreExpr = { op: "tier" };
 const DENOMINATOR: ScoreExpr = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };

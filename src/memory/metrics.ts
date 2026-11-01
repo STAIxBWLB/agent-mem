@@ -3,7 +3,7 @@ import type { HookRssSources } from "../hook-resources.ts";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: "cap" | "deadline" | "spool_full"; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {
@@ -37,8 +37,8 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
 }
 
 
-export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten" | "unknown_schema_expired";
-const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired"];
+export type CaptureDropReason = "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten" | "unknown_schema_expired" | "transcript_line_bound";
+const DROP_REASONS: readonly CaptureDropReason[] = ["spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired", "transcript_line_bound"];
 /** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. Fails open to no counts: hooks never deny over metrics. */
 export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
   const read = readCaptureDrops(base);

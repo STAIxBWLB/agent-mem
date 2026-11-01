@@ -1,0 +1,4310 @@
+{
+  "schema": "agent-mem.transcript-summaries-evidence/v1",
+  "measuredCommit": "e5a2ef1744590e5678a28f0cf5c57dbede7c642b",
+  "baseCommit": "202e46b",
+  "baselineCommit": "5d4ce38b9622f9561a38ad718d7d540055d4800b",
+  "platform": "linux",
+  "bun": "1.4.2",
+  "integrationStatus": "integrated with #208 and #198; private AC6 belongs to reviewer",
+  "rssCoverage": "images: bun+supervisor; descendants: not measured",
+  "rawDirectory": "/home/dev/tmp/amem-201/",
+  "finalResources": {
+    "measure-transcript-budget": {
+      "result": {
+        "groups": [
+          {
+            "event": "Stop",
+            "runs": 40,
+            "wallP95Ms": 97.30200799999989,
+            "peakRssMB": 80.5,
+            "wallPass": true,
+            "rssPass": true
+          },
+          {
+            "event": "SessionEnd",
+            "runs": 40,
+            "wallP95Ms": 98.09519799999998,
+            "peakRssMB": 80.5,
+            "wallPass": true,
+            "rssPass": true
+          },
+          {
+            "event": "StopBurst",
+            "runs": 40,
+            "wallP95Ms": 119.44841400000041,
+            "peakRssMB": 73.5,
+            "wallPass": true,
+            "rssPass": true
+          }
+        ],
+        "samples": [
+          {
+            "event": "Stop",
+            "run": 1,
+            "wallMs": 111.487288,
+            "rssMB": 78.75,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 4,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 2,
+            "wallMs": 91.539286,
+            "rssMB": 75.25,
+            "cliRssMB": 42,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 3,
+            "wallMs": 91.77113200000002,
+            "rssMB": 73.5,
+            "cliRssMB": 38.5,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 75.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 4,
+            "wallMs": 95.87875400000001,
+            "rssMB": 73.5,
+            "cliRssMB": 42,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 5,
+            "wallMs": 90.54098999999997,
+            "rssMB": 73.5,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 75.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 6,
+            "wallMs": 96.44497999999999,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 7,
+            "wallMs": 92.20305000000008,
+            "rssMB": 77,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 77,
+            "rawRssMB": 77,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 8,
+            "wallMs": 94.17414900000006,
+            "rssMB": 77,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 9,
+            "wallMs": 91.28500399999996,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261334
+          },
+          {
+            "event": "Stop",
+            "run": 10,
+            "wallMs": 91.51600900000005,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 11,
+            "wallMs": 93.7695819999999,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 12,
+            "wallMs": 98.69572500000004,
+            "rssMB": 80.5,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 80.5,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 13,
+            "wallMs": 94.931824,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 14,
+            "wallMs": 93.472712,
+            "rssMB": 78.75,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 15,
+            "wallMs": 93.16829299999995,
+            "rssMB": 73.5,
+            "cliRssMB": 38.5,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 75.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 16,
+            "wallMs": 96.42260999999985,
+            "rssMB": 75.25,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 17,
+            "wallMs": 97.30200799999989,
+            "rssMB": 75.25,
+            "cliRssMB": 42,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 18,
+            "wallMs": 96.28085600000009,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 19,
+            "wallMs": 93.05607999999984,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 20,
+            "wallMs": 91.76974599999994,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 21,
+            "wallMs": 94.12575500000003,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 22,
+            "wallMs": 93.42155299999968,
+            "rssMB": 75.25,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 23,
+            "wallMs": 91.97111899999982,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 24,
+            "wallMs": 92.34048200000007,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 25,
+            "wallMs": 93.57268299999987,
+            "rssMB": 75.25,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 77,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 26,
+            "wallMs": 93.5255259999999,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 27,
+            "wallMs": 93.3438500000002,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 28,
+            "wallMs": 94.36625800000002,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 29,
+            "wallMs": 96.64760499999966,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 30,
+            "wallMs": 92.19099700000015,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 31,
+            "wallMs": 97.27818700000034,
+            "rssMB": 75.25,
+            "cliRssMB": 42,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 32,
+            "wallMs": 93.20256400000017,
+            "rssMB": 75.25,
+            "cliRssMB": 42,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 33,
+            "wallMs": 91.68636500000002,
+            "rssMB": 80.5,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 80.5,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 34,
+            "wallMs": 93.68328800000018,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 35,
+            "wallMs": 93.17767800000001,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 36,
+            "wallMs": 92.54241899999988,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 37,
+            "wallMs": 94.36438700000008,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 38,
+            "wallMs": 94.99595599999975,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 39,
+            "wallMs": 92.3060089999999,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "Stop",
+            "run": 40,
+            "wallMs": 95.21485100000018,
+            "rssMB": 78.75,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261337
+          },
+          {
+            "event": "SessionEnd",
+            "run": 1,
+            "wallMs": 94.34068900000011,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 2,
+            "wallMs": 92.48272199999974,
+            "rssMB": 80.5,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 80.5,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 3,
+            "wallMs": 94.77336399999967,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 4,
+            "wallMs": 89.87566499999957,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 5,
+            "wallMs": 93.04493600000023,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 6,
+            "wallMs": 92.69004700000005,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 7,
+            "wallMs": 92.86766400000033,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 8,
+            "wallMs": 93.57231299999967,
+            "rssMB": 78.75,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 9,
+            "wallMs": 93.3209310000002,
+            "rssMB": 80.5,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 80.5,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261352
+          },
+          {
+            "event": "SessionEnd",
+            "run": 10,
+            "wallMs": 93.25981899999988,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 11,
+            "wallMs": 92.42444799999976,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 12,
+            "wallMs": 90.99689000000035,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 13,
+            "wallMs": 92.27006500000061,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 14,
+            "wallMs": 91.00178899999992,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 15,
+            "wallMs": 90.3962389999997,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 16,
+            "wallMs": 98.12354799999957,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 17,
+            "wallMs": 92.75996000000032,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 18,
+            "wallMs": 93.36146399999961,
+            "rssMB": 75.25,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 77,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 19,
+            "wallMs": 94.77688600000056,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 20,
+            "wallMs": 93.98381000000063,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 21,
+            "wallMs": 97.1026780000002,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 22,
+            "wallMs": 93.23448199999984,
+            "rssMB": 75.25,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 75.25,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 23,
+            "wallMs": 91.76288999999997,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 24,
+            "wallMs": 93.95773400000053,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 25,
+            "wallMs": 92.93307300000015,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 26,
+            "wallMs": 94.04236200000014,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 27,
+            "wallMs": 92.48725800000011,
+            "rssMB": 78.75,
+            "cliRssMB": 42,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 28,
+            "wallMs": 94.16599899999983,
+            "rssMB": 73.5,
+            "cliRssMB": 40.25,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 78.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 29,
+            "wallMs": 95.24847600000066,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 30,
+            "wallMs": 98.56876099999954,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 31,
+            "wallMs": 95.56443000000036,
+            "rssMB": 77,
+            "cliRssMB": 42,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 32,
+            "wallMs": 98.09519799999998,
+            "rssMB": 73.5,
+            "cliRssMB": 41.765625,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 76.765625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 33,
+            "wallMs": 94.79376000000047,
+            "rssMB": 77,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 34,
+            "wallMs": 96.13644199999999,
+            "rssMB": 77,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 77,
+            "rawRssMB": 80.265625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 35,
+            "wallMs": 92.41419399999995,
+            "rssMB": 78.75,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 82.015625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 36,
+            "wallMs": 90.73981000000003,
+            "rssMB": 78.75,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 78.75,
+            "rawRssMB": 82.015625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 37,
+            "wallMs": 93.13787800000046,
+            "rssMB": 77,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.015625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 38,
+            "wallMs": 96.00982000000022,
+            "rssMB": 77,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.015625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 39,
+            "wallMs": 94.05733200000032,
+            "rssMB": 77,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 77,
+            "rawRssMB": 83.765625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "SessionEnd",
+            "run": 40,
+            "wallMs": 95.28925699999945,
+            "rssMB": 77,
+            "cliRssMB": 43.515625,
+            "recordedRssMB": 77,
+            "rawRssMB": 82.015625,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 261355
+          },
+          {
+            "event": "StopBurst",
+            "run": 1,
+            "wallMs": 118.99523300000055,
+            "rssMB": 68.25,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2387
+          },
+          {
+            "event": "StopBurst",
+            "run": 2,
+            "wallMs": 119.04641800000081,
+            "rssMB": 68.25,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2323
+          },
+          {
+            "event": "StopBurst",
+            "run": 3,
+            "wallMs": 118.6199349999988,
+            "rssMB": 71.75,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 71.75,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2451
+          },
+          {
+            "event": "StopBurst",
+            "run": 4,
+            "wallMs": 118.22281099999964,
+            "rssMB": 66.5,
+            "cliRssMB": 43.75,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 87.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2131
+          },
+          {
+            "event": "StopBurst",
+            "run": 5,
+            "wallMs": 117.51198600000134,
+            "rssMB": 70,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 70,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2003
+          },
+          {
+            "event": "StopBurst",
+            "run": 6,
+            "wallMs": 118.14609000000019,
+            "rssMB": 73.5,
+            "cliRssMB": 49,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2387
+          },
+          {
+            "event": "StopBurst",
+            "run": 7,
+            "wallMs": 118.2085019999995,
+            "rssMB": 71.75,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 71.75,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2387
+          },
+          {
+            "event": "StopBurst",
+            "run": 8,
+            "wallMs": 118.36080199999924,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 94.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2451
+          },
+          {
+            "event": "StopBurst",
+            "run": 9,
+            "wallMs": 118.54087800000161,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2323
+          },
+          {
+            "event": "StopBurst",
+            "run": 10,
+            "wallMs": 119.42852100000164,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2292
+          },
+          {
+            "event": "StopBurst",
+            "run": 11,
+            "wallMs": 118.26165500000025,
+            "rssMB": 64.75,
+            "cliRssMB": 45.23828125,
+            "recordedRssMB": 64.75,
+            "rawRssMB": 88.98828125,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2357
+          },
+          {
+            "event": "StopBurst",
+            "run": 12,
+            "wallMs": 118.7912180000003,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 13,
+            "wallMs": 118.23494899999969,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 14,
+            "wallMs": 118.51957599999878,
+            "rssMB": 70,
+            "cliRssMB": 49,
+            "recordedRssMB": 70,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 15,
+            "wallMs": 118.65787400000045,
+            "rssMB": 70,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 70,
+            "rawRssMB": 91,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 16,
+            "wallMs": 117.98616799999945,
+            "rssMB": 73.5,
+            "cliRssMB": 49,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2617
+          },
+          {
+            "event": "StopBurst",
+            "run": 17,
+            "wallMs": 118.79199899999912,
+            "rssMB": 64.75,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 64.75,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2357
+          },
+          {
+            "event": "StopBurst",
+            "run": 18,
+            "wallMs": 119.85295099999894,
+            "rssMB": 68.25,
+            "cliRssMB": 49,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 19,
+            "wallMs": 118.55811800000083,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2357
+          },
+          {
+            "event": "StopBurst",
+            "run": 20,
+            "wallMs": 118.94091000000117,
+            "rssMB": 70,
+            "cliRssMB": 50.75,
+            "recordedRssMB": 70,
+            "rawRssMB": 101.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 21,
+            "wallMs": 119.01571999999942,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2292
+          },
+          {
+            "event": "StopBurst",
+            "run": 22,
+            "wallMs": 119.25970099999904,
+            "rssMB": 71.75,
+            "cliRssMB": 49,
+            "recordedRssMB": 71.75,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2357
+          },
+          {
+            "event": "StopBurst",
+            "run": 23,
+            "wallMs": 118.22581499999978,
+            "rssMB": 68.25,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 24,
+            "wallMs": 118.47852899999998,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          },
+          {
+            "event": "StopBurst",
+            "run": 25,
+            "wallMs": 119.00590600000032,
+            "rssMB": 71.75,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 71.75,
+            "rawRssMB": 94.5,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 26,
+            "wallMs": 118.31712000000152,
+            "rssMB": 66.5,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 27,
+            "wallMs": 118.98237999999947,
+            "rssMB": 71.75,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 71.75,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2617
+          },
+          {
+            "event": "StopBurst",
+            "run": 28,
+            "wallMs": 118.31915900000058,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          },
+          {
+            "event": "StopBurst",
+            "run": 29,
+            "wallMs": 121.51105400000051,
+            "rssMB": 68.25,
+            "cliRssMB": 49,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 96.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2422
+          },
+          {
+            "event": "StopBurst",
+            "run": 30,
+            "wallMs": 118.60324899999978,
+            "rssMB": 70,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 70,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2617
+          },
+          {
+            "event": "StopBurst",
+            "run": 31,
+            "wallMs": 119.44841400000041,
+            "rssMB": 66.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 32,
+            "wallMs": 118.9935000000005,
+            "rssMB": 68.25,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 33,
+            "wallMs": 119.33210800000052,
+            "rssMB": 66.5,
+            "cliRssMB": 45.23828125,
+            "recordedRssMB": 66.5,
+            "rawRssMB": 88.98828125,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 34,
+            "wallMs": 119.21170100000018,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          },
+          {
+            "event": "StopBurst",
+            "run": 35,
+            "wallMs": 119.07813899999928,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 36,
+            "wallMs": 119.06936300000052,
+            "rssMB": 70,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 70,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 37,
+            "wallMs": 118.32435699999951,
+            "rssMB": 70,
+            "cliRssMB": 45.5,
+            "recordedRssMB": 70,
+            "rawRssMB": 89.25,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2487
+          },
+          {
+            "event": "StopBurst",
+            "run": 38,
+            "wallMs": 118.47226700000101,
+            "rssMB": 73.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          },
+          {
+            "event": "StopBurst",
+            "run": 39,
+            "wallMs": 118.14516899999944,
+            "rssMB": 68.25,
+            "cliRssMB": 45.23828125,
+            "recordedRssMB": 68.25,
+            "rawRssMB": 87.23828125,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          },
+          {
+            "event": "StopBurst",
+            "run": 40,
+            "wallMs": 118.09914299999946,
+            "rssMB": 73.5,
+            "cliRssMB": 47.25,
+            "recordedRssMB": 73.5,
+            "rawRssMB": 92.75,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "offset": 2552
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "transcript-hooks",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 11.120736999999998,
+            "spawnMs": 13.504625999999995,
+            "ioMs": 3.4433409999999967,
+            "ioSamplesMs": [
+              3.657485000000001,
+              3.2695969999999974,
+              3.4433409999999967
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.551167999999961,
+            "spawnMs": 12.955991000000722,
+            "ioMs": 2.6998879999991914,
+            "ioSamplesMs": [
+              3.1459109999996144,
+              2.490338999999949,
+              2.6998879999991914
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall"
+        }
+      ]
+    },
+    "measure-hooks-budget": {
+      "timeoutPaths": [
+        {
+          "event": "SessionStart",
+          "wallMs": 127.74,
+          "rssMB": 45.47,
+          "cliRssMB": 61.25,
+          "recordedRssMB": 45.46875,
+          "rawRssMB": 171.5,
+          "rssSource": "production-owned-images",
+          "rssSources": {
+            "vmhwm": 2,
+            "vmpeakBound": 2,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "ownedChildren": 3,
+          "remainingProcesses": 0,
+          "stalledAttempts": 0
+        },
+        {
+          "event": "PreToolUse",
+          "wallMs": 117.6,
+          "rssMB": 50.75,
+          "cliRssMB": 61.25,
+          "recordedRssMB": 50.75,
+          "rawRssMB": 96.25,
+          "rssSource": "production-owned-images",
+          "rssSources": {
+            "vmhwm": 2,
+            "vmpeakBound": 0,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "ownedChildren": 1,
+          "remainingProcesses": 0,
+          "stalledAttempts": 0
+        }
+      ],
+      "capture": {
+        "baselineRows": 1,
+        "replayedWorkload": 55,
+        "drainInvocations": 1,
+        "capturedInvocations": 56,
+        "pendingAcknowledgements": 20
+      },
+      "platform": "linux",
+      "bun": "1.4.2",
+      "executable": "bin/amem.js hook",
+      "budgets": {
+        "R1": {
+          "pass": true,
+          "leftoverProcesses": 0,
+          "checkedInvocations": 136,
+          "checkedWorkers": 136,
+          "checkedOwnedChildren": 136,
+          "checkedBunWorkers": 96,
+          "checkedNativeSupervisors": 40,
+          "zeroWorkerDeferrals": {
+            "plain": 0,
+            "spoolAndExit": 0,
+            "drain": 0,
+            "sessionStart": 0,
+            "sessionStartRepoLog": 0,
+            "jcode": 0
+          },
+          "maxPlainZeroWorkers": 10,
+          "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+        },
+        "R2": {
+          "pass": true,
+          "wallP95BudgetMs": 150,
+          "peakRssBudgetMB": 100,
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.53,
+              "wallMaxMs": 98.44,
+              "peakRssMB": 77.86,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 77.86,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 81,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.98,
+              "wallMaxMs": 77.98,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 63.92,
+              "wallMaxMs": 66.32,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 52.5,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 34,
+                "vmpeakBound": 6,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.66,
+              "wallMaxMs": 68.49,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 38,
+                "vmpeakBound": 2,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 81.32,
+              "wallMaxMs": 81.32,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 87.5,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.15,
+              "wallMaxMs": 112.05,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 98,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          }
+        }
+      },
+      "pass": true,
+      "groupAttempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "hook-workloads",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 10.549111,
+            "spawnMs": 13.297057000000002,
+            "ioMs": 2.6872029999999967,
+            "ioSamplesMs": [
+              4.142831000000001,
+              2.3012659999999983,
+              2.6872029999999967
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.97234700000081,
+            "spawnMs": 13.726501999999527,
+            "ioMs": 2.749383000000307,
+            "ioSamplesMs": [
+              3.3654640000004292,
+              2.749383000000307,
+              2.3901759999989736
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall"
+        }
+      ]
+    },
+    "measure-mcp-budget": {
+      "sessionProfile": "shards/v1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "runtimeMode": "--smol",
+      "transport": "stdio",
+      "sessionMs": 5951,
+      "wallTimingPass": true,
+      "steps": [
+        "initialize:77",
+        "tools/list:0",
+        "amem_search:488",
+        "amem_search:640",
+        "amem_search:177",
+        "amem_search:30",
+        "amem_search:16",
+        "amem_search:430",
+        "amem_search:554",
+        "amem_search:156",
+        "amem_search:27",
+        "amem_search:17",
+        "amem_timeline:28",
+        "amem_timeline:21",
+        "amem_timeline:41",
+        "amem_timeline:24",
+        "amem_brief:20",
+        "amem_evidence:467",
+        "amem_work_state_read:1382",
+        "amem_work_state_read:1334"
+      ],
+      "corpus": {
+        "curated": 5001,
+        "capture": 5001,
+        "workRows": 10001,
+        "workItems": 100
+      },
+      "R1": {
+        "pass": true,
+        "eofExitCode": 0,
+        "childReaped": true
+      },
+      "R3": {
+        "pass": true,
+        "idleRssMB": 36.75,
+        "peakRssMB": 157.6,
+        "searches": 10,
+        "timelines": 4,
+        "workReads": 2,
+        "briefReads": 1,
+        "evidenceReads": 1,
+        "evidenceRendered": 6,
+        "briefRendered": 6,
+        "briefBytes": 952,
+        "budgetIdleMB": 100,
+        "budgetPeakMB": 200
+      },
+      "pass": true,
+      "groupAttempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "mcp-session",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 11.484403000000004,
+            "spawnMs": 14.144252999999999,
+            "ioMs": 3.0679599999999994,
+            "ioSamplesMs": [
+              4.4351819999999975,
+              2.3795029999999997,
+              3.0679599999999994
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.59755000000041,
+            "spawnMs": 14.446969999999055,
+            "ioMs": 2.4810280000001512,
+            "ioSamplesMs": [
+              3.383920999998736,
+              2.4758419999998296,
+              2.4810280000001512
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "stall"
+        }
+      ],
+      "volume": {
+        "platform": "linux",
+        "bun": "1.4.2",
+        "runtimeMode": "--smol",
+        "transport": "stdio",
+        "entry": "bin/amem.js",
+        "sessionMs": 14490,
+        "queryMs": 14336,
+        "wallTimingPass": true,
+        "corpus": {
+          "capture": 84765,
+          "excerptBytes": 1154,
+          "matchingRows": 84765,
+          "logicalBytes": 107609150,
+          "seedDatabaseBytes": 173031424,
+          "databaseBytes": 344973312,
+          "vocabulary": 95279,
+          "tokens": 15673044,
+          "averageChars": 1135.5974045891583,
+          "averageBytes": 1154,
+          "tempFreeBytes": 11906342535168
+        },
+        "engine": "fts5",
+        "first": 84765,
+        "hits": 10,
+        "R1": {
+          "pass": true,
+          "eofExitCode": 0,
+          "childReaped": true
+        },
+        "R3": {
+          "pass": true,
+          "idleMeasured": false,
+          "peakRssMB": 103.96,
+          "selfPeakKB": 106460,
+          "darwinWait4KB": null,
+          "peakKB": 106460,
+          "budgetPeakMB": 200
+        },
+        "pass": true,
+        "groupAttempts": [
+          {
+            "diagnostic": "budget-group",
+            "check": "mcp-volume",
+            "attempt": 1,
+            "outcome": "pass",
+            "before": {
+              "cpuMs": 10.7602969999989,
+              "spawnMs": 13.443390000000363,
+              "ioMs": 2.8053169999984675,
+              "ioSamplesMs": [
+                2.8714660000005097,
+                2.4720089999991615,
+                2.8053169999984675
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 11.91548899999907,
+              "spawnMs": 14.384369999999763,
+              "ioMs": 2.538117999996757,
+              "ioSamplesMs": [
+                3.4746289999966393,
+                2.2630080000017188,
+                2.538117999996757
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "baseline": {
+              "cpuMs": 10.73,
+              "spawnMs": 15.44,
+              "ioMs": 2.78,
+              "factor": 2,
+              "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+            },
+            "slow": false,
+            "retryPolicy": "stall"
+          }
+        ]
+      }
+    }
+  },
+  "focused": {
+    "tests": 43,
+    "assertions": 280,
+    "failures": 0,
+    "raw": "final-acceptance/focused.log"
+  },
+  "indexChoice": {
+    "rows": 500001,
+    "logicalBytes": 50000123,
+    "physicalBytes": 68300800,
+    "partialIndexWallMs": 4.544996,
+    "boundedFallbackWallMs": 11.312664,
+    "oneTimeBuildMs": 32.938285,
+    "olderRecapIndexWallMs": 4.642038,
+    "olderRecapFallbackWallMs": 4.266535,
+    "raw": "partial-index-comparison/result.json",
+    "decision": "ordinary partial index, no custom summary table or triggers; atomic small-store build <=128 rows; large legacy bounded128 fallback until off-hook query builds index"
+  },
+  "historicalReceipt": {
+    "schema": "agent-mem.transcript-summaries-evidence/v1",
+    "measuredCommit": "5a1ee36ce2462543f48b49feacd90b7efd979f69",
+    "baselineCommit": "5d4ce38b9622f9561a38ad718d7d540055d4800b",
+    "platform": "linux",
+    "bun": "1.4.2",
+    "integrationStatus": "blocked on #208 merge and AC4 burst RSS",
+    "sourceIdentity": {
+      "memoryTree": "fb84115c74c0017863f25d6ac19d0a21cee51368",
+      "blobs": {
+        "src/mcp-memory.ts": "e0decb4be5366881181e6ae6a774d693372c36af",
+        "scripts/longmemeval.ts": "fc712d88dbb6f416513a99ad7897ec2549baf060",
+        "scripts/longmemeval-input.ts": "4a28da8554f4084b8cce7ff1a3df0c4f4b153d38",
+        "scripts/longmemeval-metrics.ts": "d107ad47e7c05f9ebf092109e2b06429e2f0cee2",
+        "scripts/budget-rss.ts": "f8390d8b03046e585ac3db1ea613c10bfe0af3ae"
+      }
+    },
+    "longMemEval": {
+      "S": {
+        "dataset": {
+          "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+          "bytes": 277383467
+        },
+        "questions": 500,
+        "abstentions": 30,
+        "failures": 0,
+        "wallMs": 194958.45826699998,
+        "guardrailsPass": true,
+        "comparisons": 42,
+        "maxAbsDelta": 0,
+        "baselineOverall": {
+          "mcp": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.9531914893617022,
+            "sessionRecallAllAt5": 0.7702127659574468,
+            "sessionRecallAnyAt10": 0.9744680851063829,
+            "sessionRecallAllAt10": 0.8659574468085106,
+            "ndcgAnyAt10": 0.557008336400422,
+            "MRR": 0.8916400500480701,
+            "turnRecallAt10": 0.7606382978723404
+          },
+          "library": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.9531914893617022,
+            "sessionRecallAllAt5": 0.7680851063829788,
+            "sessionRecallAnyAt10": 0.9744680851063829,
+            "sessionRecallAllAt10": 0.8659574468085106,
+            "ndcgAnyAt10": 0.5567955683294449,
+            "MRR": 0.8916237667475555,
+            "turnRecallAt10": 0.7617021276595745
+          },
+          "bm25": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.951063829787234,
+            "sessionRecallAllAt5": 0.8127659574468085,
+            "sessionRecallAnyAt10": 0.9702127659574468,
+            "sessionRecallAllAt10": 0.8936170212765957,
+            "ndcgAnyAt10": 0.5670158337035224,
+            "MRR": 0.8993032867757904,
+            "turnRecallAt10": 0.7817021276595745
+          }
+        },
+        "candidateOverall": {
+          "mcp": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.9531914893617022,
+            "sessionRecallAllAt5": 0.7702127659574468,
+            "sessionRecallAnyAt10": 0.9744680851063829,
+            "sessionRecallAllAt10": 0.8659574468085106,
+            "ndcgAnyAt10": 0.557008336400422,
+            "MRR": 0.8916400500480701,
+            "turnRecallAt10": 0.7606382978723404
+          },
+          "library": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.9531914893617022,
+            "sessionRecallAllAt5": 0.7680851063829788,
+            "sessionRecallAnyAt10": 0.9744680851063829,
+            "sessionRecallAllAt10": 0.8659574468085106,
+            "ndcgAnyAt10": 0.5567955683294449,
+            "MRR": 0.8916237667475555,
+            "turnRecallAt10": 0.7617021276595745
+          },
+          "bm25": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.951063829787234,
+            "sessionRecallAllAt5": 0.8127659574468085,
+            "sessionRecallAnyAt10": 0.9702127659574468,
+            "sessionRecallAllAt10": 0.8936170212765957,
+            "ndcgAnyAt10": 0.5670158337035224,
+            "MRR": 0.8993032867757904,
+            "turnRecallAt10": 0.7817021276595745
+          }
+        }
+      },
+      "M": {
+        "dataset": {
+          "sha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+          "bytes": 2737100077
+        },
+        "questions": 500,
+        "abstentions": 30,
+        "failures": 0,
+        "wallMs": 850656.316526,
+        "guardrailsPass": true,
+        "comparisons": 42,
+        "maxAbsDelta": 0,
+        "baselineOverall": {
+          "mcp": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6234042553191489,
+            "sessionRecallAnyAt10": 0.9170212765957447,
+            "sessionRecallAllAt10": 0.7106382978723405,
+            "ndcgAnyAt10": 0.41507264586831066,
+            "MRR": 0.7854706435494305,
+            "turnRecallAt10": 0.6577304964539005
+          },
+          "library": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6234042553191489,
+            "sessionRecallAnyAt10": 0.9191489361702128,
+            "sessionRecallAllAt10": 0.7148936170212766,
+            "ndcgAnyAt10": 0.4154137574043282,
+            "MRR": 0.7843312823346572,
+            "turnRecallAt10": 0.6598581560283685
+          },
+          "bm25": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6978723404255319,
+            "sessionRecallAnyAt10": 0.9191489361702128,
+            "sessionRecallAllAt10": 0.7723404255319148,
+            "ndcgAnyAt10": 0.4318245100540788,
+            "MRR": 0.7903655135372779,
+            "turnRecallAt10": 0.701950354609929
+          }
+        },
+        "candidateOverall": {
+          "mcp": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6234042553191489,
+            "sessionRecallAnyAt10": 0.9170212765957447,
+            "sessionRecallAllAt10": 0.7106382978723405,
+            "ndcgAnyAt10": 0.41507264586831066,
+            "MRR": 0.7854706435494305,
+            "turnRecallAt10": 0.6577304964539005
+          },
+          "library": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6234042553191489,
+            "sessionRecallAnyAt10": 0.9191489361702128,
+            "sessionRecallAllAt10": 0.7148936170212766,
+            "ndcgAnyAt10": 0.4154137574043282,
+            "MRR": 0.7843312823346572,
+            "turnRecallAt10": 0.6598581560283685
+          },
+          "bm25": {
+            "eligible": 470,
+            "success": 470,
+            "failure": 0,
+            "turnLabelled": 470,
+            "sessionRecallAnyAt5": 0.8829787234042553,
+            "sessionRecallAllAt5": 0.6978723404255319,
+            "sessionRecallAnyAt10": 0.9191489361702128,
+            "sessionRecallAllAt10": 0.7723404255319148,
+            "ndcgAnyAt10": 0.4318245100540788,
+            "MRR": 0.7903655135372779,
+            "turnRecallAt10": 0.701950354609929
+          }
+        }
+      }
+    },
+    "resources": {
+      "measure-transcript-budget": [
+        {
+          "check": "transcript-hooks",
+          "attempt": 1,
+          "outcome": "pass",
+          "slow": false,
+          "result": {
+            "groups": [
+              {
+                "event": "Stop",
+                "runs": 40,
+                "wallP95Ms": 87.95202300000028,
+                "peakRssMB": 78.75,
+                "wallPass": true,
+                "rssPass": true
+              },
+              {
+                "event": "SessionEnd",
+                "runs": 40,
+                "wallP95Ms": 90.18296999999984,
+                "peakRssMB": 73.5,
+                "wallPass": true,
+                "rssPass": true
+              }
+            ],
+            "sampleCount": 80,
+            "samplesAtOrAboveLimit": []
+          },
+          "rawSamplesFile": "measure-transcript-budget-5a1ee36.log"
+        }
+      ],
+      "measure-hooks-budget": [
+        {
+          "check": "hook-workloads",
+          "attempt": 1,
+          "outcome": "pass",
+          "slow": false,
+          "result": {
+            "timeoutPaths": [
+              {
+                "event": "SessionStart",
+                "wallMs": 127.3,
+                "rssMB": 55.96,
+                "ownedChildren": 3,
+                "remainingProcesses": 0,
+                "stalledAttempts": 0
+              },
+              {
+                "event": "PreToolUse",
+                "wallMs": 115.98,
+                "rssMB": 70,
+                "ownedChildren": 1,
+                "remainingProcesses": 0,
+                "stalledAttempts": 0
+              }
+            ],
+            "capture": {
+              "baselineRows": 1,
+              "replayedWorkload": 55,
+              "drainInvocations": 1,
+              "capturedInvocations": 56,
+              "pendingAcknowledgements": 20
+            },
+            "platform": "linux",
+            "bun": "1.4.2",
+            "executable": "bin/amem.js hook",
+            "budgets": {
+              "R1": {
+                "pass": true,
+                "leftoverProcesses": 0,
+                "checkedInvocations": 96,
+                "checkedWorkers": 96,
+                "checkedOwnedChildren": 96,
+                "checkedBunWorkers": 56,
+                "checkedNativeSupervisors": 40,
+                "zeroWorkerDeferrals": {
+                  "plain": 0,
+                  "spoolAndExit": 0,
+                  "drain": 0,
+                  "sessionStart": 0,
+                  "sessionStartRepoLog": 0
+                },
+                "maxPlainZeroWorkers": 10,
+                "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+              },
+              "R2": {
+                "pass": true,
+                "wallP95BudgetMs": 150,
+                "peakRssBudgetMB": 100,
+                "groups": {
+                  "plain": {
+                    "runs": 40,
+                    "stalledAttempts": 0,
+                    "wallP95Ms": 76.62,
+                    "wallMaxMs": 95.66,
+                    "peakRssMB": 75.25,
+                    "cliPeakRssMB": 42,
+                    "productionCombinedPeakRssMB": 75.25,
+                    "rawCombinedPeakRssMB": 77,
+                    "wallTimingPass": true,
+                    "peakPass": true,
+                    "wallAdvisory": false,
+                    "pass": true
+                  },
+                  "spoolAndExit": {
+                    "runs": 15,
+                    "stalledAttempts": 0,
+                    "wallP95Ms": 73.09,
+                    "wallMaxMs": 73.09,
+                    "peakRssMB": 73.5,
+                    "cliPeakRssMB": 42,
+                    "productionCombinedPeakRssMB": 73.5,
+                    "rawCombinedPeakRssMB": 80.5,
+                    "wallTimingPass": true,
+                    "peakPass": true,
+                    "wallAdvisory": false,
+                    "pass": true
+                  },
+                  "sessionStart": {
+                    "runs": 20,
+                    "stalledAttempts": 0,
+                    "wallP95Ms": 62.43,
+                    "wallMaxMs": 64.43,
+                    "peakRssMB": 70,
+                    "cliPeakRssMB": 47.25,
+                    "productionCombinedPeakRssMB": 70,
+                    "rawCombinedPeakRssMB": 82.25,
+                    "wallTimingPass": true,
+                    "peakPass": true,
+                    "wallAdvisory": false,
+                    "pass": true
+                  },
+                  "sessionStartRepoLog": {
+                    "runs": 20,
+                    "stalledAttempts": 0,
+                    "wallP95Ms": 67.39,
+                    "wallMaxMs": 67.45,
+                    "peakRssMB": 73.5,
+                    "cliPeakRssMB": 55.96,
+                    "productionCombinedPeakRssMB": 73.5,
+                    "rawCombinedPeakRssMB": 90.96,
+                    "wallTimingPass": true,
+                    "peakPass": true,
+                    "wallAdvisory": false,
+                    "pass": true
+                  },
+                  "drain": {
+                    "runs": 1,
+                    "stalledAttempts": 0,
+                    "wallP95Ms": 80.06,
+                    "wallMaxMs": 80.06,
+                    "peakRssMB": 70,
+                    "cliPeakRssMB": 43.75,
+                    "productionCombinedPeakRssMB": 70,
+                    "rawCombinedPeakRssMB": 80.5,
+                    "wallTimingPass": true,
+                    "peakPass": true,
+                    "wallAdvisory": false,
+                    "pass": true
+                  }
+                }
+              }
+            },
+            "pass": true
+          }
+        }
+      ],
+      "measure-mcp-budget": [
+        {
+          "check": "mcp-session",
+          "attempt": 1,
+          "outcome": "pass",
+          "slow": false,
+          "result": {
+            "platform": "linux",
+            "bun": "1.4.2",
+            "runtimeMode": "--smol",
+            "transport": "stdio",
+            "sessionMs": 5781,
+            "wallTimingPass": true,
+            "steps": [
+              "initialize:76",
+              "tools/list:0",
+              "amem_search:468",
+              "amem_search:603",
+              "amem_search:177",
+              "amem_search:27",
+              "amem_search:19",
+              "amem_search:414",
+              "amem_search:559",
+              "amem_search:155",
+              "amem_search:24",
+              "amem_search:18",
+              "amem_timeline:27",
+              "amem_timeline:18",
+              "amem_timeline:37",
+              "amem_timeline:24",
+              "amem_brief:19",
+              "amem_evidence:475",
+              "amem_work_state_read:1338",
+              "amem_work_state_read:1278"
+            ],
+            "corpus": {
+              "curated": 5001,
+              "capture": 5001,
+              "workRows": 10001,
+              "workItems": 100
+            },
+            "R1": {
+              "pass": true,
+              "eofExitCode": 0,
+              "childReaped": true
+            },
+            "R3": {
+              "pass": true,
+              "idleRssMB": 36.73,
+              "peakRssMB": 174.67,
+              "searches": 10,
+              "timelines": 4,
+              "workReads": 2,
+              "briefReads": 1,
+              "evidenceReads": 1,
+              "evidenceRendered": 6,
+              "briefRendered": 6,
+              "briefBytes": 952,
+              "budgetIdleMB": 100,
+              "budgetPeakMB": 200
+            },
+            "pass": true
+          }
+        },
+        {
+          "check": "mcp-volume",
+          "attempt": 1,
+          "outcome": "pass",
+          "slow": false,
+          "result": {
+            "platform": "linux",
+            "bun": "1.4.2",
+            "runtimeMode": "--smol",
+            "transport": "stdio",
+            "entry": "bin/amem.js",
+            "sessionMs": 14492,
+            "queryMs": 14326,
+            "wallTimingPass": true,
+            "corpus": {
+              "capture": 84765,
+              "excerptBytes": 1154,
+              "matchingRows": 84765,
+              "logicalBytes": 107609150,
+              "seedDatabaseBytes": 173027328,
+              "databaseBytes": 344969216,
+              "vocabulary": 95279,
+              "tokens": 15673044,
+              "averageChars": 1135.5974045891583,
+              "averageBytes": 1154,
+              "tempFreeBytes": 11906606759936
+            },
+            "engine": "fts5",
+            "first": 84765,
+            "hits": 10,
+            "R1": {
+              "pass": true,
+              "eofExitCode": 0,
+              "childReaped": true
+            },
+            "R3": {
+              "pass": true,
+              "idleMeasured": false,
+              "peakRssMB": 100.95,
+              "selfPeakKB": 103368,
+              "darwinWait4KB": null,
+              "peakKB": 103368,
+              "budgetPeakMB": 200
+            },
+            "pass": true
+          }
+        }
+      ]
+    },
+    "rawDirectory": "/home/dev/tmp/amem-201/",
+    "earlierAttempts": [
+      {
+        "commit": "f5510a8",
+        "scope": "typecheck, boundary, 22 focused tests and 80 summary-hook invocations",
+        "outcome": "pass",
+        "note": "Initial summary R2 peak 99.75 MB; stdout receipt, before format-3 protection."
+      },
+      {
+        "commit": "d925e3b",
+        "scope": "full suite",
+        "outcome": "stopped after two numeric-instrumentation anchor failures",
+        "exitCode": 130,
+        "note": "Publication helper changed the diagnostic source anchor. Assertions and limits unchanged; corrected focused suite passed at 5a1ee36."
+      }
+    ],
+    "laterResourceAttempts": [
+      {
+        "commit": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+        "note": "Fixed 100-title cold-home workload; no retries or discarded samples. Accounting source for the single 101.5MB peak was not component-traced.",
+        "attempts": [
+          {
+            "diagnostic": "budget-group",
+            "check": "transcript-hooks",
+            "attempt": 1,
+            "outcome": "rss-miss",
+            "before": {
+              "cpuMs": 10.121931,
+              "spawnMs": 12.890549999999998,
+              "ioMs": 2.598368999999998,
+              "ioSamplesMs": [
+                3.4795389999999955,
+                2.5004239999999953,
+                2.598368999999998
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 11.966764000000694,
+              "spawnMs": 13.170396999999866,
+              "ioMs": 2.2417119999990973,
+              "ioSamplesMs": [
+                2.5821930000001885,
+                2.09343600000102,
+                2.2417119999990973
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "baseline": {
+              "cpuMs": 10.73,
+              "spawnMs": 15.44,
+              "ioMs": 2.78,
+              "factor": 2,
+              "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+            },
+            "slow": false,
+            "retryPolicy": "slow-wall",
+            "result": {
+              "groups": [
+                {
+                  "event": "Stop",
+                  "runs": 40,
+                  "wallP95Ms": 87.4520980000002,
+                  "peakRssMB": 82.25,
+                  "wallPass": true,
+                  "rssPass": true
+                },
+                {
+                  "event": "SessionEnd",
+                  "runs": 40,
+                  "wallP95Ms": 88.59036799999922,
+                  "peakRssMB": 77,
+                  "wallPass": true,
+                  "rssPass": true
+                },
+                {
+                  "event": "StopBurst",
+                  "runs": 40,
+                  "wallP95Ms": 117.71020700000008,
+                  "peakRssMB": 101.5,
+                  "wallPass": true,
+                  "rssPass": false
+                }
+              ],
+              "sampleCount": 120,
+              "samplesAtOrAboveLimit": [
+                {
+                  "event": "StopBurst",
+                  "run": 34,
+                  "wallMs": 117.63546600000154,
+                  "rssMB": 101.5,
+                  "offset": 2617
+                }
+              ]
+            },
+            "rawSamplesFile": "transcript-ea5fc73.log"
+          }
+        ]
+      },
+      {
+        "commit": "04df65e78dd05b24b4ca385280a1ef13aad59e8d",
+        "experiment": "Eight admissions per invocation; did not resolve RSS gate and was reverted.",
+        "attempts": [
+          {
+            "diagnostic": "budget-group",
+            "check": "transcript-hooks",
+            "attempt": 1,
+            "outcome": "rss-miss",
+            "before": {
+              "cpuMs": 11.812013000000004,
+              "spawnMs": 13.971718000000003,
+              "ioMs": 2.693415999999999,
+              "ioSamplesMs": [
+                4.391273999999996,
+                2.5050430000000006,
+                2.693415999999999
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 12.009243000000424,
+              "spawnMs": 13.76451199999974,
+              "ioMs": 2.4993070000000444,
+              "ioSamplesMs": [
+                2.5027159999990545,
+                2.185281000000032,
+                2.4993070000000444
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "baseline": {
+              "cpuMs": 10.73,
+              "spawnMs": 15.44,
+              "ioMs": 2.78,
+              "factor": 2,
+              "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+            },
+            "slow": false,
+            "retryPolicy": "slow-wall",
+            "result": {
+              "groups": [
+                {
+                  "event": "Stop",
+                  "runs": 40,
+                  "wallP95Ms": 92.02789400000006,
+                  "peakRssMB": 78.75,
+                  "wallPass": true,
+                  "rssPass": true
+                },
+                {
+                  "event": "SessionEnd",
+                  "runs": 40,
+                  "wallP95Ms": 93.31035100000008,
+                  "peakRssMB": 77,
+                  "wallPass": true,
+                  "rssPass": true
+                },
+                {
+                  "event": "StopBurst",
+                  "runs": 40,
+                  "wallP95Ms": 112.64678900000035,
+                  "peakRssMB": 129.5,
+                  "wallPass": true,
+                  "rssPass": false
+                }
+              ],
+              "sampleCount": 120,
+              "samplesAtOrAboveLimit": [
+                {
+                  "event": "StopBurst",
+                  "run": 5,
+                  "wallMs": 112.29673299999922,
+                  "rssMB": 101.5,
+                  "cliRssMB": 48.84375,
+                  "productionRssMB": 101.5,
+                  "rawProductionRssMB": 85.59375,
+                  "offset": 664
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 6,
+                  "wallMs": 112.64901999999893,
+                  "rssMB": 129.5,
+                  "cliRssMB": 48.84375,
+                  "productionRssMB": 129.5,
+                  "rawProductionRssMB": 85.59375,
+                  "offset": 664
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 9,
+                  "wallMs": 112.64678900000035,
+                  "rssMB": 105,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 105,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 664
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 11,
+                  "wallMs": 112.54763099999946,
+                  "rssMB": 127.75,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 127.75,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 13,
+                  "wallMs": 110.01467100000082,
+                  "rssMB": 103.25,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 103.25,
+                  "rawProductionRssMB": 89.03125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 15,
+                  "wallMs": 109.55870699999832,
+                  "rssMB": 110.25,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 110.25,
+                  "rawProductionRssMB": 90.78125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 16,
+                  "wallMs": 110.29020499999933,
+                  "rssMB": 126,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 126,
+                  "rawProductionRssMB": 85.53125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 17,
+                  "wallMs": 111.57286900000145,
+                  "rssMB": 108.5,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 108.5,
+                  "rawProductionRssMB": 90.78125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 18,
+                  "wallMs": 108.77485400000114,
+                  "rssMB": 103.25,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 103.25,
+                  "rawProductionRssMB": 89.03125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 24,
+                  "wallMs": 107.61859600000025,
+                  "rssMB": 103.25,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 103.25,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 31,
+                  "wallMs": 108.00041899999997,
+                  "rssMB": 103.25,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 103.25,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 33,
+                  "wallMs": 109.42813999999998,
+                  "rssMB": 122.5,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 122.5,
+                  "rawProductionRssMB": 85.53125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 34,
+                  "wallMs": 107.40617600000041,
+                  "rssMB": 101.5,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 101.5,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 672
+                },
+                {
+                  "event": "StopBurst",
+                  "run": 40,
+                  "wallMs": 109.50672900000063,
+                  "rssMB": 126,
+                  "cliRssMB": 50.53125,
+                  "productionRssMB": 126,
+                  "rawProductionRssMB": 87.28125,
+                  "offset": 672
+                }
+              ]
+            },
+            "rawSamplesFile": "transcript-04df65e.log"
+          }
+        ]
+      }
+    ],
+    "standardGate": {
+      "commit": "cd6038a340df8105bbd8f18fdd418c36fbe6059a",
+      "typecheck": "pass",
+      "boundary": "pass",
+      "tests": {
+        "passed": 2375,
+        "skipped": 7,
+        "failed": 0,
+        "assertions": 39045
+      },
+      "packDryRun": "pass"
+    },
+    "currentResourceState": {
+      "productionSourceEquivalentTo": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+      "state": "blocked",
+      "thresholdsUnchanged": true,
+      "accountingUnchanged": true,
+      "note": "Original burst peak 101.5MB; bounded-admission experiment still failed at129.5MB, with CLI<=50.54MB and raw production<=90.79MB for its failed samples. These readings do not prove the exact accounting cause. No retry-until-green or accounting change was made.",
+      "pending": [
+        "#208 merge and integration",
+        "final combined standard/resource gates",
+        "reviewer private AC6 replay"
+      ]
+    },
+    "acceptanceStatus": "incomplete",
+    "functionalChecksAfterStandard": {
+      "commit": "ea5fc73d7cc5dc16c446e2a1b6e9ef2fb6802b27",
+      "typecheck": "pass",
+      "boundary": "pass",
+      "focusedTests": 24,
+      "failed": 0,
+      "note": "Current production src tree and transcript test file are byte-identical to this head after withdrawing the eight-admission experiment."
+    }
+  },
+  "runHistory": [
+    {
+      "head": "d61a112",
+      "raw": "integrated/",
+      "outcome": "37 focused and summary R2 pass; before final cursor/index corrections"
+    },
+    {
+      "head": "9094ad0",
+      "raw": "9094ad0/focused.log",
+      "outcome": "25 pass, 1 test ordering assertion failed; equal-time assertion corrected to count and idempotence"
+    },
+    {
+      "head": "b09a488",
+      "raw": "b09a488/",
+      "outcome": "20 focused pass; dense brief 128.595 ms; residual scan motivated indexed design"
+    },
+    {
+      "head": "59c554f",
+      "raw": "59c554f/focused.log",
+      "outcome": "22 pass, 1 N-1 fixture missing input.project; fixture corrected"
+    },
+    {
+      "head": "16798a0",
+      "raw": "legacy-index-fixed/",
+      "outcome": "23 focused and summary R2 pass; custom summary table/triggers withdrawn"
+    },
+    {
+      "head": "e3bd025",
+      "raw": "acceptance/",
+      "outcome": "42 focused pass; summary R2 failed closed on unknown provenance (76.109 MB, vmhwm2/vmpeakBound1/unavailable1); no retry, remaining gates did not run; custom summary design withdrawn"
+    },
+    {
+      "head": "e3bd025",
+      "raw": "partial-index-comparison/result.json",
+      "outcome": "controlled partial-index comparison, selected simpler design"
+    },
+    {
+      "head": "1908876",
+      "raw": "partial-index/",
+      "outcome": "36 focused and 120 summary R2 pass"
+    },
+    {
+      "head": "1908876",
+      "raw": "partial-acceptance/",
+      "outcome": "42 focused, ordinary R2, R3 and full S no-loss pass; M stopped at170/500 after atomic index guard changed source, not acceptance"
+    },
+    {
+      "head": "1908876",
+      "raw": "partial-full/test.log",
+      "outcome": "2420 pass,7 skip,3 fail; legacy schema fixtures and CLI-only allowlist updated without changing assertions or deadlines"
+    },
+    {
+      "head": "1b0ab54",
+      "raw": "atomic-index/focused.log",
+      "outcome": "typecheck failed on generic spy typing, corrected"
+    },
+    {
+      "head": "e5a2ef1",
+      "raw": "e5a2ef1/",
+      "outcome": "19 focused pass; final source standard gates"
+    },
+    {
+      "head": "e5a2ef1",
+      "raw": "final-acceptance/",
+      "outcome": "43 focused, summary R2, ordinary R2 and R3 pass; complete S/M reports recorded separately below"
+    }
+  ],
+  "finalLongMemEval": {
+    "S": {
+      "candidateReport": "final-acceptance/candidate-S.json",
+      "comparisonReport": "final-acceptance/compare-S.json",
+      "completionAndVerdict": "Read final reports; completion and no-loss verdict are recorded in the PR delivery report, after these documentation bytes were frozen."
+    },
+    "M": {
+      "candidateReport": "final-acceptance/candidate-M.json",
+      "comparisonReport": "final-acceptance/compare-M.json",
+      "completionAndVerdict": "Read final reports; completion and no-loss verdict are recorded in the PR delivery report, after these documentation bytes were frozen."
+    }
+  },
+  "nativeFirstTimingFix": {
+    "sourceCommit": "461d63b95bf8f2447683f40198ebd837b883d56c",
+    "measuredProductionCommit": "5bfcbe199967",
+    "subsequentChanges": "Harness HOME restoration on failure; metadata-refusal scan preserves independently bound pending summaries; monotonic progress retains offset across later deadline-only frames; final regressions cover both.",
+    "normalRawDirectory": "/home/dev/tmp/amem-201/resume-bound-home/",
+    "logicalRunsPerGroup": 40,
+    "maxAdditionalInvocations": 8,
+    "allActualInvocationsCountAsR2Samples": true,
+    "physicalSamples": 382,
+    "maxFollowUpsObserved": 7,
+    "groups": [
+      {
+        "event": "Stop",
+        "logicalRuns": 40,
+        "runs": 40,
+        "followUpInvocations": 0,
+        "maxFollowUps": 8,
+        "wallP95Ms": 91.14564900000005,
+        "peakRssMB": 78.75,
+        "wallPass": true,
+        "rssPass": true
+      },
+      {
+        "event": "SessionEnd",
+        "logicalRuns": 40,
+        "runs": 40,
+        "followUpInvocations": 0,
+        "maxFollowUps": 8,
+        "wallP95Ms": 88.1755320000002,
+        "peakRssMB": 78.75,
+        "wallPass": true,
+        "rssPass": true
+      },
+      {
+        "event": "StopBurst",
+        "logicalRuns": 40,
+        "runs": 302,
+        "followUpInvocations": 262,
+        "maxFollowUps": 8,
+        "wallP95Ms": 114.44892899999832,
+        "peakRssMB": 87.5,
+        "wallPass": true,
+        "rssPass": true
+      }
+    ],
+    "sampleColumns": [
+      "event",
+      "run",
+      "logicalRun",
+      "followUp",
+      "wallMs",
+      "rssMB",
+      "cliRssMB",
+      "recordedRssMB",
+      "rawRssMB",
+      "rssSource",
+      "vmhwm",
+      "vmpeakBound",
+      "platformRusage",
+      "rawFallback",
+      "unavailable",
+      "offset",
+      "stopReason"
+    ],
+    "samplesCompact": [
+      ["Stop",1,1,0,104.62013300000001,78.75,40.25,78.75,78.75,"production-owned-images",4,0,0,0,0,261334,"cap"],
+      ["Stop",2,2,0,87.28216700000002,71.75,40.25,71.75,78.75,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",3,3,0,86.529901,75.25,40.25,75.25,78.75,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",4,4,0,89.49360899999999,73.5,40.25,73.5,78.75,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",5,5,0,88.59029499999997,77,40.25,77,78.75,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",6,6,0,88.52042500000005,73.5,38.5,73.5,77,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",7,7,0,91.14564900000005,75.25,42,75.25,82.140625,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",8,8,0,86.58428300000003,75.25,40.25,75.25,80.390625,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",9,9,0,86.16049099999998,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261334,"cap"],
+      ["Stop",10,10,0,89.72711199999992,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",11,11,0,86.28232700000012,75.25,40.25,75.25,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",12,12,0,89.83817599999998,77,42,77,82.140625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",13,13,0,88.31976199999986,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",14,14,0,90.19800899999996,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",15,15,0,90.996711,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",16,16,0,92.40153200000009,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",17,17,0,89.83837599999993,77,43.75,77,83.890625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",18,18,0,86.71755299999995,78.75,43.75,78.75,83.890625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",19,19,0,83.0653339999999,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",20,20,0,89.74822100000006,73.5,42,73.5,82.140625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",21,21,0,89.1223399999999,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",22,22,0,86.03395899999987,75.25,42,75.25,82.140625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",23,23,0,86.30698399999983,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",24,24,0,89.9435309999999,75.25,40.25,75.25,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",25,25,0,87.97995300000002,73.5,42,73.5,82.140625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",26,26,0,86.50356499999998,73.5,40.25,73.5,80.390625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",27,27,0,86.18259000000035,77,43.75,77,83.890625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",28,28,0,85.84513500000003,73.5,40.140625,73.5,78.640625,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",29,29,0,87.70782000000008,75.25,41.19921875,75.25,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",30,30,0,87.1354110000002,73.5,41.19921875,73.5,79.69921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",31,31,0,86.14873099999977,73.5,41.19921875,73.5,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",32,32,0,87.2539069999998,75.25,41.19921875,75.25,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",33,33,0,87.31806200000028,71.75,41.19921875,71.75,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",34,34,0,86.75237700000025,75.25,41.19921875,75.25,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",35,35,0,85.49574900000016,75.25,42,75.25,83.19921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",36,36,0,86.94497000000001,73.5,41.19921875,73.5,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",37,37,0,86.5762920000002,73.5,41.19921875,73.5,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",38,38,0,86.37400200000002,73.5,41.19921875,73.5,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",39,39,0,86.32082700000001,75.25,42,75.25,83.19921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["Stop",40,40,0,86.99212299999999,75.25,41.19921875,75.25,81.44921875,"production-owned-images",2,0,0,0,0,261337,"cap"],
+      ["SessionEnd",1,1,0,86.05036000000018,71.75,44.34375,71.75,84.59375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",2,2,0,84.85512999999992,73.5,44.34375,73.5,84.59375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",3,3,0,85.38689799999975,71.75,46.09375,71.75,84.59375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",4,4,0,84.73863900000015,75.25,46.09375,75.25,88.09375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",5,5,0,87.94986900000004,73.5,46.09375,73.5,84.59375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",6,6,0,85.10867300000064,73.5,46.09375,73.5,86.34375,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",7,7,0,84.88801599999988,75.25,47.70703125,75.25,87.95703125,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",8,8,0,85.00860700000067,75.25,47.70703125,75.25,87.95703125,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",9,9,0,84.71450600000026,73.5,47.70703125,73.5,86.20703125,"production-owned-images",2,0,0,0,0,261352,"cap"],
+      ["SessionEnd",10,10,0,85.96608900000047,78.75,47.70703125,78.75,91.45703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",11,11,0,85.60030199999983,73.5,47.70703125,73.5,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",12,12,0,86.25966499999959,75.25,47.70703125,75.25,89.70703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",13,13,0,86.39698500000031,75.25,47.70703125,75.25,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",14,14,0,84.79392600000028,75.25,47.70703125,75.25,89.70703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",15,15,0,86.96681799999988,73.5,47.70703125,73.5,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",16,16,0,87.16053800000009,73.5,47.70703125,73.5,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",17,17,0,85.56902799999989,75.25,47.70703125,75.25,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",18,18,0,86.97177900000042,75.25,47.70703125,75.25,87.95703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",19,19,0,88.1755320000002,73.5,47.70703125,73.5,89.70703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",20,20,0,82.78706599999987,73.5,47.70703125,73.5,86.20703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",21,21,0,85.0301929999996,77,47.70703125,77,89.70703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",22,22,0,86.18618699999934,77,47.70703125,77,89.70703125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",23,23,0,85.3730230000001,73.5,49.1484375,73.5,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",24,24,0,84.99778400000014,75.25,49.1484375,75.25,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",25,25,0,88.53741700000046,71.75,49.1484375,71.75,87.6484375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",26,26,0,86.78682000000026,75.25,49.1484375,75.25,91.1484375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",27,27,0,87.1986769999994,75.25,49.1484375,75.25,91.1484375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",28,28,0,85.00285299999996,73.5,49.1484375,73.5,87.6484375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",29,29,0,86.45717000000059,75.25,49.1484375,75.25,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",30,30,0,85.16797700000006,73.5,49.1484375,73.5,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",31,31,0,85.83493999999973,75.25,49.1484375,75.25,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",32,32,0,85.12811000000056,71.75,49.1484375,71.75,89.3984375,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",33,33,0,85.38971300000048,71.75,50.7578125,71.75,89.2578125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",34,34,0,96.7950609999998,75.25,50.7578125,75.25,92.7578125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",35,35,0,86.29655199999979,73.5,50.7578125,73.5,89.2578125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",36,36,0,86.06722100000025,73.5,50.7578125,73.5,91.0078125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",37,37,0,86.08249200000046,77,50.7578125,77,92.7578125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",38,38,0,83.09402099999988,73.5,50.7578125,73.5,91.0078125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",39,39,0,87.0544259999997,73.5,50.7578125,73.5,91.0078125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["SessionEnd",40,40,0,84.98661900000025,75.25,50.7578125,75.25,91.0078125,"production-owned-images",2,0,0,0,0,261355,"cap"],
+      ["StopBurst",1,1,0,112.85866900000019,83.109375,50.7578125,83.109375,94.5078125,"production-owned-images",3,1,0,0,0,1171,"deadline"],
+      ["StopBurst",2,1,1,111.63319899999988,82.25,50.7578125,82.25,96.2578125,"production-owned-images",2,0,0,0,0,2259,"deadline"],
+      ["StopBurst",3,1,2,111.52758300000005,84,52.31640625,84,99.56640625,"production-owned-images",2,0,0,0,0,3219,"deadline"],
+      ["StopBurst",4,1,3,112.8189769999999,80.5,52.31640625,80.5,97.81640625,"production-owned-images",2,0,0,0,0,4051,"deadline"],
+      ["StopBurst",5,1,4,112.40148500000032,82.25,52.31640625,82.25,97.81640625,"production-owned-images",2,0,0,0,0,4947,"deadline"],
+      ["StopBurst",6,1,5,112.23324700000012,75.25,52.31640625,75.25,92.56640625,"production-owned-images",2,0,0,0,0,5907,"deadline"],
+      ["StopBurst",7,1,6,111.44450300000062,75.25,52.31640625,75.25,92.56640625,"production-owned-images",2,0,0,0,0,6675,"deadline"],
+      ["StopBurst",8,1,7,112.47439400000076,78.75,52.31640625,78.75,96.06640625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",9,2,0,113.48493299999973,80.5,60.9765625,80.5,104.7265625,"production-owned-images",4,0,0,0,0,1171,"deadline"],
+      ["StopBurst",10,2,1,112.82729400000062,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2259,"deadline"],
+      ["StopBurst",11,2,2,111.8974930000004,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,3347,"deadline"],
+      ["StopBurst",12,2,3,113.41634200000044,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4371,"deadline"],
+      ["StopBurst",13,2,4,112.15158200000042,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,5267,"deadline"],
+      ["StopBurst",14,2,5,112.07170099999894,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,6163,"deadline"],
+      ["StopBurst",15,2,6,113.49450500000057,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",16,3,0,111.5769139999993,82.21875,60.9765625,82.21875,104.7265625,"production-owned-images",2,2,0,0,0,1299,"deadline"],
+      ["StopBurst",17,3,1,111.66545900000165,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,2451,"deadline"],
+      ["StopBurst",18,3,2,111.95211300000119,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3411,"deadline"],
+      ["StopBurst",19,3,3,112.01893000000018,73.5,60.9765625,73.5,102.9765625,"production-owned-images",2,0,0,0,0,4435,"deadline"],
+      ["StopBurst",20,3,4,113.08899800000108,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5331,"deadline"],
+      ["StopBurst",21,3,5,111.83943100000033,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,6163,"deadline"],
+      ["StopBurst",22,3,6,111.54304599999887,80.5,60.9765625,80.5,108.2265625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",23,4,0,112.7917180000004,82.25,60.9765625,82.25,106.4765625,"production-owned-images",4,0,0,0,0,1171,"deadline"],
+      ["StopBurst",24,4,1,111.28307999999925,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2323,"deadline"],
+      ["StopBurst",25,4,2,111.43616499999916,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3219,"deadline"],
+      ["StopBurst",26,4,3,112.2769270000008,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4179,"deadline"],
+      ["StopBurst",27,4,4,114.61661500000082,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4947,"deadline"],
+      ["StopBurst",28,4,5,113.81835499999943,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5843,"deadline"],
+      ["StopBurst",29,4,6,112.14349700000093,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6739,"deadline"],
+      ["StopBurst",30,5,0,114.26570300000094,80.46875,60.9765625,80.46875,102.9765625,"production-owned-images",2,2,0,0,0,1107,"deadline"],
+      ["StopBurst",31,5,1,112.021381999999,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2323,"deadline"],
+      ["StopBurst",32,5,2,112.44835799999964,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3155,"deadline"],
+      ["StopBurst",33,5,3,112.87632099999973,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,3987,"deadline"],
+      ["StopBurst",34,5,4,112.47523700000056,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,4883,"deadline"],
+      ["StopBurst",35,5,5,112.09620899999936,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5715,"deadline"],
+      ["StopBurst",36,5,6,111.49360900000102,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6611,"deadline"],
+      ["StopBurst",37,5,7,112.83482499999991,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",38,6,0,114.1629129999983,79.609375,60.9765625,79.609375,101.2265625,"production-owned-images",3,1,0,0,0,1107,"deadline"],
+      ["StopBurst",39,6,1,111.79676500000096,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2259,"deadline"],
+      ["StopBurst",40,6,2,112.26460700000098,80.5,60.9765625,80.5,108.2265625,"production-owned-images",2,0,0,0,0,3219,"deadline"],
+      ["StopBurst",41,6,3,112.58384599999954,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4115,"deadline"],
+      ["StopBurst",42,6,4,111.6794090000003,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4947,"deadline"],
+      ["StopBurst",43,6,5,112.39566099999865,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5779,"deadline"],
+      ["StopBurst",44,6,6,111.90650499999902,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6611,"deadline"],
+      ["StopBurst",45,6,7,110.8758170000001,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",46,7,0,113.78461299999981,81.359375,60.9765625,81.359375,102.9765625,"production-owned-images",3,1,0,0,0,1107,"deadline"],
+      ["StopBurst",47,7,1,112.76651700000002,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,2195,"deadline"],
+      ["StopBurst",48,7,2,112.22210099999938,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3091,"deadline"],
+      ["StopBurst",49,7,3,112.67356099999961,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3923,"deadline"],
+      ["StopBurst",50,7,4,112.08508400000028,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4691,"deadline"],
+      ["StopBurst",51,7,5,112.05003699999907,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5587,"deadline"],
+      ["StopBurst",52,7,6,111.27948800000013,77,60.9765625,77,106.4765625,"production-owned-images",2,0,0,0,0,6483,"deadline"],
+      ["StopBurst",53,7,7,112.19800399999986,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",54,8,0,113.50670200000059,79.609375,60.9765625,79.609375,102.9765625,"production-owned-images",3,1,0,0,0,1107,"deadline"],
+      ["StopBurst",55,8,1,111.59266699999898,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2323,"deadline"],
+      ["StopBurst",56,8,2,112.35781599999973,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3283,"deadline"],
+      ["StopBurst",57,8,3,113.82780599999933,78.75,60.9765625,78.75,102.9765625,"production-owned-images",2,0,0,0,0,4115,"deadline"],
+      ["StopBurst",58,8,4,112.62756300000001,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4947,"deadline"],
+      ["StopBurst",59,8,5,110.86203600000044,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5843,"deadline"],
+      ["StopBurst",60,8,6,112.05544399999962,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6739,"deadline"],
+      ["StopBurst",61,9,0,113.44432100000085,83.109375,60.9765625,83.109375,104.7265625,"production-owned-images",3,1,0,0,0,1171,"deadline"],
+      ["StopBurst",62,9,1,112.34242000000086,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,2323,"deadline"],
+      ["StopBurst",63,9,2,112.15260599999965,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,3347,"deadline"],
+      ["StopBurst",64,9,3,111.45678399999997,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4179,"deadline"],
+      ["StopBurst",65,9,4,111.45204999999987,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,4947,"deadline"],
+      ["StopBurst",66,9,5,112.87892000000102,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,5779,"deadline"],
+      ["StopBurst",67,9,6,111.91311400000086,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,6547,"deadline"],
+      ["StopBurst",68,9,7,113.01515800000016,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,262519,null],
+      ["StopBurst",69,10,0,113.64578300000358,78.75,60.9765625,78.75,102.9765625,"production-owned-images",4,0,0,0,0,1057,"deadline"],
+      ["StopBurst",70,10,1,112.12347099999897,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2162,"deadline"],
+      ["StopBurst",71,10,2,111.80602200000067,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3072,"deadline"],
+      ["StopBurst",72,10,3,113.78614799999923,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3917,"deadline"],
+      ["StopBurst",73,10,4,111.17115199999898,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4762,"deadline"],
+      ["StopBurst",74,10,5,113.40269799999805,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5672,"deadline"],
+      ["StopBurst",75,10,6,112.26421800000026,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6517,"deadline"],
+      ["StopBurst",76,10,7,112.84340200000224,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",77,11,0,113.57697699999699,84.859375,60.9765625,84.859375,106.4765625,"production-owned-images",3,1,0,0,0,1187,"deadline"],
+      ["StopBurst",78,11,1,113.16383700000006,87.5,60.9765625,87.5,109.9765625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",79,11,2,111.74238699999842,85.75,60.9765625,85.75,108.2265625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",80,11,3,113.08323199999722,78.75,60.9765625,78.75,102.9765625,"production-owned-images",2,0,0,0,0,3982,"deadline"],
+      ["StopBurst",81,11,4,113.27732599999945,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,4892,"deadline"],
+      ["StopBurst",82,11,5,112.39272999999957,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5672,"deadline"],
+      ["StopBurst",83,11,6,112.66673100000116,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6452,"deadline"],
+      ["StopBurst",84,11,7,113.18290299999717,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",85,12,0,114.93815400000312,83.109375,60.9765625,83.109375,104.7265625,"production-owned-images",3,1,0,0,0,1057,"deadline"],
+      ["StopBurst",86,12,1,113.10958400000163,85.75,60.9765625,85.75,108.2265625,"production-owned-images",2,0,0,0,0,2162,"deadline"],
+      ["StopBurst",87,12,2,112.54517299999861,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,3072,"deadline"],
+      ["StopBurst",88,12,3,113.13865799999985,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4047,"deadline"],
+      ["StopBurst",89,12,4,112.94877799999813,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4892,"deadline"],
+      ["StopBurst",90,12,5,113.57812399999966,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5802,"deadline"],
+      ["StopBurst",91,12,6,113.48139499999888,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6647,"deadline"],
+      ["StopBurst",92,12,7,113.13994900000034,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",93,13,0,115.01714399999764,78.75,60.9765625,78.75,101.2265625,"production-owned-images",4,0,0,0,0,1122,"deadline"],
+      ["StopBurst",94,13,1,113.11175399999775,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2162,"deadline"],
+      ["StopBurst",95,13,2,111.96939600000042,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",96,13,3,112.23952700000154,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4047,"deadline"],
+      ["StopBurst",97,13,4,111.45510899999863,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4957,"deadline"],
+      ["StopBurst",98,13,5,114.37220799999704,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,5737,"deadline"],
+      ["StopBurst",99,13,6,112.7763249999989,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6517,"deadline"],
+      ["StopBurst",100,13,7,114.7734109999983,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",101,14,0,115.13869399999749,79.609375,60.9765625,79.609375,101.2265625,"production-owned-images",3,1,0,0,0,1057,"deadline"],
+      ["StopBurst",102,14,1,111.81670700000177,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",103,14,2,111.87607800000114,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3267,"deadline"],
+      ["StopBurst",104,14,3,114.57880099999966,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4242,"deadline"],
+      ["StopBurst",105,14,4,112.02855999999883,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5217,"deadline"],
+      ["StopBurst",106,14,5,111.36699700000099,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6062,"deadline"],
+      ["StopBurst",107,14,6,111.94645899999887,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,254792,"deadline"],
+      ["StopBurst",108,15,0,111.92326700000194,81.359375,60.9765625,81.359375,104.7265625,"production-owned-images",3,1,0,0,0,1252,"deadline"],
+      ["StopBurst",109,15,1,111.4995880000024,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",110,15,2,112.51846099999966,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,3332,"deadline"],
+      ["StopBurst",111,15,3,112.43458900000041,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4307,"deadline"],
+      ["StopBurst",112,15,4,114.51098199999979,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5282,"deadline"],
+      ["StopBurst",113,15,5,112.0361410000005,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6062,"deadline"],
+      ["StopBurst",114,15,6,111.8413470000014,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",115,16,0,112.6182430000008,78.75,60.9765625,78.75,101.2265625,"production-owned-images",4,0,0,0,0,1317,"deadline"],
+      ["StopBurst",116,16,1,112.11300100000153,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2487,"deadline"],
+      ["StopBurst",117,16,2,112.29527299999972,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,3592,"deadline"],
+      ["StopBurst",118,16,3,111.78136499999891,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4502,"deadline"],
+      ["StopBurst",119,16,4,112.03844899999967,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,5347,"deadline"],
+      ["StopBurst",120,16,5,113.4425650000012,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6192,"deadline"],
+      ["StopBurst",121,16,6,113.08902299999681,85.75,60.9765625,85.75,109.9765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",122,17,0,113.6316250000018,77,60.9765625,77,99.4765625,"production-owned-images",4,0,0,0,0,864,"deadline"],
+      ["StopBurst",123,17,1,112.34740900000179,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,1967,"deadline"],
+      ["StopBurst",124,17,2,112.58022900000287,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2877,"deadline"],
+      ["StopBurst",125,17,3,111.83383500000127,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,3852,"deadline"],
+      ["StopBurst",126,17,4,112.28247700000065,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,4827,"deadline"],
+      ["StopBurst",127,17,5,112.48328899999979,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,5737,"deadline"],
+      ["StopBurst",128,17,6,111.98063200000252,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6647,"deadline"],
+      ["StopBurst",129,17,7,112.14651800000138,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",130,18,0,113.1699600000029,82.25,60.9765625,82.25,106.4765625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",131,18,1,112.70268399999986,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2292,"deadline"],
+      ["StopBurst",132,18,2,111.94240400000126,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3267,"deadline"],
+      ["StopBurst",133,18,3,112.34860199999821,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4177,"deadline"],
+      ["StopBurst",134,18,4,112.03267100000085,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5152,"deadline"],
+      ["StopBurst",135,18,5,111.75816000000123,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5997,"deadline"],
+      ["StopBurst",136,18,6,113.8088800000005,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6842,"deadline"],
+      ["StopBurst",137,19,0,112.80987499999901,83.109375,60.9765625,83.109375,104.7265625,"production-owned-images",3,1,0,0,0,1252,"deadline"],
+      ["StopBurst",138,19,1,111.64290799999799,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2357,"deadline"],
+      ["StopBurst",139,19,2,112.00495099999898,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,3462,"deadline"],
+      ["StopBurst",140,19,3,112.98928900000101,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,4437,"deadline"],
+      ["StopBurst",141,19,4,111.50967799999853,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5347,"deadline"],
+      ["StopBurst",142,19,5,112.44785599999886,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6192,"deadline"],
+      ["StopBurst",143,19,6,111.63650499999858,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",144,20,0,113.54064499999731,82.25,60.9765625,82.25,102.9765625,"production-owned-images",4,0,0,0,0,1122,"deadline"],
+      ["StopBurst",145,20,1,111.86863099999755,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",146,20,2,112.73193000000174,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3202,"deadline"],
+      ["StopBurst",147,20,3,113.85869399999865,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4112,"deadline"],
+      ["StopBurst",148,20,4,114.23513499999899,75.25,60.9765625,75.25,102.9765625,"production-owned-images",2,0,0,0,0,4957,"deadline"],
+      ["StopBurst",149,20,5,112.82190099999934,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,5737,"deadline"],
+      ["StopBurst",150,20,6,112.61571900000126,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,6517,"deadline"],
+      ["StopBurst",151,20,7,112.08821900000112,77,60.9765625,77,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",152,21,0,115.82562099999996,77,60.9765625,77,101.2265625,"production-owned-images",4,0,0,0,0,1057,"deadline"],
+      ["StopBurst",153,21,1,112.43526400000337,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2097,"deadline"],
+      ["StopBurst",154,21,2,112.1848940000018,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3072,"deadline"],
+      ["StopBurst",155,21,3,112.62818100000004,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3917,"deadline"],
+      ["StopBurst",156,21,4,114.31843800000206,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4827,"deadline"],
+      ["StopBurst",157,21,5,112.28460099999938,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5737,"deadline"],
+      ["StopBurst",158,21,6,114.44892899999832,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,6517,"deadline"],
+      ["StopBurst",159,21,7,113.4090240000005,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",160,22,0,115.22122200000013,80.5,60.9765625,80.5,102.9765625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",161,22,1,111.92935799999759,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2292,"deadline"],
+      ["StopBurst",162,22,2,112.66708899999867,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3267,"deadline"],
+      ["StopBurst",163,22,3,111.78693600000042,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4242,"deadline"],
+      ["StopBurst",164,22,4,111.55231599999752,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5152,"deadline"],
+      ["StopBurst",165,22,5,111.9601619999994,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5997,"deadline"],
+      ["StopBurst",166,22,6,112.65651499999876,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,13802,"deadline"],
+      ["StopBurst",167,23,0,112.35660300000018,82.25,60.9765625,82.25,104.7265625,"production-owned-images",4,0,0,0,0,1317,"deadline"],
+      ["StopBurst",168,23,1,112.0803769999984,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",169,23,2,111.78495300000213,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,3527,"deadline"],
+      ["StopBurst",170,23,3,112.21773899999971,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,4502,"deadline"],
+      ["StopBurst",171,23,4,111.96779799999786,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5412,"deadline"],
+      ["StopBurst",172,23,5,112.13479200000074,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6322,"deadline"],
+      ["StopBurst",173,23,6,112.62775799999872,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",174,24,0,114.67589800000133,78.75,60.9765625,78.75,102.9765625,"production-owned-images",4,0,0,0,0,1122,"deadline"],
+      ["StopBurst",175,24,1,111.86045999999988,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",176,24,2,112.40181700000176,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",177,24,3,111.85782100000142,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4112,"deadline"],
+      ["StopBurst",178,24,4,111.56235799999922,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4957,"deadline"],
+      ["StopBurst",179,24,5,112.26635199999873,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5672,"deadline"],
+      ["StopBurst",180,24,6,114.05581499999971,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6452,"deadline"],
+      ["StopBurst",181,24,7,113.13978200000201,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",182,25,0,114.02690699999948,82.21875,60.9765625,82.21875,102.9765625,"production-owned-images",2,2,0,0,0,1122,"deadline"],
+      ["StopBurst",183,25,1,111.68240100000185,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",184,25,2,111.91954700000133,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3267,"deadline"],
+      ["StopBurst",185,25,3,111.97914999999921,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,4112,"deadline"],
+      ["StopBurst",186,25,4,112.25019099999918,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5022,"deadline"],
+      ["StopBurst",187,25,5,111.66758599999957,77,60.9765625,77,102.9765625,"production-owned-images",2,0,0,0,0,5867,"deadline"],
+      ["StopBurst",188,25,6,112.94177299999865,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6712,"deadline"],
+      ["StopBurst",189,25,7,112.4268090000005,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",190,26,0,113.74409300000116,78.75,60.9765625,78.75,102.9765625,"production-owned-images",4,0,0,0,0,1122,"deadline"],
+      ["StopBurst",191,26,1,111.69781600000351,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",192,26,2,112.57311899999331,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",193,26,3,112.0706910000008,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4047,"deadline"],
+      ["StopBurst",194,26,4,111.98326900000393,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4957,"deadline"],
+      ["StopBurst",195,26,5,113.17356999999902,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5867,"deadline"],
+      ["StopBurst",196,26,6,113.83785599999828,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6712,"deadline"],
+      ["StopBurst",197,26,7,111.84779799999524,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",198,27,0,114.25750799999514,85.75,60.9765625,85.75,106.4765625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",199,27,1,111.8641690000004,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2357,"deadline"],
+      ["StopBurst",200,27,2,112.03947200000403,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3397,"deadline"],
+      ["StopBurst",201,27,3,112.34197100000165,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4307,"deadline"],
+      ["StopBurst",202,27,4,111.42659899999853,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5087,"deadline"],
+      ["StopBurst",203,27,5,111.74635300000227,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5932,"deadline"],
+      ["StopBurst",204,27,6,111.62056499999744,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6777,"deadline"],
+      ["StopBurst",205,27,7,113.26303599999665,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",206,28,0,114.77680099999998,82.25,60.9765625,82.25,104.7265625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",207,28,1,112.67431200000283,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",208,28,2,112.88477199999761,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3202,"deadline"],
+      ["StopBurst",209,28,3,113.1001249999972,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,4112,"deadline"],
+      ["StopBurst",210,28,4,113.15248799999972,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4957,"deadline"],
+      ["StopBurst",211,28,5,111.71288599999389,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5802,"deadline"],
+      ["StopBurst",212,28,6,113.09196800000063,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6582,"deadline"],
+      ["StopBurst",213,28,7,111.95904800000426,78.75,60.9765625,78.75,102.9765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",214,29,0,114.15182600000117,80.5,60.9765625,80.5,104.7265625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",215,29,1,112.6723850000053,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",216,29,2,112.26807499999995,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",217,29,3,111.49475699999311,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,4177,"deadline"],
+      ["StopBurst",218,29,4,111.35104200000205,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,5022,"deadline"],
+      ["StopBurst",219,29,5,111.60087399999611,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5867,"deadline"],
+      ["StopBurst",220,29,6,111.89162299999589,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6712,"deadline"],
+      ["StopBurst",221,29,7,114.67592799999693,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",222,30,0,112.4225179999994,80.5,60.9765625,80.5,102.9765625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",223,30,1,112.23497900000075,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",224,30,2,114.30802200000471,78.75,60.9765625,78.75,102.9765625,"production-owned-images",2,0,0,0,0,3267,"deadline"],
+      ["StopBurst",225,30,3,112.69962400000077,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4177,"deadline"],
+      ["StopBurst",226,30,4,113.18924600000173,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,5022,"deadline"],
+      ["StopBurst",227,30,5,112.31758799999807,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5867,"deadline"],
+      ["StopBurst",228,30,6,112.05038000000059,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,6647,"deadline"],
+      ["StopBurst",229,30,7,112.77884300000005,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",230,31,0,113.5478310000035,80.5,60.9765625,80.5,104.7265625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",231,31,1,111.71289499999693,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,2357,"deadline"],
+      ["StopBurst",232,31,2,111.45618499999546,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3397,"deadline"],
+      ["StopBurst",233,31,3,111.51436100000137,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,4372,"deadline"],
+      ["StopBurst",234,31,4,113.90202300000237,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5347,"deadline"],
+      ["StopBurst",235,31,5,113.3134510000018,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,6257,"deadline"],
+      ["StopBurst",236,31,6,111.69961099999637,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",237,32,0,112.24050500000158,83.109375,60.9765625,83.109375,104.7265625,"production-owned-images",3,1,0,0,0,1252,"deadline"],
+      ["StopBurst",238,32,1,111.67525199999363,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",239,32,2,111.63051099999575,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,3332,"deadline"],
+      ["StopBurst",240,32,3,111.7088139999978,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4437,"deadline"],
+      ["StopBurst",241,32,4,112.15442699999403,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,5347,"deadline"],
+      ["StopBurst",242,32,5,112.24364900000364,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6322,"deadline"],
+      ["StopBurst",243,32,6,112.36958000000595,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",244,33,0,113.97434300000168,84,60.9765625,84,104.7265625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",245,33,1,111.99312199999986,77,60.9765625,77,104.7265625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",246,33,2,112.23955900000146,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3462,"deadline"],
+      ["StopBurst",247,33,3,111.74742300000071,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,4372,"deadline"],
+      ["StopBurst",248,33,4,113.71446999999898,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5282,"deadline"],
+      ["StopBurst",249,33,5,112.18582199999946,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6192,"deadline"],
+      ["StopBurst",250,33,6,112.64941900000122,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",251,34,0,112.64827199999854,83.109375,60.9765625,83.109375,102.9765625,"production-owned-images",3,1,0,0,0,1317,"deadline"],
+      ["StopBurst",252,34,1,111.9045929999993,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,2552,"deadline"],
+      ["StopBurst",253,34,2,112.66428599999927,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3527,"deadline"],
+      ["StopBurst",254,34,3,113.63320899999962,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4567,"deadline"],
+      ["StopBurst",255,34,4,112.22512599999754,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5477,"deadline"],
+      ["StopBurst",256,34,5,112.4157650000052,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6387,"deadline"],
+      ["StopBurst",257,34,6,112.57697400000325,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",258,35,0,112.93900700000086,80.5,60.9765625,80.5,104.7265625,"production-owned-images",4,0,0,0,0,1187,"deadline"],
+      ["StopBurst",259,35,1,112.11812099999952,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2357,"deadline"],
+      ["StopBurst",260,35,2,113.17594899999676,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,3332,"deadline"],
+      ["StopBurst",261,35,3,112.75817200000165,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,4242,"deadline"],
+      ["StopBurst",262,35,4,111.70345500000258,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5152,"deadline"],
+      ["StopBurst",263,35,5,112.3372309999977,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,5997,"deadline"],
+      ["StopBurst",264,35,6,111.8150089999981,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6842,"deadline"],
+      ["StopBurst",265,36,0,114.59341200000199,81.359375,60.9765625,81.359375,104.7265625,"production-owned-images",3,1,0,0,0,1187,"deadline"],
+      ["StopBurst",266,36,1,112.48070900000312,80.5,60.9765625,80.5,108.2265625,"production-owned-images",2,0,0,0,0,2422,"deadline"],
+      ["StopBurst",267,36,2,111.76485099999991,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,3332,"deadline"],
+      ["StopBurst",268,36,3,111.65668600000208,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4307,"deadline"],
+      ["StopBurst",269,36,4,111.93397499999992,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5217,"deadline"],
+      ["StopBurst",270,36,5,112.44174400000338,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,6127,"deadline"],
+      ["StopBurst",271,36,6,113.43371900000056,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",272,37,0,112.55666299999575,82.25,60.9765625,82.25,106.4765625,"production-owned-images",4,0,0,0,0,1252,"deadline"],
+      ["StopBurst",273,37,1,112.09410200000275,85.75,60.9765625,85.75,108.2265625,"production-owned-images",2,0,0,0,0,2357,"deadline"],
+      ["StopBurst",274,37,2,111.75749299999734,85.75,60.9765625,85.75,109.9765625,"production-owned-images",2,0,0,0,0,3332,"deadline"],
+      ["StopBurst",275,37,3,111.42075099999784,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,4242,"deadline"],
+      ["StopBurst",276,37,4,113.48614899999666,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,5217,"deadline"],
+      ["StopBurst",277,37,5,114.187122000003,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6062,"deadline"],
+      ["StopBurst",278,37,6,111.62925999999425,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6842,"deadline"],
+      ["StopBurst",279,38,0,112.84359699999914,86.609375,60.9765625,86.609375,106.4765625,"production-owned-images",3,1,0,0,0,1187,"deadline"],
+      ["StopBurst",280,38,1,112.63435400000162,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,2292,"deadline"],
+      ["StopBurst",281,38,2,112.6802469999966,84,60.9765625,84,108.2265625,"production-owned-images",2,0,0,0,0,3137,"deadline"],
+      ["StopBurst",282,38,3,112.75697900000523,85.75,60.9765625,85.75,108.2265625,"production-owned-images",2,0,0,0,0,3982,"deadline"],
+      ["StopBurst",283,38,4,112.8078669999959,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,4827,"deadline"],
+      ["StopBurst",284,38,5,113.84193600000435,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5607,"deadline"],
+      ["StopBurst",285,38,6,115.45622100000037,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,6387,"deadline"],
+      ["StopBurst",286,38,7,113.00240599999961,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",287,39,0,114.37635600000067,77.859375,60.9765625,77.859375,101.2265625,"production-owned-images",3,1,0,0,0,1057,"deadline"],
+      ["StopBurst",288,39,1,112.42807599999651,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,2162,"deadline"],
+      ["StopBurst",289,39,2,112.7907320000013,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,3007,"deadline"],
+      ["StopBurst",290,39,3,112.86853200000041,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,3852,"deadline"],
+      ["StopBurst",291,39,4,112.83276500000648,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,4697,"deadline"],
+      ["StopBurst",292,39,5,114.4361659999995,82.25,60.9765625,82.25,108.2265625,"production-owned-images",2,0,0,0,0,5477,"deadline"],
+      ["StopBurst",293,39,6,112.25157999999647,80.5,60.9765625,80.5,106.4765625,"production-owned-images",2,0,0,0,0,6257,"deadline"],
+      ["StopBurst",294,39,7,112.33679600000323,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null],
+      ["StopBurst",295,40,0,113.83126899999479,80.46875,60.9765625,80.46875,102.9765625,"production-owned-images",2,2,0,0,0,1122,"deadline"],
+      ["StopBurst",296,40,1,112.19441100000404,78.75,60.9765625,78.75,104.7265625,"production-owned-images",2,0,0,0,0,2227,"deadline"],
+      ["StopBurst",297,40,2,111.97470099999919,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,3202,"deadline"],
+      ["StopBurst",298,40,3,111.75453800000105,80.5,60.9765625,80.5,104.7265625,"production-owned-images",2,0,0,0,0,4177,"deadline"],
+      ["StopBurst",299,40,4,113.40112400000362,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5022,"deadline"],
+      ["StopBurst",300,40,5,113.7651560000013,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,5867,"deadline"],
+      ["StopBurst",301,40,6,115.48359599999822,78.75,60.9765625,78.75,106.4765625,"production-owned-images",2,0,0,0,0,6582,"deadline"],
+      ["StopBurst",302,40,7,113.383888999997,82.25,60.9765625,82.25,106.4765625,"production-owned-images",2,0,0,0,0,262622,null]
+    ],
+    "ordinaryHooks": {
+      "pass": true,
+      "R1": {
+        "pass": true,
+        "leftoverProcesses": 0,
+        "checkedInvocations": 136,
+        "checkedWorkers": 136,
+        "checkedOwnedChildren": 136,
+        "checkedBunWorkers": 96,
+        "checkedNativeSupervisors": 40,
+        "zeroWorkerDeferrals": {
+          "plain": 0,
+          "spoolAndExit": 0,
+          "drain": 0,
+          "sessionStart": 0,
+          "sessionStartRepoLog": 0,
+          "jcode": 0
+        },
+        "maxPlainZeroWorkers": 10,
+        "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+      },
+      "R2": {
+        "pass": true,
+        "wallP95BudgetMs": 150,
+        "peakRssBudgetMB": 100,
+        "groups": {
+          "plain": {
+            "runs": 40,
+            "stalledAttempts": 0,
+            "wallP95Ms": 81.15,
+            "wallMaxMs": 99.28,
+            "peakRssMB": 77.86,
+            "cliPeakRssMB": 42,
+            "productionCombinedPeakRssMB": 77.86,
+            "rawCombinedPeakRssMB": 77,
+            "rssSources": {
+              "vmhwm": 81,
+              "vmpeakBound": 1,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "spoolAndExit": {
+            "runs": 15,
+            "stalledAttempts": 0,
+            "wallP95Ms": 77.62,
+            "wallMaxMs": 77.62,
+            "peakRssMB": 73.5,
+            "cliPeakRssMB": 45.48,
+            "productionCombinedPeakRssMB": 73.5,
+            "rawCombinedPeakRssMB": 83.98,
+            "rssSources": {
+              "vmhwm": 30,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStart": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 65.61,
+            "wallMaxMs": 65.86,
+            "peakRssMB": 44.61,
+            "cliPeakRssMB": 50.73,
+            "productionCombinedPeakRssMB": 44.61,
+            "rawCombinedPeakRssMB": 83.98,
+            "rssSources": {
+              "vmhwm": 33,
+              "vmpeakBound": 7,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStartRepoLog": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 67.54,
+            "wallMaxMs": 68.64,
+            "peakRssMB": 44.61,
+            "cliPeakRssMB": 59.46,
+            "productionCombinedPeakRssMB": 44.61,
+            "rawCombinedPeakRssMB": 94.46,
+            "rssSources": {
+              "vmhwm": 34,
+              "vmpeakBound": 6,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "drain": {
+            "runs": 1,
+            "stalledAttempts": 0,
+            "wallP95Ms": 87.48,
+            "wallMaxMs": 87.48,
+            "peakRssMB": 71.75,
+            "cliPeakRssMB": 45.48,
+            "productionCombinedPeakRssMB": 71.75,
+            "rawCombinedPeakRssMB": 82.23,
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "jcode": {
+            "runs": 40,
+            "stalledAttempts": 0,
+            "wallP95Ms": 77.11,
+            "wallMaxMs": 114.63,
+            "peakRssMB": 71.75,
+            "cliPeakRssMB": 59.46,
+            "productionCombinedPeakRssMB": 71.75,
+            "rawCombinedPeakRssMB": 97.96,
+            "rssSources": {
+              "vmhwm": 80,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          }
+        }
+      }
+    },
+    "limits": {
+      "wallP95Ms": 150,
+      "peakRssMB": 100,
+      "scanCapMs": 60,
+      "handlerMs": 140,
+      "workerCleanupReserveMs": 25,
+      "scanCommitReserveMs": 20
+    },
+    "durability": "All3 normal or103 burst summaries durable within N=8 additional calls. Bounded non-hook library replay under the admitting fixture HOME verifies exact unique stored rows. No extra hook calls hidden outside samples.",
+    "remainingVerification": "Final delivery-head standard gates and CPU=1 reports are recorded in the PR description after receipt bytes are frozen.",
+    "diagnostics": [
+      {
+        "raw": "cpu1-e8913da/trace.log",
+        "outcome": "CPU1 without contention: original120-call diagnostic completed; not a gate attempt."
+      },
+      {
+        "raw": "cpu1-contended-e8913da/trace.log",
+        "outcome": "CPU1 plus owned hog: Stop3 committedoffset107 vs required334. First title stage crossed scan cap under scheduling. Partial progress, not cursor loss."
+      },
+      {
+        "raw": "cpu1-contended-all-e8913da/trace.log",
+        "outcome": "Diagnostic-only continuation despite old guard:120 observations,43 partial prefixes,10 zero offsets; no acceptance claim."
+      },
+      {
+        "raw": "native-first/focused.log",
+        "outcome": "31pass2fail due preload observation scope; corrected without changing assertions."
+      },
+      {
+        "raw": "native-first-fixed/",
+        "outcome": "33focused pass; original strict-prefix transcript120 and ordinary hooks pass before progress protocol/harness ruling."
+      },
+      {
+        "raw": "darwin-native-window/old.jsonl",
+        "outcome": "Darwin codepath with owned50ms delay: native supervisors active without frames at worker death; finalplatform2/unavailable2. EmulatedLinuxrusage108.5MB is not budget attempt."
+      },
+      {
+        "raw": "darwin-native-window/fixed.jsonl",
+        "outcome": "Native-first: both supervisors reaped with known receipts before scan; finalplatform4/unavailable0. EmulatedLinuxrusage133MB is not budget attempt."
+      },
+      {
+        "raw": "native-first-cpu1/",
+        "outcome": "Old-order regression red;80focused pass; old all-three guard failed firstcoldburst after80 Stop/End samples."
+      },
+      {
+        "raw": "native-first-cpu1-final/",
+        "outcome": "80focused pass; strict-prefix guard failed before reviewer ruled bounded resumptions."
+      },
+      {
+        "raw": "resume-harness/",
+        "outcome": "34focused pass; no commitreserve prototype repeatedzerooffset/deadline9times, correctlyfailed N8. Fixed with existing20ms commit/drain reserve."
+      },
+      {
+        "raw": "resume-commit-reserve/",
+        "outcome": "All103keys durable; replay oracle used wrong driverHOME and could not adopt pending rows. No data-loss claim."
+      },
+      {
+        "raw": "resume-replay-diagnostic/",
+        "outcome": "30stored unique,73pending,103durable; no duplicate. Confirmed admitting-HOME mismatch in verification."
+      },
+      {
+        "raw": "resume-bound-home/",
+        "outcome": "35focused pass,382physical transcript samples and ordinary hook suite pass on firstattempts; all summaries replay uniquely under correctHOME."
+      },
+      {
+        "raw": "progress-final-focus/",
+        "outcome": "Typecheck identified unresolved project union after refusal exit; narrowed through existing never-returning stop assignment."
+      },
+      {
+        "raw": "progress-final-focus-fixed/",
+        "outcome": "23focused tests,0fail106assertions; includes metadata-refusal/replay, lateprogress-offset, forcedreap knownRSS and malformedprogress failclosed."
+      },
+      {
+        "raw": "native-first-final-cpu1/",
+        "outcome": "84focused pass486assertions; N8coldburst advanced tooffset5395 on9thphysical call, allknown, thenboundedcompletionfailed. FinalN16 chosen; no productionbudget/sourcechange."
+      },
+      {
+        "raw": "native-first-n16-cpu1/",
+        "outcome": "84focused pass486assertions; on logicalburst10, call17 reachedoffset6712 withknownRSS, thenN16bounded-completionfailed; no numerical R2failure observed. FinalN24 chosen and first-callp95 also gated at unchanged150ms."
+      },
+      {
+        "raw": "native-first-final-standard/",
+        "outcome": "Full2431pass7skip2fail; bothfailures are numeric recovery-diagnostic needle for renameddeadlineStop. Assertions/timeouts retained, fixture needle updated."
+      },
+      {
+        "raw": "native-first-final-n24-cpu1/",
+        "outcome": "84focused pass486assertions;779transcriptcalls659resumes,max21followups,firstp95132.62ms/allp95128.14ms,peak87.47MB,unknown0;ordinaryR2/R1/packpass. Reviewer replacedN24margin withprogressfloor,3stallrule,N64hangguard."
+      },
+      {
+        "raw": "final-progress-n64-{normal,cpu1}/",
+        "outcome": "Head4315493: normal405/CPU1 712 actual calls, firstp95 116.57/133.03ms, allp95 115.13/128.15ms, peak85.75/84.86MB, maxfollowups9/18, maxreason-onlystreak0/1, unknown0. All zero-summary calls independently verified deadline/full before firstuncommittedstage boundary; latest strictguard rerun reported inPR."
+      },
+      {
+        "raw": "final-progress-strict-{normal,cpu1}/",
+        "outcome": "Strict04d normal passed. CPU1coldburst6/call1 had knownRSS andactualdeadline but cursororacle raisedSQLITE_READONLY_ROLLBACK. Oracle nowlabels lastverifiedoffset rollback_pending onlyfor exacterror/deadline/no offsetreceipt, leaves journal untouched fornexttimedhook recovery."
+      }
+    ],
+    "finalMaxAdditionalInvocations": 64,
+    "progressFloor": "Each call adds a new durable summary, or names deadline/spool_full before the first uncommitted summary can finish;cap alone cannot excuse zero. Committed prefixes are durable;3reason-only calls failstall. N64 is only a hangguard.",
+    "supersededThroughputBounds": [
+      8,
+      16,
+      24
+    ]
+  }
+}

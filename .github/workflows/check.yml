@@ -30,6 +30,13 @@ jobs:
       - run: npm pack --dry-run
       - run: bun scripts/measure-hooks-budget.ts
         if: always() && !cancelled()
+      - name: Compare main Stop and SessionEnd RSS on the same runner
+        if: always() && !cancelled()
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/amem-hook-baseline" "${{ github.event.pull_request.base.sha || github.sha }}"
+          bun scripts/measure-hook-baseline.ts --root "$RUNNER_TEMP/amem-hook-baseline"
+      - run: bun scripts/measure-transcript-budget.ts
+        if: always() && !cancelled()
       - run: bun scripts/measure-hook-stages.ts
         if: always() && !cancelled()
       - run: bun scripts/measure-budget.ts

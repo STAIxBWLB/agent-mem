@@ -4,11 +4,12 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
-import { CAPTURE_MAX_EXCERPT, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type NormalizedCaptureFields } from "./memory/capture-input.ts";
+import { CAPTURE_MAX_EXCERPT, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { fold } from "./memory/policy.ts";
+import { stripPrivateSpans } from "./memory/private-spans.ts";
 import { looksSecret } from "./memory/screen.ts";
 import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { projectState } from "./memory/lifecycle.ts";
@@ -296,7 +297,7 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
-      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude") === v3 || !(HOOK_EVENTS as readonly string[]).includes(c.event)
+      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude" && !["Title", "Recap", "Compact"].includes(c.event)) === v3 || ![...HOOK_EVENTS, "Title", "Recap", "Compact"].includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
@@ -447,7 +448,7 @@ function retireUnresolved(base: string, _admittingCwd: string | undefined, inven
  * discard a valid pending record; only positively invalid publications leave admission. */
 export function quarantineHookScope(options: { cwd: string; base: string; scope: string }): { retired: number } {
   let retired = 0;
-  if (!/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
+  if (belowFloor(options.base) || !/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), cwdHash = hash(cwd);
   trimQuarantine(base);
   const rows = entries(base).filter(row => {
@@ -506,9 +507,27 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // Enriched tool rows are refused rather than persisting the normalizer's redaction marker.
   if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
-  const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
-  // Claude rows keep 0.18.0's format 2; any other agent needs format 3 so a 0.18.0 drain cannot retire it as corrupt.
-  const v3 = capture.agent !== "claude";
+  return publishCapture(event, capture, { ...options, cwd, base });
+}
+
+/** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
+export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string): Promise<PendingHookCapture | undefined> {
+  if (options.policy?.host || belowFloor(options.base) || input.agent !== "claude" || !["Title", "Recap", "Compact"].includes(input.event)) return;
+  const cwd = realPath(options.cwd), base = canonicalPath(options.base);
+  const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
+  if (!await policy.screen({ cwd, input })) return;
+  const configured = loadAmemConfig(base, repoConfigRoot(cwd)).config;
+  const capture = normalizeCaptureFields({ ...input, excerpt: clipCaptureUtf8(stripPrivateSpans(input.excerpt ?? ""), Math.min(CAPTURE_MAX_EXCERPT, configured.excerptBytes ?? CAPTURE_MAX_EXCERPT)) }, undefined,
+    text => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),
+    { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, denyPaths: configured.denyPaths });
+  if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) return;
+  return publishCapture(input.event, capture, { ...options, cwd, base }, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
+}
+
+function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {
+  const { cwd, base } = options;
+  const scope = hookCaptureScope(cwd, base) ?? null;
+  const v3 = capture.agent !== "claude" || ["Title", "Recap", "Compact"].includes(event);
   const record: Record = { schema: FAMILY, format: v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);

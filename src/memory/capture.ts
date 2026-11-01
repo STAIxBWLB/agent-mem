@@ -50,6 +50,7 @@ export const CAPTURE_EVICT_MAX_BATCHES = 4;
 /** Wall-time bound for one invocation's eviction: with the batch bound, an append stays inside R2 after a cap shrink. */
 export const CAPTURE_EVICT_MAX_MS = 25;
 export const CAPTURE_DRAIN_MAX_LINES = 1000;
+const BRIEF_SUMMARY_CANDIDATES = 32;
 const SPOOL = "spool.jsonl";
 const DRAINING = "spool.jsonl.draining";
 const SPOOL_DIR = "spool";
@@ -290,6 +291,7 @@ export class CaptureStore {
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
       addAttributionColumns(db);
+      this.ensureBriefSummaryIndex(true);
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
@@ -385,6 +387,12 @@ export class CaptureStore {
   }
 
   private mcpReady = false;
+  private briefReady = false;
+  private prepareBriefSummaryIndex(): void {
+    if (this.readOnly || this.briefReady) return;
+    try { this.ensureBriefSummaryIndex(false); this.briefReady = true; }
+    catch { /* Optional summary coverage remains partial; query engines remain independent. */ }
+  }
   /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
   private ensureMcpFts(): boolean {
     if (this.readOnly) return !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
@@ -639,6 +647,41 @@ export class CaptureStore {
     return rows.map(toRow);
   }
 
+  /** Generic SQLite index maintenance also covers older writers sharing this file. */
+  private ensureBriefSummaryIndex(bounded: boolean): void {
+    if (this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_summaries_v1' AND type='index'").get()) return;
+    const build = () => {
+      if (bounded) {
+        const count = (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n;
+        if (count > 128) return;
+      }
+      this.db.run("CREATE INDEX IF NOT EXISTS rows_brief_summaries_v1 ON rows(project,at,id) WHERE event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)");
+    };
+    // Keep the small-store decision and build atomic against a concurrent older writer.
+    if (bounded) this.db.transaction(build).immediate(); else build();
+  }
+
+  /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */
+  readBriefSummaries(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
+    this.checkReadBinding();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief summary limit");
+    const indexed = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_summaries_v1' AND type='index'").get();
+    let rows: RawRow[], partial = false;
+    if (indexed) {
+      rows = this.db.query("SELECT * FROM rows INDEXED BY rows_brief_summaries_v1 WHERE project=? AND event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1) ORDER BY at DESC,id DESC LIMIT ?")
+        .all(this.key, limit + 1) as RawRow[];
+    } else {
+      // ponytail: a large legacy store stays partial within128 rows until an off-hook
+      // query builds the partial index; never scan or build the history on a hook.
+      const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
+      const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
+      rows = this.db.query(`SELECT * FROM (SELECT * FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 128) WHERE project=? AND event IN ('Recap','Compact')${subagent} ORDER BY at DESC,id DESC LIMIT ?`)
+        .all(this.key, limit + 1) as RawRow[];
+      partial = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all().length > 128;
+    }
+    return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
+  }
+
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     this.checkReadBinding();
@@ -647,6 +690,7 @@ export class CaptureStore {
       if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");
       where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds));
     }
+    if (window.query !== undefined) this.prepareBriefSummaryIndex();
     const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
     const plan = captureReadPlan(window, engine, where, bind);
     if (!plan) return { rows: [], engine };

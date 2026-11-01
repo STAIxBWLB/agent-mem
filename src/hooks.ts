@@ -1,18 +1,18 @@
 import { fileURLToPath } from "node:url";
-import { resolveHookProjectAsync } from "./hook-project.ts";
+import { resolveHookProjectAsync, type HookProjectReceipt } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
-import { stageHookCapture, hookCaptureScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
+import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
 import { jcodeHookCapture } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 
-import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
 const HANDLER_MS = 140;
@@ -68,13 +68,14 @@ async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefi
 }
 const publicBefore = async (policy: MemoryPolicy, value: unknown, deadline: number) => await before(policy.screen(value), deadline) === true;
 
-async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void): Promise<string | undefined> {
+async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void): Promise<string | undefined> {
   const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
   let length = 0, pending = "", body = "";
   const line = (text: string) => {
     if (!text) return;
-    const value = JSON.parse(text) as { rss?: unknown };
+    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown };
     if (onRss && Object.hasOwn(value, "rss")) onRss(value.rss);
+    else if (onTranscript && Object.hasOwn(value, "transcript")) onTranscript(value.transcript);
     else { if (body) throw new Error("worker output bound"); body = text; }
   };
   try {
@@ -90,54 +91,88 @@ async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value:
   finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** Native metadata and cold indexes are bounded in a short-lived owned child, never a resident worker.
+/** Native handles always belong to the CLI that writes the metric, never a killable worker. */
+async function parentProject(options: HookOptions, base: string, deadline: number) {
+  const cwd = realPath(options.cwd);
+  const scope = hookCaptureScope(cwd, base);
+  const usage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, rssSources: emptyRssSources() };
+  let project: string | undefined, receipt: HookProjectReceipt | undefined;
+  try {
+    project = await resolveHookProjectAsync({ cwd, base, scope, timeRemaining: () => deadline - performance.now(), maintainCache: true, prefetch: true,
+      onResolved: value => { receipt = value; } }, usage);
+  } catch { /* All native finally/reap barriers have completed before this returns. */ }
+  if (project === undefined && scope !== undefined) try { quarantineHookScope({ cwd, base, scope }); }
+  catch { /* Failed maintenance cannot change native fail-open behavior or its accounting. */ }
+  return { cwd, scope, project, receipt, usage };
+}
+
+/** Only capture work uses a short-lived owned child; native handles remain in this CLI.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
-  const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
-  const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-  // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
-  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
-    policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
-  const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
-    { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
-  let exited = false;
-  const tracker = new HookWorkerRss(child.pid);
-  const output = boundedOutput(child.stdout, value => tracker.frame(value));
-  const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources() };
-  const exit = child.exited.then(code => { exited = true; return code; });
-  const stop = () => {
-    if (exited) return;
-    tracker.captureLive();
-    // The still-live leader is the detached process we just spawned, so its group is ours.
-    // Kill its native metadata children too; never signal a group after observing leader exit.
-    try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* Already exited. */ } }
-  };
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const metadata = await parentProject(options, base, workDeadline);
+  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false, ...(transcript !== undefined ? { transcript: { stopReason: "deadline" as const } } : {}) };
+  const result = { context: unavailable, ...metadata.usage, captured: false, valid: false,
+    rssSources: combineRssSources(metadata.usage.rssSources), transcript: undefined as HookTranscriptProgress | undefined };
+  let owned: ReturnType<typeof Bun.spawn> | undefined, exited = false;
   try {
-    const answer = await Promise.race([
-      Promise.all([exit, output]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
-    ]);
-    if (!answer || !answer[1]) return result;
-    const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
-    if (parsed.complete !== true) return result;
-    if (parsed.rssTelemetryValid !== true) tracker.invalidate();
-    if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
-    if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
-    result.captured = parsed.captured === true; result.valid = parsed.valid === true;
-    return result;
-  } catch { return result; }
+    const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
+    const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
+    // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
+    const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
+      policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
+    const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
+      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
+    owned = child;
+    result.rssSources.unavailable++;
+    const exit = child.exited.then(code => { exited = true; return code; });
+    const tracker = new HookWorkerRss(child.pid);
+    const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
+      if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
+      if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
+      result.transcript = { ...result.transcript, ...value };
+    });
+    const stop = () => {
+      if (exited) return;
+      tracker.captureLive();
+      // The still-live leader is the detached process we just spawned, so its group is ours.
+      // The capture-only worker owns no native helper; those handles were reaped in this parent.
+      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* Already exited. */ } }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answer = await Promise.race([
+        Promise.all([exit, output]),
+        new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+      ]);
+      if (!answer || !answer[1]) return result;
+      const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
+      if (parsed.complete !== true) return result;
+      if (parsed.rssTelemetryValid !== true) tracker.invalidate();
+      if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
+      if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
+      result.captured = parsed.captured === true; result.valid = parsed.valid === true;
+      return result;
+    } catch { return result; }
+    finally {
+      if (timer) clearTimeout(timer);
+      stop();
+      await exit;
+      // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
+      const workerRawKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
+      result.rawRssKB = metadata.usage.rawRssKB + workerRawKB;
+      if (await output === undefined) tracker.invalidate();
+      const accounting = tracker.finish(workerRawKB);
+      result.rssKB = metadata.usage.rssKB + accounting.rssKB; result.rssSources = combineRssSources(metadata.usage.rssSources, accounting.rssSources);
+    }
+  } catch { result.valid = false; return result; }
   finally {
-    if (timer) clearTimeout(timer);
-    stop();
-    await exit;
-    // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
-    result.rawRssKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-    if (await output === undefined) tracker.invalidate();
-    const accounting = tracker.finish(result.rawRssKB);
-    result.rssKB = accounting.rssKB; result.rssSources = accounting.rssSources;
+    // Even setup or accounting failure after spawn cannot leave an owned image live.
+    if (owned) {
+      if (!exited) try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already gone. */ } }
+      await owned.exited;
+    }
   }
 }
 
@@ -209,13 +244,15 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
  * publication; this path uses one helper too, and the current normalized event stays pending. */
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
-  let result: Awaited<ReturnType<typeof hookWorker>> | undefined;
+  const transcript = (event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input && typeof input.transcript_path === "string" ? input : undefined;
+  const work = (pending: PendingHookCapture) => hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript);
+  let result: Awaited<ReturnType<typeof work>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
   catch (error) {
     if (!(error instanceof HookSpoolFull)) throw error;
     const cwd = realPath(options.cwd);
-    result = await hookWorker({ ...options, cwd }, base, deadline, { name: "", receipt: "", cwd }, event);
+    result = await work({ name: "", receipt: "", cwd });
     try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
     catch (retryError) {
       // A concurrent publisher can refill the soft tier. Capture admission cannot discard
@@ -225,7 +262,7 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
     }
   }
   if (!pending) return result ? { ...result, pending: false } : undefined;
-  result ??= await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);
+  result ??= await work(pending);
   return { ...result, pending: !result.captured };
 }
 
@@ -235,6 +272,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   const deadline = started + handlerMs(host);
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false, dropped = false;
   let childSources = emptyRssSources();
+  let transcriptProgress: HookTranscriptProgress | undefined;
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
@@ -244,6 +282,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
     if (!result) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     captured = result.captured; pending = result.pending; dropped = "dropped" in result && result.dropped === true;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources();
+    transcriptProgress = "transcript" in result ? result.transcript : undefined;
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
@@ -251,7 +290,8 @@ export async function runHook(event: string, input: unknown, options: HookOption
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
     if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
-      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
+      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
@@ -261,6 +301,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
+  let transcriptProgress: HookTranscriptProgress | undefined;
   try {
     if (args.length !== 1) return "";
     if (args[0] === "jcode") {
@@ -288,6 +329,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + deadlineMs - 3);
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
+      transcriptProgress = "transcript" in result ? result.transcript : undefined;
       if (!result.valid || args[0] !== "SessionStart") return "";
       return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
@@ -298,7 +340,8 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     try {
       const self = hookRssReading();
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
-        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024, ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
+        rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
+        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }
