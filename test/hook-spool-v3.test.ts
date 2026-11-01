@@ -65,6 +65,19 @@ test("N-1: 0.18.0 still drains a Claude record this version stages (format 2 is 
   expect(pending(f.base)).toEqual([]);
 });
 
+test("a hook-spool format floor above this version skips the spool and leaves a pending format-3 record untouched (#207)", async () => {
+  const f = fixture();
+  const staged = (await stageHookCapture("Stop", { session_id: "s", last_assistant_message: "jcode before floor" }, { ...f.options, agent: "jcode" }))!;
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "hook-spool", minReader: "99.0.0", since: "2026-11-01" }]));
+  expect(await stageHookCapture("Stop", { session_id: "s", last_assistant_message: "jcode under floor" }, { ...f.options, agent: "jcode" })).toBeUndefined();
+  const result = await drain(f);
+  expect(result.rows).toEqual([]);
+  expect(pending(f.base)).toEqual([staged.name]);
+  // Floors gate the surface by reader version, not the record format: removing the floor drains the same v3 record.
+  writeFileSync(join(f.base, "formats.json"), "[]");
+  expect((await drain(f)).rows.filter(row => row.excerpt === "jcode before floor").map(row => row.agent)).toEqual(["jcode"]);
+});
+
 test("the format and agent must agree: a jcode capture in a format-2 body, or a claude capture in format 3, is not drained", async () => {
   const f = fixture();
   const jcode = (await stageHookCapture("Stop", { session_id: "s", last_assistant_message: "mislabelled jcode" }, { ...f.options, agent: "jcode" }))!;
