@@ -161,7 +161,7 @@ try { s.append({ project: ${JSON.stringify(f.project)}, agent: "old", event: "Po
   rmSync(join(f.base, "hook-spool"), { recursive: true, force: true });
 });
 
-test("0.15.0 drain discards (never misreads) a pending hook record staged with attribution", async () => {
+test("0.15.0 drain leaves a pending hook record staged with attribution for the current reader (#199)", async () => {
   const f = fixture();
   await stageHookCapture("PostToolUse", { session_id: "s", agent_id: "a", tool_response: "new-format pending" }, f.options);
   const old = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v015/src/hook-spool.ts")).href;
@@ -172,6 +172,6 @@ console.log(JSON.stringify({ captured: r.captured.length, appended }));`;
   const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: f.cwd, env: { ...f.env }, stdout: "pipe", stderr: "pipe", timeout: 10000 });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(JSON.parse(child.stdout.toString())).toEqual({ captured: 0, appended: [] });
-  // 0.15.0 retires an undecodable record by deleting it: the recorded compatibility rule (docs/contracts.md #173).
-  expect((await drain(f)).length).toBe(0);
+  // #199: the record publishes under a name 0.15.0 does not match, so it survives and the current version drains it.
+  expect((await drain(f)).map(row => row.excerpt)).toEqual(["new-format pending"]);
 });
