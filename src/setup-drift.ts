@@ -116,7 +116,7 @@ function codexMissingTrust(hooksPath: string, hooksImage: ConfigImage, configIma
       const key = `${hooksPath}:session_end:${groupIndex}:${handlerIndex}`;
       const state = stateRoot[key];
       // Presence is not proof that the stored digest still matches; amem only detects a missing record.
-      if (!plain(state) || typeof state.trusted_hash !== "string") missing.push(key);
+      if (!plain(state) || typeof state.trusted_hash !== "string" || !state.trusted_hash || state.enabled === false) missing.push(key);
     }
   }
   return missing;
@@ -193,12 +193,19 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
       if (target === "pi" && change.key === "pi:1" && !managedAfter(target, 1, change.before, change.after, current)) entries.push(entry(target, change.path, "session_shutdown extension", "managed hook extension is missing or changed", "drift"));
       if (target === "codex" && change.key === "codex:1") {
         // Codex owns trust state. Doctor checks only whether an entry exists; it never writes or verifies trusted_hash.
+        const runtimePaths = resolved.redirects.some(row => row.target === "codex") ? resolved.legacyPaths.codex : expectedPaths;
+        const configPath = runtimePaths[0]!, hooksPath = runtimePaths[1]!;
         try {
-          const configImage = liveImages[0];
+          const configImage = configPath === receipt.changes[0]!.path ? liveImages[0] : safeImage(configPath, SETUP_CONFIG_BYTES, budget);
           if (!configImage) throw Error("Codex config is unavailable");
+          const hookImage = hooksPath === change.path ? current : safeImage(hooksPath, SETUP_CONFIG_BYTES, budget);
           const expected = expectedManagedHookCommands(target, receipt.changes[0]!.after);
-          for (const key of codexMissingTrust(change.path, current, configImage, expected)) entries.push(entry(target, change.path, `hooks.state.${key}`, "no Codex trust record exists; treat the hook as untrusted and review it in Codex", "review-needed"));
-        } catch { entries.push(entry(target, change.path, "hooks.state", "Codex hook trust could not be checked safely", "unavailable")); unavailable = true; }
+          if (hooksPath !== change.path && (hookImage.bytes === null || configImage.bytes === null || managedHookEntries(target, change.before, change.after, hookImage, expected).some(row => !row.present))) {
+            entries.push(entry(target, hooksPath, "hooks.SessionEnd", "personal hook source is waiting for the managed runtime copy; start a new Orca session, then review the hook", "review-needed"));
+          } else {
+            for (const key of codexMissingTrust(hooksPath, hookImage, configImage, expected)) entries.push(entry(target, configPath, `hooks.state.${key}`, "Codex hook has no enabled trust record; treat it as untrusted and review it in Codex", "review-needed"));
+          }
+        } catch { entries.push(entry(target, configPath, "hooks.state", "Codex hook trust could not be checked safely", "unavailable")); unavailable = true; }
       }
     }
   }

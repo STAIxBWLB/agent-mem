@@ -161,6 +161,7 @@ test("Codex missing trust state is review-needed; a present state record is left
   const missing = inspect(f);
   expect(missing.status).toBe("attention");
   expect(missing.entries.some(row => row.kind === "review-needed" && row.entry.includes("hooks.state") && row.reason.includes("untrusted"))).toBe(true);
+  expect(missing.entries.find(row => row.kind === "review-needed")?.file).toBe(configPath);
   expect(readFileSync(configPath!)).toEqual(beforeMissing);
 
   const current = Bun.TOML.parse(readFileSync(configPath!, "utf8")) as Record<string, any>;
@@ -172,6 +173,29 @@ test("Codex missing trust state is review-needed; a present state record is left
   expect(present.status).toBe("ok");
   expect(present.entries.some(row => row.kind === "review-needed")).toBe(false);
   expect(readFileSync(configPath!)).toEqual(before);
+});
+
+test("Orca Codex trust is checked in the active runtime copy, without changing source or trust files", () => {
+  const f = fixture(), data = join(f.root, "orca data"), managed = join(data, "codex-accounts", "id", "home");
+  Object.assign(f.env, { ORCA_USER_DATA_PATH: data, CODEX_HOME: managed });
+  const resolved = resolveSetupPaths(f.env), [configPath, hooksPath] = resolved.paths.codex;
+  const [runtimeConfig, runtimeHooks] = resolved.legacyPaths.codex;
+  const command = `${quote(f.bun)} --smol ${quote(f.entry)} ingest codex --json`;
+  const config = Bun.TOML.stringify({ mcp_servers: { amem: { command: f.bun, args: ["--smol", f.entry, "mcp"] } } });
+  const handler = { hooks: [{ type: "command", command, timeout: 3 }] }, hookFile = json({ hooks: { SessionEnd: [handler] } });
+  put(configPath!, config); put(hooksPath!, hookFile);
+  receipt(f, "codex", [{ path: configPath!, before: null, after: config }, { path: hooksPath!, before: null, after: hookFile }]);
+  expect(inspect(f).entries.some(row => row.kind === "review-needed" && row.file === runtimeHooks)).toBe(true);
+  put(runtimeHooks!, json({ hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "echo unrelated", timeout: 3 }] }, handler] } }));
+  const key = `${runtimeHooks}:session_end:1:0`;
+  put(runtimeConfig!, Bun.TOML.stringify({ hooks: { state: { [key]: { trusted_hash: "fixture-only" } } } }));
+  const sourceBefore = readFileSync(configPath!), trustBefore = readFileSync(runtimeConfig!);
+  expect(inspect(f)).toMatchObject({ status: "ok", entries: [] });
+  expect(readFileSync(configPath!)).toEqual(sourceBefore); expect(readFileSync(runtimeConfig!)).toEqual(trustBefore);
+  put(runtimeConfig!, "");
+  const missing = inspect(f);
+  expect(missing.entries.some(row => row.kind === "review-needed" && row.file === runtimeConfig && row.entry.includes(key))).toBe(true);
+  expect(readFileSync(runtimeConfig!, "utf8")).toBe("");
 });
 
 test("target-specific MCP registration names are checked for Gemini, Jcode, and OpenCode", () => {
