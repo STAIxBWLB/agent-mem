@@ -62,7 +62,25 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     } catch { receiptValid = false; }
     finally { await rssReader.cancel().catch(() => {}); rssReader.releaseLock(); }
   })();
-  const exit = child.exited.then(code => { exited = true; return code; });
+  let usageRecorded = false;
+  const recordUsage = () => {
+    if (usageRecorded) return;
+    usageRecorded = true;
+    const raw = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
+    const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw, Math.max(ownVirtual, receiptValid ? reportedVirtual : 0));
+    usage.rawRssKB = Math.max(usage.rawRssKB, raw);
+    usage.rssKB = Math.max(usage.rssKB, selected.kb);
+    usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));
+    try { observer?.finished(selected); } catch { observationFailed = true; }
+    if (observationFailed) usage.rssSources.unavailable++;
+  };
+  const exit = child.exited.then(code => {
+    exited = true;
+    // Reaped platform rusage is final before pipe cleanup; publish it while the worker is alive.
+    // Linux still needs the authenticated terminal receipt consumed below.
+    if (process.platform !== "linux") recordUsage();
+    return code;
+  });
   const stop = () => {
     if (exited) return;
     const image = processImageMemory(child.pid);
@@ -110,13 +128,7 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     await rssReceipt;
     try { child.stdin.end(); } catch { /* pipe closed with the owned leader */ }
     await reader.cancel().catch(() => {}); reader.releaseLock();
-    const raw = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-    const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw, Math.max(ownVirtual, receiptValid ? reportedVirtual : 0));
-    usage.rawRssKB = Math.max(usage.rawRssKB, raw);
-    usage.rssKB = Math.max(usage.rssKB, selected.kb);
-    usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));
-    try { observer?.finished(selected); } catch { observationFailed = true; }
-    if (observationFailed) usage.rssSources.unavailable++;
+    recordUsage();
   }
 }
 
