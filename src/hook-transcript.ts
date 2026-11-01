@@ -28,8 +28,8 @@ export function transcriptSummary(line: string): { event: SummaryEvent; text: st
     if (Array.isArray(text)) text = text.flatMap(part => { const value = object(part); return value?.type === "text" && typeof value.text === "string" ? [value.text] : []; }).join("\n");
   } else return undefined;
   if (typeof text !== "string" || !text.trim()) return undefined;
-  if (event === "Recap") text = text.replace(/\s*\(disable recaps in \/config\)\s*$/, "");
-  return { event, text, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), ...(row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0 ? { subagent: true as const } : {}) };
+  const visibleText = event === "Recap" ? text.replace(/\s*\(disable recaps in \/config\)\s*$/, "") : text;
+  return { event, text: visibleText, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), ...(row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0 ? { subagent: true as const } : {}) };
 }
 
 function privateDirectory(dir: string): void {

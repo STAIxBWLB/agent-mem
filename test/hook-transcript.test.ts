@@ -19,7 +19,7 @@ function fixture() {
   const store = () => new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
   const drain = async () => {
     const capture = store();
-    try { await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt })); return capture.readPage({ limit: 100 }).rows; }
+    try { await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt })); return capture.readPage({ project: f.project, limit: 100 }).rows; }
     finally { capture.close(); }
   };
   return { ...f, transcript, id, input, scan, add, drain };
@@ -98,4 +98,23 @@ test("missing identity, linked transcript and elapsed deadline never create a cu
   const link = f.transcript + ".link"; symlinkSync(f.transcript, link);
   await expect(scanHookTranscriptTail({ ...f.input, transcript_path: link }, { cwd: f.cwd, base: f.base, deadline: performance.now() + 1000 })).rejects.toThrow();
   expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
+});
+
+for (const event of ["Stop", "SessionEnd"]) test(`the real ${event} handler scans and replays native summaries`, async () => {
+  const f = fixture();
+  f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "native handler summary" });
+  const result = f.runFunctional(event, { ...f.input, last_assistant_message: "ordinary final answer" });
+  expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("");
+  const rows = await f.drain();
+  expect(rows.filter(row => row.event === "Recap" && row.excerpt === "native handler summary")).toHaveLength(1);
+  expect(rows.filter(row => row.event === event)).toHaveLength(1);
+});
+
+test("subagent summaries keep attribution and project policy refuses PII and denied text", async () => {
+  const f = fixture();
+  f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "agent summary", isSidechain: true },
+    { type: "system", subtype: "away_summary", timestamp: at, content: "person@example.org" },
+    { type: "system", subtype: "away_summary", timestamp: at, content: "read .env credentials" });
+  await f.scan(); const rows = await f.drain();
+  expect(rows).toHaveLength(1); expect(rows[0]?.subagent).toBe(true);
 });

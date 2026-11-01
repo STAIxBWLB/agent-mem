@@ -163,3 +163,11 @@ test("AC3 direct capture append path stays offline under the same runtime tripwi
   expect(result.exitCode).toBe(0); expect(f.rows().some(row => row.excerpt === "direct-offline-positive-marker")).toBe(true);
   expect(f.attempts()).toEqual([]);
 });
+
+test("transcript summary scanning enters the offline hook path without network or model calls", async () => {
+  const f = fixture(), transcript = join(f.root, "transcript.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "offline summary" }) + "\n");
+  const result = f.child([hookBin, "hook", "Stop"], JSON.stringify({ cwd: f.cwd, hook_event_name: "Stop", session_id: "offline-summary", transcript_path: transcript }));
+  expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("");
+  replayOffline(f, "Recap", "offline summary"); expect(f.attempts()).toEqual([]);
+});
