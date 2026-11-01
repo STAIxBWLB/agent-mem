@@ -12,10 +12,11 @@ import { readSelector } from "./generation.ts";
 import { processLiveness, withGitTimeout } from "./platform.ts";
 import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
-import { facts, label, PLAIN, type Style } from "./style.ts";
+import { facts, label, PLAIN, singleLine, type Style } from "./style.ts";
 import { aliasedKeys, shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
+import { readSetupDrift } from "../setup-drift.ts";
 
 /**
  * F15, `amem doctor`: one report over the memory home. It writes nothing into the home. Every check that needs a store (the notes, the brief, the index proof) runs on a
@@ -42,6 +43,8 @@ const MAX_IDS = 10;
 
 export interface DoctorOptions {
   home: string; homeSource: string; cwd: string; project: string; aliases: readonly string[]; now: number;
+  /** Test seam for setup path resolution; the CLI uses the process environment. */
+  env?: Readonly<Record<string, string | undefined>>;
   /** Opens this project's curated store on `base`, the way the other person reads do (a split home through its project shard). Doctor passes a private scratch base, never the live home. */
   openCurated: (base: string) => MemoryStore;
   /** The cadence command the person runs from their own shell; shown in the report, never installed. */
@@ -60,6 +63,8 @@ export interface DoctorReport {
     drops: Section;
     /** #188, additive: present only when the project's curated logs hold forget or prune operations. Informational; status is always ok. */
     masked?: Section;
+    /** #202, additive: applied native setup registrations checked against the shared path resolver. */
+    setup: Section;
   };
 }
 
@@ -480,10 +485,13 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     candidates = summary === null ? unavailable("candidates.db exists but cannot be read")
       : { status: summary.dueWithin7Days ? "attention" : "ok", ...summary, ...(summary.dueWithin7Days ? { hint: "run amem review walk" } : {}) };
   } catch (error) { candidates = unavailable(message(error)); }
+  let setup: Section;
+  try { setup = { ...readSetupDrift({ home: options.home, ...(options.env ? { env: options.env } : {}), cwd: options.cwd }) }; }
+  catch { setup = unavailable("setup registrations could not be checked"); }
   let sections: DoctorReport["sections"];
   try {
     await tick();
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), ...maskedSection(curated) };
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), setup, ...maskedSection(curated) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
@@ -493,6 +501,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
   index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence", drops: "recent capture drops",
+  setup: "native setup registrations",
   masked: "forgotten or pruned entries (informational)",
 };
 
@@ -512,6 +521,10 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
     if (detail.counts === undefined) return [];   // unavailable: only its reason is shown
     const counts = Object.entries((detail.counts ?? {}) as Record<string, number>);
     return [counts.length ? `${counts.map(([reason, n]) => `${reason.replaceAll("_", " ")} ${n}`).join(", ")} (recent metrics tail)` : "none in the recent metrics tail"].map(line => detail.malformedLines ? `${line}; ${detail.malformedLines} malformed lines skipped` : line);
+  }
+  if (name === "setup" && Array.isArray(detail.entries)) {
+    return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown }[]).map(item =>
+      singleLine(`${item.target} ${item.file}${item.expectedFile ? ` -> ${item.expectedFile}` : ""} ${item.entry}: ${item.reason}`));
   }
   if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
   const { examples, ...rest } = detail;
