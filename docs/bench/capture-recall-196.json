@@ -233,5 +233,69 @@
     "idleRssMB": 34.93,
     "peakRssMB": 142.54
   },
-  "limits": "Public no-loss compatibility only; prior R2 failures retained in Markdown; private AC6 is reviewer-owned."
+  "limits": "Public no-loss compatibility only; prior R2 failures retained in Markdown; private AC6 is reviewer-owned.",
+  "reviewRecheck": {
+    "unmodifiedR2Runs": [
+      {
+        "head": "db272294638dcde648785aa9a0ba0feeda4f880f",
+        "log": "db27229-r2-1.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null,
+        "plainP95Ms": 76.82,
+        "maxWorkloadRssMB": 77,
+        "maxTimeoutRssMB": 73.5
+      },
+      {
+        "head": "db272294638dcde648785aa9a0ba0feeda4f880f",
+        "log": "db27229-r2-2.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null,
+        "plainP95Ms": 73.89,
+        "maxWorkloadRssMB": 78.75,
+        "maxTimeoutRssMB": 75.25
+      },
+      {
+        "head": "db272294638dcde648785aa9a0ba0feeda4f880f",
+        "log": "db27229-r2-3.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null,
+        "plainP95Ms": 75.73,
+        "maxWorkloadRssMB": 77,
+        "maxTimeoutRssMB": 70
+      }
+    ],
+    "instrumentedDiagnosticRuns": [
+      {
+        "file": "db27229-instrumented-r2-1.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null
+      },
+      {
+        "file": "db27229-instrumented-r2-2.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null
+      },
+      {
+        "file": "db27229-instrumented-r2-3.log",
+        "attempt": 1,
+        "outcome": "pass",
+        "error": null
+      }
+    ],
+    "accountingObservation": {
+      "parentImageKB": 39424,
+      "originFallbackKB": 37632,
+      "metadataImageKB": 1792,
+      "signatureImageKB": 1792,
+      "combinedKB": 80640,
+      "alternativeNonzeroOriginImageKB": 1792,
+      "deltaMB": 35
+    },
+    "limitation": "Original failed runs lacked component traces; the observation does not retrospectively prove their cause or waive failures. No accounting changed. Final-head inventory is in PR197."
+  }
 }

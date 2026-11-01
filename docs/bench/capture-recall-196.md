@@ -56,3 +56,25 @@ A separate three-pair import/allocation probe found 21 MB peak after importing c
 The independent existing R3 MCP harness passed at `9d9da27`: idle RSS 34.93 MB, peak RSS 142.54 MB, within its unchanged 100/200 MB ceilings, and clean EOF reaping. It exercised 5,001 curated notes, 5,001 captures and 10,001 work rows. This does not override the R2 failure.
 
 Raw public reports and measurement logs remain outside the source tree under `/home/dev/tmp/amem-196-capture` on the dgx02 development-container home volume. Diagnostic logs are in `r2-attribution/`; corrected-harness logs and reports use the `9d9da27-` prefix. The integrated R2 run is `integrated-r2.log`.
+
+## Review recheck and RSS component attribution
+
+The reviewer accepted shorter dense results on exhaustion: no duplicate, null or fake fillers, no additional curated notes; preserve the curated cohort and relative order, and exact slots whenever sufficient capture groups exist. A direct library/MCP regression now covers three same-session captures ahead of two older curated notes and asserts exactly three returned hits.
+
+The following three unmodified R2 runs at `db272294638dcde648785aa9a0ba0feeda4f880f` were declared in advance and all retained. Every workload, real timeout path and R1 check passed on the first group attempt. They are additional observations, not replacements for the failures above.
+
+| Run | Outcome | Plain p95, ms | Maximum workload RSS, MB | Maximum timeout RSS, MB |
+|---|---|---:|---:|---:|
+| 1 | Pass | 76.82 | 77.00 | 73.50 |
+| 2 | Pass | 73.89 | 78.75 | 75.25 |
+| 3 | Pass | 75.73 | 77.00 | 70.00 |
+
+A separate three-run component trace also passed, but was instrumented and is not unmodified gate evidence. It established a variable accounting path in the existing native helper sampler:
+
+- `hook-native.ts` uses Linux `ownPeak || raw`. A dash helper was observed with `VmHWM = 0`, causing its reaped `raw` value of 37,632 KiB to enter combined accounting. Other helpers had a nonzero image peak of 1,792 KiB despite reaped raw values of 28,672-37,632 KiB.
+- In one traced SessionStart, parent image peak 39,424 KiB plus origin fallback 37,632, metadata image peak 1,792 and signature image peak 1,792 produced 80,640 KiB (78.75 MB). A nonzero 1,792 KiB origin sample would instead contribute 35 MB less. The existing Linux raw fallback can include launcher high-water, so adding it is conservative and can duplicate launcher residency.
+- Worker output adds its own image peak to native helper usage; parent metrics then add that aggregate to the parent image peak. The raw column on the Bun-worker path contains the reaped Bun worker, not that worker's separately summed native helpers. Thus raw below recorded is not, by itself, a physical-memory verdict.
+
+This trace identifies an observed source of combined-RSS variation. It does not retrospectively prove which component caused the original 103-126 MB failures, which were not traced, and does not waive them. No resource accounting, policy, sanitizer or gate was changed. The complete final-head run inventory is recorded in [PR #197](https://github.com/STAIxBWLB/agent-mem/pull/197) without changing the tested head to insert its results.
+
+The pre-existing stage diagnostic anchored an inline notice statement that had moved into `sessionNoticeAndLimit`; another anchor matched both resume and normal context assignment. Only the two diagnostic marker strings were narrowed to the normal brief branch. All timing assertions, samples and deadlines remain. At `03237db8db73`, cold known-work context completed in 67.31 ms and full-foreign context in 68.93 ms, both below 140 ms. The workflow does run this diagnostic, but its `singleAttemptTiming` failures are advisory on GitHub Actions, explaining prior green CI despite the broken preload. Local dgx02 now executes and passes the actual diagnostic.
