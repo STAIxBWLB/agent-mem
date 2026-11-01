@@ -11,7 +11,7 @@ import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { budgetGroup } from "./budget-attempt.ts";
 
-const RUNS = 40, MAX_FOLLOW_UPS = 16;
+const RUNS = 40, MAX_FOLLOW_UPS = 24;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const key = (row: { event: string; excerpt: string }) => JSON.stringify([row.event, row.excerpt]);
 const summary = (row: { event: string }) => ["Title", "Recap", "Compact"].includes(row.event);
@@ -99,9 +99,9 @@ async function measure() {
       await verifyReplay(f, digest, expected);
     }
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
-      const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
+      const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), firstInvocationWallP95Ms = p95(rows.filter(row => row.followUp === 0).map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
-        maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms: p95(rows.filter(row => row.followUp === 0).map(row => row.wallMs)), wallP95Ms, peakRssMB, wallPass: wallP95Ms < 150, rssPass: peakRssMB < 100 };
+        maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, wallP95Ms, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssPass: peakRssMB < 100 };
     });
     return { groups, samples };
   } finally { f.close(); }

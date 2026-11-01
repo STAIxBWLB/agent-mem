@@ -4277,8 +4277,16 @@
       {
         "raw": "native-first-final-cpu1/",
         "outcome": "84focused pass486assertions; N8coldburst advanced tooffset5395 on9thphysical call, allknown, thenboundedcompletionfailed. FinalN16 chosen; no productionbudget/sourcechange."
+      },
+      {
+        "raw": "native-first-n16-cpu1/",
+        "outcome": "84focused pass486assertions; on logicalburst10, call17 reachedoffset6712 withknownRSS, thenN16bounded-completionfailed; no numerical R2failure observed. FinalN24 chosen and first-callp95 also gated at unchanged150ms."
+      },
+      {
+        "raw": "native-first-final-standard/",
+        "outcome": "Full2431pass7skip2fail; bothfailures are numeric recovery-diagnostic needle for renameddeadlineStop. Assertions/timeouts retained, fixture needle updated."
       }
     ],
-    "finalMaxAdditionalInvocations": 16
+    "finalMaxAdditionalInvocations": 24
   }
 }
