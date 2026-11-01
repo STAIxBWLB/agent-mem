@@ -35,7 +35,10 @@ test("legacy summary history is explicitly partial until bounded backfill or off
 test("a small readonly legacy history is complete without creating derived tables", () => {
   const f = fixture(); legacy(f, 10, false);
   const store = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
+  const file = join(store.dir, "capture.db");
   try { expect(store.readBriefSummaries()).toEqual({ rows: [], partial: false }); } finally { store.close(); }
+  const db = new Database(file, { readonly: true });
+  try { expect(db.query("SELECT name FROM sqlite_master WHERE name='brief_summaries_v1'").all()).toEqual([]); } finally { db.close(); }
 });
 
 test("a published 0.18.0 writer maintains the new summary index through SQLite triggers", () => {
@@ -47,7 +50,8 @@ test("a published 0.18.0 writer maintains the new summary index through SQLite t
   const store = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
   let file: string;
   try { file = join(store.dir, "capture.db"); expect(store.readBriefSummaries().rows.map(row => row.excerpt)).toEqual(["from old writer"]); } finally { store.close(); }
-  const db = new Database(file!); try { db.run("DELETE FROM rows"); } finally { db.close(); }
+  const db = new Database(file!);
+  try { db.run("DELETE FROM rows"); expect((db.query("SELECT COUNT(*) AS n FROM brief_summaries_v1").get() as { n: number }).n).toBe(0); } finally { db.close(); }
   const after = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
   try { expect(after.readBriefSummaries().rows).toEqual([]); } finally { after.close(); }
 });
