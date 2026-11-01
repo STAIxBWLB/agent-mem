@@ -387,15 +387,22 @@ export class CaptureStore {
   }
 
   private mcpReady = false;
+  private briefReady = false;
+  private prepareBriefSummaryIndex(): void {
+    if (this.readOnly || this.briefReady) return;
+    try {
+      this.ensureBriefSummaryIndex();
+      this.db.transaction(() => this.completeBriefSummaryIndex()).immediate();
+      this.briefReady = true;
+    } catch { /* Optional derived coverage remains partial; query engines remain independent. */ }
+  }
   /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
   private ensureMcpFts(): boolean {
     if (this.readOnly) return !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
     if (!fts5Available()) return false;
     if (this.mcpReady) return true;
     try {
-      this.ensureBriefSummaryIndex();
       this.db.transaction(() => {
-        this.completeBriefSummaryIndex();
         const hadMcp = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
         const body = (row: string) => `${row}.excerpt || char(10) || COALESCE((SELECT group_concat(value, ' ') FROM json_each(${row}.paths)), '') || char(10) || ${row}.event`;
         this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS mcp_fts USING fts5(body)");
@@ -713,6 +720,7 @@ export class CaptureStore {
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     this.checkReadBinding();
+    if (window.query !== undefined) this.prepareBriefSummaryIndex();
     const { columns, where, bind } = readWindowSql(window, "id", "integer");
     if (this.recentReadIds) {
       if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");

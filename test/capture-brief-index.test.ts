@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import * as searchFts from "../src/memory/search-fts.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
@@ -54,4 +55,17 @@ test("a published 0.18.0 writer maintains the new summary index through SQLite t
   try { db.run("DELETE FROM rows"); expect((db.query("SELECT COUNT(*) AS n FROM brief_summaries_v1").get() as { n: number }).n).toBe(0); } finally { db.close(); }
   const after = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
   try { expect(after.readBriefSummaries().rows).toEqual([]); } finally { after.close(); }
+});
+
+test("off-hook summary completion remains available with the substring fallback", () => {
+  const f = fixture(); legacy(f, 1000);
+  const probe = spyOn(searchFts, "fts5Available").mockReturnValue(false);
+  let store: CaptureStore | undefined;
+  try {
+    store = new CaptureStore({ memoryDir: f.base, project: f.project });
+    expect(store.readBriefSummaries().partial).toBe(true);
+    expect(store.readPage({ project: f.project, query: "legacy", match: "substring", limit: 1 }).rows.length).toBe(1);
+    expect(store.readBriefSummaries().rows.map(row => row.excerpt)).toEqual(["legacy recap"]);
+    expect(store.readBriefSummaries().partial).toBe(false);
+  } finally { store?.close(); probe.mockRestore(); }
 });
