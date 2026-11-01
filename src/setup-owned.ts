@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "./setup-toml.ts";
-import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp } from "./setup-jcode.ts";
+import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, restoreJcodeHooks } from "./setup-jcode.ts";
 import { readAgyMcp, putAgyMcp, restoreAgyMcp } from "./setup-agy.ts";
 import { readOpencodeMcp, putOpencodeMcp, restoreOpencodeMcp } from "./setup-opencode.ts";
 export interface ConfigImage { bytes: string | null; mode: number }
@@ -119,6 +119,7 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
   if (target === "agy" && index === 0) return restoreAgyMcp(before, after, current);
   if (target === "opencode" && index === 0) return restoreOpencodeMcp(before, after, current);
   if (target === "jcode" && index === 0) return restoreJcodeMcp(before, after, current);
+  if (target === "jcode" && index === 1) return restoreJcodeHooks(before, after, current);
   if (sameImage(current, after)) return before;
   if (sameImage(current, before)) return current;
   // Qwen keeps both managed surfaces in one settings file and one receipt image.
@@ -136,6 +137,7 @@ export function managedAfter(target: string, index: number, before: ConfigImage,
     return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current)) && needed.every(row => live.some(value => value.id === row.id));
   }
   if (index === 0) return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current));
+  if (target === "jcode") return jcodeHooksManaged(before, after, current);
   if (target === "claude" || target === "codex") {
     const needed = added(hooks(json(before)), hooks(json(after)), row => row.id), live = hooks(json(current));
     return needed.every(row => live.some(value => value.id === row.id));

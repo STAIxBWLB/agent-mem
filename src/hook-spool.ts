@@ -28,7 +28,10 @@ const hash = (value: string | Uint8Array) => createHash("sha256").update(value).
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
-interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true }
+/** #203: the agent a staged record belongs to. Claude hooks and jcode lifecycle observers share this spool, budget and replay. */
+export const HOOK_AGENTS = ["claude", "jcode"] as const;
+export type HookAgent = typeof HOOK_AGENTS[number];
+interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true; agent?: HookAgent }
 const directory = (base: string) => join(base, "hook-spool");
 /** A hook below the home's hook-spool floor (#199 AC5) stages, drains and maintains nothing; it still never denies a native action. */
 function belowFloor(base: string): boolean {
@@ -290,7 +293,7 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
-      || c.agent !== "claude" || !(HOOK_EVENTS as readonly string[]).includes(c.event)
+      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || !(HOOK_EVENTS as readonly string[]).includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
@@ -490,7 +493,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // a non-empty agent_id marks a subagent (or in-process teammate) event. Both are read from the already-screened input.
   const session = typeof value.session_id === "string" && value.session_id.length > 0 && value.session_id.length <= 256 ? hash(`amem-session\0${value.session_id}`).slice(0, 16) : undefined;
   const subagent = typeof value.agent_id === "string" && value.agent_id.length > 0;
-  const capture = normalizeCaptureFields({ agent: "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
+  const capture = normalizeCaptureFields({ agent: options.agent ?? "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
     ...(session ? { session } : {}), ...(subagent ? { subagent: true } : {}),
     ...(typeof value.tool_name === "string" ? { tool: value.tool_name } : {}), excerpt },
     undefined,

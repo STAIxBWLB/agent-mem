@@ -5,6 +5,9 @@ import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type Co
 import { opencodeServer } from "./setup-opencode.ts";
 import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
 import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
+import { JCODE_CAPTURE_EVENTS, putJcodeHooks } from "./setup-jcode.ts";
+/** jcode parses hook command lines shell-style and runs them directly (no shell), so single quotes group each path. */
+const jcodeHookCommand = (bun: string, entry: string) => `${quote(bun)} --smol ${quote(entry)} hook jcode`;
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -202,12 +205,12 @@ function assertOpencodeLayout(c: ReturnType<typeof context>, mode: SetupPlan["mo
   for (const name of ["opencode.jsonc", "config.json"]) if (read(join(dir, name)).bytes !== null) throw Error(`OpenCode setup supports one strict-JSON global opencode.json; ${name} beside it is merged too and is not supported`);
   if ([c.bun, c.entry].some(value => /\{(?:env|file):/.test(value))) throw Error("OpenCode substitutes {env:} and {file:} in configuration; setup cannot register this runtime exactly");
 }
-function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
+function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "jcode" ? ["jcode-hooks-v1"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
 function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
-  if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length) throw Error("setup receipt does not match this installation");
+  if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
     const change = record(value.changes[i]); const currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
     if (change.path !== currentPath && !legacyRedirect || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
@@ -223,12 +226,13 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   return value as unknown as Receipt;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
-  if (target === "jcode" || target === "opencode" || target === "gemini" || target === "agy") return [];
+  if (target === "jcode") return JCODE_CAPTURE_EVENTS.map(event => ({ event, command: jcodeHookCommand(c.bun, c.entry), timeout: 1 }));
+  if (target === "opencode" || target === "gemini" || target === "agy") return [];
   const launch = `${quote(c.bun)} --smol ${quote(c.entry)}`;
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}${target === "pi" ? "" : " --json"}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
-const lifecycle = (target: SetupTarget) => target === "jcode" || target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+const lifecycle = (target: SetupTarget) => target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "jcode" ? "post_tool and turn_end capture hooks" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
@@ -252,7 +256,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     for (const id of [...ids].filter(key => /^agent-mem(?:@[A-Za-z0-9._-]+)?$/.test(key))) pluginNotes.push(`Installed Claude plugin ${id} detected: if enabled, direct setup would duplicate its MCP server and seven hooks. Choose plugin installation or direct setup; disable/uninstall the plugin before applying direct setup.`);
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
-  if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP only. Native saved sessions do not prove per-message project scope, so capture and ingest hooks are unavailable; no hook or config.toml is installed.");
+  if (targets.includes("jcode")) pluginNotes.push("Jcode setup registers MCP and adds `amem hook jcode` to the post_tool and turn_end lifecycle hooks in JCODE_HOME/config.toml, keeping any existing command for those events (array form). Each event is scoped by its own JCODE_HOOK_CWD; events with no cwd, or outside a project, are skipped. Saved sessions and journals are still not ingested (no per-message origin), and user prompts are not captured.");
   if (targets.includes("gemini")) pluginNotes.push("Gemini CLI setup registers MCP only, at user scope in ~/.gemini/settings.json (GEMINI_CLI_HOME moves it), through the native gemini mcp add in a private staging HOME. Antigravity's ~/.gemini/config/mcp_config.json is never touched. A workspace .gemini/settings.json defining mcpServers.amem overrides this entry. No hook or ingest is installed: see docs/gemini-cli.md for why transcripts are not ingested.");
   if (targets.includes("opencode")) pluginNotes.push("OpenCode setup registers MCP only in the global strict-JSON opencode.json (mcp.amem, a local server started in the session's project directory). No plugin or ingest hook is installed: see docs/opencode.md for why transcripts are not ingested. A project opencode.json defining mcp.amem overrides this entry.");
   if (c.workspace) {
@@ -437,6 +441,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     } else if (target === "jcode") {
       // Shared native pools use the daemon cwd; amem must bind the calling session's project.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], shared: false });
+      changes[1]!.after = putJcodeHooks(changes[1]!.before, jcodeHookCommand(c.bun, c.entry));
     } else if (target === "opencode") {
       // `opencode mcp add` is interactive for local servers and has no remove; edit the owned entry directly.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, opencodeServer(c.bun, c.entry));

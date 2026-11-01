@@ -4,7 +4,8 @@ import { hookProcessSignature } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { hookPeakRssKB } from "./hook-resources.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
-import { stageHookCapture, hookCaptureScope, HookSpoolFull, type PendingHookCapture } from "./hook-spool.ts";
+import { stageHookCapture, hookCaptureScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
+import { jcodeHookCapture } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
@@ -25,7 +26,7 @@ function handlerMs(host?: HookHostPorts): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 10_000) throw new TypeError("invalid hook host deadline");
   return value;
 }
-export interface HookOptions { cwd: string; base?: string; policy?: StandalonePolicyOptions; maxTokens?: number; startedAt?: number }
+export interface HookOptions { cwd: string; base?: string; policy?: StandalonePolicyOptions; maxTokens?: number; startedAt?: number; agent?: HookAgent }
 export interface HookReceipt {
   captured: boolean; skipped: boolean;
   /** Screened capture is durable but still awaits project-bound replay. */
@@ -244,6 +245,14 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   try {
     if (args.length !== 1) return "";
+    if (args[0] === "jcode") {
+      // #203: jcode observers have no stdin and discard stdout; the event and its cwd arrive in the environment.
+      const jcode = jcodeHookCapture(process.env);
+      if (!jcode) return "";
+      const result = await captureAndWork(jcode.event, jcode.input, { cwd: jcode.cwd, agent: "jcode" }, canonicalPath(memoryHome()), startedAt + deadlineMs - 3);
+      if (result) { childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; dropped = "dropped" in result && result.dropped === true; }
+      return "";
+    }
     const reader = Bun.stdin.stream().getReader();
     cleanup = async () => { await reader.cancel().catch(() => {}); reader.releaseLock(); };
     const chunks: Uint8Array[] = []; let length = 0;
