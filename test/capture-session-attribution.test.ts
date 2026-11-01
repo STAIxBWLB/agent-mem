@@ -90,6 +90,7 @@ test("older rows without the columns read unchanged, and the shard gains the col
   legacy.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "pre-173 row" }); legacy.close();
   // Simulate a pre-#173 shard: drop the new columns.
   const db = new Database(join(dir, "capture.db"));
+  db.run("DROP INDEX IF EXISTS rows_brief_summaries_v1");
   db.run("ALTER TABLE rows DROP COLUMN session"); db.run("ALTER TABLE rows DROP COLUMN subagent"); db.close();
   const reopened = new CaptureStore({ memoryDir: f.base, project: f.project });
   try {
@@ -104,7 +105,7 @@ test("two first opens after upgrade migrate concurrently: a column added between
   const f = fixture();
   const first = new CaptureStore({ memoryDir: f.base, project: f.project }), file = join(first.dir, "capture.db");
   first.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "pre-upgrade row" }); first.close();
-  const legacy = new Database(file); legacy.run("ALTER TABLE rows DROP COLUMN session"); legacy.run("ALTER TABLE rows DROP COLUMN subagent"); legacy.close();
+  const legacy = new Database(file); legacy.run("DROP INDEX IF EXISTS rows_brief_summaries_v1"); legacy.run("ALTER TABLE rows DROP COLUMN session"); legacy.run("ALTER TABLE rows DROP COLUMN subagent"); legacy.close();
   // Writer A has read table_info (no columns); writer B's ALTERs land before each of A's ALTERs.
   const a = new Database(file), b = new Database(file);
   try {

@@ -109,7 +109,7 @@ test("amem mcp keeps answering from its own code after its install root is remov
 });
 
 // CLI-only modules: no MCP handler reaches them, so `amem mcp` does not load them.
-const CLI_ONLY = ["hooks.ts", "ingest.ts", "setup.ts", "setup-console.ts", "session-brief.ts", "memory/decay-review.ts", "memory/goal-promotion.ts"];
+const CLI_ONLY = ["hooks.ts", "hook-transcript.ts", "ingest.ts", "setup.ts", "setup-console.ts", "session-brief.ts", "memory/decay-review.ts", "memory/goal-promotion.ts"];
 test("every lazy import under src/ is preloaded by amem mcp or named CLI-only", () => {
   const src = join(PACKAGE, "src"), found = new Set<string>();
   const walk = (dir: string) => { for (const entry of readdirSync(dir, { withFileTypes: true })) {
