@@ -58,7 +58,7 @@ An earlier N=8 series on the production source measured at `5bfcbe1` passed 382 
 
 All 103 burst summaries were durable and replayed without duplicates; every RSS source was known. Ordinary hook/jcode R2 also passed on its first suite, and R1 reaped all 136 observed invocations/owned children. The numeric receipt retains every transcript physical sample in a compact column/row format, plus all failed and diagnostic runs.
 
-N1: the exact cause of the trigger-era dgx02 cold-burst invocation 16 remains unconfirmed and was not reproduced after the partial-index rewrite. #212 corrected the matching Darwin completed-rusage/held-pipe receipt-order mechanism; #211 subsequently moved native ownership into the metric-writing parent. These mechanism fixes do not identify the exact old invocation or retroactively turn its failed gate into a pass or flake.
+N1: the exact cause of the trigger-era dgx02 cold-burst invocation 16 remains unconfirmed; that dgx02 failure did not recur in the partial-index acceptance runs. #212 corrected the matching Darwin completed-rusage/held-pipe receipt-order mechanism; #211 subsequently moved native ownership into the metric-writing parent. These mechanism fixes do not identify the exact old invocation or retroactively turn its failed gate into a pass or flake.
 
 ## Partial-index design choice
 

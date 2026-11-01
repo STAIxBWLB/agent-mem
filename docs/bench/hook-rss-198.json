@@ -17383,6 +17383,125 @@
       }
     ],
     "outcome": "pass",
-    "ordinaryReportScope": "Literal main emits ordinary/jcode group aggregates and source totals; transcript reports retain each physical invocation and measured sample. New per-sample ordinary report fields are a later change."
+    "ordinaryReportScope": "Literal main emits ordinary/jcode group aggregates and source totals; transcript reports retain each physical invocation and measured sample. New per-sample ordinary report fields are a later change.",
+    "summary": [
+      {
+        "workload": "hooks",
+        "group": "plain",
+        "calls": 400,
+        "wallP95MinMs": 74.17,
+        "wallP95MaxMs": 80.58,
+        "peakRssMB": 80.47
+      },
+      {
+        "workload": "hooks",
+        "group": "spoolAndExit",
+        "calls": 150,
+        "wallP95MinMs": 72.12,
+        "wallP95MaxMs": 80.95,
+        "peakRssMB": 75.25
+      },
+      {
+        "workload": "hooks",
+        "group": "sessionStart",
+        "calls": 200,
+        "wallP95MinMs": 61.73,
+        "wallP95MaxMs": 65.63,
+        "peakRssMB": 44.61
+      },
+      {
+        "workload": "hooks",
+        "group": "sessionStartRepoLog",
+        "calls": 200,
+        "wallP95MinMs": 65.31,
+        "wallP95MaxMs": 67.69,
+        "peakRssMB": 46.36
+      },
+      {
+        "workload": "hooks",
+        "group": "drain",
+        "calls": 10,
+        "wallP95MinMs": 77.84,
+        "wallP95MaxMs": 87.09,
+        "peakRssMB": 75.25
+      },
+      {
+        "workload": "hooks",
+        "group": "jcode",
+        "calls": 400,
+        "wallP95MinMs": 72.52,
+        "wallP95MaxMs": 79.16,
+        "peakRssMB": 75.25
+      },
+      {
+        "workload": "transcript",
+        "group": "Stop",
+        "calls": 400,
+        "wallP95MinMs": 83.81478100000004,
+        "wallP95MaxMs": 94.01326700000004,
+        "peakRssMB": 83.96875
+      },
+      {
+        "workload": "transcript",
+        "group": "SessionEnd",
+        "calls": 400,
+        "wallP95MinMs": 83.86333300000024,
+        "wallP95MaxMs": 93.08748100000003,
+        "peakRssMB": 78.75
+      },
+      {
+        "workload": "transcript",
+        "group": "StopBurst",
+        "calls": 2867,
+        "wallP95MinMs": 112.80604200000016,
+        "wallP95MaxMs": 114.61886800000138,
+        "peakRssMB": 91.859375
+      }
+    ]
+  },
+  "descendantCharacterization": {
+    "sourceHead": "a6a77c7019f4",
+    "rawDirectory": "/home/dev/tmp/amem-198/followup-a6a77c7",
+    "apiReference": "https://bun.sh/reference/bun/Subprocess/resourceUsage",
+    "result": {
+      "characterization": "hook-descendants/v1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "invocations": 1,
+      "includedInGate": false,
+      "gateCoverage": "images: bun+supervisor; descendants: not measured",
+      "cliRawMaxRssBytes": 40370176,
+      "cliUsageScope": "outer CLI handle only; raw rusage is not a process-tree maximum",
+      "observedOwnedImages": {
+        "supervisors": 2,
+        "workers": 1
+      },
+      "nativeCommandsInSupervisorArgv": [
+        "git"
+      ],
+      "descendants": [
+        {
+          "command": "git",
+          "maxRssBytes": null,
+          "status": "not measured",
+          "reason": "resourceUsage() belongs to a Bun-spawned handle after exit. The harness owns the CLI handle; Git and watchdog sleep are spawned natively below supervisors and have no separate Bun handles."
+        },
+        {
+          "command": "sleep",
+          "maxRssBytes": null,
+          "status": "not measured",
+          "reason": "resourceUsage() belongs to a Bun-spawned handle after exit. The harness owns the CLI handle; Git and watchdog sleep are spawned natively below supervisors and have no separate Bun handles."
+        }
+      ]
+    }
+  },
+  "followupFocusedChecks": {
+    "head": "a6a77c7019f4",
+    "result": "37 pass, 0 fail; tsc and boundary pass; one bounded characterization invocation",
+    "rawDirectory": "/home/dev/tmp/amem-198/followup-a6a77c7",
+    "previousCheck": {
+      "head": "07cc982",
+      "result": "tsc caught an unnarrowed platform literal in a new test; no resource workload ran"
+    }
   }
 }

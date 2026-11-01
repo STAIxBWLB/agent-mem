@@ -18,6 +18,30 @@ Before any source edit, the clean worktree at literal merged origin/main `c2d6ba
 
 The earlier hosted 90 MB target is withdrawn: main 884e90f already reached 94.7 MB on a cold Ubuntu Stop in hosted run 41345173905. The unchanged 100 MB gate and fail-closed unknown provenance apply to every run. A future rss-miss remains a regression. These ten runs are literal post-merge-main evidence, separate from the candidate-based series below and from the later follow-up validation.
 
+| Literal main workload | Calls across ten suites | Wall p95 range, ms | Maximum RSS, MB |
+|---|---:|---:|---:|
+| plain | 400 | 74.17-80.58 | 80.47 |
+| spoolAndExit | 150 | 72.12-80.95 | 75.25 |
+| sessionStart | 200 | 61.73-65.63 | 44.61 |
+| sessionStartRepoLog | 200 | 65.31-67.69 | 46.36 |
+| drain | 10 | 77.84-87.09 | 75.25 |
+| jcode | 400 | 72.52-79.16 | 75.25 |
+| Stop | 400 | 83.81-94.01 | 83.97 |
+| SessionEnd | 400 | 83.86-93.09 | 78.75 |
+| StopBurst | 2867 | 112.81-114.62 | 91.86 |
+
+## Descendant API characterization
+
+A separate single PostToolUse invocation on dgx02/Bun 1.4.2 observed two owned native supervisors and one Bun worker. The harness held the outer CLI's Bun Subprocess handle; its reported raw maxRSS was 40,370,176 bytes. That is a handle-level diagnostic, not a tree maximum or an R2 sample. Git was present in the supervisor argv. Git and watchdog sleep are spawned natively below those supervisors, so neither has an individual Bun handle from which the harness can read completed maxRSS. Both descendant results are explicitly null / not measured. No wrapper, dependency or descendant value was added to the gate.
+
+[Bun's resourceUsage API](https://bun.sh/reference/bun/Subprocess/resourceUsage) takes no PID and returns the represented process's usage only after exit; maxRSS is in bytes. The pinned-runtime invocation confirms that API on the owned CLI handle, while topology establishes the missing descendant ownership. The full characterization object is retained in the JSON receipt; raw result: `/home/dev/tmp/amem-198/followup-a6a77c7/characterization.json`.
+
+## Follow-up changes and validation
+
+The common measurement profile supplies the exact coverage literal and preserves fail-closed source/scope checks. Ordinary/jcode group reports now retain each existing sample profile instead of discarding it in aggregation; transcript, timeout and same-runner baseline profiles already spread the common result. This is report-only metadata and does not change a verdict, numeric bound, timing count or retry. The `vmpeak-bound` source remains wire code 1; the `vmpeakBound` counter and all RSS arithmetic are unchanged. Individually named tests cover HWM present, HWM zero with a bound and both image fields missing. The summary-index regression captures the actual read SQL and checks EXPLAIN for `rows_brief_summaries_v1` with no temporary B-tree; no production index/query change is made.
+
+Focused validation at `a6a77c7` passed 37 tests, tsc and boundary; the characterization ran once. An earlier test-only type error was corrected before any resource workload. Full final-head gates and post-edit resource results are reported in the follow-up PR after these receipt bytes are frozen. The earlier series below retain their original labels and outcomes.
+
 ## Consecutive series
 
 The complete numeric receipt is [hook-rss-198.json](hook-rss-198.json). Every physical attempt remains in the raw log named by each row under `/home/dev/tmp/amem-198/` on the dgx02 dev-container home volume.
