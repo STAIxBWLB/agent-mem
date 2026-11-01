@@ -23,7 +23,7 @@ function captureLines(context: string): { event: string; excerpt: string; id: nu
     .filter(line => line.section === "capture").map(line => line.data);
 }
 
-function add(f: ReturnType<typeof fixture>, event: string, excerpt: string, at: number, extra: { session?: string; subagent?: boolean } = {}): number {
+function add(f: ReturnType<typeof fixture>, event: string, excerpt: string, at: number, extra: { session?: string; subagent?: boolean; paths?: string[] } = {}): number {
   const row = f.capture.append({ project: f.project, agent: "claude", event, excerpt, paths: [], at: new Date(at).toISOString(), ...extra });
   if (!("id" in row)) throw new Error("fixture capture unexpectedly spooled");
   return row.id;
@@ -106,4 +106,16 @@ test("a policy-refused summary is not screened a second time or reintroduced by 
   expect(refusedChecks).toBe(1);
   expect(brief.context).not.toContain("refused recap");
   expect(captureLines(brief.context).map(row => row.excerpt)).toEqual(["allowed raw row"]);
+});
+
+test("a summary that exceeds the remaining bytes does not consume a raw record slot", async () => {
+  const f = fixture();
+  for (let index = 0; index < 4; index++) add(f, "PostToolUse", `r${index}`, f.now - 1000 + index);
+  const paths = ["a".repeat(80), "b".repeat(80)];
+  add(f, "Recap", "r".repeat(240), f.now - 100, { paths });
+  add(f, "Compact", "c".repeat(240), f.now - 50, { paths });
+  f.closeCapture();
+  const brief = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project, maxTokens: 640, now: () => f.now });
+  expect(captureLines(brief.context).map(row => row.excerpt)).toEqual(["r3", "r2", "r1"]);
+  expect(brief.tokens).toBeLessThanOrEqual(640);
 });

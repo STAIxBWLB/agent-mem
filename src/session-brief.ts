@@ -152,13 +152,13 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     let candidateLine: string | undefined;
     const line = pendingLine(pendingSummary(base, [project, ...aliases], (options.now ?? Date.now)()));
     if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
-    const add = async (section: Section, shown: { data: unknown; partial: boolean }, evidence: boolean) => {
-      if (!await screen(shown.data)) return;
+    const add = async (section: Section, shown: { data: unknown; partial: boolean }, evidence: boolean): Promise<boolean> => {
+      if (!await screen(shown.data)) return false;
       coverage[section] = shown.partial ? "partial" : coverage[section] ?? "complete";
       const line = JSON.stringify({ section, evidence, data: shown.data });
       const size = Buffer.byteLength(line) + 1;
-      if (Buffer.byteLength(line) > RECORD_BYTES || size > remaining) { coverage[section] = "partial"; return; }
-      lines.push(line); remaining -= size;
+      if (Buffer.byteLength(line) > RECORD_BYTES || size > remaining) { coverage[section] = "partial"; return false; }
+      lines.push(line); remaining -= size; return true;
     };
     const run = async (section: Section, work: () => Promise<void>) => {
       const firstLine = lines.length, priorRemaining = remaining;
@@ -259,8 +259,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           if (selectedSummaries >= 2) break;
           if (!await screen(row)) { summaryIds.add(row.id); continue; }
           summaryIds.add(row.id);
-          selectedSummaries++;
-          await add("capture", captureDisplay(row), false);
+          if (await add("capture", captureDisplay(row), false)) selectedSummaries++;
         }
         await recent("capture", window => capture.readPage(window), captureDisplay, selectedSummaries, summaryIds);
       });
