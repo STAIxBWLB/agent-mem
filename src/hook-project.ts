@@ -117,7 +117,7 @@ function prepareHookProject(options: ResolverOptions) {
       if (Object.keys(receipt).some(key => !["cwd", "base", "scope", "validity", "binary", "project"].includes(key))
         || receipt.cwd !== cwd || receipt.base !== base || receipt.scope !== scope || scope === undefined
         || receipt.validity !== validity || receipt.binary !== binary.revision || typeof receipt.project !== "string"
-        || !receipt.project || Buffer.byteLength(receipt.project) > 64 * 1024 || /[\p{Cc}]/u.test(receipt.project)) throw new Error("project receipt changed");
+        || !receipt.project || Buffer.byteLength(receipt.project) > 64 * 1024) throw new Error("project receipt changed");
       verify(); return receipt.project;
     },
     resolve(gitRead: ProjectGitRead, assertComplete?: () => void): string {
