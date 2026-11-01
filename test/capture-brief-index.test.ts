@@ -41,7 +41,7 @@ test("a small readonly legacy history is complete without creating derived table
 test("a published 0.18.0 writer maintains the new summary index through SQLite triggers", () => {
   const f = fixture(), initial = new CaptureStore({ memoryDir: f.base, project: f.project }); initial.close();
   const module = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018/src/memory/capture.ts")).href;
-  const code = `const {CaptureStore}=await import(${JSON.stringify(module)});const s=new CaptureStore(${JSON.stringify({ memoryDir: f.base, project: f.project, cwd: f.cwd })});try{s.append({agent:'fixture',event:'Recap',excerpt:'from old writer'});}finally{s.close();}`;
+  const code = `const {CaptureStore}=await import(${JSON.stringify(module)});const s=new CaptureStore(${JSON.stringify({ memoryDir: f.base, project: f.project, cwd: f.cwd })});try{s.append({project:${JSON.stringify(f.project)},agent:'fixture',event:'Recap',excerpt:'from old writer'});}finally{s.close();}`;
   const result = Bun.spawnSync([process.execPath, "--smol", "-e", code], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 5000 });
   expect(result.exitCode, result.stderr.toString()).toBe(0);
   const store = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
