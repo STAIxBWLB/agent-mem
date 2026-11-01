@@ -12,17 +12,18 @@ for (const stall of [false, true]) test(`native receipts precede transcript work
   writeFileSync(phases, "");
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 const phases=${JSON.stringify(phases)},worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)};
+globalThis.__phase201=(phase,known)=>appendFileSync(phases,JSON.stringify({phase,pid:process.pid,known})+'\\n');
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',preload,...argv.slice(2)],options):spawn(argv,options);
 Bun.plugin({name:'transcript-order',setup(builder){
 builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='    try { observer?.finished(selected); }';
  if(source.split(anchor).length!==2)throw Error('native receipt order anchor changed');
- return {loader:'ts',contents:source.replace(anchor,'    appendFileSync('+JSON.stringify(phases)+',JSON.stringify({phase:"native",pid:process.pid,known:selected.known})+"\\n");'+anchor)};
+ return {loader:'ts',contents:source.replace(anchor,"    (globalThis as any).__phase201('native',selected.known);"+anchor)};
 });
 builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='  const value = object(input);';
  if(source.split(anchor).length!==2)throw Error('transcript order anchor changed');
- return {loader:'ts',contents:source.replace(anchor,'  appendFileSync('+JSON.stringify(phases)+',JSON.stringify({phase:"scan",pid:process.pid})+"\\n");'+${JSON.stringify(stallCode)}+anchor)};
+ return {loader:'ts',contents:source.replace(anchor,"  (globalThis as any).__phase201('scan');"+${JSON.stringify(stallCode)}+anchor)};
 });}});
 `);
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "worker summary", timestamp: new Date().toISOString() }) + "\n");
