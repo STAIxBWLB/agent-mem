@@ -422,6 +422,50 @@ test("native-resolution maintenance removes malformed records and retains every 
   expect(existsSync(join(f.base, "hook-spool", ".quarantine"))).toBe(false);
 });
 
+for (const event of ["PostToolUse", "Stop"] as const) test("parent native failure retires malformed publication but retains valid pending: " + event, async () => {
+  const f = fixture("https://github.com/fixture/quarantine-parent"), config = join(f.cwd, ".git", "config"), original = readFileSync(config, "utf8");
+  const scope = hookCaptureScope(f.cwd, f.base), valid = await stageHookCapture("PostToolUse", { prompt: "valid native-refusal pending" }, f.options);
+  const broken = await stageHookCapture("PostToolUse", { prompt: "replaced malformed publication" }, f.options);
+  expect(scope).toBeDefined(); expect(valid).toBeDefined(); expect(broken).toBeDefined();
+  const preload = join(f.root, "malform-after-admission.ts"), entered = join(f.root, "malform-entered"), transcript = join(f.root, "transcript.jsonl");
+  const invalidBody = "RAW_MALFORMED_PUBLICATION_CANARY";
+  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
+globalThis.__malformPublication=()=>{writeFileSync(${JSON.stringify(join(f.base, "hook-spool", broken!.name))},${JSON.stringify(invalidBody)});writeFileSync(${JSON.stringify(entered)},'entered');};
+Bun.plugin({name:'malform-after-admission',setup(b){b.onLoad({filter:/[/]hook-project\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),anchor='  const reads = new Map<string, ReturnType<ProjectGitRead>>();';
+ if(source.split(anchor).length!==2)throw Error('native resolver entry anchor changed');
+ return {loader:'ts',contents:source.replace(anchor,'  (globalThis as any).__malformPublication();'+anchor)};
+});}});`);
+  appendFileSync(config, "\n[core]\nrepositoryformatversion = 999\n");
+  expect(hookCaptureScope(f.cwd, f.base)).toBe(scope);
+  writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "summary with unresolved native project" }) + "\n");
+  const result = f.runFunctional(event, { prompt: "current unresolved capture", ...(event === "Stop" ? { transcript_path: transcript } : {}) }, { BUN_OPTIONS: `--preload=${preload}` });
+  expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
+  expect(hookCapturePending(f.base, broken!.name)).toBe(false);
+  expect(hookCapturePending(f.base, valid!.name)).toBe(true);
+  expect(f.pending().filter(row => row.value.capture.excerpt === "valid native-refusal pending")).toHaveLength(1);
+  expect(f.rows()).toHaveLength(0);
+  const metrics = readMetrics(f.base);
+  expect(metrics.filter(row => row.captureDropReason === "malformed_publication").reduce((n, row) => n + (row.captureDrops ?? 0), 0)).toBe(1);
+  expect(JSON.stringify(metrics)).not.toContain(invalidBody);
+  writeFileSync(config, original);
+  expect(f.runFunctional("PostToolUse", { prompt: "healthy quarantine recovery" }).exitCode).toBe(0);
+  expect(f.rows().filter(row => row.excerpt === "valid native-refusal pending")).toHaveLength(1);
+  expect(f.rows().some(row => row.excerpt === "replaced malformed publication")).toBe(false);
+  expect(hookCapturePending(f.base, valid!.name)).toBe(false);
+  if (event === "Stop") expect(f.rows().filter(row => row.excerpt === "summary with unresolved native project")).toHaveLength(1);
+});
+
+test("native-failure malformed maintenance respects a raised hook-spool floor", async () => {
+  const f = fixture(), staged = await stageHookCapture("PostToolUse", { prompt: "below-floor malformed fixture" }, f.options), scope = hookCaptureScope(f.cwd, f.base)!;
+  expect(staged).toBeDefined();
+  writeFileSync(join(f.base, "hook-spool", staged!.name), "RAW_BELOW_FLOOR_CANARY");
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "hook-spool", minReader: "99.0.0", since: "2026-11-01" }]));
+  expect(quarantineHookScope({ ...f.options, scope }).retired).toBe(0);
+  expect(readFileSync(join(f.base, "hook-spool", staged!.name), "utf8")).toBe("RAW_BELOW_FLOOR_CANARY");
+  expect(readMetrics(f.base).some(row => row.captureDrops)).toBe(false);
+});
+
 test("native fatal Git resolution retains pending for retry and never uses a local fallback", async () => {
   const f = fixture("https://github.com/fixture/native-fatal"), config = join(f.cwd, ".git", "config");
   const original = readFileSync(config, "utf8"), scope = hookCaptureScope(f.cwd, f.base);

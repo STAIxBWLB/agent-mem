@@ -448,7 +448,7 @@ function retireUnresolved(base: string, _admittingCwd: string | undefined, inven
  * discard a valid pending record; only positively invalid publications leave admission. */
 export function quarantineHookScope(options: { cwd: string; base: string; scope: string }): { retired: number } {
   let retired = 0;
-  if (!/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
+  if (belowFloor(options.base) || !/^[a-f0-9]{64}$/.test(options.scope)) return { retired };
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), cwdHash = hash(cwd);
   trimQuarantine(base);
   const rows = entries(base).filter(row => {
@@ -465,7 +465,10 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim), match = namePattern.exec(row.name)!;
       const valid = !!record && record.value.cwd === cwd && record.value.scope === options.scope && record.value.nonce === match[4];
-      if (!valid && retireClaim(base, claim, false)) retired++;
+      if (!valid) {
+        appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "malformed_publication" }]);
+        if (retireClaim(base, claim, false)) retired++;
+      }
     } catch { /* A transient failure or foreign replacement is never treated as acknowledgement. */ }
     finally { if (file) closeSync(file.fd); }
   }

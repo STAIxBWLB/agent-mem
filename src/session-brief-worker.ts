@@ -6,7 +6,7 @@ import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
-import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
+import { drainHookCaptures, hookCaptureScope } from "./hook-spool.ts";
 
 async function readOptions(): Promise<string> {
   const reader = Bun.stdin.stream().getReader(), chunks: Uint8Array[] = []; let bytes = 0;

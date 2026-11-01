@@ -5,7 +5,7 @@ import { resolveAlias } from "./memory/aliases.ts";
 import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
-import { stageHookCapture, drainHookCaptures, hookCaptureScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
+import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
 import { jcodeHookCapture } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -101,6 +101,8 @@ async function parentProject(options: HookOptions, base: string, deadline: numbe
     project = await resolveHookProjectAsync({ cwd, base, scope, timeRemaining: () => deadline - performance.now(), maintainCache: true, prefetch: true,
       onResolved: value => { receipt = value; } }, usage);
   } catch { /* All native finally/reap barriers have completed before this returns. */ }
+  if (project === undefined && scope !== undefined) try { quarantineHookScope({ cwd, base, scope }); }
+  catch { /* Failed maintenance cannot change native fail-open behavior or its accounting. */ }
   return { cwd, scope, project, receipt, usage };
 }
 
