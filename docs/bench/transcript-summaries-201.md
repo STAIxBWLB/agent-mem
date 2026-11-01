@@ -4,6 +4,28 @@ Issue #201 captures Claude Code's existing titles, recaps and compaction summari
 
 [The numeric receipt](transcript-summaries-201.json) retains the final physical summary samples, runner probes, earlier receipt and all subsequent attempts. Raw logs and public retrieval reports are on the dgx02 development-container home volume under `/home/dev/tmp/amem-201/`. No resource failure or withdrawn design is treated as a passing acceptance run.
 
+## Native-first timing correction and resumed workload
+
+Hosted run `41287687151` failed the rebased `e8913da` in the transcript step: macOS reported `platformRusage:2, unavailable:2`; Ubuntu reported scan progress unavailable. Ordinary hook budgets passed. The new source completes and reaps the existing native project-metadata helpers before scanning, inside the same owned worker. Ordinary capture is durably staged first. No native helper is started after transcript work consumes its slice. The 140 ms handler, 25 ms worker cleanup reserve, 60 ms maximum scan slice and 150 ms / 100 MB R2 limits are unchanged. The existing 20 ms private reserve permits cursor commit and drain before worker reap. Initial cursor schema/identity/time are now created in one fully durable transaction, avoiding redundant initial commits.
+
+A controlled Darwin-codepath comparison with an owned 50 ms metadata delay identifies the matching mechanism: old ordering left both native supervisor ids active without a completion frame at worker death, yielding two known platform readings plus two unavailable components. Native-first ordering reaped both and delivered their sources before scanning, yielding four known platform readings and no unavailable component. This proves the mechanism, not the exact untraced hosted invocation. The emulation uses Linux inherited wait4 peaks (108.5 / 133 MB); those numbers are not memory-gate attempts. Raw reports: `darwin-native-window/old.jsonl` and `fixed.jsonl`.
+
+CPU=1 with an owned CPU hog reproduced the progress guard: a first Title was committed at offset 107 after its staging crossed the scan deadline, while the harness incorrectly required all three summaries through offset 334. The resume contract permits this partial prefix. The scanner now reports numeric committed offset plus a bounded stop reason (`cap`, `deadline`, `spool_full`). The parent can report its actual worker deadline when it reaps before a progress frame. No source path, session id or summary text enters the metric.
+
+Per the reviewer ruling, the harness permits at most **N=8 additional invocations** per logical workload. Every call, including every resumption, is timed and included in the unchanged R2 gates. Zero progress requires an explicit stop reason; backwards or over-256-KiB progress and unknown RSS still fail. All 3 normal or 103 burst summary keys must be durable by that bound. A bounded library replay, with the same HOME privacy binding as the real CLI, then verifies exactly one stored row per summary; it launches no additional hook invocation.
+
+The production source measured at `5bfcbe1` passed 382 physical transcript samples on the first group attempt. The maximum observed follow-up count was 7. Subsequent changes only strengthen fixture HOME restoration on failure and add a negative-control regression. Final delivery-head checks and CPU=1 results are reported in the PR after these document bytes are frozen.
+
+| Workload | Logical workloads | Actual calls | Resume calls | Wall p95, ms | Peak RSS, MB |
+|---|---:|---:|---:|---:|---:|
+| Stop | 40 | 40 | 0 | 91.15 | 78.75 |
+| SessionEnd | 40 | 40 | 0 | 88.18 | 78.75 |
+| Stop burst | 40 | 302 | 262 | 114.45 | 87.50 |
+
+All 103 burst summaries were durable and replayed without duplicates; every RSS source was known. Ordinary hook/jcode R2 also passed on its first suite, and R1 reaped all 136 observed invocations/owned children. The numeric receipt retains every transcript physical sample in a compact column/row format, plus all failed and diagnostic runs.
+
+The original trigger-era dgx02 invocation's exact unknown-provenance cause remains unconfirmed. Later partial-index dgx02 acceptance did not reproduce it; subsequent hosted failures did reproduce the unknown-provenance class. #212 fixes completed rusage delayed behind pipe teardown; this revision fixes native intents started too late after scanning. Neither diagnosis retroactively labels the original failed invocation as a pass or flake.
+
 ## Partial-index design choice
 
 A controlled probe used the same 500,001-row capture store (50,000,123 declared row bytes, 68,300,800 physical database bytes). With no summary, brief generation took 4.545 ms using the partial index and 11.313 ms using the bounded fallback. One-time partial-index construction took 32.938 ms. With an older recap outside the recent window, the indexed brief took 4.642 ms and rendered the recap; the fallback took 4.267 ms and could not reach it. Raw evidence: `partial-index-comparison/result.json`.
