@@ -4273,7 +4273,12 @@
       {
         "raw": "progress-final-focus-fixed/",
         "outcome": "23focused tests,0fail106assertions; includes metadata-refusal/replay, lateprogress-offset, forcedreap knownRSS and malformedprogress failclosed."
+      },
+      {
+        "raw": "native-first-final-cpu1/",
+        "outcome": "84focused pass486assertions; N8coldburst advanced tooffset5395 on9thphysical call, allknown, thenboundedcompletionfailed. FinalN16 chosen; no productionbudget/sourcechange."
       }
-    ]
+    ],
+    "finalMaxAdditionalInvocations": 16
   }
 }
