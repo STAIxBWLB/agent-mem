@@ -2,6 +2,8 @@
 
 Issue #196 adds a bounded Claude tool-input line, a fixed 1.25x conversational-event ordering weight, and one capture result per attributed session. It preserves the legacy unweighted non-capture cohort before refilling capture slots. Returned score fields retain their previous meaning. Missing session hashes are independent groups.
 
+The original measurements below are retained. The latest post-review iterator/recency correction and renewed retrieval evidence are in the task 77 section at the end.
+
 ## Measurement boundary
 
 These are retrieval and resource checks, not an adoption claim. The private 70-query transcript comparison (AC6) belongs to the reviewer and was not accessed by the implementer.
@@ -78,3 +80,18 @@ A separate three-run component trace also passed, but was instrumented and is no
 This trace identifies an observed source of combined-RSS variation. It does not retrospectively prove which component caused the original 103-126 MB failures, which were not traced, and does not waive them. No resource accounting, policy, sanitizer or gate was changed. The complete final-head run inventory is recorded in [PR #197](https://github.com/STAIxBWLB/agent-mem/pull/197) without changing the tested head to insert its results.
 
 The pre-existing stage diagnostic anchored an inline notice statement that had moved into `sessionNoticeAndLimit`; another anchor matched both resume and normal context assignment. Only the two diagnostic marker strings were narrowed to the normal brief branch. All timing assertions, samples and deadlines remain. At `03237db8db73`, cold known-work context completed in 67.31 ms and full-foreign context in 68.93 ms, both below 140 ms. The workflow does run this diagnostic, but its `singleAttemptTiming` failures are advisory on GitHub Actions, explaining prior green CI despite the broken preload. Local dgx02 now executes and passes the actual diagnostic.
+
+## Task 77: single iterator ordered by the complete score
+
+Review found two introduced library-search defects: repeated OFFSET queries re-sorted the match set when too few sessions existed, and raw event-weighted ordering could stop before reading a better recent row. The grouped capture path now executes one ordered statement, using the shared final-score SQL recipe (BM25, capture tier, recency and event weight). It keeps the first row of each valid session and stops at the requested number of groups. Missing/invalid hashes remain independent. The legacy unweighted baseline query remains `ORDER BY rank LIMIT`; it still determines the curated cohort and capture slots.
+
+Two new regressions were copied onto the old `ef9d75a` production source and run there, then on corrected source at `f7fced9`:
+
+- Thirty-one old Stop rows, a current tool row, and another old Stop row force the current row outside the former 32-row weighted prefix. Old code selected id 1 instead of current id 32; fixed capture and library search select id 32. The library case explicitly retains 90 days so the 60-day-old rows remain candidates.
+- A transaction seeds 10,000 same-session matches before the timed query. Old query time was 3,310.86 ms and failed the 1,000 ms bound. The fixed query passes the bound; its whole test, including setup and seeding, took 161.35 ms. This synthetic fixture checks the repeated-sort regression, not real-corpus throughput or an adoption speedup.
+
+Typecheck, boundary and the corrected focused suite passed: 21 tests, zero failures. Neither timing bounds nor legacy score oracles were weakened.
+
+The complete public S/M runs were renewed at `5d4ce38b9622f9561a38ad718d7d540055d4800b` against the same `15a3dc9` baseline, unchanged harness and datasets. Both completed 500 questions with zero failures and passed all 42 strict no-loss comparisons per set. S metrics are identical. In M, MCP is unchanged; library overall session all@10 falls by 0.00212766 and ndcg_any@10 by 0.00047874. Knowledge-update all@10 falls by 0.01388889 and ndcg_any@10 by 0.00312513. These changes remain within the existing overall 0.005/per-type 0.02 tolerances; all guardrails pass. The adjacent JSON retains the new aggregates. This renewed measurement supersedes the earlier invariant library result for the corrected implementation.
+
+Raw renewed reports use `5d4ce38-` and regression logs `p2-old-regressions.log` / `p2-new-regressions.log` in the same remote artifact directory. Final-head standard/resource checks and the complete R2 outcome inventory are recorded in PR #197 without committing after the tested head.
