@@ -126,3 +126,10 @@ test("untimed content keeps its first fallback timestamp after rotation", async 
   renameSync(f.transcript, f.transcript + ".old"); f.add(row); await f.scan();
   expect(await f.drain()).toEqual(first);
 });
+
+test("title timestamp carry ignores nested timestamps in ordinary tool data", async () => {
+  const f = fixture();
+  f.add({ type: "assistant", message: { tool_input: { timestamp: "2000-01-01T00:00:00.000Z" } }, timestamp: at },
+    { type: "ai-title", aiTitle: "correct predecessor time" });
+  await f.scan(); expect((await f.drain())[0]?.at).toBe(at);
+});

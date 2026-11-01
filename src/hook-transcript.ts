@@ -32,6 +32,28 @@ export function transcriptSummary(line: string): { event: SummaryEvent; text: st
   return { event, text: visibleText, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), ...(row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0 ? { subagent: true as const } : {}) };
 }
 
+/** Read only a top-level timestamp token, without parsing ordinary message bodies. */
+function transcriptTimestamp(line: string): string | undefined {
+  if (!line.includes('"timestamp"')) return;
+  let depth = 0, at: string | undefined;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (character === '"') {
+      const start = index++;
+      for (; index < line.length; index++) {
+        if (line[index] === "\\") index++;
+        else if (line[index] === '"') break;
+      }
+      if (depth === 1 && line.slice(start, index + 1) === '"timestamp"') {
+        const value = /^\s*:\s*"([^"\\]+)"/.exec(line.slice(index + 1));
+        if (value) at = timestamp(value[1]);
+      }
+    } else if (character === "{" || character === "[") depth++;
+    else if (character === "}" || character === "]") depth--;
+  }
+  return at;
+}
+
 function privateDirectory(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
@@ -142,7 +164,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
         }
       }
       // Carry timestamps without parsing ordinary messages (including across invocation boundaries).
-      const at = timestamp(/"timestamp"\s*:\s*"([^"\\]+)"/.exec(line)?.[1]); if (at) cursor.at = at;
+      const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
     }
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
