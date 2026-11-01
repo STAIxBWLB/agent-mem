@@ -81,7 +81,7 @@ test("the CLI parent owns native Git and its watchdog reaps the group after call
     await callerProcess.exited;
     const ownedRows = native.length ? native : jsonLines(metadata).flatMap(row => Number.isSafeInteger(row.leader)
       ? [{ caller: Number(row.caller), leader: Number(row.leader), marker: String(row.marker) }] : []);
-    const recordedDescendants = descendants.length ? descendants : jsonLines(marker).flatMap(row => [row.git, row.supervisor, row.descendant].every(Number.isSafeInteger)
+    const recordedDescendants = descendants.length ? descendants.map(row => ({ descendant: row.pid, supervisor: row.pgid! })) : jsonLines(marker).flatMap(row => [row.git, row.supervisor, row.descendant].every(Number.isSafeInteger)
       ? [{ git: Number(row.git), supervisor: Number(row.supervisor), descendant: Number(row.descendant) }] : []);
     const cleanupUntil = performance.now() + 1800;
     while ([...ownedRows.map(owner => owner.leader), ...recordedDescendants.map(row => row.descendant)].some(alive) && performance.now() < cleanupUntil) await Bun.sleep(10);
