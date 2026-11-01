@@ -291,6 +291,7 @@ export class CaptureStore {
       db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
       addAttributionColumns(db);
+      this.ensureBriefSummaryIndex();
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
@@ -392,7 +393,9 @@ export class CaptureStore {
     if (!fts5Available()) return false;
     if (this.mcpReady) return true;
     try {
+      this.ensureBriefSummaryIndex();
       this.db.transaction(() => {
+        this.completeBriefSummaryIndex();
         const hadMcp = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'mcp_fts' AND type = 'table'").get();
         const body = (row: string) => `${row}.excerpt || char(10) || COALESCE((SELECT group_concat(value, ' ') FROM json_each(${row}.paths)), '') || char(10) || ${row}.event`;
         this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS mcp_fts USING fts5(body)");
@@ -640,18 +643,70 @@ export class CaptureStore {
     return rows.map(toRow);
   }
 
-  /** Newest-first Recap/Compact candidates, independent of the brief's 128-row raw window.
-   * ponytail: materialize at most 32 candidates plus a sentinel; the existing time index can
-   * traverse intervening tool rows. A measured need should add a derived summary index off
-   * the hook's critical path, without expanding the brief's record or token ceilings. */
+  /** Summary metadata is derived; old writers maintain it through SQLite triggers too. */
+  private ensureBriefSummaryIndex(): void {
+    this.db.transaction(() => {
+      const had = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='brief_summaries_v1' AND type='table'").get();
+      this.db.run("CREATE TABLE IF NOT EXISTS brief_summaries_v1 (id INTEGER PRIMARY KEY, at TEXT NOT NULL, project TEXT NOT NULL)");
+      // A new table is empty. Rebuilding a missing index on a populated table is off-hook work.
+      if (!had) this.db.run("CREATE INDEX brief_summaries_v1_recent ON brief_summaries_v1(project, at, id)");
+      const eligible = "new.event IN ('Recap','Compact') AND (new.subagent IS NULL OR new.subagent != 1)";
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_brief_ai AFTER INSERT ON rows WHEN ${eligible} BEGIN INSERT OR REPLACE INTO brief_summaries_v1 VALUES(new.id,new.at,new.project); END`);
+      this.db.run("CREATE TRIGGER IF NOT EXISTS rows_brief_ad AFTER DELETE ON rows BEGIN DELETE FROM brief_summaries_v1 WHERE id=old.id; END");
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS rows_brief_au AFTER UPDATE ON rows BEGIN DELETE FROM brief_summaries_v1 WHERE id=old.id; INSERT INTO brief_summaries_v1 SELECT new.id,new.at,new.project WHERE ${eligible}; END`);
+      const get = (key: string) => (this.db.query("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | null)?.value;
+      if (get("brief-v1-max") === undefined) {
+        const max = (this.db.query("SELECT id FROM rows ORDER BY id DESC LIMIT 1").get() as { id: number } | null)?.id ?? 0;
+        this.db.query("INSERT INTO meta(key,value) VALUES ('brief-v1-max',?),('brief-v1-through','0')").run(String(max));
+      }
+      const max = Number(get("brief-v1-max")), through = Number(get("brief-v1-through"));
+      if (![max, through].every(value => Number.isSafeInteger(value) && value >= 0) || through > max) throw new Error("capture summary metadata unavailable");
+      if (through >= max) return;
+      // ponytail: at most 128 legacy metadata rows per writer-open; complete history is
+      // filled only by the existing off-hook MCP index path, never a hook table scan.
+      const page = this.db.query("SELECT id,at,project,event,subagent FROM rows WHERE id>? AND id<=? ORDER BY id LIMIT 128")
+        .all(through, max) as { id: number; at: string; project: string; event: string; subagent: number | null }[];
+      const insert = this.db.query("INSERT OR REPLACE INTO brief_summaries_v1 VALUES (?,?,?)");
+      for (const row of page) if (["Recap", "Compact"].includes(row.event) && row.subagent !== 1) insert.run(row.id, row.at, row.project);
+      this.db.query("UPDATE meta SET value=? WHERE key='brief-v1-through'").run(String(page.at(-1)?.id ?? max));
+    }).immediate();
+  }
+
+  private completeBriefSummaryIndex(): void {
+    this.db.run("CREATE INDEX IF NOT EXISTS brief_summaries_v1_recent ON brief_summaries_v1(project,at,id)");
+    const max = Number((this.db.query("SELECT value FROM meta WHERE key='brief-v1-max'").get() as { value: string }).value);
+    const through = Number((this.db.query("SELECT value FROM meta WHERE key='brief-v1-through'").get() as { value: string }).value);
+    if (through < max) {
+      this.db.query("INSERT OR REPLACE INTO brief_summaries_v1 SELECT id,at,project FROM rows WHERE id>? AND id<=? AND event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)").run(through, max);
+      this.db.query("UPDATE meta SET value=? WHERE key='brief-v1-through'").run(String(max));
+    }
+  }
+
+  /** At most 33 indexed bodies plus 33 recent fallback bodies; no full tool-history scan. */
   readBriefSummaries(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
     this.checkReadBinding();
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief summary limit");
-    const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
-    const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
-    const rows = this.db.query(`SELECT * FROM rows INDEXED BY rows_at WHERE project = ? AND event IN ('Recap', 'Compact')${subagent} ORDER BY at DESC, id DESC LIMIT ?`)
-      .all(this.key, limit + 1) as RawRow[];
-    return { rows: rows.slice(0, limit).map(toRow), partial: rows.length > limit };
+    const indexed = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='brief_summaries_v1_recent' AND type='index'").get();
+    let partial = true;
+    let rows: RawRow[] = [];
+    if (indexed) {
+      const meta = this.db.query("SELECT key,value FROM meta WHERE key IN ('brief-v1-max','brief-v1-through')").all() as { key: string; value: string }[];
+      const values = new Map(meta.map(row => [row.key, Number(row.value)]));
+      partial = values.size !== 2 || values.get("brief-v1-max") !== values.get("brief-v1-through");
+      rows = this.db.query("SELECT r.* FROM brief_summaries_v1 AS b INDEXED BY brief_summaries_v1_recent JOIN rows AS r ON r.id=b.id WHERE b.project=? AND r.project=b.project AND r.event IN ('Recap','Compact') AND (r.subagent IS NULL OR r.subagent != 1) ORDER BY b.at DESC,b.id DESC LIMIT ?")
+        .all(this.key, limit + 1) as RawRow[];
+    }
+    if (partial) {
+      const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
+      const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
+      const recent = this.db.query(`SELECT * FROM (SELECT * FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 128) WHERE project=? AND event IN ('Recap','Compact')${subagent} ORDER BY at DESC,id DESC LIMIT ?`)
+        .all(this.key, limit + 1) as RawRow[];
+      const sentinel = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all();
+      partial = sentinel.length > 128;
+      rows = [...new Map([...rows, ...recent].map(row => [row.id, row])).values()];
+      rows.sort((a, b) => b.at.localeCompare(a.at) || b.id - a.id);
+    }
+    return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
   }
 
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
