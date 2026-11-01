@@ -1,3 +1,4 @@
+import { combineRssSources } from "./hook-resources.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -159,7 +160,7 @@ export async function resolveHookProjectAsync(options: { cwd: string; base: stri
     if (pending.size >= 64) throw new Error("native identity query bound");
     prepared.verifyBinary(); // No awaited native read may execute a replaced binary.
     const argv = memoryGitArgv(args); argv[0] = prepared.binary.file;
-    const abort = new AbortController(), own = { rssKB: 0, rawRssKB: 0 };
+    const abort = new AbortController(), own: HookNativeUsage = { rssKB: 0, rawRssKB: 0, observe: usage.observe };
     active.add(key); overlaps.push([...active]);
     const result = hookNative(argv, memoryGitEnv(env, { repositoryIsolation: true }), options.timeRemaining, own, abort.signal)
       .finally(() => { active.delete(key); });
@@ -202,5 +203,6 @@ export async function resolveHookProjectAsync(options: { cwd: string; base: stri
       usage.rssKB = Math.max(usage.rssKB, group.reduce((sum, key) => sum + pending.get(key)!.usage.rssKB, 0));
       usage.rawRssKB = Math.max(usage.rawRssKB, group.reduce((sum, key) => sum + pending.get(key)!.usage.rawRssKB, 0));
     }
+    usage.rssSources = combineRssSources(...[...pending.values()].map(child => child.usage.rssSources));
   }
 }

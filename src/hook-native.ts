@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { combineRssSources, processImageMemory, rssSource, selectHookRss, type HookRssReading, type HookRssSources } from "./hook-resources.ts";
 
-export interface HookNativeUsage { rssKB: number; rawRssKB: number }
+export interface HookNativeUsage {
+  rssKB: number; rawRssKB: number; rssSources?: HookRssSources;
+  observe?: () => { started(pid: number): void; finished(reading: HookRssReading): void };
+}
 // One native supervisor, with a native sleep watchdog rather than another Bun boot.
 // The leader waits for its watchdog even after stdin EOF, so losing the calling CLI
 // cannot let the owned command outlive the same remaining per-call deadline.
@@ -10,12 +13,13 @@ const SUPERVISOR = [
   // Fixed ps plus the unguessable invocation marker guards an externally killed/reused
   // leader too. Normal completion never exits the leader before its group is reaped.
   'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
-  'reap() { if owned; then kill -KILL "-$leader"; fi; }',
+  "rss() { [ -r \"/proc/$leader/status\" ] || return 0; trap '' PIPE; hwm=0; virtual=0; while read -r key value unit rest; do case \"$key\" in VmPeak:) virtual=$value ;; VmHWM:) hwm=$value; break ;; esac; done < \"/proc/$leader/status\"; printf \"%s:RSS:%s:%s\\n\" \"$marker\" \"$hwm\" \"$virtual\" >&2; trap - PIPE; }",
+  'reap() { if owned; then rss; kill -KILL "-$leader"; fi; }',
   '[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125',
   'trap reap EXIT HUP INT TERM',
   '( /bin/sleep "$seconds" & sleeper=$!; kill -0 "$sleeper" 2>/dev/null || { reap; exit 125; }; printf "\\n%s:ARMED\\n" "$marker"; wait "$sleeper"; reap ) & watchdog=$!',
   'kill -0 "$watchdog" 2>/dev/null || { reap; exit 125; }',
-  '"$@" </dev/null; code=$?; printf "\\n%s:%s\\n" "$marker" "$code"',
+  '"$@" </dev/null 2>/dev/null; code=$?; rss; printf "\\n%s:%s\\n" "$marker" "$code"',
   'read -r ignored || :',
   'wait "$watchdog"',
 ].join("; ");
@@ -25,16 +29,44 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   const remaining = timeRemaining();
   if (!Number.isFinite(remaining) || remaining <= 1) throw new Error("native metadata deadline");
   const marker = `AMEM_META_${randomBytes(16).toString("hex")}`, prefix = `\n${marker}:`, armedFrame = `${prefix}ARMED\n`;
+  let observer: ReturnType<NonNullable<HookNativeUsage["observe"]>> | undefined, observationFailed = false;
+  try { observer = usage.observe?.(); } catch { observationFailed = true; }
   const child = Bun.spawn(["/bin/sh", "-c", SUPERVISOR, "amem-hook-native", marker, String(remaining / 1000), ...argv],
-    { env, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    { env, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  try { observer?.started(child.pid); } catch { observationFailed = true; }
   let exited = false, ownPeak = 0;
+  let reportedPeak = 0, reportedVirtual = 0, ownVirtual = 0, receiptValid = true;
+  const rssReader = child.stderr.getReader();
+  // A separate numeric channel survives a late parent read after the watchdog exits.
+  // Command stderr remains discarded, as before; only the fixed supervisor writes here.
+  const rssReceipt = (async () => {
+    let pending = "", bytes = 0;
+    try {
+      for (;;) {
+        const next = await rssReader.read(); if (next.done) break;
+        bytes += next.value.byteLength;
+        if (bytes > 4096) { receiptValid = false; break; }
+        pending += new TextDecoder("utf-8", { fatal: true }).decode(next.value);
+        for (;;) {
+          const newline = pending.indexOf("\n"); if (newline < 0) break;
+          const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+          const prefix = `${marker}:RSS:`, value = line.startsWith(prefix) ? line.slice(prefix.length) : "";
+          const fields = /^(\d+):(\d+)$/.exec(value);
+          const peak = fields ? Number(fields[1]) : -1, virtual = fields ? Number(fields[2]) : -1;
+          if (Number.isSafeInteger(peak) && peak >= 0 && Number.isSafeInteger(virtual) && virtual >= 0) {
+            reportedPeak = Math.max(reportedPeak, peak); reportedVirtual = Math.max(reportedVirtual, virtual);
+          } else receiptValid = false;
+        }
+      }
+      if (pending) receiptValid = false;
+    } catch { receiptValid = false; }
+    finally { await rssReader.cancel().catch(() => {}); rssReader.releaseLock(); }
+  })();
   const exit = child.exited.then(code => { exited = true; return code; });
   const stop = () => {
     if (exited) return;
-    if (process.platform === "linux") try {
-      const match = /^VmHWM:\s+(\d+)\s+kB$/m.exec(readFileSync(`/proc/${child.pid}/status`, "utf8"));
-      if (match && Number.isSafeInteger(Number(match[1]))) ownPeak = Number(match[1]);
-    } catch { /* Fall back conservatively to reaped rusage. */ }
+    const image = processImageMemory(child.pid);
+    ownPeak = Math.max(ownPeak, image.hwmKB ?? 0); ownVirtual = Math.max(ownVirtual, image.virtualKB ?? 0);
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already exited */ } }
   };
   const reader = child.stdout.getReader();
@@ -75,11 +107,16 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     // Init can briefly retain zombie grandchildren; they cannot execute, and only
     // their adopting reaper can remove those PIDs (we cannot waitpid a non-child).
     await exit;
+    await rssReceipt;
     try { child.stdin.end(); } catch { /* pipe closed with the owned leader */ }
     await reader.cancel().catch(() => {}); reader.releaseLock();
     const raw = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
+    const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw, Math.max(ownVirtual, receiptValid ? reportedVirtual : 0));
     usage.rawRssKB = Math.max(usage.rawRssKB, raw);
-    usage.rssKB = Math.max(usage.rssKB, process.platform === "linux" ? ownPeak || raw : Math.max(ownPeak, raw));
+    usage.rssKB = Math.max(usage.rssKB, selected.kb);
+    usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));
+    try { observer?.finished(selected); } catch { observationFailed = true; }
+    if (observationFailed) usage.rssSources.unavailable++;
   }
 }
 

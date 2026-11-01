@@ -1,8 +1,9 @@
 import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import type { HookRssSources } from "../hook-resources.ts";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {

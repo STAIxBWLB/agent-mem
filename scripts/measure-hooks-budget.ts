@@ -1,3 +1,5 @@
+import { measuredHookRss } from "./hook-rss-check.ts";
+import { combineRssSources, type HookRssSources } from "../src/hook-resources.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** #13 P3 actual executable R1/R2 receipt. Never invokes a model, account, personal config or plugin installer.
@@ -20,7 +22,7 @@ import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
-interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
+interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number | null; rssSource: string; rssSources: HookRssSources }
 async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
@@ -87,7 +89,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     }
   } catch (error) {
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
-    throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
+    throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, rssSources: metric?.rssSources ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
   }
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);
@@ -105,11 +107,11 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   const metrics = readMetrics(f.base).filter(row => row.kind === "hook"), metric = metrics.at(-1);
   if (metrics.length !== before + 1 || !metric || !Number.isFinite(metric.rssMB) || !Number.isFinite(metric.wallMs) || metric.rssMB! <= 0 || metric.wallMs! < 0) throw new Error("actual hook failed to append a valid production metrics sample");
   // Bun child rusage maxRSS is bytes; process.resourceUsage().maxRSS uses a different unit.
-  const cliRssMB = result.resourceUsage.maxRSS / 1048576, recordedRssMB = metric.rssMB!;
+  const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576), { cliRssMB, recordedRssMB } = rss;
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
-  if (!(Math.max(cliRssMB, recordedRssMB) < RSS_MB)) throw new Error(`actual hook exceeded R2 peak RSS: ${JSON.stringify({ event, group, invocation: invocations, wallMs: round(wallMs), cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB })}`);
+  if (!(rss.rssMB < RSS_MB)) throw new Error(`actual hook exceeded R2 peak RSS: ${JSON.stringify({ event, group, invocation: invocations, wallMs: round(wallMs), cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB, rssSource: rss.rssSource, rssSources: rss.rssSources })}`);
   if (event === "SessionStart") {
-    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: Math.max(cliRssMB, recordedRssMB), wallLimitMs: WALL_MS });
+    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssSourcesJson: JSON.stringify(rss.rssSources) });
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
     if (result.stdout.length > 8192) throw new Error("SessionStart output exceeded 8 KiB");
     if (!result.stdout.length) {
@@ -127,8 +129,8 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (expectRepoSection && !/repo=(?:complete|partial|unavailable)/.test(context)) throw new Error(`SessionStart with a repo log named no repo coverage: ${context.slice(0, 160)}`);
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
-  // Production metrics sum each exec-image peak; raw inherited-rusage peaks remain separate diagnostics. CLI rusage independently covers the executable.
-  return { wallMs, cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB ?? recordedRssMB, rssMB: Math.max(cliRssMB, recordedRssMB) };
+  // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
+  return { wallMs, ...rss };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
@@ -138,7 +140,7 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
   const verdict = workloadBudget(name, { wallP95Ms, peakRssMB, wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
-  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.rawRssMB))), ...verdict };
+  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), ...verdict };
 }
 try {
   await f.seed();
@@ -243,8 +245,8 @@ try {
       const timeoutFixture = hookFixture();
       try {
         const value = await hookTimeoutProbe(timeoutFixture, event, false);
-        if (!(value.rssMB < RSS_MB)) throw new Error(`actual ${event} timeout exceeded R2 peak: wall=${value.wallMs}, rss=${value.rssMB}`);
-        if (!(value.wallMs < WALL_MS)) throw new BudgetStall(`actual ${event} timeout wall below 150 ms`, { wallMs: value.wallMs, rssMB: value.rssMB, limitMs: WALL_MS });
+        if (!(value.rssMB < RSS_MB)) throw new Error(`actual ${event} timeout exceeded R2 peak: wall=${value.wallMs}, rss=${value.rssMB}, source=${value.rssSource}, sources=${JSON.stringify(value.rssSources)}`);
+        if (!(value.wallMs < WALL_MS)) throw new BudgetStall(`actual ${event} timeout wall below 150 ms`, { wallMs: value.wallMs, rssMB: value.rssMB, limitMs: WALL_MS, rssSource: value.rssSource, rssSourcesJson: JSON.stringify(value.rssSources) });
         return value;
       } finally { timeoutFixture.close(); }
     }, budgetGroupRecorder<Awaited<ReturnType<typeof hookTimeoutProbe>>>(`actual-${event}-timeout`, stalledAttempts));
