@@ -507,7 +507,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // Enriched tool rows are refused rather than persisting the normalizer's redaction marker.
   if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
-  return publishCapture(event, capture, options);
+  return publishCapture(event, capture, { ...options, cwd, base });
 }
 
 /** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
@@ -521,11 +521,11 @@ export async function stageTranscriptCapture(input: CaptureFields, options: Opti
     text => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, denyPaths: configured.denyPaths });
   if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) return;
-  return publishCapture(input.event, capture, options, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
+  return publishCapture(input.event, capture, { ...options, cwd, base }, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
 }
 
 function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {
-  const cwd = realPath(options.cwd), base = canonicalPath(options.base);
+  const { cwd, base } = options;
   const scope = hookCaptureScope(cwd, base) ?? null;
   const v3 = capture.agent !== "claude" || ["Title", "Recap", "Compact"].includes(event);
   const record: Record = { schema: FAMILY, format: v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
