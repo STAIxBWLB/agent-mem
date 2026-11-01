@@ -33,7 +33,7 @@ test("the CLI parent owns native Git and its watchdog reaps the group after call
   const f = hookFixture(), bin = join(f.root, "bin"), marker = join(f.root, "blocked-git.jsonl"), metadata = join(f.root, "owned-native.jsonl"), caller = join(f.root, "caller.ts");
   const hooks = resolve(import.meta.dir, "../src/hooks.ts");
   mkdirSync(bin);
-  const fakeGit = "#!/bin/sh\n/bin/sleep 30 >/dev/null 2>&1 & descendant=$!\nprintf '%s %s %s\\n' \"$$\" \"$PPID\" \"$descendant\" >> '" + marker + "'\nwait\n";
+  const fakeGit = "#!/bin/sh\n/bin/sleep 30 >/dev/null 2>&1 & descendant=$!\nprintf '{\"git\":%s,\"supervisor\":%s,\"descendant\":%s}\\n' \"$$\" \"$PPID\" \"$descendant\" >> '" + marker + "'\nwait\n";
   writeFileSync(join(bin, "git"), fakeGit, { mode: 0o700 });
   const callerSource = [
     "import{appendFileSync}from'node:fs';",
