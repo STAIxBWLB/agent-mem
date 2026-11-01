@@ -448,6 +448,10 @@ Bun.plugin({name:'malform-after-admission',setup(b){b.onLoad({filter:/[/]hook-pr
   const metrics = readMetrics(f.base);
   expect(metrics.filter(row => row.captureDropReason === "malformed_publication").reduce((n, row) => n + (row.captureDrops ?? 0), 0)).toBe(1);
   expect(JSON.stringify(metrics)).not.toContain(invalidBody);
+  const { readCaptureDrops: readPreviousDrops } = await import("../node_modules/@staix/agent-mem-v018/src/memory/metrics.ts");
+  const previous = readPreviousDrops(f.base);
+  expect(previous.readable).toBe(true);
+  if (previous.readable) expect(Object.keys(previous.counts)).toHaveLength(0);
   writeFileSync(config, original);
   expect(f.runFunctional("PostToolUse", { prompt: "healthy quarantine recovery" }).exitCode).toBe(0);
   expect(f.rows().filter(row => row.excerpt === "valid native-refusal pending")).toHaveLength(1);
