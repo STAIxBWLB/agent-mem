@@ -1,0 +1,237 @@
+{
+  "publicNoLoss": {
+    "S": {
+      "baselineCommit": "15a3dc95c25d11e36a94ccaf65025ab8aa2afc4f",
+      "candidateCommit": "9d9da274b3f744dc5c2e39d9fc5051cf2dfacb43",
+      "questions": 500,
+      "abstentions": 30,
+      "failures": 0,
+      "allMetricsEqual": true,
+      "guardrailsPass": true,
+      "bm25Control": "strict",
+      "comparisons": 42,
+      "maxAbsoluteDelta": 0,
+      "overall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7702127659574468,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.557008336400422,
+          "MRR": 0.8916400500480701,
+          "turnRecallAt10": 0.7606382978723404
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7680851063829788,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.5567955683294449,
+          "MRR": 0.8916237667475555,
+          "turnRecallAt10": 0.7617021276595745
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.951063829787234,
+          "sessionRecallAllAt5": 0.8127659574468085,
+          "sessionRecallAnyAt10": 0.9702127659574468,
+          "sessionRecallAllAt10": 0.8936170212765957,
+          "ndcgAnyAt10": 0.5670158337035224,
+          "MRR": 0.8993032867757904,
+          "turnRecallAt10": 0.7817021276595745
+        }
+      }
+    },
+    "M": {
+      "baselineCommit": "15a3dc95c25d11e36a94ccaf65025ab8aa2afc4f",
+      "candidateCommit": "9d9da274b3f744dc5c2e39d9fc5051cf2dfacb43",
+      "questions": 500,
+      "abstentions": 30,
+      "failures": 0,
+      "allMetricsEqual": true,
+      "guardrailsPass": true,
+      "bm25Control": "strict",
+      "comparisons": 42,
+      "maxAbsoluteDelta": 0,
+      "overall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9170212765957447,
+          "sessionRecallAllAt10": 0.7106382978723405,
+          "ndcgAnyAt10": 0.41507264586831066,
+          "MRR": 0.7854706435494305,
+          "turnRecallAt10": 0.6577304964539005
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7170212765957447,
+          "ndcgAnyAt10": 0.4158925007773272,
+          "MRR": 0.7843312823346572,
+          "turnRecallAt10": 0.6598581560283685
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6978723404255319,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7723404255319148,
+          "ndcgAnyAt10": 0.4318245100540788,
+          "MRR": 0.7903655135372779,
+          "turnRecallAt10": 0.701950354609929
+        }
+      }
+    }
+  },
+  "integratedR2": {
+    "commit": "6d03529e650bf893eb5b188b8d91468d7ce10881",
+    "outcome": "pass",
+    "error": null,
+    "budgets": {
+      "R1": {
+        "pass": true,
+        "leftoverProcesses": 0,
+        "checkedInvocations": 96,
+        "checkedWorkers": 96,
+        "checkedOwnedChildren": 96,
+        "checkedBunWorkers": 56,
+        "checkedNativeSupervisors": 40,
+        "zeroWorkerDeferrals": {
+          "plain": 0,
+          "spoolAndExit": 0,
+          "drain": 0,
+          "sessionStart": 0,
+          "sessionStartRepoLog": 0
+        },
+        "maxPlainZeroWorkers": 10,
+        "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+      },
+      "R2": {
+        "pass": true,
+        "wallP95BudgetMs": 150,
+        "peakRssBudgetMB": 100,
+        "groups": {
+          "plain": {
+            "runs": 40,
+            "stalledAttempts": 0,
+            "wallP95Ms": 73.52,
+            "wallMaxMs": 88.73,
+            "peakRssMB": 99.75,
+            "cliPeakRssMB": 43.75,
+            "productionCombinedPeakRssMB": 99.75,
+            "rawCombinedPeakRssMB": 77,
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "spoolAndExit": {
+            "runs": 15,
+            "stalledAttempts": 0,
+            "wallP95Ms": 72.55,
+            "wallMaxMs": 72.55,
+            "peakRssMB": 73.5,
+            "cliPeakRssMB": 45.5,
+            "productionCombinedPeakRssMB": 73.5,
+            "rawCombinedPeakRssMB": 84,
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStart": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 64.58,
+            "wallMaxMs": 65.67,
+            "peakRssMB": 70,
+            "cliPeakRssMB": 52.5,
+            "productionCombinedPeakRssMB": 70,
+            "rawCombinedPeakRssMB": 85.75,
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStartRepoLog": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 67.16,
+            "wallMaxMs": 67.55,
+            "peakRssMB": 75.25,
+            "cliPeakRssMB": 59.49,
+            "productionCombinedPeakRssMB": 75.25,
+            "rawCombinedPeakRssMB": 94.49,
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "drain": {
+            "runs": 1,
+            "stalledAttempts": 0,
+            "wallP95Ms": 79.91,
+            "wallMaxMs": 79.91,
+            "peakRssMB": 71.75,
+            "cliPeakRssMB": 47.25,
+            "productionCombinedPeakRssMB": 71.75,
+            "rawCombinedPeakRssMB": 85.75,
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          }
+        }
+      }
+    },
+    "timeoutPaths": [
+      {
+        "event": "SessionStart",
+        "wallMs": 128.28,
+        "rssMB": 78.75,
+        "ownedChildren": 3,
+        "remainingProcesses": 0,
+        "stalledAttempts": 0
+      },
+      {
+        "event": "PreToolUse",
+        "wallMs": 117.32,
+        "rssMB": 73.5,
+        "ownedChildren": 1,
+        "remainingProcesses": 0,
+        "stalledAttempts": 0
+      }
+    ]
+  },
+  "R3": {
+    "commit": "9d9da274b3f744dc5c2e39d9fc5051cf2dfacb43",
+    "pass": true,
+    "idleRssMB": 34.93,
+    "peakRssMB": 142.54
+  },
+  "limits": "Public no-loss compatibility only; prior R2 failures retained in Markdown; private AC6 is reviewer-owned."
+}
