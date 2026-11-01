@@ -30,12 +30,12 @@ for (const target of ["claude", "codex"] as const) test(`${target}: identical ha
   applySetup(planSetup(target, "apply", r.options), r.options);
   expect(existsSync(receipt)).toBe(true);
   expect(r.text(hooks(r.home))).toBe(before); expect(count(r.text(hooks(r.home)))).toBe(count(before));
-  if (target === "codex") expect(r.text(config(r.home))).toBe(beforeConfig);
+  if (target === "codex") { expect(beforeConfig).toBeDefined(); expect(r.text(config(r.home))).toBe(beforeConfig!); }
   const drift = readSetupDrift({ home: join(r.home, "memory"), env: r.env, cwd: r.home });
   if (target === "claude") expect(drift).toMatchObject({ status: "ok", entries: [] });
   else expect(drift.entries.some(row => row.kind === "review-needed" && row.entry === "hooks.SessionEnd")).toBe(true);
   undoSetup(planSetup(target, "undo", r.options), r.options);
   expect(r.text(hooks(r.home))).toBe(before); expect(count(r.text(hooks(r.home)))).toBe(target === "claude" ? 7 : 1);
-  if (target === "codex") expect(r.text(config(r.home))).toBe(beforeConfig);
+  if (target === "codex") { expect(beforeConfig).toBeDefined(); expect(r.text(config(r.home))).toBe(beforeConfig!); }
   expect(existsSync(receipt)).toBe(false);
 });
