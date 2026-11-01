@@ -14,9 +14,9 @@ const loads=globalThis[Symbol.for('amem.hook.observer.loads')]=(globalThis[Symbo
 const note=(phase,values={})=>appendFileSync(${JSON.stringify(evidence)},JSON.stringify({phase,pid:process.pid,loads,...values})+'\\n',{mode:0o600});
 note('preload');
 Bun.plugin({name:'observe-worker-precheck',setup(builder){builder.onLoad({filter:/[/]hooks\\.ts$/},({path})=>{
- const source=readFileSync(path,'utf8'),guard='  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, ...(transcript !== undefined && !options.policy?.host ? { transcript: { stopReason: "deadline" as const } } : {}) };';
+ const source=readFileSync(path,'utf8'),guard='  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };';
  if(source.split(guard).length!==2)throw new Error('worker precheck observation anchor changed');
- return {loader:'ts',contents:source.replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false,...(transcript!==undefined&&!options.policy?.host?{transcript:{stopReason:"deadline"}}:{})};}')};
+ return {loader:'ts',contents:source.replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false};}')};
 });}});
 globalThis.__hookProcessNote=note;
 const original=Bun.spawn.bind(Bun);

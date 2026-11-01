@@ -5,7 +5,7 @@ import { writeSync } from "node:fs";
 import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import { resolveAlias } from "./memory/aliases.ts";
-import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
 
 async function readOptions(): Promise<string> {
@@ -27,7 +27,6 @@ if (import.meta.main) {
   let owned = false;
   let rssTelemetryValid = true;
   const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
-  const progress = (transcript: HookTranscriptProgress) => { try { writeSync(1, JSON.stringify({ transcript }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   const stop = (): never => {
     if (!rssTelemetryValid) frame([4]);
@@ -45,13 +44,12 @@ if (import.meta.main) {
     stop();
   };
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; transcript?: unknown; deadlineAt: number; ownedGroup: boolean };
+    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
-    const deadlineStop = () => { if (options.transcript !== undefined) progress({ stopReason: "deadline" }); stop(); };
-    if (remaining() <= 0) deadlineStop();
-    setTimeout(deadlineStop, remaining()).unref();
+    if (remaining() <= 0) stop();
+    setTimeout(stop, remaining()).unref();
     const event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!);
