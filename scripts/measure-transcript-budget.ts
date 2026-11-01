@@ -41,7 +41,7 @@ async function measure() {
       try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; } finally { db.close(); }
       if (!(offset >= Buffer.byteLength(requiredPrefix) && offset <= HOOK_TRANSCRIPT_BYTES)) throw Error("transcript budget scan progress unavailable");
       const captured = f.rows().filter(row => row.session === digest);
-      const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(dir => existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith(".json")).flatMap(name => {
+      const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(dir => existsSync(dir) ? readdirSync(dir).filter(name => /^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)).flatMap(name => {
         const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
         return value.capture?.session === digest ? [value.capture] : [];
       }) : []);
