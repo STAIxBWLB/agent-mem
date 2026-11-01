@@ -117,6 +117,35 @@ test("store keeps the legacy curated position when the conversational weight wou
   } finally { capture.close(); store.close(); }
 });
 
+test("exhausted sessions shorten library and MCP results without padding or changing the curated cohort", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-exhausted-sessions-")); roots.push(root);
+  const base = join(root, "memory"); let clock = now - 365 * 86400_000;
+  const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => clock });
+  const curated = ["first", "second"].map(suffix => store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: `${text} ${suffix}`, about: [] })).sort();
+  clock = now;
+  const capture = new CaptureStore({ memoryDir: base, project, now: () => now });
+  let best: number;
+  try {
+    const ids = ["PostToolUse", "Stop", "PostToolUseFailure"].map(event => {
+      const row = capture.append({ project, agent: "claude", event, excerpt: text, paths: [], session: "a".repeat(16) });
+      if (!("id" in row)) throw Error("fixture capture unexpectedly spooled"); return row.id;
+    });
+    best = ids[1]!;
+  } finally { capture.close(); }
+  const expected = [`capture:${best}`, ...curated];
+  try {
+    const hits = store.search(text, { project, limit: 5 }).hits;
+    expect(hits.map(hit => hit.view?.id ?? `capture:${hit.capture!.id}`)).toEqual(expected);
+    expect(hits).toHaveLength(3);
+  } finally { store.close(); }
+  const mcp = createMemoryMcp({ cwd: root, base, project });
+  try {
+    const result = await mcp.tools.amem_search({ query: text, limit: 5 }) as { hits: { view?: { id: string }; capture?: { id: number } }[] };
+    expect(result.hits.map(hit => hit.view?.id ?? `capture:${hit.capture!.id}`)).toEqual(expected);
+    expect(result.hits).toHaveLength(3);
+  } finally { mcp.close(); }
+});
+
 test("MCP screens captures before grouping so a refused row cannot hide its public same-session row", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-screened-session-")); roots.push(root);
   const base = join(root, "memory"), capture = new CaptureStore({ memoryDir: base, project, now: () => now }), session = "d".repeat(16);
