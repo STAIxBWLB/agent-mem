@@ -21,23 +21,27 @@ The complete numeric receipt is [hook-rss-198.json](hook-rss-198.json). Every ph
 | `3fdde86` | `392b317` | 1 prototype | pass |
 | `bb2bfff` | `dd97408` | 10 fixed consecutive | 6 pass, 4 unknown-provenance failures |
 | `b8dbebe` | `dd97408` | 10 fixed consecutive | 10 pass |
+| `8a506bf` | `6792bbd` (#208) | 10 fixed consecutive, including jcode | 10 pass |
 
 The four failures were the forced PreToolUse worker-timeout path. Repeated teardown replaced a valid pre-kill snapshot with an empty read after exit. The monotonic snapshot correction has a deterministic regression and changes no timeout or retry. The second series was one predeclared ten-run batch after that root-cause change, retaining the first series in full.
 
-All ten suites at `b8dbebe` passed R1 and R2, with zero retained processes. Every accepted sample had known provenance; no raw-fallback or unavailable sample was accepted. Ranges below span these ten suites.
+Both ten-pass series passed R1 and R2, with zero retained processes. Every accepted sample had known provenance; no raw-fallback or unavailable sample was accepted. The final integrated series at `8a506bf` includes 40 jcode invocations in every suite. Ranges below span that integrated series.
 
 | Workload | Wall p95 range, ms | Maximum RSS, MB |
 |---|---:|---:|
-| plain | 76.19-80.02 | 80.50 |
-| spoolAndExit | 73.86-83.14 | 73.50 |
-| sessionStart | 63.72-67.88 | 44.61 |
-| sessionStartRepoLog | 65.39-68.08 | 46.36 |
-| drain | 80.96-85.83 | 73.50 |
+| plain | 75.63-82.75 | 77.86 |
+| spoolAndExit | 72.93-80.04 | 73.50 |
+| sessionStart | 63.86-68.20 | 44.61 |
+| sessionStartRepoLog | 65.62-68.82 | 46.36 |
+| drain | 81.44-88.04 | 71.75 |
+| jcode | 74.99-83.88 | 71.75 |
 
-These are exact main-based candidate executions, not executions of a post-merge main commit. Literal post-merge-main confirmation is a separate reviewer gate. Subsequent harness changes add source metadata to timing-miss and workload summaries; the accounting runtime is byte-identical to `b8dbebe`.
+These are exact main-based candidate executions. Literal post-merge-main confirmation is a separate reviewer gate. After the earlier series, worker telemetry-write failures gained an explicit invalidity marker and a fault-injection regression, and the non-Linux worker rusage floor retained its prior aggregation formula. Those changes and #208's source propagation are included in the integrated series.
 
 ## Checks and integration
 
 Typecheck, boundary and 22 focused resource/native/worker tests passed at `b8dbebe`. The early terminal-receipt prototype exposed two focused failures (parent-death reaping and zero-HWM receipt handling); the SIGPIPE and VmPeak-bound corrections passed their focused checks before the consecutive series.
 
-The full standard suite and package dry-run are pending on the final delivery head. PR #208's jcode group is still pending integration. Its child result must propagate `rssSources` beside the RSS scalars; a counted child without source metadata fails the new gate. Task #81's transcript worktree remains held and unchanged; its burst must be remeasured after the shared accounting lands. No #201 acceptance or private replay is claimed here.
+At `35b1224`, the full suite passed 2,381 tests with 7 skipped, and package dry-run passed. At `4d06708`, the full suite passed 2,382 tests with 7 skipped, package dry-run and the source-attributed R2 harness passed. The integrated runtime `8a506bf` passed typecheck, boundary, 29 focused tests and the ten-suite series above. Final delivery-head standard gates are recorded in the PR separately.
+
+PR #208 is merged in main `6792bbd`; its jcode branch now propagates RSS provenance. Task 81's worktree remains held and unchanged. A private capture-only preview (`b9e9b6b`) composed that task's scanner with corrected accounting and #207's format-floor guards: 40 normal Stop calls passed at p95 96.00 ms / peak 80.50 MB; 40 SessionEnd calls at 95.29 ms / 78.75 MB; 40 cold-home 100-title bursts at 119.49 ms / 75.25 MB. All 120 samples used the source-validation gate. This preview does not establish final #201 AC4 or its private replay. The [accounting adapter patch](hook-rss-198-transcript.patch) is retained for the task's existing harness.

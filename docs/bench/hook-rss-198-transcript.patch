@@ -1,0 +1,31 @@
+diff --git a/scripts/measure-transcript-budget.ts b/scripts/measure-transcript-budget.ts
+index e7da3dd..208c4d3 100644
+--- a/scripts/measure-transcript-budget.ts
++++ b/scripts/measure-transcript-budget.ts
+@@ -1,3 +1,5 @@
++import { measuredHookRss } from "./hook-rss-check.ts";
++import type { HookRssSources } from "../src/hook-resources.ts";
+ /** #201: real CLI final hooks with a fresh 256 KiB transcript tail per run, including summary bursts.
+  * Run beside the unchanged R1/R2 harness; every physical sample is printed, never discarded.
+  */
+@@ -13,7 +15,7 @@ import { budgetGroup } from "./budget-attempt.ts";
+ const RUNS = 40, p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
+ async function measure() {
+   let f = hookFixture();
+-  const samples: { event: string; run: number; wallMs: number; rssMB: number; cliRssMB: number; productionRssMB: number; rawProductionRssMB: number | null; offset: number }[] = [];
++  const samples: { event: string; run: number; wallMs: number; rssMB: number; cliRssMB: number; productionRssMB: number; rawProductionRssMB: number | null; rssSource: string; rssSources: HookRssSources; offset: number }[] = [];
+   try {
+     await f.seed();
+     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let run = 1; run <= RUNS; run++) {
+@@ -46,9 +48,8 @@ async function measure() {
+         return value.capture?.session === digest ? [value.capture] : [];
+       }) : []);
+       for (const kind of ["Title", "Recap", "Compact"]) if (![...captured, ...pending].some(row => row.event === kind && row.excerpt === marker)) throw Error(`missing scanned ${kind}`);
+-      const cliRssMB = result.resourceUsage.maxRSS / 1048576, productionRssMB = metric.rssMB ?? Infinity;
+-      const rssMB = Math.max(cliRssMB, productionRssMB);
+-      const sample = { event, run, wallMs, rssMB, cliRssMB, productionRssMB, rawProductionRssMB: metric.rawRssMB ?? null, offset };
++      const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576);
++      const sample = { event, run, wallMs, rssMB: rss.rssMB, cliRssMB: rss.cliRssMB, productionRssMB: rss.recordedRssMB, rawProductionRssMB: rss.rawRssMB, rssSource: rss.rssSource, rssSources: rss.rssSources, offset };
+       samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+     }
+     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {

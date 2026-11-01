@@ -11,7 +11,7 @@
   "rawDirectory": "/home/dev/tmp/amem-198/",
   "series": [
     {
-      "head": "3fdde86",
+      "head": "3fdde86717c728beccce489c34619089ea0860ce",
       "base": "392b317",
       "runs": [
         {
@@ -189,7 +189,7 @@
       ]
     },
     {
-      "head": "bb2bfff",
+      "head": "bb2bfff55b92bcc34373daffe51014ba82e9cd8a",
       "base": "dd97408",
       "runs": [
         {
@@ -1423,7 +1423,7 @@
       ]
     },
     {
-      "head": "b8dbebe",
+      "head": "b8dbebed98cf76436e1f4243da502f59c554a44f",
       "base": "dd97408",
       "runs": [
         {
@@ -3147,6 +3147,2831 @@
           ]
         }
       ]
+    },
+    {
+      "head": "8a506bf0b1251c8b0c18105ef42c7b23c69ec8d1",
+      "base": "6792bbdd0710a769a6c0c9a6185b0120a472667f",
+      "runs": [
+        {
+          "file": "8a506bf/r2-1.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.828896999999998,
+                "spawnMs": 14.673707999999998,
+                "ioMs": 2.886027999999996,
+                "ioSamplesMs": [
+                  4.3709050000000005,
+                  2.80265,
+                  2.886027999999996
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.695863999999347,
+                "spawnMs": 13.330025999999634,
+                "ioMs": 2.734598000000915,
+                "ioSamplesMs": [
+                  3.032831000000442,
+                  2.734598000000915,
+                  2.683796999999686
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 270,
+            "vmpeakBound": 10,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 81.52,
+              "wallMaxMs": 101.2,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.78,
+              "wallMaxMs": 77.78,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 47.23,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 83.98,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 63.86,
+              "wallMaxMs": 63.96,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 50.73,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 85.73,
+              "rssSources": {
+                "vmhwm": 36,
+                "vmpeakBound": 4,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.92,
+              "wallMaxMs": 67.1,
+              "peakRssMB": 46.36,
+              "cliPeakRssMB": 61.23,
+              "productionCombinedPeakRssMB": 46.36,
+              "rawCombinedPeakRssMB": 96.23,
+              "rssSources": {
+                "vmhwm": 35,
+                "vmpeakBound": 5,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 81.5,
+              "wallMaxMs": 81.5,
+              "peakRssMB": 70,
+              "cliPeakRssMB": 47.23,
+              "productionCombinedPeakRssMB": 70,
+              "rawCombinedPeakRssMB": 83.98,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 74.99,
+              "wallMaxMs": 110.67,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 61.23,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 97.98,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 127.32,
+              "rssMB": 42.86,
+              "cliRssMB": 61.2265625,
+              "recordedRssMB": 42.859375,
+              "rawRssMB": 166.2265625,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 3,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.02,
+              "rssMB": 52.5,
+              "cliRssMB": 61.2265625,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 96.2265625,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-2.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.641912999999999,
+                "spawnMs": 12.726283000000002,
+                "ioMs": 2.861946000000003,
+                "ioSamplesMs": [
+                  3.688617999999998,
+                  2.3013660000000016,
+                  2.861946000000003
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.566162999999506,
+                "spawnMs": 12.493265999999494,
+                "ioMs": 2.5486970000001747,
+                "ioSamplesMs": [
+                  2.8244489999997313,
+                  2.5486970000001747,
+                  2.2039530000001832
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 265,
+            "vmpeakBound": 15,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 75.63,
+              "wallMaxMs": 98.94,
+              "peakRssMB": 75.25,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 75.25,
+              "rawCombinedPeakRssMB": 77,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 72.93,
+              "wallMaxMs": 72.93,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 65.05,
+              "wallMaxMs": 65.62,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 47.24,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 82.24,
+              "rssSources": {
+                "vmhwm": 32,
+                "vmpeakBound": 8,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.11,
+              "wallMaxMs": 66.3,
+              "peakRssMB": 46.36,
+              "cliPeakRssMB": 55.99,
+              "productionCombinedPeakRssMB": 46.36,
+              "rawCombinedPeakRssMB": 90.99,
+              "rssSources": {
+                "vmhwm": 33,
+                "vmpeakBound": 7,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 81.44,
+              "wallMaxMs": 81.44,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 75.85,
+              "wallMaxMs": 112.82,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 55.99,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 92.74,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 127.46,
+              "rssMB": 42,
+              "cliRssMB": 55.9921875,
+              "recordedRssMB": 42,
+              "rawRssMB": 160.9921875,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 4,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 116.33,
+              "rssMB": 50.75,
+              "cliRssMB": 55.9921875,
+              "recordedRssMB": 50.75,
+              "rawRssMB": 90.9921875,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-3.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 10.317922,
+                "spawnMs": 12.755313999999998,
+                "ioMs": 2.7944519999999997,
+                "ioSamplesMs": [
+                  3.282755999999999,
+                  2.6018380000000008,
+                  2.7944519999999997
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.384883000000627,
+                "spawnMs": 13.43239100000028,
+                "ioMs": 2.393340000000535,
+                "ioSamplesMs": [
+                  2.9186209999988932,
+                  2.363467999999557,
+                  2.393340000000535
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 270,
+            "vmpeakBound": 10,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.98,
+              "wallMaxMs": 91.42,
+              "peakRssMB": 75.22,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 75.22,
+              "rawCombinedPeakRssMB": 80.5,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 2,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.23,
+              "wallMaxMs": 77.23,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 87.5,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.32,
+              "wallMaxMs": 67.72,
+              "peakRssMB": 43.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 43.75,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 37,
+                "vmpeakBound": 3,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.65,
+              "wallMaxMs": 67.8,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 59.41,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 94.41,
+              "rssSources": {
+                "vmhwm": 36,
+                "vmpeakBound": 4,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 83.35,
+              "wallMaxMs": 83.35,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 87.5,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.78,
+              "wallMaxMs": 114.57,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 59.41,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 97.91,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.81,
+              "rssMB": 41.11,
+              "cliRssMB": 59.41015625,
+              "recordedRssMB": 41.109375,
+              "rawRssMB": 164.41015625,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 3,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.49,
+              "rssMB": 52.5,
+              "cliRssMB": 59.41015625,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 96.16015625,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-4.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.818477999999999,
+                "spawnMs": 14.064495999999998,
+                "ioMs": 2.6474270000000004,
+                "ioSamplesMs": [
+                  3.7625730000000033,
+                  2.6474270000000004,
+                  2.292028000000002
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.793078999999125,
+                "spawnMs": 14.705401000001075,
+                "ioMs": 3.0788849999989907,
+                "ioSamplesMs": [
+                  3.260764000000563,
+                  3.0788849999989907,
+                  2.983336999999665
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 266,
+            "vmpeakBound": 14,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.74,
+              "wallMaxMs": 97.48,
+              "peakRssMB": 77,
+              "cliPeakRssMB": 40.25,
+              "productionCombinedPeakRssMB": 77,
+              "rawCombinedPeakRssMB": 75.25,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 78.42,
+              "wallMaxMs": 78.42,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 80.5,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 65.13,
+              "wallMaxMs": 65.99,
+              "peakRssMB": 42.86,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 42.86,
+              "rawCombinedPeakRssMB": 77,
+              "rssSources": {
+                "vmhwm": 36,
+                "vmpeakBound": 4,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.21,
+              "wallMaxMs": 67.53,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 52.5,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 87.5,
+              "rssSources": {
+                "vmhwm": 31,
+                "vmpeakBound": 9,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 87.41,
+              "wallMaxMs": 87.41,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 80.5,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 78.19,
+              "wallMaxMs": 114.01,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 52.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 89.25,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.18,
+              "rssMB": 44.61,
+              "cliRssMB": 52.49609375,
+              "recordedRssMB": 44.609375,
+              "rawRssMB": 162.74609375,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 3,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.61,
+              "rssMB": 52.5,
+              "cliRssMB": 52.49609375,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 87.49609375,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-5.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.774804999999997,
+                "spawnMs": 14.733618,
+                "ioMs": 2.8907799999999995,
+                "ioSamplesMs": [
+                  4.159843000000002,
+                  2.625121,
+                  2.8907799999999995
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.947127999999793,
+                "spawnMs": 13.935852000000523,
+                "ioMs": 3.1561770000007527,
+                "ioSamplesMs": [
+                  3.1561770000007527,
+                  3.2621150000013586,
+                  2.4990580000012415
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 269,
+            "vmpeakBound": 11,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.06,
+              "wallMaxMs": 105.42,
+              "peakRssMB": 72.61,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 72.61,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 81,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.04,
+              "wallMaxMs": 80.04,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.44,
+              "wallMaxMs": 66.71,
+              "peakRssMB": 43.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 43.75,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 33,
+                "vmpeakBound": 7,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.9,
+              "wallMaxMs": 69,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 57.7,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 92.7,
+              "rssSources": {
+                "vmhwm": 37,
+                "vmpeakBound": 3,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 85.76,
+              "wallMaxMs": 85.76,
+              "peakRssMB": 70,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 70,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.37,
+              "wallMaxMs": 114.51,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 57.7,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 94.45,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.72,
+              "rssMB": 43.75,
+              "cliRssMB": 57.703125,
+              "recordedRssMB": 43.75,
+              "rawRssMB": 167.953125,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 4,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.33,
+              "rssMB": 52.5,
+              "cliRssMB": 57.703125,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 92.703125,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-6.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 12.045369,
+                "spawnMs": 14.089672,
+                "ioMs": 3.083849999999998,
+                "ioSamplesMs": [
+                  3.859466999999995,
+                  2.6967719999999957,
+                  3.083849999999998
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.710473999999522,
+                "spawnMs": 13.844122000000425,
+                "ioMs": 2.5672379999996338,
+                "ioSamplesMs": [
+                  3.0993390000003274,
+                  2.5672379999996338,
+                  2.557434000000285
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 267,
+            "vmpeakBound": 13,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.9,
+              "wallMaxMs": 97.79,
+              "peakRssMB": 76.11,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 76.11,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 81,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.89,
+              "wallMaxMs": 79.89,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 65.63,
+              "wallMaxMs": 68.69,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 50.75,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 34,
+                "vmpeakBound": 6,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 68.73,
+              "wallMaxMs": 69.16,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 94.5,
+              "rssSources": {
+                "vmhwm": 35,
+                "vmpeakBound": 5,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 85.13,
+              "wallMaxMs": 85.13,
+              "peakRssMB": 68.25,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 68.25,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.55,
+              "wallMaxMs": 113.66,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.17,
+              "rssMB": 42.86,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 42.859375,
+              "rawRssMB": 164.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 3,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.77,
+              "rssMB": 52.5,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 94.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-7.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.289390000000001,
+                "spawnMs": 14.063130000000001,
+                "ioMs": 2.8029110000000017,
+                "ioSamplesMs": [
+                  3.670060999999997,
+                  2.8029110000000017,
+                  2.6875850000000057
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.976000000000568,
+                "spawnMs": 14.13216999999895,
+                "ioMs": 2.496643000000404,
+                "ioSamplesMs": [
+                  3.259331999999631,
+                  2.3788019999992684,
+                  2.496643000000404
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 263,
+            "vmpeakBound": 17,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.12,
+              "wallMaxMs": 98.37,
+              "peakRssMB": 77,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 77,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.82,
+              "wallMaxMs": 79.82,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.06,
+              "wallMaxMs": 67.8,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 50.75,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 35,
+                "vmpeakBound": 5,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 68.82,
+              "wallMaxMs": 69.14,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 94.5,
+              "rssSources": {
+                "vmhwm": 31,
+                "vmpeakBound": 9,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 86.69,
+              "wallMaxMs": 86.69,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 83.88,
+              "wallMaxMs": 114.95,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.18,
+              "rssMB": 44.58,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 44.578125,
+              "rawRssMB": 164.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 1,
+                "vmpeakBound": 3,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.79,
+              "rssMB": 52.5,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 52.5,
+              "rawRssMB": 94.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-8.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.944609999999997,
+                "spawnMs": 15.003810999999999,
+                "ioMs": 2.887504,
+                "ioSamplesMs": [
+                  3.943947999999999,
+                  2.887504,
+                  2.6576459999999997
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.817808999998306,
+                "spawnMs": 13.908245999999053,
+                "ioMs": 2.541087999999945,
+                "ioSamplesMs": [
+                  3.311041999999361,
+                  2.541087999999945,
+                  2.386418000000049
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 265,
+            "vmpeakBound": 15,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.95,
+              "wallMaxMs": 101.83,
+              "peakRssMB": 75.25,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 75.25,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 78.33,
+              "wallMaxMs": 78.33,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.62,
+              "wallMaxMs": 67.62,
+              "peakRssMB": 43.75,
+              "cliPeakRssMB": 49,
+              "productionCombinedPeakRssMB": 43.75,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 34,
+                "vmpeakBound": 6,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 68.23,
+              "wallMaxMs": 69.06,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 94.5,
+              "rssSources": {
+                "vmhwm": 33,
+                "vmpeakBound": 7,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 86.01,
+              "wallMaxMs": 86.01,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.85,
+              "wallMaxMs": 114.53,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.14,
+              "rssMB": 43.72,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 43.71875,
+              "rawRssMB": 164.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 2,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 116.99,
+              "rssMB": 49,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 49,
+              "rawRssMB": 94.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-9.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.695881,
+                "spawnMs": 14.525527000000004,
+                "ioMs": 3.124792999999997,
+                "ioSamplesMs": [
+                  3.8680200000000013,
+                  3.124792999999997,
+                  2.772106000000008
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.747581000001446,
+                "spawnMs": 13.555403000000297,
+                "ioMs": 2.7161329999998998,
+                "ioSamplesMs": [
+                  3.1529069999996864,
+                  2.7161329999998998,
+                  2.4866870000005292
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 257,
+            "vmpeakBound": 23,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.72,
+              "wallMaxMs": 96.41,
+              "peakRssMB": 77.86,
+              "cliPeakRssMB": 42,
+              "productionCombinedPeakRssMB": 77.86,
+              "rawCombinedPeakRssMB": 78.75,
+              "rssSources": {
+                "vmhwm": 81,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 78.13,
+              "wallMaxMs": 78.13,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 65.38,
+              "wallMaxMs": 67.36,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 52.5,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 29,
+                "vmpeakBound": 11,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 65.62,
+              "wallMaxMs": 66.31,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 10,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 88.04,
+              "wallMaxMs": 88.04,
+              "peakRssMB": 70,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 70,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 79.37,
+              "wallMaxMs": 116.35,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 98,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.38,
+              "rssMB": 44.61,
+              "cliRssMB": 61.25,
+              "recordedRssMB": 44.609375,
+              "rawRssMB": 171.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 3,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.7,
+              "rssMB": 50.75,
+              "cliRssMB": 61.25,
+              "recordedRssMB": 50.75,
+              "rawRssMB": 96.25,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        },
+        {
+          "file": "8a506bf/r2-10.log",
+          "outcome": "pass",
+          "groupAttempts": [
+            {
+              "attempt": 1,
+              "outcome": "pass",
+              "before": {
+                "cpuMs": 11.653909000000002,
+                "spawnMs": 14.413603000000002,
+                "ioMs": 2.8724460000000036,
+                "ioSamplesMs": [
+                  4.249431000000001,
+                  2.8724460000000036,
+                  2.776457999999998
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "after": {
+                "cpuMs": 11.749284999999873,
+                "spawnMs": 13.949861000000965,
+                "ioMs": 2.3578309999993508,
+                "ioSamplesMs": [
+                  3.1988799999999173,
+                  2.3578309999993508,
+                  2.1908579999999347
+                ],
+                "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+              },
+              "slow": false
+            }
+          ],
+          "physicalSamples": 138,
+          "rssSources": {
+            "vmhwm": 266,
+            "vmpeakBound": 14,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "failures": [],
+          "R1": {
+            "pass": true,
+            "leftoverProcesses": 0,
+            "checkedInvocations": 136,
+            "checkedWorkers": 136,
+            "checkedOwnedChildren": 136,
+            "checkedBunWorkers": 96,
+            "checkedNativeSupervisors": 40,
+            "zeroWorkerDeferrals": {
+              "plain": 0,
+              "spoolAndExit": 0,
+              "drain": 0,
+              "sessionStart": 0,
+              "sessionStartRepoLog": 0,
+              "jcode": 0
+            },
+            "maxPlainZeroWorkers": 10,
+            "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+          },
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 82.75,
+              "wallMaxMs": 104.3,
+              "peakRssMB": 74.36,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 74.36,
+              "rawCombinedPeakRssMB": 80.5,
+              "rssSources": {
+                "vmhwm": 81,
+                "vmpeakBound": 1,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 76.96,
+              "wallMaxMs": 76.96,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 68.2,
+              "wallMaxMs": 68.25,
+              "peakRssMB": 44.61,
+              "cliPeakRssMB": 50.75,
+              "productionCombinedPeakRssMB": 44.61,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 34,
+                "vmpeakBound": 6,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.38,
+              "wallMaxMs": 69.61,
+              "peakRssMB": 45.5,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 45.5,
+              "rawCombinedPeakRssMB": 94.5,
+              "rssSources": {
+                "vmhwm": 33,
+                "vmpeakBound": 7,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 83.51,
+              "wallMaxMs": 83.51,
+              "peakRssMB": 70,
+              "cliPeakRssMB": 45.5,
+              "productionCombinedPeakRssMB": 70,
+              "rawCombinedPeakRssMB": 82.25,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 78.19,
+              "wallMaxMs": 114.14,
+              "peakRssMB": 71.75,
+              "cliPeakRssMB": 59.5,
+              "productionCombinedPeakRssMB": 71.75,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          },
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 128.68,
+              "rssMB": 42,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 42,
+              "rawRssMB": 164.5,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 4,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 117.6,
+              "rssMB": 50.75,
+              "cliRssMB": 59.5,
+              "recordedRssMB": 50.75,
+              "rawRssMB": 92.75,
+              "rssSource": "production-owned-images",
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ]
+        }
+      ]
     }
-  ]
+  ],
+  "validationStages": [
+    {
+      "head": "35b1224827a72d1c8d1961a956962b8faa30e92d",
+      "typecheck": "pass",
+      "boundary": "pass",
+      "tests": {
+        "passed": 2381,
+        "skipped": 7,
+        "failed": 0
+      },
+      "packDryRun": "pass",
+      "R2": {
+        "file": "35b1224/r2-final.log",
+        "outcome": "pass",
+        "groupAttempts": [
+          {
+            "attempt": 1,
+            "outcome": "pass",
+            "before": {
+              "cpuMs": 10.698019000000002,
+              "spawnMs": 14.270932000000002,
+              "ioMs": 2.885424999999998,
+              "ioSamplesMs": [
+                4.071276000000005,
+                2.5386629999999997,
+                2.885424999999998
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 12.178163999999924,
+              "spawnMs": 13.454878000000463,
+              "ioMs": 2.363336999999774,
+              "ioSamplesMs": [
+                3.251365999999507,
+                2.363336999999774,
+                2.285331000000042
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "slow": false
+          }
+        ],
+        "physicalSamples": 98,
+        "rssSources": {
+          "vmhwm": 185,
+          "vmpeakBound": 15,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        },
+        "failures": [],
+        "R1": {
+          "pass": true,
+          "leftoverProcesses": 0,
+          "checkedInvocations": 96,
+          "checkedWorkers": 96,
+          "checkedOwnedChildren": 96,
+          "checkedBunWorkers": 56,
+          "checkedNativeSupervisors": 40,
+          "zeroWorkerDeferrals": {
+            "plain": 0,
+            "spoolAndExit": 0,
+            "drain": 0,
+            "sessionStart": 0,
+            "sessionStartRepoLog": 0
+          },
+          "maxPlainZeroWorkers": 10,
+          "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+        },
+        "groups": {
+          "plain": {
+            "runs": 40,
+            "stalledAttempts": 0,
+            "wallP95Ms": 79.3,
+            "wallMaxMs": 95.94,
+            "peakRssMB": 75.25,
+            "cliPeakRssMB": 40.25,
+            "productionCombinedPeakRssMB": 75.25,
+            "rawCombinedPeakRssMB": 75.25,
+            "rssSources": {
+              "vmhwm": 82,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "spoolAndExit": {
+            "runs": 15,
+            "stalledAttempts": 0,
+            "wallP95Ms": 79,
+            "wallMaxMs": 79,
+            "peakRssMB": 73.5,
+            "cliPeakRssMB": 45.48,
+            "productionCombinedPeakRssMB": 73.5,
+            "rawCombinedPeakRssMB": 82.23,
+            "rssSources": {
+              "vmhwm": 30,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStart": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 65.61,
+            "wallMaxMs": 66.83,
+            "peakRssMB": 44.61,
+            "cliPeakRssMB": 48.98,
+            "productionCombinedPeakRssMB": 44.61,
+            "rawCombinedPeakRssMB": 83.98,
+            "rssSources": {
+              "vmhwm": 31,
+              "vmpeakBound": 9,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStartRepoLog": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 67.07,
+            "wallMaxMs": 67.07,
+            "peakRssMB": 45.5,
+            "cliPeakRssMB": 57.7,
+            "productionCombinedPeakRssMB": 45.5,
+            "rawCombinedPeakRssMB": 92.7,
+            "rssSources": {
+              "vmhwm": 36,
+              "vmpeakBound": 4,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "drain": {
+            "runs": 1,
+            "stalledAttempts": 0,
+            "wallP95Ms": 82.5,
+            "wallMaxMs": 82.5,
+            "peakRssMB": 70,
+            "cliPeakRssMB": 45.48,
+            "productionCombinedPeakRssMB": 70,
+            "rawCombinedPeakRssMB": 82.23,
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          }
+        },
+        "timeoutPaths": [
+          {
+            "event": "SessionStart",
+            "wallMs": 128.15,
+            "rssMB": 45.47,
+            "cliRssMB": 57.703125,
+            "recordedRssMB": 45.46875,
+            "rawRssMB": 167.953125,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 2,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "ownedChildren": 3,
+            "remainingProcesses": 0,
+            "stalledAttempts": 0
+          },
+          {
+            "event": "PreToolUse",
+            "wallMs": 117.76,
+            "rssMB": 50.75,
+            "cliRssMB": 57.703125,
+            "recordedRssMB": 50.75,
+            "rawRssMB": 92.703125,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "ownedChildren": 1,
+            "remainingProcesses": 0,
+            "stalledAttempts": 0
+          }
+        ]
+      }
+    },
+    {
+      "head": "4d06708212f9804309ed1feb416faf83e8f1a887",
+      "typecheck": "pass",
+      "boundary": "pass",
+      "tests": {
+        "passed": 2382,
+        "skipped": 7,
+        "failed": 0
+      },
+      "packDryRun": "pass",
+      "R2": {
+        "file": "4d06708/r2-final.log",
+        "outcome": "pass",
+        "groupAttempts": [
+          {
+            "attempt": 1,
+            "outcome": "pass",
+            "before": {
+              "cpuMs": 11.892167,
+              "spawnMs": 14.828415,
+              "ioMs": 2.7970989999999887,
+              "ioSamplesMs": [
+                4.191490000000002,
+                2.3734109999999973,
+                2.7970989999999887
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 11.99778999999944,
+              "spawnMs": 13.586084999999912,
+              "ioMs": 2.5550020000000586,
+              "ioSamplesMs": [
+                3.0257030000002487,
+                2.5550020000000586,
+                2.4490080000005037
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "slow": false
+          }
+        ],
+        "physicalSamples": 98,
+        "rssSources": {
+          "vmhwm": 184,
+          "vmpeakBound": 16,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        },
+        "failures": [],
+        "R1": {
+          "pass": true,
+          "leftoverProcesses": 0,
+          "checkedInvocations": 96,
+          "checkedWorkers": 96,
+          "checkedOwnedChildren": 96,
+          "checkedBunWorkers": 56,
+          "checkedNativeSupervisors": 40,
+          "zeroWorkerDeferrals": {
+            "plain": 0,
+            "spoolAndExit": 0,
+            "drain": 0,
+            "sessionStart": 0,
+            "sessionStartRepoLog": 0
+          },
+          "maxPlainZeroWorkers": 10,
+          "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+        },
+        "groups": {
+          "plain": {
+            "runs": 40,
+            "stalledAttempts": 0,
+            "wallP95Ms": 78.94,
+            "wallMaxMs": 98.59,
+            "peakRssMB": 78.75,
+            "cliPeakRssMB": 42,
+            "productionCombinedPeakRssMB": 78.75,
+            "rawCombinedPeakRssMB": 78.75,
+            "rssSources": {
+              "vmhwm": 82,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "spoolAndExit": {
+            "runs": 15,
+            "stalledAttempts": 0,
+            "wallP95Ms": 83.19,
+            "wallMaxMs": 83.19,
+            "peakRssMB": 71.75,
+            "cliPeakRssMB": 45.5,
+            "productionCombinedPeakRssMB": 71.75,
+            "rawCombinedPeakRssMB": 82.25,
+            "rssSources": {
+              "vmhwm": 30,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStart": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 66.68,
+            "wallMaxMs": 67.15,
+            "peakRssMB": 42.86,
+            "cliPeakRssMB": 47.25,
+            "productionCombinedPeakRssMB": 42.86,
+            "rawCombinedPeakRssMB": 82.25,
+            "rssSources": {
+              "vmhwm": 32,
+              "vmpeakBound": 8,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "sessionStartRepoLog": {
+            "runs": 20,
+            "stalledAttempts": 0,
+            "wallP95Ms": 66.99,
+            "wallMaxMs": 67.44,
+            "peakRssMB": 43.75,
+            "cliPeakRssMB": 54.21,
+            "productionCombinedPeakRssMB": 43.75,
+            "rawCombinedPeakRssMB": 89.21,
+            "rssSources": {
+              "vmhwm": 33,
+              "vmpeakBound": 7,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          },
+          "drain": {
+            "runs": 1,
+            "stalledAttempts": 0,
+            "wallP95Ms": 85.18,
+            "wallMaxMs": 85.18,
+            "peakRssMB": 70,
+            "cliPeakRssMB": 45.5,
+            "productionCombinedPeakRssMB": 70,
+            "rawCombinedPeakRssMB": 82.25,
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "wallTimingPass": true,
+            "peakPass": true,
+            "wallAdvisory": false,
+            "pass": true
+          }
+        },
+        "timeoutPaths": [
+          {
+            "event": "SessionStart",
+            "wallMs": 128.45,
+            "rssMB": 42.86,
+            "cliRssMB": 54.2109375,
+            "recordedRssMB": 42.859375,
+            "rawRssMB": 159.2109375,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 3,
+              "vmpeakBound": 1,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "ownedChildren": 3,
+            "remainingProcesses": 0,
+            "stalledAttempts": 0
+          },
+          {
+            "event": "PreToolUse",
+            "wallMs": 117.78,
+            "rssMB": 52.5,
+            "cliRssMB": 54.2109375,
+            "recordedRssMB": 52.5,
+            "rawRssMB": 90.9609375,
+            "rssSource": "production-owned-images",
+            "rssSources": {
+              "vmhwm": 2,
+              "vmpeakBound": 0,
+              "platformRusage": 0,
+              "rawFallback": 0,
+              "unavailable": 0
+            },
+            "ownedChildren": 1,
+            "remainingProcesses": 0,
+            "stalledAttempts": 0
+          }
+        ]
+      }
+    }
+  ],
+  "integrationPreview": {
+    "head": "b9e9b6b80fe6056e1b38310ea5095b80329cfa12",
+    "runtimeBase": "452a10ab928f1bb5c4626a18c3d3e36cbc19778e",
+    "heldTask81": "eb9c09f893ca7e49ceeae2489020757053f46d18",
+    "capturePathOnly": true,
+    "formatFloorsGuarded": true,
+    "heldWorktreeUnchanged": true,
+    "acceptance": "preview only; final task81 AC4 remains unverified",
+    "result": {
+      "file": "burst-preview/r2.log",
+      "outcome": "pass",
+      "groupAttempts": [
+        {
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 11.902978000000001,
+            "spawnMs": 14.597665,
+            "ioMs": 2.595049000000003,
+            "ioSamplesMs": [
+              3.895828999999999,
+              2.5011629999999982,
+              2.595049000000003
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.97284799999943,
+            "spawnMs": 13.86845799999901,
+            "ioMs": 2.6562770000000455,
+            "ioSamplesMs": [
+              2.6562770000000455,
+              3.050363999998808,
+              2.3258420000001934
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "slow": false
+        }
+      ],
+      "physicalSamples": 120,
+      "rssSources": {
+        "vmhwm": 242,
+        "vmpeakBound": 0,
+        "platformRusage": 0,
+        "rawFallback": 0,
+        "unavailable": 0
+      },
+      "failures": [],
+      "groups": [
+        {
+          "event": "Stop",
+          "runs": 40,
+          "wallP95Ms": 96.00218099999998,
+          "peakRssMB": 80.5,
+          "wallPass": true,
+          "rssPass": true
+        },
+        {
+          "event": "SessionEnd",
+          "runs": 40,
+          "wallP95Ms": 95.28503100000034,
+          "peakRssMB": 78.75,
+          "wallPass": true,
+          "rssPass": true
+        },
+        {
+          "event": "StopBurst",
+          "runs": 40,
+          "wallP95Ms": 119.49261400000069,
+          "peakRssMB": 75.25,
+          "wallPass": true,
+          "rssPass": true
+        }
+      ]
+    }
+  },
+  "finalDeliveryStandardGate": "pending on documentation descendant of integrated runtime 8a506bf",
+  "sourceIdentity": {
+    "runtimeCommit": "8a506bf0b1251c8b0c18105ef42c7b23c69ec8d1",
+    "srcTree": "67f6746f8bb29d3116280eb45bf85b2d71ed19c4",
+    "harnessBlob": "30601eeb8f753fd1ffd6a9788ae7f2f924ded656",
+    "checkerBlob": "0cd76b12288694907054b04240c7da184a0c3bde"
+  },
+  "focusedIntegratedGate": {
+    "head": "8a506bf0b1251c8b0c18105ef42c7b23c69ec8d1",
+    "typecheck": "pass",
+    "boundary": "pass",
+    "passed": 29,
+    "failed": 0
+  }
 }
