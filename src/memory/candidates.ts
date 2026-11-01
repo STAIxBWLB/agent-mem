@@ -242,7 +242,9 @@ export class CandidateStore {
     const where = ["project IN (SELECT value FROM json_each(?))"], bind: (string | number)[] = [this.scope(filter.project)];
     if (filter.status === undefined) where.push("status IN ('pending', 'accepting')"); else if (filter.status !== "all") { where.push("status = ?"); bind.push(filter.status); }
     if (filter.kind) { where.push("kind = ?"); bind.push(filter.kind); }
-    return (this.db.query(`SELECT * FROM candidates WHERE ${where.join(" AND ")} ORDER BY at DESC, rowid DESC LIMIT ?`).all(...bind, limit) as Parameters<CandidateStore["decode"]>[0][]).flatMap(row => this.decode(row) ?? []);
+    // #199: unknown kinds are skipped before LIMIT, so a newer writer's rows never displace a supported candidate; they are still counted.
+    this.skippedUnknownKinds += (this.db.query(`SELECT count(*) AS n FROM candidates WHERE ${where.join(" AND ")} AND kind NOT IN (SELECT value FROM json_each(?))`).get(...bind, JSON.stringify(KINDS)) as { n: number }).n;
+    return (this.db.query(`SELECT * FROM candidates WHERE ${where.join(" AND ")} AND kind IN (SELECT value FROM json_each(?)) ORDER BY at DESC, rowid DESC LIMIT ?`).all(...bind, JSON.stringify(KINDS), limit) as Parameters<CandidateStore["decode"]>[0][]).flatMap(row => this.decode(row) ?? []);
   }
   recordCounter(key: CounterKey, values: CounterValues, verdict: CandidateVerdict): string {
     publicOnly(verdict); const normalized = counterKey(key);

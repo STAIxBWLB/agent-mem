@@ -106,10 +106,13 @@ test("AC3: a candidate row of an unknown kind is skipped and counted, not thrown
   try {
     const id = store.put({ kind: "memory", project: f.project, text: "a known candidate" }, "public");
     const db = new Database(join(f.base, "candidates.db"));
-    try { db.query("INSERT INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, 'future-kind', ?, ?, 'pending')").run("f".repeat(64), f.project, JSON.stringify({ kind: "future-kind", project: f.project, x: 1 }), Date.now()); }
+    try { db.query("INSERT INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, 'future-kind', ?, ?, 'pending')").run("f".repeat(64), f.project, JSON.stringify({ kind: "future-kind", project: f.project, x: 1 }), Date.now() + 60_000); }
     finally { db.close(); }
     expect(store.list({ project: f.project }).map(candidate => candidate.id)).toEqual([id]);
     expect(store.get("f".repeat(64), f.project)).toBeUndefined();
     expect(store.skippedUnknownKinds).toBe(2);
+    // The newer row sorts first; the limit applies after it is skipped.
+    expect(store.list({ project: f.project, limit: 1 }).map(candidate => candidate.id)).toEqual([id]);
+    expect(store.skippedUnknownKinds).toBe(3);
   } finally { store.close(); }
 });
