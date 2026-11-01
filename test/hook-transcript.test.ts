@@ -114,6 +114,7 @@ test("subagent summaries keep attribution and project policy refuses PII and den
   const f = fixture();
   f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "agent summary", isSidechain: true },
     { type: "system", subtype: "away_summary", timestamp: at, content: "person@example.org" },
+    { type: "system", subtype: "away_summary", timestamp: at, content: "private metadata summary", isPrivate: true },
     { type: "system", subtype: "away_summary", timestamp: at, content: "read .env credentials" });
   await f.scan(); const rows = await f.drain();
   expect(rows).toHaveLength(1); expect(rows[0]?.subagent).toBe(true);

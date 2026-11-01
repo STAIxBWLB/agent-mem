@@ -116,6 +116,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       catch { start = newline + 1; continue; }
       let summary: ReturnType<typeof transcriptSummary>;
       try { summary = transcriptSummary(line); } catch { /* Malformed native JSON is not capture. */ }
+      if (summary && !await policy.screen(JSON.parse(line))) summary = undefined;
       if (summary) {
         const title = summary.event === "Title" ? hash(summary.text) : "";
         if (!title || title !== cursor.title) {
