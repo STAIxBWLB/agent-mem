@@ -26,7 +26,7 @@ for (const heldPipe of ["stderr", "stdout"] as const) test(`Darwin native rusage
     const marker = argv[4]!;
     return { pid: 101, exited, resourceUsage: () => ({ maxRSS: 64 * 1024 }), stdin: { end() {} }, kill() {},
       stdout: new ReadableStream<Uint8Array>({ start(controller) {
-        controller.enqueue(new TextEncoder().encode(`\n${marker}:ARMED\nmetadata\n${marker}:0\n`));
+        controller.enqueue(new TextEncoder().encode(`\n${marker}:ARMED\nmetadata\n\n${marker}:0\n`));
         if (heldPipe === "stderr") controller.close();
       }, cancel: () => heldPipe === "stdout" ? pipe : undefined }),
       stderr: new ReadableStream<Uint8Array>({ start(controller) {
