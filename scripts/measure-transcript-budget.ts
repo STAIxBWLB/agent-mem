@@ -75,6 +75,8 @@ async function measure() {
         Bun.gc(true);
         const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
         const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+        console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
+          exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
         if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("transcript budget hook unavailable");
         let offset = 0;
         if (existsSync(file)) {
