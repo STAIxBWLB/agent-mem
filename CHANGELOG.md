@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.19.0
 
 - Hook budget profiles state `images: bun+supervisor; descendants: not measured` for each sample and spell the conservative source tag `vmpeak-bound`, retaining its wire code and numeric counters. The literal post-merge-main ten-suite receipt includes ordinary, jcode and transcript workloads; descendant usage remains a separate characterization, with no threshold, timeout, retry or dependency change (#198).
 
@@ -15,9 +15,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Claude Stop/SessionEnd hooks incrementally capture screened Title, Recap and Compact transcript summaries within a 256 KiB read limit. Native metadata children are owned and reaped by the metric-writing CLI; scanning and SQLite replay remain inside its killable worker. Native-failure cleanup retains valid pending capture and retires malformed publications. Summary spool records use format 3 names that older readers ignore. Search ranks summaries as conversation; the session brief prefers at most two newest main-session recaps/compactions within its existing caps (#201).
 
+- Setup recognizes Orca-managed Claude/Codex homes and writes the durable personal source, preserving profile Claude MCP and byte-exact undo. Doctor reports applied-registration/path drift and missing Codex hook trust records without configuration contents; setup never grants hook trust (#202).
+
 ## 0.18.0
 
-- Setup recognizes Orca-managed Claude/Codex homes and writes the durable personal source, preserving profile Claude MCP and byte-exact undo. Doctor reports applied-registration/path drift and missing Codex hook trust records without configuration contents; setup never grants hook trust (#202).
 - Claude tool capture prepends a deterministic, screened tool-input line (512 UTF-8 bytes, within the total excerpt cap). Selected-project capture recall refills the existing capture slots with a fixed conversational-event weight and one best row per session, preserving the curated cohort; timeline/show retain every row. Capture schema and existing rows are unchanged (#196).
 - **Console Recap panel** (#194). On demand, shows the selected project's current SessionStart context with screened coverage, partial status, conservative token bound and generation time. It is a fresh machine-policy read from private scratch, not a stored copy of a previous session's injected brief; no repository section is available in the console and no hook output or capture data is added.
 - **Hook-spool records survive older versions on one home** (#199, P0 of the staged-upgrade contract). Staged hook records are format 2 (`schema: "agent-mem.hook-capture"`, `format: 2`) under `hook-v2-<cwd>-<scope>-<nonce>.json`, a name 0.14.0-0.17.0 do not match, so their drain and maintenance leave them alone instead of deleting them; this version still drains v1 records. A record with a valid envelope and an unknown or newer schema stays pending until the seven-day TTL and then retires with the counted reason `unknown_schema_expired`; a corrupt record is retired at once as before. `CandidateStore` skips a stored row of an unknown kind and counts it in `skippedUnknownKinds` instead of throwing. Development: `@staix/agent-mem-v017` pins the published 0.17.0 for the compatibility test (`test/hook-spool-compat.test.ts`).
