@@ -34,6 +34,8 @@ for (const heldPipe of ["stderr", "stdout"] as const) test(`Darwin native rusage
       } }),
     };
   } });
+  let released = false;
+  const releaseHeldPipe = () => { if (!released) { released = true; if (heldPipe === "stderr") closeStderr(); else releasePipe(); } };
   const work = hookNative(["fixture"], {}, () => 1000, usage);
   try {
     expect(received).toEqual([]);
@@ -43,12 +45,12 @@ for (const heldPipe of ["stderr", "stdout"] as const) test(`Darwin native rusage
     expect(received[0]).toMatchObject({ kb: 64, rawKB: 64, source: "platform-rusage", known: true });
     expect(usage.rssSources).toMatchObject({ platformRusage: 1, unavailable: 0 });
     expect(tracker.finish(35000, "darwin").rssSources).toMatchObject({ platformRusage: 2, unavailable: 0 });
-    if (heldPipe === "stderr") closeStderr(); else releasePipe();
+    releaseHeldPipe();
     expect(await work).toEqual({ status: 0, stdout: "metadata\n" });
     expect(received).toHaveLength(1);
     expect(usage.rssSources).toMatchObject({ platformRusage: 1, unavailable: 0 });
   } finally {
-    releaseExit(0); if (heldPipe === "stderr" && received.length === 0) closeStderr(); releasePipe();
+    releaseExit(0); releaseHeldPipe();
     await work.catch(() => {}); Bun.spawn = spawn; kill.mockRestore(); Object.defineProperty(process, "platform", platform);
   }
 });
