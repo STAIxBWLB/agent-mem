@@ -1,7 +1,10 @@
 import type { BriefOptions } from "./session-brief.ts";
 import type { CaptureStore } from "./memory/capture.ts";
 import { resolveHookProjectAsync } from "./hook-project.ts";
-import { hookPeakRssKB } from "./hook-resources.ts";
+import { writeSync } from "node:fs";
+import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
+import { rssSourceCode } from "./hook-rss-wire.ts";
+import type { HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope, quarantineHookScope } from "./hook-spool.ts";
@@ -25,8 +28,15 @@ async function readOptions(): Promise<string> {
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
 if (import.meta.main) {
   let owned = false;
-  const nativeUsage = { rssKB: 0, rawRssKB: 0 };
+  const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { /* A missing receipt remains unknown to the parent. */ } };
+  frame([0]);
+  let nativeId = 0;
+  const nativeUsage: HookNativeUsage = { rssKB: 0, rawRssKB: 0, observe: () => {
+    const id = ++nativeId; frame([1, id, 0]);
+    return { started: pid => frame([1, id, pid]), finished: value => frame([2, id, value.kb, value.rawKB, rssSourceCode(value), 0]) };
+  } };
   const stop = (): never => {
+    const self = hookRssReading(); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
     // This leader is still alive in the detached group created by hookWorker.
     // Native Git uses a separate owned async supervisor with its own native watchdog;
     // a blocked Git cannot prevent this worker's JS deadline from firing.

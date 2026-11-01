@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { combineRssSources, processImageMemory, rssSource, selectHookRss, type HookRssSources } from "./hook-resources.ts";
+import { combineRssSources, processImageMemory, rssSource, selectHookRss, type HookRssReading, type HookRssSources } from "./hook-resources.ts";
 
-export interface HookNativeUsage { rssKB: number; rawRssKB: number; rssSources?: HookRssSources }
+export interface HookNativeUsage {
+  rssKB: number; rawRssKB: number; rssSources?: HookRssSources;
+  observe?: () => { started(pid: number): void; finished(reading: HookRssReading): void };
+}
 // One native supervisor, with a native sleep watchdog rather than another Bun boot.
 // The leader waits for its watchdog even after stdin EOF, so losing the calling CLI
 // cannot let the owned command outlive the same remaining per-call deadline.
@@ -26,8 +29,11 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   const remaining = timeRemaining();
   if (!Number.isFinite(remaining) || remaining <= 1) throw new Error("native metadata deadline");
   const marker = `AMEM_META_${randomBytes(16).toString("hex")}`, prefix = `\n${marker}:`, armedFrame = `${prefix}ARMED\n`;
+  let observer: ReturnType<NonNullable<HookNativeUsage["observe"]>> | undefined, observationFailed = false;
+  try { observer = usage.observe?.(); } catch { observationFailed = true; }
   const child = Bun.spawn(["/bin/sh", "-c", SUPERVISOR, "amem-hook-native", marker, String(remaining / 1000), ...argv],
     { env, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  try { observer?.started(child.pid); } catch { observationFailed = true; }
   let exited = false, ownPeak = 0;
   let reportedPeak = 0, reportedVirtual = 0, ownVirtual = 0, receiptValid = true;
   const rssReader = child.stderr.getReader();
@@ -109,6 +115,8 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     usage.rawRssKB = Math.max(usage.rawRssKB, raw);
     usage.rssKB = Math.max(usage.rssKB, selected.kb);
     usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));
+    try { observer?.finished(selected); } catch { observationFailed = true; }
+    if (observationFailed) usage.rssSources.unavailable++;
   }
 }
 
