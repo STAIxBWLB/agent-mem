@@ -34,10 +34,10 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   mark('  const remaining = () => deadline','parent-scope-done');
   mark('    const metadata = await Promise.allSettled(','parent-project-start');
   mark('    const project = resolveAlias(base, identity.value);','parent-project-done');
-  mark('    const losses = captureDropSummary(base);','parent-recovery-deferred');
+  mark('    const { dropNotice, contextLimit } = sessionNoticeAndLimit(base, cwd, options, !pending);\\n    const brief = await sessionStartBrief','parent-recovery-deferred');
   mark('    const brief = await sessionStartBrief','parent-brief-start');
   mark('    result.pending = !!pending && !result.captured;','parent-brief-done');
-  mark('    result.context = joinedContext(','parent-context-ready');
+  mark('    result.context = joinedContext(brief.context','parent-context-ready');
  }else if(path.endsWith('/hook-native.ts')){
   mark('  const child = Bun.spawn','native-spawn');
  }else if(path.endsWith('/session-brief-worker.ts')){

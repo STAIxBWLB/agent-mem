@@ -1,4 +1,4 @@
-import { rankedScoreSql, rankedScoreSqlDetails, type ScoreFactors } from "./search-score.ts";
+import { captureEventWeightSql, rankedScoreSql, rankedScoreSqlDetails, type ScoreFactors } from "./search-score.ts";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -204,8 +204,8 @@ export class ScreenedSearchIndex<T> {
       if ((db.query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS memoryOnly").get() as { memoryOnly: number }).memoryOnly) throw Error("disk-backed search unavailable");
       db.run("PRAGMA temp_store = FILE");
       db.run(this.available
-        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED)"
-        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL)");
+        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED, event UNINDEXED, session UNINDEXED)"
+        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL, event TEXT, session TEXT)");
       db.run("PRAGMA temp.cache_size = -2048");
       // A platform spill minimum can exceed cache_size (macOS: 20,000 pages).
       // Spill at the cache target so dirty TEMP pages cannot accumulate behind that minimum.
@@ -214,13 +214,13 @@ export class ScreenedSearchIndex<T> {
     } catch (error) { db?.close(); throw error; }
   }
 
-  append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null }[]): void {
-    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires) VALUES (?, ?, ?, ?, ?, ?)");
+  append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null; event?: string; session?: string }[]): void {
+    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires, event, session) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     this.db.transaction(() => {
       for (const row of rows) {
         const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
         // Invalid deadlines fail closed; this sentinel predates every representable Date.
-        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline);
+        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline, row.event ?? null, row.session ?? null);
       }
     })();
   }
@@ -242,6 +242,31 @@ export class ScreenedSearchIndex<T> {
     });
   }
 
+  /** Weighted capture-only fill after the caller fixes the legacy noncapture slots. The caller has already screened every row before append. */
+  bestCaptureGroups(query: string, limit: number, now: number, useFts = this.available, explain = false): { value: T; score: number; scoreDetails?: ScoreFactors }[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || useFts && !ftsTerms(query)) return [];
+    const instant = new Date(now).toISOString(), score = useFts ? SCREENED_SCORE : SCREENED_SUBSTRING_SCORE;
+    const weight = captureEventWeightSql("event");
+    const factors = explain ? rankedScoreSqlDetails(useFts ? "bm25(docs)" : "-1.0", useFts) : undefined;
+    const columns = factors ? `, ${factors.rawBm25Rank} AS rawBm25Rank, ${factors.tierFactor} AS tierFactor, ${factors.recencyFactor} AS recencyFactor` : "";
+    const where = "WHERE tier = 'capture' AND (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
+    const selected: { value: T; score: number; scoreDetails?: ScoreFactors }[] = [], groups = new Set<string>();
+    // Sort once in SQLite-owned TEMP storage, then stream past duplicate sessions without growing JS pages or re-sorting OFFSET windows.
+    const statement = this.db.query(`SELECT payload, ref, event, session, ${score} AS score${columns} FROM docs ${where} ORDER BY score * ${weight} DESC, ref`);
+    const orderedArgs = [instant, ...(explain ? [instant] : []), now, ...(useFts ? [ftsTerms(query)] : [])];
+    for (const row of statement.iterate(...orderedArgs) as Iterable<{ payload: string; ref: string; event: string | null; session: string | null; score: number; rawBm25Rank?: number | null; tierFactor?: number | null; recencyFactor?: number | null }>) {
+      const session = typeof row.session === "string" && /^[a-f0-9]{16}$/.test(row.session) ? row.session : undefined;
+      const group = session ? `session:${session}` : `row:${row.ref}`;
+      if (groups.has(group)) continue;
+      groups.add(group);
+      const hit: { value: T; score: number; scoreDetails?: ScoreFactors } = { value: JSON.parse(row.payload) as T, score: row.score };
+      if (explain) hit.scoreDetails = { rawBm25Rank: row.rawBm25Rank ?? null, tierFactor: row.tierFactor ?? null, recencyFactor: row.recencyFactor ?? null, finalScore: row.score, matchMode: useFts ? "fts5" : "substring" };
+      selected.push(hit);
+      if (selected.length === limit) break;
+    }
+    return selected;
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -250,6 +275,7 @@ export class ScreenedSearchIndex<T> {
 }
 
 interface RawCaptureRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string; session?: string | null; subagent?: number | null }
+export interface CaptureSearchOptions { weightEvents?: boolean; onePerSession?: boolean; now?: number }
 
 /**
  * The capture leg of #13 search: BM25 over the excerpts of one capture shard (`machine/<id>` of a project shard,
@@ -257,21 +283,43 @@ interface RawCaptureRow { id: number; at: string; project: string; agent: string
  * Rows older than `notBefore` (an ISO time) are left out; the store passes the shard's retention cutoff, so an expired
  * row is not recalled before a later append evicts it.
  */
-export function captureSearch(dir: string, q: string, limit: number, notBefore?: string): { row: CaptureRow; rank: number }[] {
+export function captureSearch(dir: string, q: string, limit: number, notBefore?: string, options: CaptureSearchOptions = {}): { row: CaptureRow; rank: number }[] {
   const match = ftsTerms(q);
-  if (!match || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
+  if (!match || !Number.isSafeInteger(limit) || limit < 1 || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
+  const weightEvents = options.weightEvents !== false, onePerSession = options.onePerSession ?? weightEvents;
+  const eventWeight = captureEventWeightSql("r.event");
+  const weightedOrder = `bm25(fts) * ${eventWeight}, r.id`;
+  const selected: { row: CaptureRow; rank: number }[] = [], groups = new Set<string>();
   let db: Database | undefined;
   try {
     db = new Database(join(dir, "capture.db"), { readonly: true });
     db.run("PRAGMA busy_timeout = 3000");
     if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get()) return [];
-    // `notBefore` (retention cutoff, `since`) runs inside the query: rows past it never take a LIMIT slot.
-    const rows = (notBefore === undefined
-      ? db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit)
-      : db.query(`SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE fts MATCH ? AND r.at >= ? ORDER BY rank LIMIT ?`).all(match, notBefore, limit)) as (RawCaptureRow & { rank: number })[];
-    return rows.map((r) => ({ row: { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt,
-      // #173 attribution, mirrored from capture-input.ts captureAttribution (this module stays import-light for the ablation harness).
-      ...(typeof r.session === "string" && /^[a-f0-9]{16}$/.test(r.session) ? { session: r.session } : {}), ...(r.subagent === 1 ? { subagent: true as const } : {}) }, rank: r.rank }));
+    // Filter first, then sort once. In the grouped path the first row of each session is
+    // its best complete-score match, so stopping at limit cannot hide a better unread row.
+    const matchWhere = notBefore === undefined ? "fts MATCH ?" : "fts MATCH ? AND r.at >= ?";
+    const args: (string | number)[] = notBefore === undefined ? [match] : [match, notBefore];
+    const order = onePerSession
+      ? `${rankedScoreSql("bm25(fts)")} * ${weightEvents ? eventWeight : "1.0"} DESC, r.id`
+      : weightEvents ? weightedOrder : "rank";
+    // The capture tier is an existing score input, projected only for the shared SQL recipe.
+    const sql = `SELECT r.*, ${onePerSession ? "'capture' AS tier, " : ""}bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE ${matchWhere} ORDER BY ${order}${onePerSession ? "" : " LIMIT ?"}`;
+    args.push(onePerSession ? new Date(options.now ?? Date.now()).toISOString() : limit);
+    const statement = db.query(sql);
+    const rows = (onePerSession ? statement.iterate(...args) : statement.all(...args)) as Iterable<RawCaptureRow & { rank: number }>;
+    for (const r of rows) {
+      const session = typeof r.session === "string" && /^[a-f0-9]{16}$/.test(r.session) ? r.session : undefined;
+      if (onePerSession && session) {
+        if (groups.has(session)) continue;
+        groups.add(session);
+      }
+      const row: CaptureRow = { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt,
+        // #173 attribution, mirrored from capture-input.ts captureAttribution (this module stays import-light for the ablation harness).
+        ...(session ? { session } : {}), ...(r.subagent === 1 ? { subagent: true as const } : {}) };
+      selected.push({ row, rank: r.rank });
+      if (selected.length === limit) break;
+    }
+    return selected;
   } catch { return []; }
   finally { db?.close(); }
 }

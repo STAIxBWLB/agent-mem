@@ -201,11 +201,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         try {
           const words = query.toLowerCase().split(/\s+/).filter(Boolean);
           const captureState: { engine?: "fts5" | "substring" } = {};
-          let batch: { body: string; ref: string; tier: string; at: string; value: SearchValue; expiresAt?: string | null }[] = [];
+          let batch: { body: string; ref: string; tier: string; at: string; value: SearchValue; expiresAt?: string | null; event?: string; session?: string }[] = [];
           const append = (value: SearchValue) => {
             const row = value.source === "capture" ? value.capture : value.view;
             batch.push(value.source === "capture"
-              ? { value, ref: `capture:${value.capture.id}`, at: row.at, tier: "capture", body: `${value.capture.excerpt}\n${value.capture.paths.join(" ")}\n${value.capture.event}` }
+              ? { value, ref: `capture:${value.capture.id}`, at: row.at, tier: "capture", body: `${value.capture.excerpt}\n${value.capture.paths.join(" ")}\n${value.capture.event}`,
+                event: value.capture.event, ...(typeof value.capture.session === "string" && /^[a-f0-9]{16}$/.test(value.capture.session) ? { session: value.capture.session } : {}) }
               : { value, ref: value.source === "repo" ? `repo:${value.view.id}` : value.view.id, at: row.at, tier: value.source === "repo" ? "long" : value.view.tier, body: `${value.view.title ?? ""}\n${value.view.text}\n${value.view.about.join(" ")}`, expiresAt: value.source === "curated" ? value.view.expiresAt : null });
             if (batch.length === READ_PAGE) { index.append(batch); batch = []; }
           };
@@ -223,7 +224,16 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           for (const view of repoNotes) append({ source: "repo", evidence: false, view });
           if (batch.length) index.append(batch);
-          const selected = index.best(query, limit, store.readNow(), useFts, args.explain === true).map(({ value, score, scoreDetails }) => {
+          const now = store.readNow(), baseline = index.best(query, limit, now, useFts, args.explain === true);
+          const captureSlots = baseline.filter(hit => hit.value.source === "capture").length;
+          const weightedCapture = captureSlots ? index.bestCaptureGroups(query, captureSlots, now, useFts, args.explain === true) : [];
+          let captureIndex = 0;
+          // Keep every baseline noncapture slot and position. Only its capture slots receive weighted,
+          // one-per-session rows from the separately screened TEMP corpus; exhausted slots are omitted.
+          const selected = baseline.flatMap(hit => {
+            if (hit.value.source !== "capture") return [hit];
+            const replacement = weightedCapture[captureIndex++]; return replacement ? [replacement] : [];
+          }).map(({ value, score, scoreDetails }) => {
             const hit = { ...value, score };
             return scoreDetails ? { ...hit, scoreDetails: { source: value.source, ...scoreDetails } } : hit;
           });

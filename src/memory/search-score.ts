@@ -14,6 +14,16 @@ type ScoreExpr = { op: "rank" | "tier" | "age" } | { op: "constant"; value: numb
 const MONTH_DAYS = 30;
 const TIER_WEIGHTS: Readonly<Record<string, number>> = { long: 1, capture: 0.5 };
 const DEFAULT_TIER_WEIGHT = 0.9;
+// ponytail: fixed 1.25x ceiling for conversational capture, not a learned relevance model.
+// Raise it only with fresh S/M no-loss and private-capture evidence; curated tier factors stay unchanged.
+export const CAPTURE_CONVERSATION_WEIGHT = 1.25;
+export function captureEventWeight(event: string): number {
+  return event === "Stop" || event === "UserPromptSubmit" ? CAPTURE_CONVERSATION_WEIGHT : 1;
+}
+/** Only fixed internal SQL identifiers are supplied by callers; event values remain stored data. */
+export function captureEventWeightSql(eventColumn: string): string {
+  return `(CASE WHEN ${eventColumn} IN ('Stop', 'UserPromptSubmit') THEN ${CAPTURE_CONVERSATION_WEIGHT} ELSE 1.0 END)`;
+}
 const TIER_FACTOR: ScoreExpr = { op: "tier" };
 const DENOMINATOR: ScoreExpr = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
 const RECENCY_FACTOR: ScoreExpr = { op: "reciprocal", value: DENOMINATOR };
@@ -52,6 +62,9 @@ function sql(expr: ScoreExpr, rank: string): string {
 }
 export function rankedScore(rank: number, tier: string, at: string, now: number): number {
   return numeric(SCORE, rank, tier, at, now);
+}
+export function captureWeightedScore(rank: number, event: string, at: string, now: number): number {
+  return rankedScore(rank, "capture", at, now) * captureEventWeight(event);
 }
 /** SQL uses fixed internal identifiers and bound clock values, never interpolated row/query input. */
 export function rankedScoreSql(rank = "bm25(docs)"): string { return sql(SCORE, rank); }
