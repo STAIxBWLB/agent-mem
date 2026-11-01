@@ -93,7 +93,7 @@ async function measure() {
         const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, newSummaries, durableSummaries, reasonOnlyStreak, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
-          || newSummaries < 0 || newSummaries === 0 && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")) {
+          || newSummaries < 0 || (newSummaries === 0 || offset === previous) && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")) {
           throw Error("transcript budget scan progress unavailable: " + JSON.stringify(sample));
         }
         if (reasonOnlyStreak >= 3) throw Error("transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample));
