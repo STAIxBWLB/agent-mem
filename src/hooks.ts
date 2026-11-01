@@ -209,7 +209,7 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
  * publication; this path uses one helper too, and the current normalized event stays pending. */
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
-  if (event === "Stop" || event === "SessionEnd") {
+  if ((event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input) {
     try {
       const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
       await scanHookTranscriptTail(input, { ...options, base, deadline });
