@@ -1,0 +1,41 @@
+import { afterEach, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { applySetup, planSetup, setupPlanText, undoSetup } from "../src/setup.ts";
+import { readSetupDrift } from "../src/setup-drift.ts";
+import { setup202Rig } from "./fakes/setup-202.ts";
+
+const rigs: ReturnType<typeof setup202Rig>[] = [];
+afterEach(() => { for (const r of rigs.splice(0)) r.close(); });
+const rig = () => { const r = setup202Rig(); rigs.push(r); return r; };
+
+for (const target of ["claude", "codex"] as const) test(`${target}: identical hand-merged personal wiring needs no receipt and survives undo`, () => {
+  const managed = (home: string) => join(home, "Library", "Application Support", "orca", target === "claude" ? "claude-profiles" : "codex-accounts", "id", "home");
+  const hooks = (home: string) => join(home, target === "claude" ? ".claude" : ".codex", target === "claude" ? "settings.json" : "hooks.json");
+  const config = (home: string) => join(home, ".codex", "config.toml");
+  const seed = rig(); seed.env[target === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = managed(seed.home);
+  applySetup(planSetup(target, "apply", seed.options), seed.options);
+  const r = rig(); r.env[target === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = managed(r.home);
+  const relocate = (value: string) => value.replaceAll(seed.home, r.home);
+  r.put(hooks(r.home), relocate(seed.text(hooks(seed.home))));
+  if (target === "codex") r.put(config(r.home), relocate(seed.text(config(seed.home))));
+  const receipt = join(r.home, "memory", "setup", `${target}.json`);
+  expect(existsSync(receipt)).toBe(false);
+  const before = r.text(hooks(r.home)), beforeConfig = target === "codex" ? r.text(config(r.home)) : undefined;
+  const count = (value: string) => (value.match(/amem\.js' (hook|ingest)/g) ?? []).length;
+  expect(count(before)).toBe(target === "claude" ? 7 : 1);
+  const preview = planSetup(target, "preview", r.options);
+  expect(setupPlanText(preview)).toContain("matching amem entries are already present without a setup receipt");
+  expect(existsSync(receipt)).toBe(false); expect(r.text(hooks(r.home))).toBe(before);
+  applySetup(planSetup(target, "apply", r.options), r.options);
+  expect(existsSync(receipt)).toBe(true);
+  expect(r.text(hooks(r.home))).toBe(before); expect(count(r.text(hooks(r.home)))).toBe(count(before));
+  if (target === "codex") { expect(beforeConfig).toBeDefined(); expect(r.text(config(r.home))).toBe(beforeConfig!); }
+  const drift = readSetupDrift({ home: join(r.home, "memory"), env: r.env, cwd: r.home });
+  if (target === "claude") expect(drift).toMatchObject({ status: "ok", entries: [] });
+  else expect(drift.entries.some(row => row.kind === "review-needed" && row.entry === "hooks.SessionEnd")).toBe(true);
+  undoSetup(planSetup(target, "undo", r.options), r.options);
+  expect(r.text(hooks(r.home))).toBe(before); expect(count(r.text(hooks(r.home)))).toBe(target === "claude" ? 7 : 1);
+  if (target === "codex") { expect(beforeConfig).toBeDefined(); expect(r.text(config(r.home))).toBe(beforeConfig!); }
+  expect(existsSync(receipt)).toBe(false);
+});

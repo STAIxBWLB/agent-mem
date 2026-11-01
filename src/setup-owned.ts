@@ -143,3 +143,18 @@ export function managedAfter(target: string, index: number, before: ConfigImage,
   if (target === "kimi") return added(kimiHooks(before), kimiHooks(after), kimiKey).every(row => kimiHooks(current).some(value => kimiKey(value) === kimiKey(row)));
   return current.bytes === after.bytes;
 }
+
+/** Read-only receipt diagnostics; use the same hook identity rules as semantic undo. */
+export function managedHookEntries(target: string, before: ConfigImage, after: ConfigImage, current: ConfigImage,
+  expected: readonly { event: string; command: string }[]): { entry: string; present: boolean }[] {
+  if (target === "kimi") {
+    const original = kimiHooks(before), installed = kimiHooks(after), live = kimiHooks(current);
+    const ours = new Set(added(original, installed, kimiKey).map(kimiKey));
+    return installed.filter(row => ours.has(kimiKey(row)) || expected.some(value => value.event === row.event && value.command === row.command))
+      .map(row => ({ entry: `hooks.${String(row.event)}`, present: live.some(value => kimiKey(value) === kimiKey(row)) }));
+  }
+  const strict = target === "qwen", original = hooks(json(before), strict), installed = hooks(json(after), strict), live = hooks(json(current), strict);
+  const ours = new Set(added(original, installed, row => row.id).map(row => row.id));
+  return installed.filter(row => ours.has(row.id) || expected.some(value => value.event === row.event && value.command === row.command))
+    .map(row => ({ entry: `hooks.${row.event}`, present: live.some(value => value.id === row.id) }));
+}

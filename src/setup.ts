@@ -3,7 +3,8 @@ import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
 import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
-import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand, geminiSettingsPath } from "./setup-gemini.ts";
+import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
+import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -129,30 +130,7 @@ function workspaceBinding(options: SetupContext): WorkspaceBinding {
 }
 function context(options: SetupContext, workspace?: WorkspaceBinding) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
-  const root = (key: string, fallback: string) => {
-    const setting = env[key];
-    const present = key === "JCODE_HOME" ? setting !== undefined : key === "QWEN_HOME" ? !!setting : !!setting?.trim();
-    if (!present) return join(home, fallback);
-    const expanded = key === "QWEN_HOME" && /^~(?:[/\\]|$)/.test(setting!) ? join(home, ...setting!.slice(2).split(/[/\\]/)) : setting!;
-    const given = resolve(expanded), withinHome = relative(resolve(env.HOME?.trim() || homedir()), given);
-    // Canonicalize the HOME alias only; named configuration-directory symlinks must still be refused.
-    return withinHome !== ".." && !withinHome.startsWith("../") && !isAbsolute(withinHome) ? join(home, withinHome) : given;
-  };
-  const claude = root("CLAUDE_CONFIG_DIR", ".claude"), codex = root("CODEX_HOME", ".codex"), kimi = root("KIMI_CODE_HOME", ".kimi-code"), pi = root("PI_CODING_AGENT_DIR", ".pi/agent"), qwen = root("QWEN_HOME", ".qwen");
-  const paths: Record<SetupTarget, string[]> = {
-    claude: [env.CLAUDE_CONFIG_DIR?.trim() ? join(claude, ".claude.json") : join(home, ".claude.json"), join(claude, "settings.json")],
-    codex: [join(codex, "config.toml"), join(codex, "hooks.json")],
-    kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
-    pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
-    qwen: [join(qwen, "settings.json")],
-    // Absolute JCODE_HOME spellings stay literal; unset uses the platform-home default.
-    jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
-    // xdg-basedir 5.1.0: XDG_CONFIG_HOME verbatim when set and non-empty, else ~/.config (OpenCode v1.18.35 packages/core/src/global.ts).
-    opencode: [join(opencodeConfigRoot(env, home), "opencode", "opencode.json")],
-    // Gemini CLI's own user settings, never Antigravity's <home>/.gemini/config/mcp_config.json.
-    gemini: [geminiSettingsPath(env, home)],
-    agy: workspace ? [join(workspace.root, ".agents", "mcp_config.json")] : [],
-  };
+  const { paths, legacyPaths, redirects } = resolveSetupPaths(env, home, workspace?.root);
   const requestedBun = options.bun ?? "bun", bun = requestedBun === "bun" ? Bun.which("bun", { PATH: env.PATH ?? process.env.PATH }) : requestedBun;
   const entry = options.entry ?? fileURLToPath(new URL("../bin/amem.js", import.meta.url));
   if (!bun || !isAbsolute(bun) || !isAbsolute(entry)) throw Error("setup needs a PATH-resolved absolute Bun runtime and an absolute installed entry");
@@ -161,7 +139,7 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     const roots = [resolve(tmpdir()), realPath(tmpdir())], entries = [resolve(entry), realPath(entry)];
     if (roots.some(root => entries.some(file => { const part = relative(root, file); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); }))) throw Error("setup refuses a temporary package entry; install amem in a persistent location first");
   }
-  return { env, home, paths, bun, entry, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
+  return { env, home, paths, legacyPaths, redirects, bun, entry, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
 }
 function command(target: SetupTarget, bun: string, entry: string): string[] | null {
   if (target === "kimi" || target === "jcode" || target === "opencode" || target === "agy") return null;
@@ -174,11 +152,6 @@ function command(target: SetupTarget, bun: string, entry: string): string[] | nu
  * (no trim) and falls back to ~/.config only when it is unset or empty. A relative value would resolve against
  * OpenCode's own cwd, so setup refuses it rather than guess. An absolute value keeps its literal spelling.
  */
-function opencodeConfigRoot(env: Env, home: string): string {
-  const value = env.XDG_CONFIG_HOME;
-  // A relative value is refused in assertOpencodeLayout; the path here only has to be well-formed for inventory.
-  return value === undefined || value === "" || !isAbsolute(value) ? join(home, ".config") : value;
-}
 function assertJcodeHome(env: Env): void {
   if (env.JCODE_HOME !== undefined && !isAbsolute(env.JCODE_HOME)) throw Error("setup requires an absolute JCODE_HOME; unset it to use the default");
 }
@@ -202,7 +175,8 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
   if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
-    const change = record(value.changes[i]); if (change.path !== c.paths[target][i] || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
+    const change = record(value.changes[i]); const currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
+    if (change.path !== currentPath && !legacyRedirect || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
     for (const key of ["before", "after", ...(change.start !== undefined ? ["start"] : [])]) {
       const v = record(change[key]);
       if (!Number.isInteger(v.mode) || Number(v.mode) < 0 || Number(v.mode) > 0o777 || v.bytes !== null && (typeof v.bytes !== "string" || v.bytes.length > 2 * MAX || Buffer.from(v.bytes, "base64").toString("base64") !== v.bytes)) throw Error("setup receipt invalid");
@@ -231,12 +205,16 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   if (targets.includes("gemini") && (target === "gemini" || available(c, "gemini", options))) assertGeminiHome(c.env);
   if (mode !== "undo" && targets.includes("gemini")) assertGeminiRuntime(c.bun, c.entry);
   const pluginNotes: string[] = [];
+  for (const row of c.redirects.filter(row => targets.includes(row.target))) {
+    pluginNotes.push(`${row.target}: ${row.from} -> ${row.to}. ${row.reason}; start a new Orca session to receive the change.`);
+  }
   if (targets.includes("claude")) {
-    const settings = json(read(c.paths.claude[1]!));
+    const settingsPath = mode === "undo" ? receipt(c, "claude", false)?.changes[1]?.path ?? c.paths.claude[1]! : c.paths.claude[1]!;
+    const settings = json(read(settingsPath));
     // The settings-derived ids are computed outside the registry guard, so a broken installed_plugins.json cannot hide them.
     const ids = new Set<string>();
     try { for (const key of Object.keys(record(settings.enabledPlugins ?? {}))) ids.add(key); } catch { /* Optional plugin metadata must never prevent setup or recovery. */ }
-    try { for (const key of Object.keys(record(json(read(join(dirname(c.paths.claude[1]!), "plugins", "installed_plugins.json"))).plugins ?? {}))) ids.add(key); } catch { /* Optional plugin metadata must never prevent setup or recovery; authoritative settings/receipts keep their guards. */ }
+    try { for (const key of Object.keys(record(json(read(join(dirname(settingsPath), "plugins", "installed_plugins.json"))).plugins ?? {}))) ids.add(key); } catch { /* Optional plugin metadata must never prevent setup or recovery; authoritative settings/receipts keep their guards. */ }
     for (const id of [...ids].filter(key => /^agent-mem(?:@[A-Za-z0-9._-]+)?$/.test(key))) pluginNotes.push(`Installed Claude plugin ${id} detected: if enabled, direct setup would duplicate its MCP server and seven hooks. Choose plugin installation or direct setup; disable/uninstall the plugin before applying direct setup.`);
   }
   if (targets.includes("qwen")) pluginNotes.push("Qwen capture supports the verified 0.26.1 native format. For custom advanced.runtimeOutputDir, export the matching QWEN_RUNTIME_DIR for manual and SessionEnd ingest.");
@@ -250,15 +228,31 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
   return { targets, mode, actions: targets.map(target => {
-    const prior = receipt(c, target, false); for (const file of c.paths[target]) read(file);
-    const original = read(c.paths[target][0]!);
+    const prior = receipt(c, target, false), files = mode === "undo" && prior ? prior.changes.map(change => change.path) : c.paths[target];
+    for (const file of files) read(file);
+    if (mode === "undo" && prior?.changes.some((change, index) => change.path !== c.paths[target][index])) {
+      pluginNotes.push(`${target}: undo restores the historical receipt files, not the new personal source: ${prior.changes.map(change => change.path).join(", ")}`);
+    }
+    const original = read(files[0]!);
     const document: Record<string, unknown> = target === "agy" ? {} : target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
     const hasAmem = target === "jcode" || target === "opencode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    if (!prior && mode !== "undo" && (target === "claude" || target === "codex")) {
+      try {
+        const server = mcpRecord(target, original);
+        const sameBinding = server && typeof server === "object" && !Array.isArray(server)
+          && (server as Record<string, unknown>).command === c.bun
+          && isDeepStrictEqual((server as Record<string, unknown>).args, ["--smol", c.entry, "mcp"])
+          && (server as Record<string, unknown>).enabled !== false;
+        const hookFile = json(read(c.paths[target][1]!)), groups = record(hookFile.hooks ?? {});
+        const sameHook = plannedHooks(c, target).some(row => Array.isArray(groups[row.event]) && hasHook(groups[row.event] as unknown[], row.command, row.timeout));
+        if (sameBinding || sameHook) pluginNotes.push(`${target}: matching amem entries are already present without a setup receipt; apply will not duplicate matching hook commands, and undo preserves the original entries.`);
+      } catch { /* Advisory only: preparing the real change retains the existing configuration validation. */ }
+    }
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
     if (version?.matches === false) pluginNotes.push(`WARNING: ${target} version ${version.output}; layout verified on ${version.verified}. Apply remains guarded by native configuration validation.`);
-    return { target, available: installed, ...(version ? { version } : {}), files: c.paths[target], receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
+    return { target, available: installed, ...(version ? { version } : {}), files, receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
   }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 /** Native probes and registration share one private HOME, cwd and configuration layout. */
@@ -312,12 +306,20 @@ function native(argv: readonly string[], env: Env, cwd: string): void {
     throw Error(`${argv[0]} MCP registration ${reason} in staging; no native output disclosed`);
   }
 }
+function hasHook(rows: readonly unknown[], command: string, timeout: number): boolean {
+  return rows.some(row => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const group = record(row);
+    return [undefined, "", "*"].some(value => value === group.matcher) && Array.isArray(group.hooks)
+      && group.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; });
+  });
+}
 function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
   for (const event of events) {
     const rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
     const command = commandFor(event);
-    if (!rows.some(row => [undefined, "", "*"].includes(row?.matcher) && Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; }))) rows.push({ hooks: [{ type: "command", command, timeout }] });
+    if (!hasHook(rows, command, timeout)) rows.push({ hooks: [{ type: "command", command, timeout }] });
     hooks[event] = rows;
   }
   document.hooks = hooks; return objectImage(document, before);
@@ -341,7 +343,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   if (target === "opencode") assertOpencodeLayout(c, "apply");
   if (target === "gemini") assertGeminiHome(c.env);
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
-  const restored = prior ? prior.changes.map((change, index) => restoreChange(prior, change, index, expected[index]!)) : expected;
+  // Only a same-file before-image can restore a target. A newly authoritative personal source owns its current bytes.
+  const restored = prior ? prior.changes.map((change, index) => change.path === c.paths[target][index]
+    ? restoreChange(prior, change, index, expected[index]!) : expected[index]!) : expected;
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
