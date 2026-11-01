@@ -10,8 +10,8 @@ test("a missing or zero image peak never turns inherited raw RSS into known tele
   expect(selectHookRss("linux", undefined, 0)).toMatchObject({ source: "unavailable", known: false });
 });
 
-test("valid per-image peaks preserve real allocations while raw launch evidence stays separate", () => {
-  expect(selectHookRss("linux", 2048, 128 * 1024)).toEqual({ kb: 2048, rawKB: 128 * 1024, source: "VmHWM", known: true });
+test("VmHWM present selects its image peak before a larger VmPeak bound", () => {
+  expect(selectHookRss("linux", 2048, 128 * 1024, 256 * 1024)).toEqual({ kb: 2048, rawKB: 128 * 1024, source: "VmHWM", known: true });
   expect(selectHookRss("linux", 256 * 1024, 128 * 1024).kb).toBe(256 * 1024);
   expect(selectHookRss("darwin", undefined, 4096)).toMatchObject({ kb: 4096, source: "platform-rusage", known: true });
 });
@@ -26,8 +26,8 @@ test("provenance keeps a single unknown component visible through aggregation", 
   expect(validRssSources(known)).toBe(true);
 });
 
-test("peak virtual size provides an explicitly named conservative image bound when RSS telemetry is zero", () => {
-  expect(selectHookRss("linux", 0, 128 * 1024, 2672)).toEqual({ kb: 2672, rawKB: 128 * 1024, source: "VmPeak-bound", known: true });
+test("VmHWM zero selects an explicitly named vmpeak-bound reading", () => {
+  expect(selectHookRss("linux", 0, 128 * 1024, 2672)).toEqual({ kb: 2672, rawKB: 128 * 1024, source: "vmpeak-bound", known: true });
   expect(selectHookRss("linux", 0, 128 * 1024, 256 * 1024).kb).toBe(256 * 1024);
 });
 
@@ -35,4 +35,11 @@ test("a known parent cannot hide a counted child with missing source metadata", 
   const parent = rssSource(selectHookRss("linux", 35000, 128000));
   expect(rssSourcesKnown(combineRssSources(parent, countedRssSources(2048)))).toBe(false);
   expect(rssSourcesKnown(combineRssSources(parent, countedRssSources(0)))).toBe(true);
+});
+
+test("missing VmHWM and VmPeak cannot certify an image", () => {
+  const fallback = selectHookRss("linux", undefined, 128 * 1024, undefined);
+  expect(fallback).toEqual({ kb: 128 * 1024, rawKB: 128 * 1024, source: "raw-fallback", known: false });
+  expect(rssSourcesKnown(rssSource(fallback))).toBe(false);
+  expect(selectHookRss("linux", undefined, 0, undefined)).toEqual({ kb: 0, rawKB: 0, source: "unavailable", known: false });
 });

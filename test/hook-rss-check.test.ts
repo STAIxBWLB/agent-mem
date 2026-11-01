@@ -11,3 +11,16 @@ test("a plausible small numeric RSS does not pass with missing or unknown proven
   expect(() => measuredHookRss({ ...sample, rssSources: undefined }, 40, "linux")).toThrow("provenance unknown");
   expect(() => measuredHookRss({ ...sample, rssSources: { ...sample.rssSources!, rawFallback: 1 } }, 40, "linux")).toThrow("provenance unknown");
 });
+
+test("each platform profile declares counted images and unmeasured descendants", () => {
+  for (const platform of ["linux", "darwin"]) {
+    expect(measuredHookRss(sample, 40, platform).rssCoverage).toBe("images: bun+supervisor; descendants: not measured");
+  }
+});
+
+test("coverage never certifies a missing scope or an unavailable source", () => {
+  for (const metric of [{ ...sample, rssScope: undefined }, { ...sample, rssSources: { ...sample.rssSources!, unavailable: 1 } }]) {
+    expect(() => measuredHookRss(metric, 40, "linux")).toThrow("provenance unknown");
+    expect(() => measuredHookRss(metric, 40, "linux")).toThrow("descendants: not measured");
+  }
+});

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 
-export interface HookRssReading { kb: number; rawKB: number; source: "VmHWM" | "VmPeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable"; known: boolean }
+export const HOOK_RSS_COVERAGE = "images: bun+supervisor; descendants: not measured" as const;
+
+export interface HookRssReading { kb: number; rawKB: number; source: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable"; known: boolean }
 export interface HookRssSources { vmhwm: number; vmpeakBound: number; platformRusage: number; rawFallback: number; unavailable: number }
 const positive = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value > 0;
 
@@ -8,7 +10,7 @@ const positive = (value: number | undefined): value is number => value !== undef
 export function selectHookRss(platform: string, imageKB: number | undefined, rawKB: number, virtualKB?: number): HookRssReading {
   const raw = positive(rawKB) ? rawKB : 0;
   if (platform === "linux" && positive(imageKB)) return { kb: imageKB, rawKB: raw, source: "VmHWM", known: true };
-  if (platform === "linux" && positive(virtualKB)) return { kb: virtualKB, rawKB: raw, source: "VmPeak-bound", known: true };
+  if (platform === "linux" && positive(virtualKB)) return { kb: virtualKB, rawKB: raw, source: "vmpeak-bound", known: true };
   if (platform !== "linux" && raw) return { kb: Math.max(raw, positive(imageKB) ? imageKB : 0), rawKB: raw, source: "platform-rusage", known: true };
   return { kb: raw, rawKB: raw, source: raw ? "raw-fallback" : "unavailable", known: false };
 }
@@ -32,7 +34,7 @@ export const hookPeakRssKB = (): number => hookRssReading().kb;
 export const emptyRssSources = (): HookRssSources => ({ vmhwm: 0, vmpeakBound: 0, platformRusage: 0, rawFallback: 0, unavailable: 0 });
 export function rssSource(reading: HookRssReading): HookRssSources {
   const value = emptyRssSources();
-  value[reading.source === "VmHWM" ? "vmhwm" : reading.source === "VmPeak-bound" ? "vmpeakBound" : reading.source === "platform-rusage" ? "platformRusage" : reading.source === "raw-fallback" ? "rawFallback" : "unavailable"] = 1;
+  value[reading.source === "VmHWM" ? "vmhwm" : reading.source === "vmpeak-bound" ? "vmpeakBound" : reading.source === "platform-rusage" ? "platformRusage" : reading.source === "raw-fallback" ? "rawFallback" : "unavailable"] = 1;
   return value;
 }
 export function combineRssSources(...values: (HookRssSources | undefined)[]): HookRssSources {

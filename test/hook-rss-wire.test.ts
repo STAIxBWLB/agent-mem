@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { HookWorkerRss } from "../src/hook-rss-wire.ts";
-import { rssSourcesKnown } from "../src/hook-resources.ts";
+import { HookWorkerRss, rssSourceCode } from "../src/hook-rss-wire.ts";
+import { rssSourcesKnown, selectHookRss } from "../src/hook-resources.ts";
 
 const self = (t: HookWorkerRss, kb = 35 * 1024) => t.frame([3, kb, 128 * 1024, 0]);
 function start(t: HookWorkerRss, id: number, pid: number) { t.frame([1, id, 0]); t.frame([1, id, pid]); }
@@ -55,4 +55,8 @@ test("platform worker rusage remains a floor for the combined report rather than
   t.frame([2, 1, 5000, 5000, 2, 0]); t.frame([3, 35000, 35000, 2]);
   expect(t.finish(40000, "darwin").rssKB).toBe(40000);
   expect(t.finish(45000, "darwin").rssKB).toBe(45000);
+});
+
+test("vmpeak-bound retains wire source code one", () => {
+  expect(rssSourceCode(selectHookRss("linux", 0, 35000, 2672))).toBe(1);
 });

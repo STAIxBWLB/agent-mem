@@ -22,7 +22,7 @@ import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
-interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number | null; rssSource: string; rssSources: HookRssSources }
+interface Sample extends ReturnType<typeof measuredHookRss> { wallMs: number }
 async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
@@ -109,9 +109,9 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   // Bun child rusage maxRSS is bytes; process.resourceUsage().maxRSS uses a different unit.
   const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576), { cliRssMB, recordedRssMB } = rss;
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
-  if (!(rss.rssMB < RSS_MB)) throw new Error(`actual hook exceeded R2 peak RSS: ${JSON.stringify({ event, group, invocation: invocations, wallMs: round(wallMs), cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB, rssSource: rss.rssSource, rssSources: rss.rssSources })}`);
+  if (!(rss.rssMB < RSS_MB)) throw new Error(`actual hook exceeded R2 peak RSS: ${JSON.stringify({ event, group, invocation: invocations, wallMs: round(wallMs), cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSources: rss.rssSources })}`);
   if (event === "SessionStart") {
-    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssSourcesJson: JSON.stringify(rss.rssSources) });
+    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSourcesJson: JSON.stringify(rss.rssSources) });
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
     if (result.stdout.length > 8192) throw new Error("SessionStart output exceeded 8 KiB");
     if (!result.stdout.length) {
@@ -140,7 +140,7 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
   const verdict = workloadBudget(name, { wallP95Ms, peakRssMB, wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
-  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), ...verdict };
+  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
 }
 try {
   await f.seed();

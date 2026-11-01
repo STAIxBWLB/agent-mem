@@ -1,6 +1,6 @@
 import { combineRssSources, processImageMemory, rssSource, selectHookRss, type HookRssReading, type HookRssSources } from "./hook-resources.ts";
 
-const SOURCES = ["VmHWM", "VmPeak-bound", "platform-rusage", "raw-fallback", "unavailable"] as const;
+const SOURCES = ["VmHWM", "vmpeak-bound", "platform-rusage", "raw-fallback", "unavailable"] as const;
 export const rssSourceCode = (value: HookRssReading): number => SOURCES.indexOf(value.source);
 function reading(kb: unknown, raw: unknown, code: unknown): HookRssReading | undefined {
   if (!Number.isSafeInteger(kb) || (kb as number) < 0 || !Number.isSafeInteger(raw) || (raw as number) < 0 || !Number.isSafeInteger(code) || (code as number) < 0 || (code as number) >= SOURCES.length) return;
@@ -61,7 +61,7 @@ export class HookWorkerRss {
   finish(rawWorkerKB: number, platform = process.platform): { rssKB: number; rawRssKB: number; rssSources: HookRssSources } {
     const self = this.self;
     const hwm = Math.max(this.image.hwmKB ?? 0, self?.source === "VmHWM" ? self.kb : 0);
-    const virtual = Math.max(this.image.virtualKB ?? 0, self?.source === "VmPeak-bound" ? self.kb : 0);
+    const virtual = Math.max(this.image.virtualKB ?? 0, self?.source === "vmpeak-bound" ? self.kb : 0);
     const ownRaw = platform !== "linux" && self?.source === "platform-rusage" ? self.kb : rawWorkerKB;
     const own = selectHookRss(platform, hwm, ownRaw, virtual);
     const sources = [rssSource(own)];
@@ -70,7 +70,7 @@ export class HookWorkerRss {
       const given = value.result;
       const selected = given && !given.known && !value.image?.hwmKB && !value.image?.virtualKB ? given : selectHookRss(platform,
         Math.max(value.image?.hwmKB ?? 0, given?.source === "VmHWM" ? given.kb : 0), given?.rawKB ?? 0,
-        Math.max(value.image?.virtualKB ?? 0, given?.source === "VmPeak-bound" ? given.kb : 0));
+        Math.max(value.image?.virtualKB ?? 0, given?.source === "vmpeak-bound" ? given.kb : 0));
       native.set(id, selected); sources.push(rssSource(selected));
     }
     let nativeKB = 0;

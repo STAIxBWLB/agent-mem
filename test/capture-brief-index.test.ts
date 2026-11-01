@@ -87,3 +87,26 @@ test("the small-store build decision cannot race a concurrent writer", () => {
   try { store = new CaptureStore({ memoryDir: f.base, project: f.project, busyTimeoutMs: 0 }); expect(attempted).toBe(true); }
   finally { intercept.mockRestore(); store?.close(); other.close(); }
 });
+
+test("the actual indexed summary read uses rows_brief_summaries_v1 without a temporary sort", () => {
+  const f = fixture(); legacy(f, 1000);
+  const prepare = new CaptureStore({ memoryDir: f.base, project: f.project }), file = join(prepare.dir, "capture.db");
+  try { prepare.readPage({ project: f.project, query: "legacy", limit: 1 }); }
+  finally { prepare.close(); }
+  const reader = new CaptureStore({ memoryDir: f.base, project: f.project, readOnly: true, recentReadRows: true });
+  const original = Database.prototype.query;
+  let summarySql: string | undefined;
+  const probe = spyOn(Database.prototype, "query").mockImplementation((function(this: Database, sql: string) {
+    if (sql.startsWith("SELECT * FROM rows INDEXED BY rows_brief_summaries_v1")) summarySql = sql;
+    return original.call(this, sql);
+  }) as typeof Database.prototype.query);
+  try { expect(reader.readBriefSummaries().rows.map(row => row.excerpt)).toEqual(["legacy recap"]); }
+  finally { probe.mockRestore(); reader.close(); }
+  expect(summarySql).toBeDefined();
+  const db = new Database(file, { readonly: true });
+  try {
+    const plan = db.query(`EXPLAIN QUERY PLAN ${summarySql!}`).all(f.project, 33) as { detail: string }[];
+    expect(plan.some(row => row.detail.includes("USING INDEX rows_brief_summaries_v1"))).toBe(true);
+    expect(plan.some(row => row.detail.includes("TEMP B-TREE"))).toBe(false);
+  } finally { db.close(); }
+});
