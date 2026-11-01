@@ -5,15 +5,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
-const row = (project: string, excerpt: string) => ({ project, agent: "claude", event: "Stop", excerpt });
+const row = (project: string, excerpt: string) => ({ at: new Date().toISOString(), project, agent: "claude", event: "Stop", excerpt });
 
 test("bounded hook writer initializes an empty shard and keeps replay idempotent", () => {
   const f = hookFixture();
   try {
     const store = new CaptureStore({ memoryDir: f.base, project: f.project, hookBudget: () => 1000 });
     try {
-      const first = store.append(row(f.project, "bounded row"), { receipt: "same-receipt" });
-      expect(store.append(row(f.project, "bounded row"), { receipt: "same-receipt" })).toMatchObject({ id: first.id, already: true });
+      const input = row(f.project, "bounded row");
+      const first = store.append(input, { receipt: "a".repeat(64) });
+      if (!("id" in first)) throw Error("empty store unexpectedly spooled");
+      expect(store.append(input, { receipt: "a".repeat(64) })).toMatchObject({ id: first.id, already: true });
       expect(store.rows()).toHaveLength(1);
     } finally { store.close(); }
   } finally { f.close(); }
@@ -48,7 +50,7 @@ test("bounded hook writer drains older spool rows before admitting a newer row",
       expect(() => store.append(row(f.project, "newest"), { receipt: "newest" })).toThrow("backlog deferred");
       expect(store.stats().rows).toBe(64);
       expect(() => store.append(row(f.project, "newest"), { receipt: "newest" })).toThrow("backlog deferred");
-      store.append(row(f.project, "newest"), { receipt: "newest" });
+      store.append(row(f.project, "newest"), { receipt: "b".repeat(64) });
       expect(store.rows().map(r => r.excerpt)).toEqual([...Array.from({ length: 100 }, (_, i) => `old ${i}`), "newest"]);
     } finally { store.close(); }
   } finally { f.close(); }
