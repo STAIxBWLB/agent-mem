@@ -1,0 +1,1066 @@
+{
+  "schema": "agent-mem.transcript-summaries-evidence/v1",
+  "measuredCommit": "5a1ee36ce2462543f48b49feacd90b7efd979f69",
+  "baselineCommit": "5d4ce38b9622f9561a38ad718d7d540055d4800b",
+  "platform": "linux",
+  "bun": "1.4.2",
+  "integrationStatus": "awaiting #208",
+  "sourceIdentity": {
+    "memoryTree": "fb84115c74c0017863f25d6ac19d0a21cee51368",
+    "blobs": {
+      "src/mcp-memory.ts": "e0decb4be5366881181e6ae6a774d693372c36af",
+      "scripts/longmemeval.ts": "fc712d88dbb6f416513a99ad7897ec2549baf060",
+      "scripts/longmemeval-input.ts": "4a28da8554f4084b8cce7ff1a3df0c4f4b153d38",
+      "scripts/longmemeval-metrics.ts": "d107ad47e7c05f9ebf092109e2b06429e2f0cee2",
+      "scripts/budget-rss.ts": "f8390d8b03046e585ac3db1ea613c10bfe0af3ae"
+    }
+  },
+  "longMemEval": {
+    "S": {
+      "dataset": {
+        "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+        "bytes": 277383467
+      },
+      "questions": 500,
+      "abstentions": 30,
+      "failures": 0,
+      "wallMs": 194958.45826699998,
+      "guardrailsPass": true,
+      "comparisons": 42,
+      "maxAbsDelta": 0,
+      "baselineOverall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7702127659574468,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.557008336400422,
+          "MRR": 0.8916400500480701,
+          "turnRecallAt10": 0.7606382978723404
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7680851063829788,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.5567955683294449,
+          "MRR": 0.8916237667475555,
+          "turnRecallAt10": 0.7617021276595745
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.951063829787234,
+          "sessionRecallAllAt5": 0.8127659574468085,
+          "sessionRecallAnyAt10": 0.9702127659574468,
+          "sessionRecallAllAt10": 0.8936170212765957,
+          "ndcgAnyAt10": 0.5670158337035224,
+          "MRR": 0.8993032867757904,
+          "turnRecallAt10": 0.7817021276595745
+        }
+      },
+      "candidateOverall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7702127659574468,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.557008336400422,
+          "MRR": 0.8916400500480701,
+          "turnRecallAt10": 0.7606382978723404
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.9531914893617022,
+          "sessionRecallAllAt5": 0.7680851063829788,
+          "sessionRecallAnyAt10": 0.9744680851063829,
+          "sessionRecallAllAt10": 0.8659574468085106,
+          "ndcgAnyAt10": 0.5567955683294449,
+          "MRR": 0.8916237667475555,
+          "turnRecallAt10": 0.7617021276595745
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.951063829787234,
+          "sessionRecallAllAt5": 0.8127659574468085,
+          "sessionRecallAnyAt10": 0.9702127659574468,
+          "sessionRecallAllAt10": 0.8936170212765957,
+          "ndcgAnyAt10": 0.5670158337035224,
+          "MRR": 0.8993032867757904,
+          "turnRecallAt10": 0.7817021276595745
+        }
+      }
+    },
+    "M": {
+      "dataset": {
+        "sha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+        "bytes": 2737100077
+      },
+      "questions": 500,
+      "abstentions": 30,
+      "failures": 0,
+      "wallMs": 850656.316526,
+      "guardrailsPass": true,
+      "comparisons": 42,
+      "maxAbsDelta": 0,
+      "baselineOverall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9170212765957447,
+          "sessionRecallAllAt10": 0.7106382978723405,
+          "ndcgAnyAt10": 0.41507264586831066,
+          "MRR": 0.7854706435494305,
+          "turnRecallAt10": 0.6577304964539005
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7148936170212766,
+          "ndcgAnyAt10": 0.4154137574043282,
+          "MRR": 0.7843312823346572,
+          "turnRecallAt10": 0.6598581560283685
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6978723404255319,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7723404255319148,
+          "ndcgAnyAt10": 0.4318245100540788,
+          "MRR": 0.7903655135372779,
+          "turnRecallAt10": 0.701950354609929
+        }
+      },
+      "candidateOverall": {
+        "mcp": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9170212765957447,
+          "sessionRecallAllAt10": 0.7106382978723405,
+          "ndcgAnyAt10": 0.41507264586831066,
+          "MRR": 0.7854706435494305,
+          "turnRecallAt10": 0.6577304964539005
+        },
+        "library": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6234042553191489,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7148936170212766,
+          "ndcgAnyAt10": 0.4154137574043282,
+          "MRR": 0.7843312823346572,
+          "turnRecallAt10": 0.6598581560283685
+        },
+        "bm25": {
+          "eligible": 470,
+          "success": 470,
+          "failure": 0,
+          "turnLabelled": 470,
+          "sessionRecallAnyAt5": 0.8829787234042553,
+          "sessionRecallAllAt5": 0.6978723404255319,
+          "sessionRecallAnyAt10": 0.9191489361702128,
+          "sessionRecallAllAt10": 0.7723404255319148,
+          "ndcgAnyAt10": 0.4318245100540788,
+          "MRR": 0.7903655135372779,
+          "turnRecallAt10": 0.701950354609929
+        }
+      }
+    }
+  },
+  "resources": {
+    "measure-transcript-budget": [
+      {
+        "check": "transcript-hooks",
+        "attempt": 1,
+        "outcome": "pass",
+        "slow": false,
+        "result": {
+          "groups": [
+            {
+              "event": "Stop",
+              "runs": 40,
+              "wallP95Ms": 87.95202300000028,
+              "peakRssMB": 78.75,
+              "wallPass": true,
+              "rssPass": true
+            },
+            {
+              "event": "SessionEnd",
+              "runs": 40,
+              "wallP95Ms": 90.18296999999984,
+              "peakRssMB": 73.5,
+              "wallPass": true,
+              "rssPass": true
+            }
+          ],
+          "samples": [
+            {
+              "event": "Stop",
+              "run": 1,
+              "wallMs": 103.293598,
+              "rssMB": 78.75,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 2,
+              "wallMs": 85.03843599999999,
+              "rssMB": 71.75,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 3,
+              "wallMs": 86.23557699999998,
+              "rssMB": 70,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 4,
+              "wallMs": 84.72861599999999,
+              "rssMB": 71.75,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 5,
+              "wallMs": 86.47256800000002,
+              "rssMB": 70,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 6,
+              "wallMs": 85.37363600000003,
+              "rssMB": 71.75,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 7,
+              "wallMs": 84.23051299999997,
+              "rssMB": 71.75,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 8,
+              "wallMs": 86.96302200000002,
+              "rssMB": 68.25,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 9,
+              "wallMs": 85.59237399999995,
+              "rssMB": 70,
+              "offset": 262099
+            },
+            {
+              "event": "Stop",
+              "run": 10,
+              "wallMs": 83.77495700000009,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 11,
+              "wallMs": 87.61612999999988,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 12,
+              "wallMs": 81.1249180000002,
+              "rssMB": 68.25,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 13,
+              "wallMs": 82.33906999999999,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 14,
+              "wallMs": 82.78504500000008,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 15,
+              "wallMs": 84.63661200000001,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 16,
+              "wallMs": 82.44869699999981,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 17,
+              "wallMs": 87.21632299999987,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 18,
+              "wallMs": 85.94355500000006,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 19,
+              "wallMs": 84.95980799999984,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 20,
+              "wallMs": 83.69478400000003,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 21,
+              "wallMs": 83.60066800000004,
+              "rssMB": 68.25,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 22,
+              "wallMs": 83.20412099999999,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 23,
+              "wallMs": 84.3748499999997,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 24,
+              "wallMs": 84.31239700000015,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 25,
+              "wallMs": 84.77605600000015,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 26,
+              "wallMs": 83.75284599999986,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 27,
+              "wallMs": 85.10864200000015,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 28,
+              "wallMs": 85.50458299999991,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 29,
+              "wallMs": 86.15434000000005,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 30,
+              "wallMs": 86.27405699999963,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 31,
+              "wallMs": 87.67841000000044,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 32,
+              "wallMs": 86.86025900000004,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 33,
+              "wallMs": 87.95202300000028,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 34,
+              "wallMs": 84.78738500000009,
+              "rssMB": 73.5,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 35,
+              "wallMs": 85.8011590000001,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 36,
+              "wallMs": 85.99389299999984,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 37,
+              "wallMs": 87.347397,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 38,
+              "wallMs": 88.70535399999972,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 39,
+              "wallMs": 86.567681,
+              "rssMB": 70,
+              "offset": 262102
+            },
+            {
+              "event": "Stop",
+              "run": 40,
+              "wallMs": 85.60196399999995,
+              "rssMB": 71.75,
+              "offset": 262102
+            },
+            {
+              "event": "SessionEnd",
+              "run": 1,
+              "wallMs": 86.9433039999999,
+              "rssMB": 68.25,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 2,
+              "wallMs": 86.83253000000013,
+              "rssMB": 73.5,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 3,
+              "wallMs": 86.63772699999981,
+              "rssMB": 68.25,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 4,
+              "wallMs": 83.05812999999989,
+              "rssMB": 70,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 5,
+              "wallMs": 85.40244099999973,
+              "rssMB": 71.75,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 6,
+              "wallMs": 82.2892780000002,
+              "rssMB": 70,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 7,
+              "wallMs": 85.4813180000001,
+              "rssMB": 71.75,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 8,
+              "wallMs": 85.68877500000053,
+              "rssMB": 70,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 9,
+              "wallMs": 84.84326099999998,
+              "rssMB": 66.5,
+              "offset": 262117
+            },
+            {
+              "event": "SessionEnd",
+              "run": 10,
+              "wallMs": 87.79524700000002,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 11,
+              "wallMs": 90.42530399999941,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 12,
+              "wallMs": 90.18296999999984,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 13,
+              "wallMs": 85.05587100000048,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 14,
+              "wallMs": 84.81197400000019,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 15,
+              "wallMs": 86.22969100000046,
+              "rssMB": 73.5,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 16,
+              "wallMs": 87.63100200000008,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 17,
+              "wallMs": 87.41921199999979,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 18,
+              "wallMs": 86.11312400000043,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 19,
+              "wallMs": 84.80392099999972,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 20,
+              "wallMs": 87.70718000000033,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 21,
+              "wallMs": 85.49300900000071,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 22,
+              "wallMs": 87.66171099999974,
+              "rssMB": 68.25,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 23,
+              "wallMs": 87.79645999999957,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 24,
+              "wallMs": 85.3774540000004,
+              "rssMB": 73.5,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 25,
+              "wallMs": 85.25747899999988,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 26,
+              "wallMs": 86.37574800000039,
+              "rssMB": 73.5,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 27,
+              "wallMs": 86.63891700000022,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 28,
+              "wallMs": 86.40104699999938,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 29,
+              "wallMs": 84.17274100000031,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 30,
+              "wallMs": 86.14361299999928,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 31,
+              "wallMs": 91.67217900000014,
+              "rssMB": 68.25,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 32,
+              "wallMs": 87.1170030000003,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 33,
+              "wallMs": 87.37226699999974,
+              "rssMB": 70,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 34,
+              "wallMs": 86.91191299999991,
+              "rssMB": 73.5,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 35,
+              "wallMs": 88.27297499999986,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 36,
+              "wallMs": 88.94865899999968,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 37,
+              "wallMs": 86.00529800000004,
+              "rssMB": 68.25,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 38,
+              "wallMs": 85.5760650000002,
+              "rssMB": 71.75,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 39,
+              "wallMs": 87.86109800000031,
+              "rssMB": 68.25,
+              "offset": 262120
+            },
+            {
+              "event": "SessionEnd",
+              "run": 40,
+              "wallMs": 84.11108499999955,
+              "rssMB": 70,
+              "offset": 262120
+            }
+          ]
+        }
+      }
+    ],
+    "measure-hooks-budget": [
+      {
+        "check": "hook-workloads",
+        "attempt": 1,
+        "outcome": "pass",
+        "slow": false,
+        "result": {
+          "timeoutPaths": [
+            {
+              "event": "SessionStart",
+              "wallMs": 127.3,
+              "rssMB": 55.96,
+              "ownedChildren": 3,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            },
+            {
+              "event": "PreToolUse",
+              "wallMs": 115.98,
+              "rssMB": 70,
+              "ownedChildren": 1,
+              "remainingProcesses": 0,
+              "stalledAttempts": 0
+            }
+          ],
+          "capture": {
+            "baselineRows": 1,
+            "replayedWorkload": 55,
+            "drainInvocations": 1,
+            "capturedInvocations": 56,
+            "pendingAcknowledgements": 20
+          },
+          "platform": "linux",
+          "bun": "1.4.2",
+          "executable": "bin/amem.js hook",
+          "budgets": {
+            "R1": {
+              "pass": true,
+              "leftoverProcesses": 0,
+              "checkedInvocations": 96,
+              "checkedWorkers": 96,
+              "checkedOwnedChildren": 96,
+              "checkedBunWorkers": 56,
+              "checkedNativeSupervisors": 40,
+              "zeroWorkerDeferrals": {
+                "plain": 0,
+                "spoolAndExit": 0,
+                "drain": 0,
+                "sessionStart": 0,
+                "sessionStartRepoLog": 0
+              },
+              "maxPlainZeroWorkers": 10,
+              "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+            },
+            "R2": {
+              "pass": true,
+              "wallP95BudgetMs": 150,
+              "peakRssBudgetMB": 100,
+              "groups": {
+                "plain": {
+                  "runs": 40,
+                  "stalledAttempts": 0,
+                  "wallP95Ms": 76.62,
+                  "wallMaxMs": 95.66,
+                  "peakRssMB": 75.25,
+                  "cliPeakRssMB": 42,
+                  "productionCombinedPeakRssMB": 75.25,
+                  "rawCombinedPeakRssMB": 77,
+                  "wallTimingPass": true,
+                  "peakPass": true,
+                  "wallAdvisory": false,
+                  "pass": true
+                },
+                "spoolAndExit": {
+                  "runs": 15,
+                  "stalledAttempts": 0,
+                  "wallP95Ms": 73.09,
+                  "wallMaxMs": 73.09,
+                  "peakRssMB": 73.5,
+                  "cliPeakRssMB": 42,
+                  "productionCombinedPeakRssMB": 73.5,
+                  "rawCombinedPeakRssMB": 80.5,
+                  "wallTimingPass": true,
+                  "peakPass": true,
+                  "wallAdvisory": false,
+                  "pass": true
+                },
+                "sessionStart": {
+                  "runs": 20,
+                  "stalledAttempts": 0,
+                  "wallP95Ms": 62.43,
+                  "wallMaxMs": 64.43,
+                  "peakRssMB": 70,
+                  "cliPeakRssMB": 47.25,
+                  "productionCombinedPeakRssMB": 70,
+                  "rawCombinedPeakRssMB": 82.25,
+                  "wallTimingPass": true,
+                  "peakPass": true,
+                  "wallAdvisory": false,
+                  "pass": true
+                },
+                "sessionStartRepoLog": {
+                  "runs": 20,
+                  "stalledAttempts": 0,
+                  "wallP95Ms": 67.39,
+                  "wallMaxMs": 67.45,
+                  "peakRssMB": 73.5,
+                  "cliPeakRssMB": 55.96,
+                  "productionCombinedPeakRssMB": 73.5,
+                  "rawCombinedPeakRssMB": 90.96,
+                  "wallTimingPass": true,
+                  "peakPass": true,
+                  "wallAdvisory": false,
+                  "pass": true
+                },
+                "drain": {
+                  "runs": 1,
+                  "stalledAttempts": 0,
+                  "wallP95Ms": 80.06,
+                  "wallMaxMs": 80.06,
+                  "peakRssMB": 70,
+                  "cliPeakRssMB": 43.75,
+                  "productionCombinedPeakRssMB": 70,
+                  "rawCombinedPeakRssMB": 80.5,
+                  "wallTimingPass": true,
+                  "peakPass": true,
+                  "wallAdvisory": false,
+                  "pass": true
+                }
+              }
+            }
+          },
+          "pass": true
+        }
+      }
+    ],
+    "measure-mcp-budget": [
+      {
+        "check": "mcp-session",
+        "attempt": 1,
+        "outcome": "pass",
+        "slow": false,
+        "result": {
+          "platform": "linux",
+          "bun": "1.4.2",
+          "runtimeMode": "--smol",
+          "transport": "stdio",
+          "sessionMs": 5781,
+          "wallTimingPass": true,
+          "steps": [
+            "initialize:76",
+            "tools/list:0",
+            "amem_search:468",
+            "amem_search:603",
+            "amem_search:177",
+            "amem_search:27",
+            "amem_search:19",
+            "amem_search:414",
+            "amem_search:559",
+            "amem_search:155",
+            "amem_search:24",
+            "amem_search:18",
+            "amem_timeline:27",
+            "amem_timeline:18",
+            "amem_timeline:37",
+            "amem_timeline:24",
+            "amem_brief:19",
+            "amem_evidence:475",
+            "amem_work_state_read:1338",
+            "amem_work_state_read:1278"
+          ],
+          "corpus": {
+            "curated": 5001,
+            "capture": 5001,
+            "workRows": 10001,
+            "workItems": 100
+          },
+          "R1": {
+            "pass": true,
+            "eofExitCode": 0,
+            "childReaped": true
+          },
+          "R3": {
+            "pass": true,
+            "idleRssMB": 36.73,
+            "peakRssMB": 174.67,
+            "searches": 10,
+            "timelines": 4,
+            "workReads": 2,
+            "briefReads": 1,
+            "evidenceReads": 1,
+            "evidenceRendered": 6,
+            "briefRendered": 6,
+            "briefBytes": 952,
+            "budgetIdleMB": 100,
+            "budgetPeakMB": 200
+          },
+          "pass": true
+        }
+      },
+      {
+        "check": "mcp-volume",
+        "attempt": 1,
+        "outcome": "pass",
+        "slow": false,
+        "result": {
+          "platform": "linux",
+          "bun": "1.4.2",
+          "runtimeMode": "--smol",
+          "transport": "stdio",
+          "entry": "bin/amem.js",
+          "sessionMs": 14492,
+          "queryMs": 14326,
+          "wallTimingPass": true,
+          "corpus": {
+            "capture": 84765,
+            "excerptBytes": 1154,
+            "matchingRows": 84765,
+            "logicalBytes": 107609150,
+            "seedDatabaseBytes": 173027328,
+            "databaseBytes": 344969216,
+            "vocabulary": 95279,
+            "tokens": 15673044,
+            "averageChars": 1135.5974045891583,
+            "averageBytes": 1154,
+            "tempFreeBytes": 11906606759936
+          },
+          "engine": "fts5",
+          "first": 84765,
+          "hits": 10,
+          "R1": {
+            "pass": true,
+            "eofExitCode": 0,
+            "childReaped": true
+          },
+          "R3": {
+            "pass": true,
+            "idleMeasured": false,
+            "peakRssMB": 100.95,
+            "selfPeakKB": 103368,
+            "darwinWait4KB": null,
+            "peakKB": 103368,
+            "budgetPeakMB": 200
+          },
+          "pass": true
+        }
+      }
+    ]
+  },
+  "rawDirectory": "/home/dev/tmp/amem-201/",
+  "earlierAttempts": [
+    {
+      "commit": "f5510a8",
+      "scope": "typecheck, boundary, 22 focused tests and 80 summary-hook invocations",
+      "outcome": "pass",
+      "note": "Initial summary R2 peak 99.75 MB; stdout receipt, before format-3 protection."
+    },
+    {
+      "commit": "d925e3b",
+      "scope": "full suite",
+      "outcome": "stopped after two numeric-instrumentation anchor failures",
+      "exitCode": 130,
+      "note": "Publication helper changed the diagnostic source anchor. Assertions and limits unchanged; corrected focused suite passed at 5a1ee36."
+    }
+  ]
+}
