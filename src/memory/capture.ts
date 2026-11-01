@@ -640,7 +640,10 @@ export class CaptureStore {
     return rows.map(toRow);
   }
 
-  /** Bounded newest-first Recap/Compact scan for the brief, independent of its 128-row raw window. */
+  /** Newest-first Recap/Compact candidates, independent of the brief's 128-row raw window.
+   * ponytail: materialize at most 32 candidates plus a sentinel; the existing time index can
+   * traverse intervening tool rows. A measured need should add a derived summary index off
+   * the hook's critical path, without expanding the brief's record or token ceilings. */
   readBriefSummaries(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
     this.checkReadBinding();
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief summary limit");
