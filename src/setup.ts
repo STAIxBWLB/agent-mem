@@ -236,6 +236,18 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     const original = read(files[0]!);
     const document: Record<string, unknown> = target === "agy" ? {} : target === "codex" ? toml(original.bytes === null ? "" : Buffer.from(original.bytes, "base64").toString("utf8")) : json(original);
     const hasAmem = target === "jcode" || target === "opencode" || target === "agy" ? mcpRecord(target, original) !== undefined : Object.hasOwn(record(document[target === "codex" ? "mcp_servers" : "mcpServers"] ?? {}), "amem");
+    if (!prior && mode !== "undo" && (target === "claude" || target === "codex")) {
+      try {
+        const server = mcpRecord(target, original);
+        const sameBinding = server && typeof server === "object" && !Array.isArray(server)
+          && (server as Record<string, unknown>).command === c.bun
+          && isDeepStrictEqual((server as Record<string, unknown>).args, ["--smol", c.entry, "mcp"])
+          && (server as Record<string, unknown>).enabled !== false;
+        const hookFile = json(read(c.paths[target][1]!)), groups = record(hookFile.hooks ?? {});
+        const sameHook = plannedHooks(c, target).some(row => Array.isArray(groups[row.event]) && hasHook(groups[row.event] as unknown[], row.command, row.timeout));
+        if (sameBinding || sameHook) pluginNotes.push(`${target}: matching amem entries are already present without a setup receipt; apply will not duplicate matching hook commands, and undo preserves the original entries.`);
+      } catch { /* Advisory only: preparing the real change retains the existing configuration validation. */ }
+    }
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
     const add = command(target, c.bun, c.entry), remove = target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
@@ -294,12 +306,20 @@ function native(argv: readonly string[], env: Env, cwd: string): void {
     throw Error(`${argv[0]} MCP registration ${reason} in staging; no native output disclosed`);
   }
 }
+function hasHook(rows: readonly unknown[], command: string, timeout: number): boolean {
+  return rows.some(row => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const group = record(row);
+    return [undefined, "", "*"].some(value => value === group.matcher) && Array.isArray(group.hooks)
+      && group.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; });
+  });
+}
 function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
   for (const event of events) {
     const rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
     const command = commandFor(event);
-    if (!rows.some(row => [undefined, "", "*"].includes(row?.matcher) && Array.isArray(row?.hooks) && row.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; }))) rows.push({ hooks: [{ type: "command", command, timeout }] });
+    if (!hasHook(rows, command, timeout)) rows.push({ hooks: [{ type: "command", command, timeout }] });
     hooks[event] = rows;
   }
   document.hooks = hooks; return objectImage(document, before);
