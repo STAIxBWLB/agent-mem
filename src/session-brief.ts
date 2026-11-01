@@ -193,14 +193,15 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
       });
       const recent = async <T>(section: "curated" | "capture", read: (window: ReadWindow) => { rows: T[]; next?: ReadRef },
-        display: (row: T) => { data: unknown; partial: boolean }) => {
-        let after: ReadWindow["after"], selected = 0, complete = false;
+        display: (row: T) => { data: unknown; partial: boolean }, selectedBefore = 0, skipCaptureIds: ReadonlySet<number> = new Set()) => {
+        let after: ReadWindow["after"], selected = selectedBefore, complete = false;
         for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
           guard();
           if (options.nativeSession && options.timeRemaining && options.timeRemaining() <= 0) throw new Error("brief deadline");
           const page = read({ project, limit: PAGE_ROWS, after });
           for (const row of page.rows) {
             if ((row as { project?: unknown }).project !== project) { coverage[section] = "partial"; continue; }
+            if (section === "capture" && skipCaptureIds.has((row as { id: number }).id)) continue;
             // #173: subagent capture stays searchable but never enters the session brief.
             if (section === "capture" && (row as { subagent?: unknown }).subagent === true) continue;
             if (!await screen(row)) continue;
@@ -249,7 +250,19 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
         const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession || options.measureOnly ? { readOnly: true, busyTimeoutMs: options.measureOnly ? 1000 : 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
         if (capture.recentReadTruncated) coverage.capture = "partial";
-        await recent("capture", window => capture.readPage(window), captureDisplay);
+        const summaries = capture.readBriefSummaries(), summaryIds = new Set<number>();
+        if (summaries.partial) coverage.capture = "partial";
+        let selectedSummaries = 0;
+        for (const row of summaries.rows) {
+          if (row.project !== project) continue;
+          if (row.subagent === true) { summaryIds.add(row.id); continue; }
+          if (selectedSummaries >= 2) break;
+          if (!await screen(row)) { summaryIds.add(row.id); continue; }
+          summaryIds.add(row.id);
+          selectedSummaries++;
+          await add("capture", captureDisplay(row), false);
+        }
+        await recent("capture", window => capture.readPage(window), captureDisplay, selectedSummaries, summaryIds);
       });
       guard();
       const context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");

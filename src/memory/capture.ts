@@ -50,6 +50,7 @@ export const CAPTURE_EVICT_MAX_BATCHES = 4;
 /** Wall-time bound for one invocation's eviction: with the batch bound, an append stays inside R2 after a cap shrink. */
 export const CAPTURE_EVICT_MAX_MS = 25;
 export const CAPTURE_DRAIN_MAX_LINES = 1000;
+const BRIEF_SUMMARY_CANDIDATES = 32;
 const SPOOL = "spool.jsonl";
 const DRAINING = "spool.jsonl.draining";
 const SPOOL_DIR = "spool";
@@ -637,6 +638,17 @@ export class CaptureStore {
     if (f.sinceId !== undefined) { where.push("id > ?"); bind.push(f.sinceId); }
     const rows = this.db.query(`SELECT * FROM rows${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id LIMIT ?`).all(...bind, f.limit ?? 1000) as RawRow[];
     return rows.map(toRow);
+  }
+
+  /** Bounded newest-first Recap/Compact scan for the brief, independent of its 128-row raw window. */
+  readBriefSummaries(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
+    this.checkReadBinding();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief summary limit");
+    const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
+    const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
+    const rows = this.db.query(`SELECT * FROM rows INDEXED BY rows_at WHERE project = ? AND event IN ('Recap', 'Compact')${subagent} ORDER BY at DESC, id DESC LIMIT ?`)
+      .all(this.key, limit + 1) as RawRow[];
+    return { rows: rows.slice(0, limit).map(toRow), partial: rows.length > limit };
   }
 
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
