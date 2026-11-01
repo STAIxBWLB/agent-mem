@@ -17,9 +17,14 @@ const MAX_BYTES = 64 * 1024, SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 export class FormatFloorError extends Error {
   constructor(readonly code: "format_floor" | "format_floor_unreadable", message: string, readonly floor?: FormatFloor & { reader: string }) { super(message); this.name = "FormatFloorError"; }
 }
-let ownVersion: string | undefined;
-/** This package's version, read only when a floor file exists. */
-const readerVersion = () => ownVersion ??= (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
+/**
+ * This release's version, read once when the module loads, so a long-running process whose install is replaced in place keeps comparing its own
+ * version. Undefined when it cannot be read: then every applicable floor refuses.
+ */
+const READER_VERSION: string | undefined = (() => {
+  try { const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: unknown }; return typeof version === "string" && SEMVER.test(version) ? version : undefined; }
+  catch { return undefined; }
+})();
 const parts = (version: string) => SEMVER.exec(version)!.slice(1, 4).map(Number);
 function below(reader: string, floor: string): boolean {
   const a = parts(reader), b = parts(floor);
@@ -53,8 +58,8 @@ export function readFormatFloors(home: string): FormatFloor[] | undefined {
 export function assertFormatFloor(home: string, surface: FormatSurface): void {
   const floors = readFormatFloors(home);
   if (!floors) return;
-  const reader = readerVersion();
-  for (const floor of floors) if ((floor.surface === surface || floor.surface === "home") && below(reader, floor.minReader)) {
+  const reader = READER_VERSION ?? "unknown";
+  for (const floor of floors) if ((floor.surface === surface || floor.surface === "home") && (READER_VERSION === undefined || below(READER_VERSION, floor.minReader))) {
     throw new FormatFloorError("format_floor", `amem ${reader} is below the ${surface} format floor ${floor.minReader} (since ${floor.since}) recorded in ${join(home, FORMATS_FILE)}; nothing was read or written. Upgrade amem to ${floor.minReader} or later.`, { ...floor, reader });
   }
 }

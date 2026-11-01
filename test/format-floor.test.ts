@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { runCli } from "../src/cli.ts";
 import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -78,4 +79,31 @@ test("no source file writes formats.json: raising a floor is a person's step", (
   walk(src);
   expect(offenders).toEqual([]);
   expect(readFileSync(join(src, "memory", "formats.ts"), "utf8")).not.toMatch(/writeFileSync|writeSync|appendFileSync|renameSync|linkSync/);
+});
+
+test("doctor refuses as a whole when any surface it reads has a floor above this release", async () => {
+  for (const surface of ["capture", "candidates", "work-lists", "curated", "home"]) {
+    const f = fixture(), project = memoryProjectKey(f.cwd);
+    const seed = new MemoryStore({ memoryDir: f.base, screen: () => "keep" }); seed.note(note(project)); seed.close();
+    new CandidateStore({ memoryDir: f.base }).close?.();
+    floor(f.base, [{ surface, minReader: "99.0.0", since: "2026-11-01" }]);
+    const before = snapshot(f.base);
+    const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
+    try { await expect(runCli(["doctor", "--json"], { cwd: f.cwd, env: { ...process.env, CLAUDECODE: undefined } })).rejects.toThrow("format floor 99.0.0"); }
+    finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+    expect(snapshot(f.base)).toEqual(before);
+  }
+});
+
+test("a running release compares its own version even after its package.json is replaced in place", () => {
+  const f = fixture(), root = join(f.root, "release"); mkdirSync(join(root, "src", "memory"), { recursive: true });
+  copyFileSync(resolve(import.meta.dir, "../src/memory/formats.ts"), join(root, "src", "memory", "formats.ts"));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.17.0" }));
+  const code = `const m = await import(${JSON.stringify(join(root, "src", "memory", "formats.ts"))});
+    require("node:fs").writeFileSync(${JSON.stringify(join(root, "package.json"))}, JSON.stringify({ name: "@staix/agent-mem", version: "99.0.0" }));
+    require("node:fs").writeFileSync(${JSON.stringify(join(f.base, FORMATS_FILE))}, JSON.stringify([{ surface: "curated", minReader: "99.0.0", since: "2026-11-01" }]));
+    try { m.assertFormatFloor(${JSON.stringify(f.base)}, "curated"); console.log("allowed"); } catch (e) { console.log(e.code, e.floor.reader); }`;
+  const result = Bun.spawnSync([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+  expect(result.stderr.toString()).toBe("");
+  expect(result.stdout.toString().trim()).toBe("format_floor 0.17.0");
 });

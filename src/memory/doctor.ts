@@ -442,13 +442,16 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
  * a lone signal waits at most one call for the signal handler, which then removes the scratch copy and ends doctor.
  */
 export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
-export function doctorReport(options: DoctorOptions): Promise<DoctorReport> { return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options)); }
+export function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
+  // Doctor reads every surface below, live or through a scratch copy: a floor on any of them refuses the whole report before anything is read (#199 AC5).
+  for (const surface of ["curated", "capture", "candidates", "work-lists"] as const) assertFormatFloor(options.home, surface);
+  return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options));
+}
 async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let scratch: string | undefined, unguard: (() => void) | undefined;
   let duplicates: Section, stale: Section, index: Section;
   let curated: MemoryStore | undefined, workBase: string | undefined, copyFailed: string | undefined;
   try {
-    assertFormatFloor(options.home, "curated");
     let layout: Layout | undefined;
     try { layout = layoutOf(options.home); } catch (error) { throw new Error(`the memory profile cannot be read: ${message(error)}`); }
     sweepStaleScratch();
