@@ -720,12 +720,12 @@ export class CaptureStore {
   /** Exact-project, bounded body pages; MCP screens before filling its public candidate window. */
   readPage(window: ReadWindow & { query?: string; match?: "substring" }): { rows: CaptureRow[]; next?: ReadRef; engine?: "fts5" | "substring" } {
     this.checkReadBinding();
-    if (window.query !== undefined) this.prepareBriefSummaryIndex();
     const { columns, where, bind } = readWindowSql(window, "id", "integer");
     if (this.recentReadIds) {
       if (window.query !== undefined) throw new Error("recent capture brief does not support query indexes");
       where.push("id IN (SELECT value FROM json_each(?))"); bind.push(JSON.stringify(this.recentReadIds));
     }
+    if (window.query !== undefined) this.prepareBriefSummaryIndex();
     const engine = window.query === undefined ? undefined : window.match !== "substring" && this.ensureMcpFts() ? "fts5" : "substring";
     const plan = captureReadPlan(window, engine, where, bind);
     if (!plan) return { rows: [], engine };
