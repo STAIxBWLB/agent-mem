@@ -5960,7 +5960,7 @@
       ]
     }
   },
-  "finalDeliveryStandardGate": "pending on documentation descendant of integrated runtime 8a506bf",
+  "finalDeliveryStandardGate": "Final delivery-head standard results are reported separately in the delivery PR; this artifact retains measured benchmark heads.",
   "sourceIdentity": {
     "runtimeCommit": "8a506bf0b1251c8b0c18105ef42c7b23c69ec8d1",
     "srcTree": "67f6746f8bb29d3116280eb45bf85b2d71ed19c4",
