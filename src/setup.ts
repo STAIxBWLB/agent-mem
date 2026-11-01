@@ -383,8 +383,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   if (target === "gemini") assertGeminiHome(c.env);
   const prior = receipt(c, target, false), expected = c.paths[target].map(path => read(path));
   // Only a same-file before-image can restore a target. A newly authoritative personal source owns its current bytes.
-  const restored = prior ? prior.changes.map((change, index) => change.path === c.paths[target][index]
-    ? restoreChange(prior, change, index, expected[index]!) : expected[index]!) : expected;
+  // Mapped per current path: a pre-#203 jcode receipt covers mcp.json only, so config.toml starts from its live image.
+  const restored = c.paths[target].map((path, index) => { const change = prior?.changes[index];
+    return prior && change && change.path === path ? restoreChange(prior, change, index, expected[index]!) : expected[index]!; });
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));

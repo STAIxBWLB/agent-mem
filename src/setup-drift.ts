@@ -60,7 +60,7 @@ function parseImage(value: unknown): ConfigImage {
 }
 
 function parseReceipt(value: unknown, target: SetupTarget, expectedPaths: readonly string[]): Receipt {
-  if (!plain(value) || value.version !== 1 || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length) throw Error("invalid receipt");
+  if (!plain(value) || value.version !== 1 || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
   const changes: ReceiptChange[] = [];
   for (let index = 0; index < value.changes.length; index++) {
     const item: unknown = value.changes[index];
@@ -191,6 +191,8 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         } catch { entries.push(entry(target, change.path, "hooks", "managed hooks could not be checked", "unavailable")); unavailable = true; }
       }
       if (target === "pi" && change.key === "pi:1" && !managedAfter(target, 1, change.before, change.after, current)) entries.push(entry(target, change.path, "session_shutdown extension", "managed hook extension is missing or changed", "drift"));
+      // #203: jcode's capture hooks are command elements in config.toml [hooks]; a pre-#203 receipt has no such change.
+      if (target === "jcode" && change.key === "jcode:1" && !managedAfter(target, 1, change.before, change.after, current)) entries.push(entry(target, change.path, "hooks", "managed hook is missing or changed", "drift"));
       if (target === "codex" && change.key === "codex:1") {
         // Codex owns trust state. Doctor checks only whether an entry exists; it never writes or verifies trusted_hash.
         const runtimePaths = resolved.redirects.some(row => row.target === "codex") ? resolved.legacyPaths.codex : expectedPaths;

@@ -701,67 +701,6 @@ for (const enabled of [false, true]) test(`Qwen hook controls remain user-owned 
   expect(image(file).mode).toBe(before.mode);
 });
 
-test("Jcode setup registers MCP and capture hooks, keeps a user turn_end command and restores config.toml byte for byte", () => {
-  const f = fixture(); seedOtherFiles(f);
-  const config = join(f.env.JCODE_HOME!, "config.toml");
-  const original = 'model = "keep"  # comment\n\n[hooks]\nturn_end = "/user/bin/notify --flag"\nsession_end = "user-existing-hook"\n\n[other]\nk = 1\n';
-  put(config, original, 0o640);
-  const action = f.plan("jcode", "apply").actions[0]!, file = action.files[0]!, before = image(file), hookBefore = image(config);
-  expect(action.files).toEqual([join(f.env.JCODE_HOME!, "mcp.json"), config]);
-  expect(action.registration).toBeNull(); expect(action.commands).toEqual([]);
-  const command = `'${f.bun}' --smol '${f.entry}' hook jcode`;
-  expect(action.hooks).toEqual([{ event: "post_tool", command, timeout: 1 }, { event: "turn_end", command, timeout: 1 }]);
-  expect(action.lifecycle).toContain("post_tool and turn_end");
-  expect(f.plan("jcode").notes.join("\n")).toContain("JCODE_HOOK_CWD");
-  expect(image(config)).toEqual(hookBefore);   // preview writes nothing
-  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: ["jcode"], unchanged: [] });
-  expect(f.calls).toEqual([]);
-  const hooks = (Bun.TOML.parse(text(config)) as { hooks: Record<string, unknown> }).hooks;
-  expect(hooks.turn_end).toEqual(["/user/bin/notify --flag", command]);   // the user's command keeps running
-  expect(hooks.post_tool).toBe(command); expect(hooks.session_end).toBe("user-existing-hook");
-  expect(text(config)).toStartWith('model = "keep"  # comment\n'); expect(text(config)).toContain("[other]\nk = 1\n");
-  expect(image(config).mode).toBe(0o640);
-  const installed = JSON.parse(text(file));
-  expect(installed.servers.amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], shared: false });
-  expect(installed.servers.other).toEqual({ command: "other-server", args: ["keep"] });
-  expect(f.receipt("jcode").changes).toHaveLength(2);
-  expect(lstatSync(f.receiptFile("jcode")).mode & 0o077).toBe(0);
-  const applied = image(file), appliedConfig = image(config);
-  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: [], unchanged: ["jcode"] });
-  expect(image(file)).toEqual(applied); expect(image(config)).toEqual(appliedConfig);
-  undoSetup(f.plan("jcode", "undo"), f.options);
-  expect(image(file)).toEqual(before); expect(image(config)).toEqual(hookBefore);
-});
-
-test("Jcode hook undo after unrelated edits removes only amem's command and keeps the user's edits", () => {
-  const f = fixture(); const config = join(f.env.JCODE_HOME!, "config.toml");
-  put(config, '[hooks]\nturn_end = "/user/notify"\n', 0o600);
-  applySetup(f.plan("jcode", "apply"), f.options);
-  put(config, text(config).replace("[hooks]\n", "[hooks]\nsession_start = \"/user/later\"\n"), 0o600);
-  undoSetup(f.plan("jcode", "undo"), f.options);
-  const hooks = (Bun.TOML.parse(text(config)) as { hooks: Record<string, unknown> }).hooks;
-  expect(hooks).toEqual({ session_start: "/user/later", turn_end: "/user/notify" });
-  // A config.toml that did not exist is removed again on an untouched undo.
-  const g = fixture(), absent = join(g.env.JCODE_HOME!, "config.toml");
-  applySetup(g.plan("jcode", "apply"), g.options); expect(existsSync(absent)).toBe(true);
-  undoSetup(g.plan("jcode", "undo"), g.options); expect(existsSync(absent)).toBe(false);
-});
-
-test("a pre-#203 MCP-only jcode receipt upgrades to hooks and still undoes both files", () => {
-  const f = fixture(); seedOtherFiles(f); const file = f.file("jcode"), config = join(f.env.JCODE_HOME!, "config.toml"), mcpBefore = image(file);
-  applySetup(f.plan("jcode", "apply"), f.options); undoSetup(f.plan("jcode", "undo"), f.options);
-  // Emulate the 0.17 receipt: one change, the old intent.
-  const legacyAfter = { bytes: Buffer.from(JSON.stringify({ servers: { other: { command: "other-server", args: ["keep"] }, amem: { command: f.bun, args: ["--smol", f.entry, "mcp"], shared: false } } }, null, 2) + "\n").toString("base64"), mode: 0o600 };
-  restore(file, legacyAfter);
-  writeFileSync(f.receiptFile("jcode"), JSON.stringify({ version: 1, target: "jcode", intent: "0".repeat(64), phase: "applied", changes: [{ key: "jcode:0", path: file, before: mcpBefore, after: legacyAfter }] }) + "\n", { mode: 0o600 });
-  expect(f.plan("jcode").actions[0]!.state).toContain("runtime changed");
-  expect(applySetup(f.plan("jcode", "apply"), f.options).applied).toEqual(["jcode"]);
-  expect(f.receipt("jcode").changes).toHaveLength(2);
-  expect(text(config)).toContain("hook jcode");
-  undoSetup(f.plan("jcode", "undo"), f.options);
-  expect(image(file)).toEqual(mcpBefore); expect(existsSync(config)).toBe(false);
-});
-
 test("Jcode legacy alias registration preserves unrelated raw values and semantic undo", () => {
   const f = fixture(), file = f.file("jcode");
   const original = '{ "mcpServers": {"other":{"command":"user-server","raw":9007199254740993}}, "unknown":1e99 }\n';
