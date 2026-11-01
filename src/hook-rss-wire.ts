@@ -48,10 +48,14 @@ export class HookWorkerRss {
     this.invalid = true;
   }
   captureLive(read: typeof processImageMemory = processImageMemory): void {
-    this.image = read(this.pid);
+    const retain = (before: Image | undefined, after: Image): Image => ({
+      hwmKB: Math.max(before?.hwmKB ?? 0, after.hwmKB ?? 0) || undefined,
+      virtualKB: Math.max(before?.virtualKB ?? 0, after.virtualKB ?? 0) || undefined,
+    });
+    this.image = retain(this.image, read(this.pid));
     for (const id of this.active) {
       const value = this.native.get(id)!;
-      if (value.pid > 0) value.image = read(value.pid);
+      if (value.pid > 0) value.image = retain(value.image, read(value.pid));
     }
   }
   finish(rawWorkerKB: number, platform = process.platform): { rssKB: number; rawRssKB: number; rssSources: HookRssSources } {

@@ -41,3 +41,11 @@ test("a worker's unknown native source is not promoted into known platform rusag
   t.frame([2, 1, 35000, 35000, 3, 0]); self(t);
   expect(rssSourcesKnown(t.finish(128 * 1024, "darwin").rssSources)).toBe(false);
 });
+
+test("a second teardown read after exit cannot erase an earlier valid live snapshot", () => {
+  const t = new HookWorkerRss(100); t.frame([0]); start(t, 1, 101);
+  t.captureLive(pid => pid === 100 ? { hwmKB: 35000 } : { virtualKB: 2672 });
+  t.captureLive(() => ({}));
+  const value = t.finish(128 * 1024, "linux");
+  expect(value.rssKB).toBe(37672); expect(rssSourcesKnown(value.rssSources)).toBe(true);
+});
