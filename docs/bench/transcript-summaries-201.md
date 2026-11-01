@@ -2,7 +2,7 @@
 
 Issue #201 captures Claude Code's existing titles, recaps and compaction summaries without a model call, network request or additional model tokens. The earlier acceptance measurement head was `e5a2ef1744590e5678a28f0cf5c57dbede7c642b`, based on main `202e46b`, including #208's format-3 spool and #198's RSS accounting. Later hosted failures and replacement diagnostics are recorded first below; those older passes do not certify the replacement head. The private 70-query replay (AC6) belongs to the reviewer and was not accessed by the implementer. Hosted CI and native-client acceptance are separate from these dgx02 fixture checks.
 
-[The numeric receipt](transcript-summaries-201.json) retains the final physical summary samples, runner probes, earlier receipt and all subsequent attempts. Raw logs and public retrieval reports are on the dgx02 development-container home volume under `/home/dev/tmp/amem-201/`. No resource failure or withdrawn design is treated as a passing acceptance run.
+[The earlier numeric receipt](transcript-summaries-201.json) retains the previous acceptance samples and attempts. [The ownership receipt](transcript-native-ownership-probes.json) adds the later failed hosted history, CPU=2 alternatives and replacement runtime checks. Raw logs and public retrieval reports are on the dgx02 development-container home volume under `/home/dev/tmp/amem-201/`. No resource failure or withdrawn design is treated as a passing acceptance run.
 
 ## Hosted failures and direct native ownership
 
@@ -19,6 +19,24 @@ None of the broader alternatives was adopted. Explicit GC did not establish a me
 Replay-before-scan reduced the CPU=2 peak to 85.75 MB but failed freshness: for ten consecutive sessions in each regime, the first next SessionStart included both final summaries in 0/10 last-Stop cases and 0/10 SessionEnd cases. They became rows on the second subsequent hook, PostToolUse. That ordering was rejected. A bounded, killable summary-only replay helper before the brief was described as a possible repair but not implemented. The source keeps scan-before-replay and adds a next-SessionStart freshness regression.
 
 The slow-store regression blocks a worker synchronously for 3 seconds under the existing 2-second functional host port. The parent must kill and wait for it, retain the staged summary, write known provenance and replay it once on the next healthy hook. Its Darwin-codepath arm expects four platform readings and zero unavailable readings; Linux inherited rusage in that emulation is source-mechanism proof only and never an R2 memory pass. This does not identify the exact untraced hosted invocation. Final candidate checks and hosted per-event medians/maxima must be reported separately; no hosted pass is inferred from these probes.
+
+## Replacement runtime checks
+
+At source `34ff0fa076cbd86f013b00d221936a53cf76328e`, CPU=2 dgx02 verification passed tsc, boundary (116 source files), 98 focused tests, the full suite (2441 pass, 7 skip, 0 fail), and npm pack dry-run. Earlier fixture failures and the 2652eb5 full run's two stale diagnostic-anchor failures remain in the receipt. The final source keeps CaptureStore and transcript extraction byte-identical to c74eb88; only native ownership, worker transport/setup cleanup and measurement reporting changed.
+
+All resource groups passed on their first attempts. Ordinary/jcode R2 peaked at 78.75 MB; R1 checked 136 invocations and reaped 138 owned children, with zero leftovers and zero optional-worker deferrals. Every transcript call had known RSS provenance, made summary progress and met the unchanged limits:
+
+| Event | Calls | First-call p95, ms | All-call p95, ms | RSS median, MB | RSS max, MB | Max follow-ups |
+|---|---:|---:|---:|---:|---:|---:|
+| Stop | 40 | 91.14 | 91.14 | 75.25 | 80.50 | 0 |
+| SessionEnd | 40 | 91.46 | 91.46 | 75.25 | 78.75 | 0 |
+| StopBurst | 324 | 113.77 | 114.48 | 82.25 | 87.50 | 9 |
+
+All 103 burst summaries were durable and replayed once, with 1-21 new summaries per burst call and no reason-only streak. R3 idle/peak were 41.98/151.93 MB, and the separate volume run peaked at 111.63 MB, within the existing 100/200 limits. Raw replacement reports: `/home/dev/tmp/amem-201/native-parent-final-34ff0fa/`.
+
+The actual-bin freshness check then ran ten consecutive sessions per final-event regime, checking the next default/startup SessionStart before any tool replay. Both final Recap/Compact excerpts appeared in 10/10 last-Stop cases and 10/10 SessionEnd cases; both were already rows in the final hook (zero subsequent hooks required). The observer queried rows read-only. Same-runner main884e90f comparison, 20 calls per event, measured Stop median/max 71.75/73.50 MB and SessionEnd 71.75/78.75 MB; first calls were 73.50 and 78.75 MB respectively. This small main comparison is not the literal post-merge ten-suite series assigned to task84. Raw comparison/freshness reports: `/home/dev/tmp/amem-201/native-parent-freshness-34ff0fa/`.
+
+Hosted Ubuntu/macOS checks on the delivery head remain pending. These CPU=2 results do not establish the requested hosted 90 MB maximum. The workflow now records main and candidate per-event medians/maxima on the same hosted runner. The private AC6 replay remains reviewer-owned; public S/M retrieval no-loss evidence is inherited from the unchanged retrieval/extractor source, not rerun for this hook-only ownership delta.
 
 ## Earlier native-first timing correction and resumed workload (superseded)
 

@@ -4756,5 +4756,2125 @@
     },
     "parentWriterPrototypeColdMaxMB": 52.46875,
     "parentWriterStatus": "held and removed from candidate because synchronous SQLite is not preemptible"
-  }
+  },
+  "validatedRuntime": {
+    "sourceHead": "34ff0fa076cbd86f013b00d221936a53cf76328e",
+    "cpuLimit": 2,
+    "rawDirectory": "/home/dev/tmp/amem-201/native-parent-final-34ff0fa",
+    "hooks": {
+      "timeoutPaths": [
+        {
+          "event": "SessionStart",
+          "wallMs": 128.26,
+          "rssMB": 45.47,
+          "cliRssMB": 61.24609375,
+          "recordedRssMB": 45.46875,
+          "rawRssMB": 171.49609375,
+          "rssSource": "production-owned-images",
+          "rssSources": {
+            "vmhwm": 2,
+            "vmpeakBound": 2,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "ownedChildren": 3,
+          "remainingProcesses": 0,
+          "stalledAttempts": 0
+        },
+        {
+          "event": "PreToolUse",
+          "wallMs": 118.2,
+          "rssMB": 42,
+          "cliRssMB": 61.24609375,
+          "recordedRssMB": 42,
+          "rawRssMB": 134.74609375,
+          "rssSource": "production-owned-images",
+          "rssSources": {
+            "vmhwm": 3,
+            "vmpeakBound": 0,
+            "platformRusage": 0,
+            "rawFallback": 0,
+            "unavailable": 0
+          },
+          "ownedChildren": 2,
+          "remainingProcesses": 0,
+          "stalledAttempts": 0
+        }
+      ],
+      "capture": {
+        "baselineRows": 1,
+        "replayedWorkload": 55,
+        "drainInvocations": 1,
+        "capturedInvocations": 56,
+        "pendingAcknowledgements": 20
+      },
+      "platform": "linux",
+      "bun": "1.4.2",
+      "executable": "bin/amem.js hook",
+      "budgets": {
+        "R1": {
+          "pass": true,
+          "leftoverProcesses": 0,
+          "checkedInvocations": 136,
+          "checkedWorkers": 138,
+          "checkedOwnedChildren": 138,
+          "checkedBunWorkers": 96,
+          "checkedNativeSupervisors": 42,
+          "zeroWorkerDeferrals": {
+            "plain": 0,
+            "spoolAndExit": 0,
+            "drain": 0,
+            "sessionStart": 0,
+            "sessionStartRepoLog": 0,
+            "jcode": 0
+          },
+          "maxPlainZeroWorkers": 10,
+          "scope": "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group"
+        },
+        "R2": {
+          "pass": true,
+          "wallP95BudgetMs": 150,
+          "peakRssBudgetMB": 100,
+          "groups": {
+            "plain": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 77.62,
+              "wallMaxMs": 100.24,
+              "peakRssMB": 78.75,
+              "cliPeakRssMB": 43.75,
+              "productionCombinedPeakRssMB": 78.75,
+              "rawCombinedPeakRssMB": 147,
+              "rssSources": {
+                "vmhwm": 82,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "spoolAndExit": {
+              "runs": 15,
+              "stalledAttempts": 0,
+              "wallP95Ms": 76.05,
+              "wallMaxMs": 76.05,
+              "peakRssMB": 75.25,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 75.25,
+              "rawCombinedPeakRssMB": 85.75,
+              "rssSources": {
+                "vmhwm": 30,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStart": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 66.05,
+              "wallMaxMs": 71.65,
+              "peakRssMB": 43.75,
+              "cliPeakRssMB": 52.5,
+              "productionCombinedPeakRssMB": 43.75,
+              "rawCombinedPeakRssMB": 87.5,
+              "rssSources": {
+                "vmhwm": 32,
+                "vmpeakBound": 8,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "sessionStartRepoLog": {
+              "runs": 20,
+              "stalledAttempts": 0,
+              "wallP95Ms": 67.64,
+              "wallMaxMs": 67.66,
+              "peakRssMB": 46.36,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 46.36,
+              "rawCombinedPeakRssMB": 96.25,
+              "rssSources": {
+                "vmhwm": 36,
+                "vmpeakBound": 4,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "drain": {
+              "runs": 1,
+              "stalledAttempts": 0,
+              "wallP95Ms": 84.88,
+              "wallMaxMs": 84.88,
+              "peakRssMB": 73.5,
+              "cliPeakRssMB": 47.25,
+              "productionCombinedPeakRssMB": 73.5,
+              "rawCombinedPeakRssMB": 84,
+              "rssSources": {
+                "vmhwm": 2,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            },
+            "jcode": {
+              "runs": 40,
+              "stalledAttempts": 0,
+              "wallP95Ms": 80.8,
+              "wallMaxMs": 113.09,
+              "peakRssMB": 75.25,
+              "cliPeakRssMB": 61.25,
+              "productionCombinedPeakRssMB": 75.25,
+              "rawCombinedPeakRssMB": 99.75,
+              "rssSources": {
+                "vmhwm": 80,
+                "vmpeakBound": 0,
+                "platformRusage": 0,
+                "rawFallback": 0,
+                "unavailable": 0
+              },
+              "wallTimingPass": true,
+              "peakPass": true,
+              "wallAdvisory": false,
+              "pass": true
+            }
+          }
+        }
+      },
+      "pass": true,
+      "groupAttempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "hook-workloads",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 10.806127,
+            "spawnMs": 14.055470999999997,
+            "ioMs": 2.530583,
+            "ioSamplesMs": [
+              4.0360840000000024,
+              2.3800310000000025,
+              2.530583
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 12.144428999999946,
+            "spawnMs": 13.641544000000067,
+            "ioMs": 2.424559999999474,
+            "ioSamplesMs": [
+              3.253694999999425,
+              2.258353999999599,
+              2.424559999999474
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall"
+        }
+      ]
+    },
+    "mcp": {
+      "sessionProfile": "shards/v1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "runtimeMode": "--smol",
+      "transport": "stdio",
+      "sessionMs": 6013,
+      "wallTimingPass": true,
+      "steps": [
+        "initialize:74",
+        "tools/list:1",
+        "amem_search:467",
+        "amem_search:605",
+        "amem_search:168",
+        "amem_search:28",
+        "amem_search:16",
+        "amem_search:428",
+        "amem_search:576",
+        "amem_search:164",
+        "amem_search:26",
+        "amem_search:17",
+        "amem_timeline:27",
+        "amem_timeline:19",
+        "amem_timeline:39",
+        "amem_timeline:23",
+        "amem_brief:20",
+        "amem_evidence:475",
+        "amem_work_state_read:1434",
+        "amem_work_state_read:1387"
+      ],
+      "corpus": {
+        "curated": 5001,
+        "capture": 5001,
+        "workRows": 10001,
+        "workItems": 100
+      },
+      "R1": {
+        "pass": true,
+        "eofExitCode": 0,
+        "childReaped": true
+      },
+      "R3": {
+        "pass": true,
+        "idleRssMB": 41.98,
+        "peakRssMB": 151.93,
+        "searches": 10,
+        "timelines": 4,
+        "workReads": 2,
+        "briefReads": 1,
+        "evidenceReads": 1,
+        "evidenceRendered": 6,
+        "briefRendered": 6,
+        "briefBytes": 952,
+        "budgetIdleMB": 100,
+        "budgetPeakMB": 200
+      },
+      "pass": true,
+      "groupAttempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "mcp-session",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 12.016385,
+            "spawnMs": 15.017817,
+            "ioMs": 2.7986990000000063,
+            "ioSamplesMs": [
+              4.081122999999998,
+              2.7986990000000063,
+              2.6907039999999967
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 11.682937000001402,
+            "spawnMs": 13.6207370000011,
+            "ioMs": 2.6851860000006127,
+            "ioSamplesMs": [
+              2.7414669999998296,
+              2.468740999998772,
+              2.6851860000006127
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "stall"
+        }
+      ],
+      "volume": {
+        "platform": "linux",
+        "bun": "1.4.2",
+        "runtimeMode": "--smol",
+        "transport": "stdio",
+        "entry": "bin/amem.js",
+        "sessionMs": 14047,
+        "queryMs": 13894,
+        "wallTimingPass": true,
+        "corpus": {
+          "capture": 84765,
+          "excerptBytes": 1154,
+          "matchingRows": 84765,
+          "logicalBytes": 107609150,
+          "seedDatabaseBytes": 173031424,
+          "databaseBytes": 344973312,
+          "vocabulary": 95279,
+          "tokens": 15673044,
+          "averageChars": 1135.5974045891583,
+          "averageBytes": 1154,
+          "tempFreeBytes": 11901914259456
+        },
+        "engine": "fts5",
+        "first": 84765,
+        "hits": 10,
+        "R1": {
+          "pass": true,
+          "eofExitCode": 0,
+          "childReaped": true
+        },
+        "R3": {
+          "pass": true,
+          "idleMeasured": false,
+          "peakRssMB": 111.63,
+          "selfPeakKB": 114308,
+          "darwinWait4KB": null,
+          "peakKB": 114308,
+          "budgetPeakMB": 200
+        },
+        "pass": true,
+        "groupAttempts": [
+          {
+            "diagnostic": "budget-group",
+            "check": "mcp-volume",
+            "attempt": 1,
+            "outcome": "pass",
+            "before": {
+              "cpuMs": 10.982019999999466,
+              "spawnMs": 11.949082999999519,
+              "ioMs": 2.589068999999654,
+              "ioSamplesMs": [
+                2.7824449999989156,
+                2.589068999999654,
+                2.4890509999986534
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "after": {
+              "cpuMs": 10.45604800000001,
+              "spawnMs": 14.999043999996502,
+              "ioMs": 2.703098999998474,
+              "ioSamplesMs": [
+                3.247237999996287,
+                2.495350999997754,
+                2.703098999998474
+              ],
+              "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+            },
+            "baseline": {
+              "cpuMs": 10.73,
+              "spawnMs": 15.44,
+              "ioMs": 2.78,
+              "factor": 2,
+              "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+            },
+            "slow": false,
+            "retryPolicy": "stall"
+          }
+        ]
+      }
+    },
+    "standard": {
+      "tsc": 0,
+      "boundary": "boundary: OK (116 source files)\n",
+      "pack": 0,
+      "focused": [
+        "",
+        " 98 pass",
+        " 0 fail",
+        " 2327 expect() calls",
+        "Ran 98 tests across 11 files. [33.97s]"
+      ],
+      "full": [
+        " 2441 pass",
+        " 7 skip",
+        " 0 fail",
+        " 39459 expect() calls",
+        "Ran 2448 tests across 235 files. [394.87s]"
+      ]
+    },
+    "transcript": {
+      "groups": [
+        {
+          "event": "Stop",
+          "logicalRuns": 40,
+          "runs": 40,
+          "followUpInvocations": 0,
+          "maxFollowUps": 64,
+          "maxFollowUpsObserved": 0,
+          "firstInvocationWallP95Ms": 91.13862499999993,
+          "summariesPerCall": {
+            "min": 3,
+            "max": 3,
+            "total": 120
+          },
+          "maxReasonOnlyStreak": 0,
+          "wallP95Ms": 91.13862499999993,
+          "medianRssMB": 75.25,
+          "peakRssMB": 80.5,
+          "wallPass": true,
+          "rssPass": true
+        },
+        {
+          "event": "SessionEnd",
+          "logicalRuns": 40,
+          "runs": 40,
+          "followUpInvocations": 0,
+          "maxFollowUps": 64,
+          "maxFollowUpsObserved": 0,
+          "firstInvocationWallP95Ms": 91.4606819999999,
+          "summariesPerCall": {
+            "min": 3,
+            "max": 3,
+            "total": 120
+          },
+          "maxReasonOnlyStreak": 0,
+          "wallP95Ms": 91.4606819999999,
+          "medianRssMB": 75.25,
+          "peakRssMB": 78.75,
+          "wallPass": true,
+          "rssPass": true
+        },
+        {
+          "event": "StopBurst",
+          "logicalRuns": 40,
+          "runs": 324,
+          "followUpInvocations": 284,
+          "maxFollowUps": 64,
+          "maxFollowUpsObserved": 9,
+          "firstInvocationWallP95Ms": 113.7683659999966,
+          "summariesPerCall": {
+            "min": 1,
+            "max": 21,
+            "total": 4120
+          },
+          "maxReasonOnlyStreak": 0,
+          "wallP95Ms": 114.48493099999905,
+          "medianRssMB": 82.25,
+          "peakRssMB": 87.5,
+          "wallPass": true,
+          "rssPass": true
+        }
+      ],
+      "attempts": [
+        {
+          "diagnostic": "budget-group",
+          "check": "transcript-hooks",
+          "attempt": 1,
+          "outcome": "pass",
+          "before": {
+            "cpuMs": 11.425436999999999,
+            "spawnMs": 14.484245000000001,
+            "ioMs": 2.672719999999998,
+            "ioSamplesMs": [
+              4.370394999999995,
+              2.672719999999998,
+              2.465785000000004
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "after": {
+            "cpuMs": 10.600844000000507,
+            "spawnMs": 15.014852000000246,
+            "ioMs": 2.186838000001444,
+            "ioSamplesMs": [
+              3.075816999997187,
+              2.1709540000010747,
+              2.186838000001444
+            ],
+            "checksum": "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5"
+          },
+          "baseline": {
+            "cpuMs": 10.73,
+            "spawnMs": 15.44,
+            "ioMs": 2.78,
+            "factor": 2,
+            "source": "https://github.com/STAIxBWLB/agent-mem/actions/runs/40209400516"
+          },
+          "slow": false,
+          "retryPolicy": "slow-wall"
+        }
+      ],
+      "samples": {
+        "columns": [
+          "cliRssMB",
+          "durableSummaries",
+          "event",
+          "firstUncommittedSummaryEnd",
+          "followUp",
+          "logicalRun",
+          "newSummaries",
+          "offset",
+          "offsetSource",
+          "rawRssMB",
+          "reasonOnlyStreak",
+          "recordedRssMB",
+          "rssMB",
+          "rssSource",
+          "rssSources",
+          "run",
+          "stopReason",
+          "wallMs"
+        ],
+        "rows": [
+          [38.5,3,"Stop",107,0,1,3,261334,"cursor",150.5,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},1,"cap",106.086577],
+          [38.5,3,"Stop",107,0,2,3,261334,"cursor",77,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},2,"cap",86.60021300000002],
+          [40.25,3,"Stop",107,0,3,3,261334,"cursor",78.75,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},3,"cap",88.81965299999996],
+          [38.5,3,"Stop",107,0,4,3,261334,"cursor",77,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},4,"cap",88.30886399999997],
+          [38.5,3,"Stop",107,0,5,3,261334,"cursor",75.25,0,71.75,71.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},5,"cap",89.03897099999995],
+          [38.5,3,"Stop",107,0,6,3,261334,"cursor",77,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},6,"cap",89.45566700000006],
+          [40.25,3,"Stop",107,0,7,3,261334,"cursor",78.75,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},7,"cap",88.94515100000001],
+          [40.25,3,"Stop",107,0,8,3,261334,"cursor",78.75,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},8,"cap",90.59705799999995],
+          [40.25,3,"Stop",107,0,9,3,261334,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},9,"cap",91.13862499999993],
+          [40.25,3,"Stop",108,0,10,3,261337,"cursor",80.41796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},10,"cap",89.7669699999999],
+          [40.25,3,"Stop",108,0,11,3,261337,"cursor",80.41796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},11,"cap",91.07917599999996],
+          [41.91796875,3,"Stop",108,0,12,3,261337,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},12,"cap",89.74840999999992],
+          [41.91796875,3,"Stop",108,0,13,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},13,"cap",89.75544100000002],
+          [41.91796875,3,"Stop",108,0,14,3,261337,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},14,"cap",88.26302199999986],
+          [41.91796875,3,"Stop",108,0,15,3,261337,"cursor",80.41796875,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},15,"cap",90.550614],
+          [41.91796875,3,"Stop",108,0,16,3,261337,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},16,"cap",91.86024699999984],
+          [42,3,"Stop",108,0,17,3,261337,"cursor",83.91796875,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},17,"cap",88.88374899999985],
+          [41.91796875,3,"Stop",108,0,18,3,261337,"cursor",80.41796875,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},18,"cap",88.72254300000009],
+          [41.91796875,3,"Stop",108,0,19,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},19,"cap",89.39637199999993],
+          [41.91796875,3,"Stop",108,0,20,3,261337,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},20,"cap",89.97029699999985],
+          [41.91796875,3,"Stop",108,0,21,3,261337,"cursor",80.41796875,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},21,"cap",89.90821100000016],
+          [41.91796875,3,"Stop",108,0,22,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},22,"cap",90.32367299999987],
+          [42,3,"Stop",108,0,23,3,261337,"cursor",83.91796875,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},23,"cap",89.75939699999981],
+          [41.91796875,3,"Stop",108,0,24,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},24,"cap",88.16487599999982],
+          [41.91796875,3,"Stop",108,0,25,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},25,"cap",88.24893299999985],
+          [41.91796875,3,"Stop",108,0,26,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},26,"cap",89.3111570000001],
+          [41.91796875,3,"Stop",108,0,27,3,261337,"cursor",80.41796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},27,"cap",89.1121250000001],
+          [41.91796875,3,"Stop",108,0,28,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},28,"cap",89.81676900000002],
+          [41.91796875,3,"Stop",108,0,29,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},29,"cap",89.92505999999958],
+          [41.91796875,3,"Stop",108,0,30,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},30,"cap",88.68172999999979],
+          [41.91796875,3,"Stop",108,0,31,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},31,"cap",88.65305200000012],
+          [41.91796875,3,"Stop",108,0,32,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},32,"cap",88.00713499999983],
+          [41.91796875,3,"Stop",108,0,33,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},33,"cap",90.61857700000019],
+          [41.91796875,3,"Stop",108,0,34,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},34,"cap",88.95468699999992],
+          [41.91796875,3,"Stop",108,0,35,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},35,"cap",88.11043299999983],
+          [41.91796875,3,"Stop",108,0,36,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},36,"cap",88.13846599999988],
+          [41.91796875,3,"Stop",108,0,37,3,261337,"cursor",82.16796875,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},37,"cap",90.95951200000036],
+          [41.91796875,3,"Stop",108,0,38,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},38,"cap",90.92310399999997],
+          [41.91796875,3,"Stop",108,0,39,3,261337,"cursor",82.16796875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},39,"cap",90.06244900000002],
+          [45.01953125,3,"Stop",108,0,40,3,261337,"cursor",83.51953125,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},40,"cap",89.0942729999997],
+          [45.01953125,3,"SessionEnd",113,0,1,3,261352,"cursor",85.26953125,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},1,"cap",89.53051199999982],
+          [45.01953125,3,"SessionEnd",113,0,2,3,261352,"cursor",85.26953125,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},2,"cap",90.3008520000003],
+          [45.01953125,3,"SessionEnd",113,0,3,3,261352,"cursor",83.51953125,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},3,"cap",88.63520699999935],
+          [45.01953125,3,"SessionEnd",113,0,4,3,261352,"cursor",85.26953125,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},4,"cap",89.76538100000016],
+          [45.01953125,3,"SessionEnd",113,0,5,3,261352,"cursor",83.51953125,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},5,"cap",89.50682500000039],
+          [45.01953125,3,"SessionEnd",113,0,6,3,261352,"cursor",85.26953125,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},6,"cap",89.12303100000008],
+          [46.74609375,3,"SessionEnd",113,0,7,3,261352,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},7,"cap",91.97503200000028],
+          [46.74609375,3,"SessionEnd",113,0,8,3,261352,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},8,"cap",88.9987430000001],
+          [46.74609375,3,"SessionEnd",113,0,9,3,261352,"cursor",86.99609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},9,"cap",90.0208419999999],
+          [46.74609375,3,"SessionEnd",114,0,10,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},10,"cap",89.26255200000014],
+          [46.74609375,3,"SessionEnd",114,0,11,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},11,"cap",88.43812199999957],
+          [46.74609375,3,"SessionEnd",114,0,12,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},12,"cap",90.41898799999944],
+          [46.74609375,3,"SessionEnd",114,0,13,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},13,"cap",89.19030999999995],
+          [46.74609375,3,"SessionEnd",114,0,14,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},14,"cap",87.04293599999983],
+          [46.74609375,3,"SessionEnd",114,0,15,3,261355,"cursor",85.24609375,0,71.75,71.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},15,"cap",91.4606819999999],
+          [46.74609375,3,"SessionEnd",114,0,16,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},16,"cap",88.28340000000026],
+          [46.74609375,3,"SessionEnd",114,0,17,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},17,"cap",87.011665],
+          [46.74609375,3,"SessionEnd",114,0,18,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},18,"cap",85.81742200000008],
+          [46.74609375,3,"SessionEnd",114,0,19,3,261355,"cursor",86.99609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},19,"cap",85.9371029999993],
+          [46.74609375,3,"SessionEnd",114,0,20,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},20,"cap",86.73428100000001],
+          [46.74609375,3,"SessionEnd",114,0,21,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},21,"cap",86.35920100000021],
+          [46.74609375,3,"SessionEnd",114,0,22,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},22,"cap",85.17377099999976],
+          [46.74609375,3,"SessionEnd",114,0,23,3,261355,"cursor",85.24609375,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},23,"cap",84.72595000000001],
+          [46.74609375,3,"SessionEnd",114,0,24,3,261355,"cursor",88.74609375,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},24,"cap",84.70846400000028],
+          [46.74609375,3,"SessionEnd",114,0,25,3,261355,"cursor",85.24609375,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},25,"cap",86.37304099999983],
+          [46.74609375,3,"SessionEnd",114,0,26,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},26,"cap",85.15489100000013],
+          [46.74609375,3,"SessionEnd",114,0,27,3,261355,"cursor",86.99609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},27,"cap",85.39234599999963],
+          [46.74609375,3,"SessionEnd",114,0,28,3,261355,"cursor",86.99609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},28,"cap",82.57102600000053],
+          [46.74609375,3,"SessionEnd",114,0,29,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},29,"cap",85.36883200000011],
+          [46.74609375,3,"SessionEnd",114,0,30,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},30,"cap",87.39192300000013],
+          [46.74609375,3,"SessionEnd",114,0,31,3,261355,"cursor",88.74609375,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},31,"cap",87.05008499999985],
+          [46.74609375,3,"SessionEnd",114,0,32,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},32,"cap",86.59521800000039],
+          [46.74609375,3,"SessionEnd",114,0,33,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},33,"cap",88.61350700000003],
+          [46.74609375,3,"SessionEnd",114,0,34,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},34,"cap",90.73739599999953],
+          [46.74609375,3,"SessionEnd",114,0,35,3,261355,"cursor",85.24609375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},35,"cap",90.83082100000047],
+          [46.74609375,3,"SessionEnd",114,0,36,3,261355,"cursor",86.99609375,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},36,"cap",91.0859760000003],
+          [46.74609375,3,"SessionEnd",114,0,37,3,261355,"cursor",85.24609375,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},37,"cap",90.32378299999982],
+          [46.74609375,3,"SessionEnd",114,0,38,3,261355,"cursor",88.74609375,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},38,"cap",89.0791019999997],
+          [46.74609375,3,"SessionEnd",114,0,39,3,261355,"cursor",85.24609375,0,71.75,71.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},39,"cap",91.27035299999989],
+          [46.74609375,3,"SessionEnd",114,0,40,3,261355,"cursor",86.99609375,0,73.5,73.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},40,"cap",93.6406420000003],
+          [46.74609375,11,"StopBurst",112,0,1,11,853,"cursor",156.99609375,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},1,"deadline",112.62560099999973],
+          [46.74609375,28,"StopBurst",916,1,1,17,1939,"cursor",92.24609375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},2,"deadline",114.66665099999955],
+          [47.25,41,"StopBurst",2003,2,1,13,2771,"cursor",93.99609375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},3,"deadline",113.65302200000042],
+          [47.25,54,"StopBurst",2835,3,1,13,3603,"cursor",93.99609375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},4,"deadline",112.74035300000014],
+          [46.74609375,67,"StopBurst",3667,4,1,13,4435,"cursor",92.24609375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},5,"deadline",112.70453300000008],
+          [46.74609375,78,"StopBurst",4499,5,1,11,5139,"cursor",92.24609375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},6,"deadline",113.18929299999945],
+          [47.25,90,"StopBurst",5203,6,1,12,5907,"cursor",93.99609375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},7,"deadline",112.3037600000007],
+          [47.25,101,"StopBurst",5971,7,1,11,6611,"cursor",93.99609375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},8,"deadline",113.27024700000038],
+          [46.74609375,103,"StopBurst",6675,8,1,2,262519,"cursor",90.49609375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},9,null,113.69948100000147],
+          [54.640625,14,"StopBurst",112,0,2,14,1043,"cursor",170.140625,0,83.109375,83.109375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},10,"deadline",111.9397059999992],
+          [54.640625,31,"StopBurst",1107,1,2,17,2131,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},11,"deadline",114.26913200000126],
+          [54.640625,45,"StopBurst",2195,2,2,14,3027,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},12,"deadline",112.28149900000062],
+          [54.640625,59,"StopBurst",3091,3,2,14,3923,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},13,"deadline",112.24110800000017],
+          [54.640625,72,"StopBurst",3987,4,2,13,4755,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},14,"deadline",112.20052100000066],
+          [54.640625,85,"StopBurst",4819,5,2,13,5587,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},15,"deadline",112.35341599999992],
+          [54.640625,97,"StopBurst",5651,6,2,12,6355,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},16,"deadline",112.39507500000036],
+          [54.640625,103,"StopBurst",6419,7,2,6,262519,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},17,null,113.5873360000005],
+          [54.640625,12,"StopBurst",112,0,3,12,916,"cursor",166.640625,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},18,"deadline",113.88732300000083],
+          [54.640625,29,"StopBurst",979,1,3,17,2003,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},19,"deadline",114.06482900000083],
+          [54.640625,44,"StopBurst",2067,2,3,15,2963,"cursor",101.890625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},20,"deadline",112.67216299999927],
+          [54.640625,59,"StopBurst",3027,3,3,15,3923,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},21,"deadline",112.37112900000102],
+          [54.640625,73,"StopBurst",3987,4,3,14,4819,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},22,"deadline",112.72928599999977],
+          [54.640625,85,"StopBurst",4883,5,3,12,5587,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},23,"deadline",113.25983599999927],
+          [54.640625,97,"StopBurst",5651,6,3,12,6355,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},24,"deadline",113.09476100000029],
+          [54.640625,103,"StopBurst",6419,7,3,6,262519,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},25,null,113.48459899999943],
+          [54.640625,10,"StopBurst",112,0,4,10,790,"cursor",168.390625,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},26,"deadline",114.62820399999873],
+          [54.640625,29,"StopBurst",853,1,4,19,2003,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},27,"deadline",114.6991880000005],
+          [54.640625,41,"StopBurst",2067,2,4,12,2771,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},28,"deadline",113.21554399999877],
+          [54.640625,47,"StopBurst",2835,3,4,6,3155,"cursor",94.890625,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},29,"deadline",112.34022299999924],
+          [54.640625,57,"StopBurst",3219,4,4,10,3795,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},30,"deadline",119.95558399999936],
+          [54.640625,69,"StopBurst",3859,5,4,12,4563,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},31,"deadline",112.99920199999906],
+          [54.640625,81,"StopBurst",4627,6,4,12,5331,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},32,"deadline",114.11909600000035],
+          [54.640625,92,"StopBurst",5395,7,4,11,6035,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},33,"deadline",112.9479109999993],
+          [54.640625,103,"StopBurst",6099,8,4,11,6739,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},34,"deadline",112.9101069999997],
+          [54.640625,12,"StopBurst",112,0,5,12,916,"cursor",166.640625,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},35,"deadline",112.97280599999976],
+          [54.640625,30,"StopBurst",979,1,5,18,2067,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},36,"deadline",115.46601499999997],
+          [54.640625,45,"StopBurst",2131,2,5,15,3027,"cursor",101.890625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},37,"deadline",113.24026400000002],
+          [54.640625,57,"StopBurst",3091,3,5,12,3795,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},38,"deadline",113.53033200000027],
+          [54.640625,69,"StopBurst",3859,4,5,12,4563,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},39,"deadline",112.60965100000067],
+          [54.640625,80,"StopBurst",4627,5,5,11,5267,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},40,"deadline",112.69127200000003],
+          [54.640625,91,"StopBurst",5331,6,5,11,5971,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},41,"deadline",112.72742400000061],
+          [54.640625,103,"StopBurst",6035,7,5,12,6739,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},42,"deadline",113.1002810000009],
+          [54.640625,9,"StopBurst",112,0,6,9,727,"cursor",170.140625,0,83.96875,83.96875,"production-owned-images",{"vmhwm":2,"vmpeakBound":2,"platformRusage":0,"rawFallback":0,"unavailable":0},43,"deadline",112.48327199999949],
+          [54.640625,25,"StopBurst",790,1,6,16,1747,"cursor",101.890625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},44,"deadline",113.19146],
+          [54.640625,37,"StopBurst",1811,2,6,12,2515,"cursor",101.890625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},45,"deadline",112.68531299999995],
+          [54.640625,48,"StopBurst",2579,3,6,11,3219,"cursor",103.640625,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},46,"deadline",113.10309000000052],
+          [54.640625,59,"StopBurst",3283,4,6,11,3923,"cursor",103.640625,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},47,"deadline",112.33192899999995],
+          [54.640625,71,"StopBurst",3987,5,6,12,4691,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},48,"deadline",112.8715170000014],
+          [54.640625,83,"StopBurst",4755,6,6,12,5459,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},49,"deadline",113.98521199999959],
+          [54.640625,95,"StopBurst",5523,7,6,12,6227,"cursor",98.390625,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},50,"deadline",112.69260499999837],
+          [54.640625,103,"StopBurst",6291,8,6,8,262519,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},51,null,112.35289899999952],
+          [54.640625,12,"StopBurst",112,0,7,12,916,"cursor",168.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},52,"deadline",112.00989800000025],
+          [54.640625,29,"StopBurst",979,1,7,17,2003,"cursor",100.140625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},53,"deadline",115.44368399999985],
+          [54.640625,43,"StopBurst",2067,2,7,14,2899,"cursor",101.890625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},54,"deadline",113.11781300000075],
+          [54.640625,57,"StopBurst",2963,3,7,14,3795,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},55,"deadline",112.89133299999958],
+          [54.640625,71,"StopBurst",3859,4,7,14,4691,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},56,"deadline",111.83747500000027],
+          [54.640625,83,"StopBurst",4755,5,7,12,5459,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},57,"deadline",112.7931779999999],
+          [54.640625,96,"StopBurst",5523,6,7,13,6291,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},58,"deadline",112.5533630000009],
+          [54.640625,103,"StopBurst",6355,7,7,7,262519,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},59,null,113.10838299999887],
+          [54.640625,15,"StopBurst",112,0,8,15,1107,"cursor",166.640625,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},60,"deadline",111.46004900000116],
+          [54.640625,33,"StopBurst",1171,1,8,18,2259,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},61,"deadline",114.20892800000001],
+          [54.640625,47,"StopBurst",2323,2,8,14,3155,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},62,"deadline",112.76004399999874],
+          [54.640625,59,"StopBurst",3219,3,8,12,3923,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},63,"deadline",113.5899249999984],
+          [54.640625,73,"StopBurst",3987,4,8,14,4819,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},64,"deadline",113.19784400000026],
+          [54.640625,87,"StopBurst",4883,5,8,14,5715,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},65,"deadline",112.47554100000161],
+          [54.640625,101,"StopBurst",5779,6,8,14,6611,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},66,"deadline",112.80551500000001],
+          [54.640625,103,"StopBurst",6675,7,8,2,262519,"cursor",100.140625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},67,null,112.09324699999706],
+          [54.640625,16,"StopBurst",112,0,9,16,1171,"cursor",166.640625,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},68,"deadline",112.52655400000003],
+          [54.640625,33,"StopBurst",1235,1,9,17,2259,"cursor",100.140625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},69,"deadline",114.09646099999736],
+          [54.640625,48,"StopBurst",2323,2,9,15,3219,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},70,"deadline",112.16151499999978],
+          [54.640625,62,"StopBurst",3283,3,9,14,4115,"cursor",101.890625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},71,"deadline",112.78096200000073],
+          [54.640625,75,"StopBurst",4179,4,9,13,4947,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},72,"deadline",112.28979700000127],
+          [54.640625,88,"StopBurst",5011,5,9,13,5779,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},73,"deadline",112.21400300000096],
+          [54.640625,100,"StopBurst",5843,6,9,12,6547,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},74,"deadline",112.93142100000114],
+          [54.640625,103,"StopBurst",6611,7,9,3,262519,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},75,null,113.55112999999983],
+          [54.640625,16,"StopBurst",113,0,10,16,1187,"cursor",166.640625,0,83.96875,83.96875,"production-owned-images",{"vmhwm":2,"vmpeakBound":2,"platformRusage":0,"rawFallback":0,"unavailable":0},76,"deadline",112.47057599999971],
+          [54.640625,34,"StopBurst",1252,1,10,18,2357,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},77,"deadline",115.29202299999815],
+          [54.640625,50,"StopBurst",2422,2,10,16,3397,"cursor",101.890625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},78,"deadline",112.75381700000071],
+          [54.640625,64,"StopBurst",3462,3,10,14,4307,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},79,"deadline",112.82482700000037],
+          [54.640625,77,"StopBurst",4372,4,10,13,5152,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},80,"deadline",113.02920799999993],
+          [54.640625,90,"StopBurst",5217,5,10,13,5997,"cursor",101.890625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},81,"deadline",113.05038299999796],
+          [54.640625,102,"StopBurst",6062,6,10,12,6777,"cursor",100.140625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},82,"deadline",112.45359800000006],
+          [54.640625,103,"StopBurst",6842,7,10,1,262622,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},83,null,113.21825800000079],
+          [54.640625,15,"StopBurst",113,0,11,15,1122,"cursor",168.390625,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},84,"deadline",112.04941499999768],
+          [54.640625,33,"StopBurst",1187,1,11,18,2292,"cursor",100.140625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},85,"deadline",114.37279900000067],
+          [54.640625,49,"StopBurst",2357,2,11,16,3332,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},86,"deadline",112.59179600000061],
+          [54.640625,64,"StopBurst",3397,3,11,15,4307,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},87,"deadline",112.95864799999981],
+          [54.640625,78,"StopBurst",4372,4,11,14,5217,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},88,"deadline",112.71561400000064],
+          [54.640625,90,"StopBurst",5282,5,11,12,5997,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},89,"deadline",113.54380599999786],
+          [54.640625,103,"StopBurst",6062,6,11,13,32072,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},90,"deadline",112.84562300000107],
+          [54.640625,15,"StopBurst",113,0,12,15,1122,"cursor",171.890625,0,85.75,85.75,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},91,"deadline",111.42828100000042],
+          [54.640625,33,"StopBurst",1187,1,12,18,2292,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},92,"deadline",114.48493099999905],
+          [54.640625,49,"StopBurst",2357,2,12,16,3332,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},93,"deadline",113.03993600000103],
+          [54.640625,63,"StopBurst",3397,3,12,14,4242,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},94,"deadline",112.61334700000225],
+          [54.640625,76,"StopBurst",4307,4,12,13,5087,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},95,"deadline",112.50160600000163],
+          [54.640625,89,"StopBurst",5152,5,12,13,5932,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},96,"deadline",112.95062999999936],
+          [54.640625,102,"StopBurst",5997,6,12,13,6777,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},97,"deadline",112.4423719999977],
+          [54.640625,103,"StopBurst",6842,7,12,1,262622,"cursor",98.390625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},98,null,112.81852100000106],
+          [54.640625,15,"StopBurst",113,0,13,15,1122,"cursor",170.140625,0,84,84,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},99,"deadline",113.58809499999916],
+          [54.640625,32,"StopBurst",1187,1,13,17,2227,"cursor",101.890625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},100,"deadline",114.3508490000022],
+          [54.640625,46,"StopBurst",2292,2,13,14,3137,"cursor",103.640625,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},101,"deadline",113.12972500000251],
+          [54.640625,60,"StopBurst",3202,3,13,14,4047,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},102,"deadline",112.55945399999837],
+          [54.640625,74,"StopBurst",4112,4,13,14,4957,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},103,"deadline",112.8722680000028],
+          [54.640625,87,"StopBurst",5022,5,13,13,5802,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},104,"deadline",112.47755099999995],
+          [54.640625,100,"StopBurst",5867,6,13,13,6647,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},105,"deadline",112.64951199999996],
+          [54.640625,103,"StopBurst",6712,7,13,3,262622,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},106,null,112.768379000001],
+          [54.640625,14,"StopBurst",113,0,14,14,1057,"cursor",168.390625,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},107,"deadline",112.30741000000125],
+          [54.640625,32,"StopBurst",1122,1,14,18,2227,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},108,"deadline",113.98442599999908],
+          [54.640625,47,"StopBurst",2292,2,14,15,3202,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},109,"deadline",112.67625800000314],
+          [54.640625,62,"StopBurst",3267,3,14,15,4177,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},110,"deadline",112.6743630000019],
+          [54.640625,74,"StopBurst",4242,4,14,12,4957,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},111,"deadline",112.45374000000083],
+          [54.640625,86,"StopBurst",5022,5,14,12,5737,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},112,"deadline",112.57610700000077],
+          [54.640625,98,"StopBurst",5802,6,14,12,6517,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},113,"deadline",113.11434600000212],
+          [54.640625,103,"StopBurst",6582,7,14,5,262622,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},114,null,113.5563239999974],
+          [54.640625,9,"StopBurst",113,0,15,9,736,"cursor",166.640625,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},115,"deadline",112.10591700000077],
+          [54.640625,27,"StopBurst",800,1,15,18,1902,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},116,"deadline",112.7783509999972],
+          [54.640625,39,"StopBurst",1967,2,15,12,2682,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},117,"deadline",112.72939799999949],
+          [54.640625,51,"StopBurst",2747,3,15,12,3462,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},118,"deadline",112.59114699999918],
+          [54.640625,64,"StopBurst",3527,4,15,13,4307,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},119,"deadline",112.42168300000048],
+          [54.640625,77,"StopBurst",4372,5,15,13,5152,"cursor",100.140625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},120,"deadline",111.63770000000295],
+          [54.640625,91,"StopBurst",5217,6,15,14,6062,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},121,"deadline",112.25743199999852],
+          [54.640625,103,"StopBurst",6127,7,15,12,6842,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},122,"deadline",112.58783299999777],
+          [54.640625,11,"StopBurst",113,0,16,11,864,"cursor",166.640625,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},123,"deadline",112.65883899999972],
+          [54.640625,28,"StopBurst",928,1,16,17,1967,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},124,"deadline",114.20813999999882],
+          [54.640625,40,"StopBurst",2032,2,16,12,2747,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},125,"deadline",112.21137299999828],
+          [54.640625,52,"StopBurst",2812,3,16,12,3527,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},126,"deadline",112.43535799999881],
+          [54.640625,64,"StopBurst",3592,4,16,12,4307,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},127,"deadline",112.67024799999854],
+          [54.640625,75,"StopBurst",4372,5,16,11,5022,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},128,"deadline",112.48448900000221],
+          [54.640625,87,"StopBurst",5087,6,16,12,5802,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},129,"deadline",111.33784699999887],
+          [54.640625,100,"StopBurst",5867,7,16,13,6647,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},130,"deadline",111.989454999999],
+          [54.640625,103,"StopBurst",6712,8,16,3,262622,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},131,null,111.47225100000287],
+          [54.640625,12,"StopBurst",113,0,17,12,928,"cursor",164.890625,0,78.75,78.75,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},132,"deadline",113.21598099999756],
+          [54.640625,27,"StopBurst",992,1,17,15,1902,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},133,"deadline",115.0052340000002],
+          [54.640625,42,"StopBurst",1967,2,17,15,2877,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},134,"deadline",112.51136899999983],
+          [54.640625,56,"StopBurst",2942,3,17,14,3787,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},135,"deadline",112.56331399999908],
+          [54.640625,68,"StopBurst",3852,4,17,12,4567,"cursor",100.140625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},136,"deadline",112.24685699999827],
+          [54.640625,80,"StopBurst",4632,5,17,12,5347,"cursor",101.890625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},137,"deadline",112.26755799999955],
+          [54.640625,91,"StopBurst",5412,6,17,11,6062,"cursor",96.640625,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},138,"deadline",113.3307249999998],
+          [54.640625,102,"StopBurst",6127,7,17,11,6777,"cursor",96.640625,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},139,"deadline",112.47180500000104],
+          [54.640625,103,"StopBurst",6842,8,17,1,262622,"cursor",98.390625,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},140,null,112.70710899999904],
+          [55.57421875,13,"StopBurst",113,0,18,13,992,"cursor",165.82421875,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},141,"deadline",113.66658500000267],
+          [55.57421875,30,"StopBurst",1057,1,18,17,2097,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},142,"deadline",114.2065709999988],
+          [55.57421875,43,"StopBurst",2162,2,18,13,2942,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},143,"deadline",113.13120200000048],
+          [55.57421875,56,"StopBurst",3007,3,18,13,3787,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},144,"deadline",112.48119299999962],
+          [55.57421875,68,"StopBurst",3852,4,18,12,4567,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},145,"deadline",113.49528500000088],
+          [55.57421875,80,"StopBurst",4632,5,18,12,5347,"cursor",99.32421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},146,"deadline",111.97615399999995],
+          [55.57421875,92,"StopBurst",5412,6,18,12,6127,"cursor",99.32421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},147,"deadline",112.8986470000018],
+          [55.57421875,102,"StopBurst",6192,7,18,10,6777,"cursor",102.82421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},148,"deadline",113.46642900000006],
+          [55.57421875,103,"StopBurst",6842,8,18,1,262622,"cursor",97.57421875,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},149,null,113.04629099999875],
+          [55.57421875,14,"StopBurst",113,0,19,14,1057,"cursor",169.32421875,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},150,"deadline",113.11516599999959],
+          [55.57421875,32,"StopBurst",1122,1,19,18,2227,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},151,"deadline",115.89430300000095],
+          [55.57421875,47,"StopBurst",2292,2,19,15,3202,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},152,"deadline",112.95514299999923],
+          [55.57421875,60,"StopBurst",3267,3,19,13,4047,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},153,"deadline",113.33098500000051],
+          [55.57421875,72,"StopBurst",4112,4,19,12,4827,"cursor",102.82421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},154,"deadline",113.33041900000171],
+          [55.57421875,85,"StopBurst",4892,5,19,13,5672,"cursor",97.57421875,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},155,"deadline",113.50089900000239],
+          [55.57421875,96,"StopBurst",5737,6,19,11,6387,"cursor",102.82421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},156,"deadline",112.82498900000064],
+          [55.57421875,103,"StopBurst",6452,7,19,7,262622,"cursor",95.82421875,0,77,77,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},157,null,114.44238300000143],
+          [55.57421875,12,"StopBurst",113,0,20,12,928,"cursor",167.57421875,0,79.609375,79.609375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},158,"deadline",112.99510600000212],
+          [55.57421875,31,"StopBurst",992,1,20,19,2162,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},159,"deadline",114.04392799999914],
+          [55.57421875,46,"StopBurst",2227,2,20,15,3137,"cursor",99.32421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},160,"deadline",112.53716699999859],
+          [55.57421875,58,"StopBurst",3202,3,20,12,3917,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},161,"deadline",112.40778499999942],
+          [55.57421875,72,"StopBurst",3982,4,20,14,4827,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},162,"deadline",112.22367999999915],
+          [55.57421875,84,"StopBurst",4892,5,20,12,5607,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},163,"deadline",112.5022140000001],
+          [55.57421875,95,"StopBurst",5672,6,20,11,6322,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},164,"deadline",112.69699300000138],
+          [55.57421875,103,"StopBurst",6387,7,20,8,262622,"cursor",99.32421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},165,null,113.03152700000282],
+          [55.57421875,14,"StopBurst",113,0,21,14,1057,"cursor",165.82421875,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},166,"deadline",112.04520000000048],
+          [55.57421875,32,"StopBurst",1122,1,21,18,2227,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},167,"deadline",114.46178299999883],
+          [55.57421875,46,"StopBurst",2292,2,21,14,3137,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},168,"deadline",112.75483899999745],
+          [55.57421875,57,"StopBurst",3202,3,21,11,3852,"cursor",101.07421875,0,78.75,78.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},169,"deadline",112.47811600000205],
+          [55.57421875,69,"StopBurst",3917,4,21,12,4632,"cursor",101.07421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},170,"deadline",112.83446700000059],
+          [55.57421875,81,"StopBurst",4697,5,21,12,5412,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},171,"deadline",112.91023899999709],
+          [55.57421875,94,"StopBurst",5477,6,21,13,6257,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},172,"deadline",111.50386700000308],
+          [55.57421875,103,"StopBurst",6322,7,21,9,262622,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},173,null,111.20667900000262],
+          [55.57421875,16,"StopBurst",113,0,22,16,1187,"cursor",171.07421875,0,85.75,85.75,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},174,"deadline",111.9437480000015],
+          [55.57421875,31,"StopBurst",1252,1,22,15,2162,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},175,"deadline",115.3091319999985],
+          [55.57421875,45,"StopBurst",2227,2,22,14,3072,"cursor",104.57421875,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},176,"deadline",112.97673199999917],
+          [55.57421875,55,"StopBurst",3137,3,22,10,3722,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},177,"deadline",112.31492100000105],
+          [55.57421875,67,"StopBurst",3787,4,22,12,4502,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},178,"deadline",112.54039799999737],
+          [55.57421875,79,"StopBurst",4567,5,22,12,5282,"cursor",102.82421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},179,"deadline",112.79366500000106],
+          [55.57421875,92,"StopBurst",5347,6,22,13,6127,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},180,"deadline",112.21120299999893],
+          [55.57421875,103,"StopBurst",6192,7,22,11,262622,"cursor",101.07421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},181,null,112.76848600000085],
+          [55.57421875,11,"StopBurst",113,0,23,11,864,"cursor",167.57421875,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},182,"deadline",111.69461199999932],
+          [55.57421875,32,"StopBurst",928,1,23,21,2227,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},183,"deadline",114.40201099999831],
+          [55.57421875,47,"StopBurst",2292,2,23,15,3202,"cursor",101.07421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},184,"deadline",112.51829999999973],
+          [55.57421875,62,"StopBurst",3267,3,23,15,4177,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},185,"deadline",112.51211400000102],
+          [55.57421875,76,"StopBurst",4242,4,23,14,5087,"cursor",99.32421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},186,"deadline",112.81869299999744],
+          [55.57421875,89,"StopBurst",5152,5,23,13,5932,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},187,"deadline",112.941482000002],
+          [55.57421875,102,"StopBurst",5997,6,23,13,6777,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},188,"deadline",113.08341699999801],
+          [55.57421875,103,"StopBurst",6842,7,23,1,262622,"cursor",101.07421875,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},189,null,112.9033159999999],
+          [55.57421875,16,"StopBurst",113,0,24,16,1187,"cursor",171.07421875,0,84,84,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},190,"deadline",112.79466200000388],
+          [55.57421875,34,"StopBurst",1252,1,24,18,2357,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},191,"deadline",114.19926400000259],
+          [55.57421875,49,"StopBurst",2422,2,24,15,3332,"cursor",102.82421875,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},192,"deadline",112.12280199999805],
+          [55.57421875,63,"StopBurst",3397,3,24,14,4242,"cursor",104.57421875,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},193,"deadline",113.0441359999968],
+          [55.57421875,76,"StopBurst",4307,4,24,13,5087,"cursor",104.57421875,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},194,"deadline",113.13352100000338],
+          [55.57421875,89,"StopBurst",5152,5,24,13,5932,"cursor",104.57421875,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},195,"deadline",112.03532200000336],
+          [55.57421875,101,"StopBurst",5997,6,24,12,6712,"cursor",102.82421875,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},196,"deadline",113.41736300000048],
+          [55.57421875,103,"StopBurst",6777,7,24,2,262622,"cursor",101.07421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},197,null,112.49875099999917],
+          [55.57421875,13,"StopBurst",113,0,25,13,992,"cursor",167.57421875,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},198,"deadline",112.16284999999334],
+          [55.57421875,32,"StopBurst",1057,1,25,19,2227,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},199,"deadline",114.30703100000392],
+          [55.57421875,47,"StopBurst",2292,2,25,15,3202,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},200,"deadline",112.64098899999954],
+          [55.57421875,61,"StopBurst",3267,3,25,14,4112,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},201,"deadline",112.80690599999798],
+          [55.57421875,76,"StopBurst",4177,4,25,15,5087,"cursor",102.82421875,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},202,"deadline",112.95499700000073],
+          [55.57421875,90,"StopBurst",5152,5,25,14,5997,"cursor",101.07421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},203,"deadline",112.24352799999906],
+          [55.57421875,103,"StopBurst",6062,6,25,13,6842,"cursor",102.82421875,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},204,"deadline",112.47649799999635],
+          [56.09765625,14,"StopBurst",113,0,26,14,1057,"cursor",173.34765625,0,84.859375,84.859375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},205,"deadline",111.95010100000218],
+          [56.09765625,32,"StopBurst",1122,1,26,18,2227,"cursor",103.34765625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},206,"deadline",115.19238099999347],
+          [56.09765625,47,"StopBurst",2292,2,26,15,3202,"cursor",103.34765625,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},207,"deadline",112.488986999997],
+          [56.09765625,61,"StopBurst",3267,3,26,14,4112,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},208,"deadline",112.9152780000004],
+          [56.09765625,75,"StopBurst",4177,4,26,14,5022,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},209,"deadline",112.27588600000308],
+          [56.09765625,88,"StopBurst",5087,5,26,13,5867,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},210,"deadline",112.56072999999742],
+          [56.09765625,101,"StopBurst",5932,6,26,13,6712,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},211,"deadline",112.41085599999496],
+          [56.09765625,103,"StopBurst",6777,7,26,2,262622,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},212,null,112.21281900000031],
+          [56.09765625,14,"StopBurst",113,0,27,14,1057,"cursor",171.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},213,"deadline",112.45148399999744],
+          [56.09765625,33,"StopBurst",1122,1,27,19,2292,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},214,"deadline",113.47280399999727],
+          [56.09765625,48,"StopBurst",2357,2,27,15,3267,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},215,"deadline",112.42601399999694],
+          [56.09765625,62,"StopBurst",3332,3,27,14,4177,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},216,"deadline",112.30045099999552],
+          [56.09765625,76,"StopBurst",4242,4,27,14,5087,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},217,"deadline",112.75153000000137],
+          [56.09765625,90,"StopBurst",5152,5,27,14,5997,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},218,"deadline",112.05847599999834],
+          [56.09765625,103,"StopBurst",6062,6,27,13,39032,"cursor",103.34765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},219,"deadline",113.15310399999726],
+          [56.09765625,15,"StopBurst",113,0,28,15,1122,"cursor",173.34765625,0,85.75,85.75,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},220,"deadline",112.24964300000283],
+          [56.09765625,34,"StopBurst",1187,1,28,19,2357,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},221,"deadline",114.299963999998],
+          [56.09765625,48,"StopBurst",2422,2,28,14,3267,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},222,"deadline",112.486413000006],
+          [56.09765625,61,"StopBurst",3332,3,28,13,4112,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},223,"deadline",113.36684600000444],
+          [56.09765625,74,"StopBurst",4177,4,28,13,4957,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},224,"deadline",112.31413299999986],
+          [56.09765625,87,"StopBurst",5022,5,28,13,5802,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},225,"deadline",112.1864940000014],
+          [56.09765625,100,"StopBurst",5867,6,28,13,6647,"cursor",103.34765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},226,"deadline",112.92486700000154],
+          [56.09765625,103,"StopBurst",6712,7,28,3,262622,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},227,null,112.45519600000262],
+          [56.09765625,15,"StopBurst",113,0,29,15,1122,"cursor",173.34765625,0,84.859375,84.859375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},228,"deadline",112.1099369999938],
+          [56.09765625,34,"StopBurst",1187,1,29,19,2357,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},229,"deadline",113.44405800000095],
+          [56.09765625,48,"StopBurst",2422,2,29,14,3267,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},230,"deadline",112.52847399999882],
+          [56.09765625,63,"StopBurst",3332,3,29,15,4242,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},231,"deadline",111.67256199999974],
+          [56.09765625,77,"StopBurst",4307,4,29,14,5152,"cursor",99.84765625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},232,"deadline",112.15672900000209],
+          [56.09765625,90,"StopBurst",5217,5,29,13,5997,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},233,"deadline",112.2465499999962],
+          [56.09765625,103,"StopBurst",6062,6,29,13,6842,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},234,"deadline",112.90394899999956],
+          [56.09765625,13,"StopBurst",113,0,30,13,992,"cursor",169.84765625,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},235,"deadline",113.14273899999534],
+          [56.09765625,32,"StopBurst",1057,1,30,19,2227,"cursor",101.59765625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},236,"deadline",114.88142599999992],
+          [56.09765625,47,"StopBurst",2292,2,30,15,3202,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},237,"deadline",112.60937000000558],
+          [56.09765625,61,"StopBurst",3267,3,30,14,4112,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},238,"deadline",112.14440200000536],
+          [56.09765625,75,"StopBurst",4177,4,30,14,5022,"cursor",103.34765625,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},239,"deadline",112.53875700000208],
+          [56.09765625,89,"StopBurst",5087,5,30,14,5932,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},240,"deadline",112.50643300000229],
+          [56.09765625,102,"StopBurst",5997,6,30,13,6777,"cursor",101.59765625,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},241,"deadline",112.41238800000428],
+          [56.09765625,103,"StopBurst",6842,7,30,1,262622,"cursor",99.84765625,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},242,null,113.76406299999508],
+          [56.30859375,14,"StopBurst",113,0,31,14,1057,"cursor",168.30859375,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},243,"deadline",112.75843600000371],
+          [56.30859375,32,"StopBurst",1122,1,31,18,2227,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},244,"deadline",114.61748500000249],
+          [56.30859375,46,"StopBurst",2292,2,31,14,3137,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},245,"deadline",112.63950499999919],
+          [56.30859375,62,"StopBurst",3202,3,31,16,4177,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},246,"deadline",112.33839300000545],
+          [56.30859375,74,"StopBurst",4242,4,31,12,4957,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},247,"deadline",112.7697810000027],
+          [56.30859375,88,"StopBurst",5022,5,31,14,5867,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},248,"deadline",112.0852670000022],
+          [56.30859375,101,"StopBurst",5932,6,31,13,6712,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},249,"deadline",112.71452400000271],
+          [56.30859375,103,"StopBurst",6777,7,31,2,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},250,null,113.1370969999989],
+          [56.30859375,14,"StopBurst",113,0,32,14,1057,"cursor",166.55859375,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},251,"deadline",112.37864499999705],
+          [56.30859375,32,"StopBurst",1122,1,32,18,2227,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},252,"deadline",114.0520250000045],
+          [56.30859375,46,"StopBurst",2292,2,32,14,3137,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},253,"deadline",112.99772899999516],
+          [56.30859375,58,"StopBurst",3202,3,32,12,3917,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},254,"deadline",112.78516500000114],
+          [56.30859375,72,"StopBurst",3982,4,32,14,4827,"cursor",103.55859375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},255,"deadline",112.55331700000534],
+          [56.30859375,85,"StopBurst",4892,5,32,13,5672,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},256,"deadline",113.09084699999948],
+          [56.30859375,97,"StopBurst",5737,6,32,12,6452,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},257,"deadline",112.72662599999603],
+          [56.30859375,103,"StopBurst",6517,7,32,6,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},258,null,113.09814400000323],
+          [56.30859375,13,"StopBurst",113,0,33,13,992,"cursor",166.55859375,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},259,"deadline",112.91320400000404],
+          [56.30859375,32,"StopBurst",1057,1,33,19,2227,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},260,"deadline",113.90415300000313],
+          [56.30859375,47,"StopBurst",2292,2,33,15,3202,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},261,"deadline",112.58771900000283],
+          [56.30859375,61,"StopBurst",3267,3,33,14,4112,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},262,"deadline",112.8574759999974],
+          [56.30859375,74,"StopBurst",4177,4,33,13,4957,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},263,"deadline",113.29318499999499],
+          [56.30859375,87,"StopBurst",5022,5,33,13,5802,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},264,"deadline",113.48665099999926],
+          [56.30859375,100,"StopBurst",5867,6,33,13,6647,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},265,"deadline",112.35397199999716],
+          [56.30859375,103,"StopBurst",6712,7,33,3,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},266,null,112.14144300000044],
+          [56.30859375,13,"StopBurst",113,0,34,13,992,"cursor",171.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},267,"deadline",112.5000149999978],
+          [56.30859375,29,"StopBurst",1057,1,34,16,2032,"cursor",103.55859375,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},268,"deadline",115.33827100000053],
+          [56.30859375,42,"StopBurst",2097,2,34,13,2877,"cursor",105.30859375,0,87.5,87.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},269,"deadline",113.87971599999582],
+          [56.30859375,56,"StopBurst",2942,3,34,14,3787,"cursor",101.80859375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},270,"deadline",112.5650519999981],
+          [56.30859375,70,"StopBurst",3852,4,34,14,4697,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},271,"deadline",113.35581300000194],
+          [56.30859375,83,"StopBurst",4762,5,34,13,5542,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},272,"deadline",112.57209500000317],
+          [56.30859375,95,"StopBurst",5607,6,34,12,6322,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},273,"deadline",113.50784199999907],
+          [56.30859375,103,"StopBurst",6387,7,34,8,262622,"cursor",100.05859375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},274,null,113.20090599999821],
+          [56.30859375,12,"StopBurst",113,0,35,12,928,"cursor",166.55859375,0,80.5,80.5,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},275,"deadline",113.7683659999966],
+          [56.30859375,26,"StopBurst",992,1,35,14,1837,"cursor",100.05859375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},276,"deadline",116.66245100000378],
+          [56.30859375,34,"StopBurst",1902,2,35,8,2357,"cursor",96.55859375,0,75.25,75.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},277,"deadline",115.44997200000216],
+          [56.30859375,36,"StopBurst",2422,3,35,2,2487,"cursor",93.05859375,0,71.75,71.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},278,"deadline",112.78852400000324],
+          [56.30859375,47,"StopBurst",2552,4,35,11,3202,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},279,"deadline",113.51251699999557],
+          [56.30859375,59,"StopBurst",3267,5,35,12,3982,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},280,"deadline",113.46643900000345],
+          [56.30859375,71,"StopBurst",4047,6,35,12,4762,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},281,"deadline",113.12395700000343],
+          [56.30859375,84,"StopBurst",4827,7,35,13,5607,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},282,"deadline",113.13062100000388],
+          [56.30859375,96,"StopBurst",5672,8,35,12,6387,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},283,"deadline",113.31615800000145],
+          [56.30859375,103,"StopBurst",6452,9,35,7,262622,"cursor",100.05859375,0,80.5,80.5,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},284,null,113.61244400000578],
+          [56.30859375,10,"StopBurst",113,0,36,10,800,"cursor",171.80859375,0,83.109375,83.109375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},285,"deadline",113.75819000000047],
+          [56.30859375,29,"StopBurst",864,1,36,19,2032,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},286,"deadline",114.22538299999724],
+          [56.30859375,42,"StopBurst",2097,2,36,13,2877,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},287,"deadline",113.58575200000632],
+          [56.30859375,52,"StopBurst",2942,3,36,10,3527,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},288,"deadline",114.36700399999972],
+          [56.30859375,65,"StopBurst",3592,4,36,13,4372,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},289,"deadline",113.48649399999704],
+          [56.30859375,78,"StopBurst",4437,5,36,13,5217,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},290,"deadline",113.02493899999536],
+          [56.30859375,90,"StopBurst",5282,6,36,12,5997,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},291,"deadline",113.15878599999996],
+          [56.30859375,101,"StopBurst",6062,7,36,11,6712,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},292,"deadline",113.68001100000401],
+          [56.30859375,103,"StopBurst",6777,8,36,2,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},293,null,113.52559900000051],
+          [56.30859375,12,"StopBurst",113,0,37,12,928,"cursor",168.30859375,0,83.109375,83.109375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},294,"deadline",113.13659299999563],
+          [56.30859375,31,"StopBurst",992,1,37,19,2162,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},295,"deadline",114.42652600000292],
+          [56.30859375,45,"StopBurst",2227,2,37,14,3072,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},296,"deadline",112.91815499999939],
+          [56.30859375,58,"StopBurst",3137,3,37,13,3917,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},297,"deadline",113.16665499999363],
+          [56.30859375,71,"StopBurst",3982,4,37,13,4762,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},298,"deadline",112.48056399999768],
+          [56.30859375,85,"StopBurst",4827,5,37,14,5672,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},299,"deadline",112.83449300000211],
+          [56.30859375,98,"StopBurst",5737,6,37,13,6517,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},300,"deadline",113.52729099999851],
+          [56.30859375,103,"StopBurst",6582,7,37,5,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},301,null,113.5528570000024],
+          [56.30859375,13,"StopBurst",113,0,38,13,992,"cursor",170.05859375,0,82.25,82.25,"production-owned-images",{"vmhwm":4,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},302,"deadline",113.48296600000322],
+          [56.30859375,31,"StopBurst",1057,1,38,18,2162,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},303,"deadline",114.03475799999433],
+          [56.30859375,47,"StopBurst",2227,2,38,16,3202,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},304,"deadline",113.45263300000079],
+          [56.30859375,61,"StopBurst",3267,3,38,14,4112,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},305,"deadline",111.91656999999395],
+          [56.30859375,75,"StopBurst",4177,4,38,14,5022,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},306,"deadline",112.6397999999972],
+          [56.30859375,88,"StopBurst",5087,5,38,13,5867,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},307,"deadline",112.23295499999949],
+          [56.30859375,101,"StopBurst",5932,6,38,13,6712,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},308,"deadline",113.32979999999952],
+          [56.30859375,103,"StopBurst",6777,7,38,2,262622,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},309,null,113.13334999999643],
+          [56.30859375,12,"StopBurst",113,0,39,12,928,"cursor",170.05859375,0,83.109375,83.109375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},310,"deadline",112.48195300000225],
+          [56.30859375,29,"StopBurst",992,1,39,17,2032,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},311,"deadline",114.3946419999993],
+          [56.30859375,43,"StopBurst",2097,2,39,14,2942,"cursor",103.55859375,0,85.75,85.75,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},312,"deadline",113.31919000000198],
+          [56.30859375,56,"StopBurst",3007,3,39,13,3787,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},313,"deadline",113.34997699999803],
+          [56.30859375,69,"StopBurst",3852,4,39,13,4632,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},314,"deadline",112.98683099999471],
+          [56.30859375,81,"StopBurst",4697,5,39,12,5412,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},315,"deadline",112.81876100000227],
+          [56.30859375,94,"StopBurst",5477,6,39,13,6257,"cursor",103.55859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},316,"deadline",112.15207399999781],
+          [56.30859375,103,"StopBurst",6322,7,39,9,262622,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},317,null,112.690211000001],
+          [56.30859375,14,"StopBurst",113,0,40,14,1057,"cursor",168.30859375,0,81.359375,81.359375,"production-owned-images",{"vmhwm":3,"vmpeakBound":1,"platformRusage":0,"rawFallback":0,"unavailable":0},318,"deadline",112.30998600000021],
+          [56.30859375,34,"StopBurst",1122,1,40,20,2357,"cursor",101.80859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},319,"deadline",114.13375599999563],
+          [56.30859375,49,"StopBurst",2422,2,40,15,3332,"cursor",103.55859375,0,82.25,82.25,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},320,"deadline",112.40844600000128],
+          [56.30859375,63,"StopBurst",3397,3,40,14,4242,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},321,"deadline",111.96433599999727],
+          [56.30859375,78,"StopBurst",4307,4,40,15,5217,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},322,"deadline",112.18989100000181],
+          [56.30859375,91,"StopBurst",5282,5,40,13,6062,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},323,"deadline",112.97021599999425],
+          [56.30859375,103,"StopBurst",6127,6,40,12,75572,"cursor",103.55859375,0,84,84,"production-owned-images",{"vmhwm":2,"vmpeakBound":0,"platformRusage":0,"rawFallback":0,"unavailable":0},324,"deadline",112.08730199999991]
+        ]
+      }
+    },
+    "freshness": [
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 1,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 2,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 3,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 4,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 5,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 6,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 7,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 8,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 9,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "Stop",
+        "session": 10,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness",
+        "event": "Stop",
+        "sessions": 10,
+        "yes": 10,
+        "no": 0,
+        "records": [
+          {
+            "event": "Stop",
+            "session": 1,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 2,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 3,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 4,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 5,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 6,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 7,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 8,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 9,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "Stop",
+            "session": 10,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          }
+        ]
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 1,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 2,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 3,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 4,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 5,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 6,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 7,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 8,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 9,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness-sample",
+        "event": "SessionEnd",
+        "session": 10,
+        "nextSessionStartContainsBoth": true,
+        "afterFinalRows": 2,
+        "afterStartRows": 2,
+        "hooksToRows": 0
+      },
+      {
+        "diagnostic": "summary-freshness",
+        "event": "SessionEnd",
+        "sessions": 10,
+        "yes": 10,
+        "no": 0,
+        "records": [
+          {
+            "event": "SessionEnd",
+            "session": 1,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 2,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 3,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 4,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 5,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 6,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 7,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 8,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 9,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          },
+          {
+            "event": "SessionEnd",
+            "session": 10,
+            "nextSessionStartContainsBoth": true,
+            "afterFinalRows": 2,
+            "afterStartRows": 2,
+            "hooksToRows": 0
+          }
+        ]
+      }
+    ],
+    "mainBaseline": [
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 1,
+        "wallMs": 79.703273,
+        "rssMB": 73.5,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 73.5,
+        "rawRssMB": 73.5,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 4,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 2,
+        "wallMs": 64.59103900000002,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 3,
+        "wallMs": 64.84415800000002,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 4,
+        "wallMs": 64.56849999999997,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 5,
+        "wallMs": 64.15380200000004,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 6,
+        "wallMs": 63.32277700000003,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 7,
+        "wallMs": 63.66617699999995,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 73.5,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 8,
+        "wallMs": 62.34359100000006,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 9,
+        "wallMs": 61.026096999999936,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 10,
+        "wallMs": 61.033952,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 11,
+        "wallMs": 61.80238900000006,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 12,
+        "wallMs": 62.120334999999955,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 13,
+        "wallMs": 62.466173000000026,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 14,
+        "wallMs": 64.1561109999999,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 15,
+        "wallMs": 61.31152800000007,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 16,
+        "wallMs": 71.01713100000006,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 17,
+        "wallMs": 69.33441399999992,
+        "rssMB": 73.5,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 73.5,
+        "rawRssMB": 77,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 18,
+        "wallMs": 59.703354999999874,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 19,
+        "wallMs": 60.00568999999996,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "Stop",
+        "run": 20,
+        "wallMs": 60.74684500000012,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 1,
+        "wallMs": 78.95652199999995,
+        "rssMB": 78.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 78.75,
+        "rawRssMB": 77,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 4,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 2,
+        "wallMs": 64.09736900000007,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 3,
+        "wallMs": 62.67401099999984,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 4,
+        "wallMs": 62.4308239999998,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 5,
+        "wallMs": 65.24883699999987,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 73.5,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 6,
+        "wallMs": 62.4364149999999,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 7,
+        "wallMs": 64.17455299999983,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 8,
+        "wallMs": 63.87438199999997,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 9,
+        "wallMs": 63.653160999999955,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 10,
+        "wallMs": 61.8000149999998,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 11,
+        "wallMs": 64.80163600000014,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 12,
+        "wallMs": 68.24381900000026,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 13,
+        "wallMs": 64.91432799999984,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 14,
+        "wallMs": 62.71709899999996,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 15,
+        "wallMs": 63.32375899999988,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 16,
+        "wallMs": 62.43442499999992,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 17,
+        "wallMs": 61.36745199999996,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 18,
+        "wallMs": 62.80876100000023,
+        "rssMB": 71.75,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 71.75,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 19,
+        "wallMs": 64.4447869999999,
+        "rssMB": 70,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 70,
+        "rawRssMB": 75.25,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-image-sample",
+        "event": "SessionEnd",
+        "run": 20,
+        "wallMs": 62.99285199999986,
+        "rssMB": 68.25,
+        "cliRssMB": 38.5,
+        "recordedRssMB": 68.25,
+        "rawRssMB": 73.5,
+        "rssSource": "production-owned-images",
+        "rssSources": {
+          "vmhwm": 2,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 0
+        }
+      },
+      {
+        "diagnostic": "main-hook-images",
+        "revision": "884e90f8f1bf5f52ed56540a16204c23c117f375",
+        "comparisonOnly": true,
+        "groups": [
+          {
+            "event": "Stop",
+            "runs": 20,
+            "coldFirstMB": 73.5,
+            "medianRssMB": 71.75,
+            "peakRssMB": 73.5
+          },
+          {
+            "event": "SessionEnd",
+            "runs": 20,
+            "coldFirstMB": 78.75,
+            "medianRssMB": 71.75,
+            "peakRssMB": 78.75
+          }
+        ]
+      }
+    ],
+    "freshnessRawDirectory": "/home/dev/tmp/amem-201/native-parent-freshness-34ff0fa",
+    "scope": "CPU=2 dgx02; not hosted acceptance and not the task84 literal-main ten-suite series"
+  },
+  "checkHistory": [
+    {
+      "head": "eb250e2",
+      "result": "tsc failed on un-narrowed CaptureAppend test fixture; no resource run started"
+    },
+    {
+      "head": "812cfe6",
+      "result": "29 focused pass/1 fixture fail: invalid test receipt; no resource run started"
+    },
+    {
+      "head": "4dc92ff",
+      "result": "31 focused pass; held parent-writer path, not acceptance"
+    },
+    {
+      "head": "40bc0a5",
+      "result": "tsc rejected watchdog cleanup test union; no resource run started"
+    },
+    {
+      "head": "a705e62",
+      "result": "64 focused pass/1 fixture fail: readiness file was not JSON; no resource run started"
+    },
+    {
+      "head": "2652eb5",
+      "result": "65 focused pass; full2436pass/7skip/2fail from stale test-only recovery anchor; no resource run started",
+      "rawDirectory": "/home/dev/tmp/amem-201/native-parent-gates-40bc0a5"
+    },
+    {
+      "head": "5e8b8f6",
+      "result": "68 focused pass, tsc and boundary pass",
+      "rawDirectory": "/home/dev/tmp/amem-201/native-parent-final-focus-5e8b8f6"
+    },
+    {
+      "head": "34ff0fa076cbd86f013b00d221936a53cf76328e",
+      "result": "98 focused pass; full2441pass/7skip/0fail; tsc/boundary/pack; hook, transcript, stage and MCP/volume gates pass first attempts",
+      "rawDirectory": "/home/dev/tmp/amem-201/native-parent-final-34ff0fa"
+    }
+  ]
 }
