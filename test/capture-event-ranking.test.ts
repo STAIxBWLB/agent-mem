@@ -79,6 +79,26 @@ test("rows without a valid session hash remain independent groups", () => {
   } finally { capture.close(); }
 });
 
+test("library and MCP fill two capture slots with the best of three same-session rows and the next session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-two-sessions-")); roots.push(root);
+  const base = join(root, "memory"), capture = new CaptureStore({ memoryDir: base, project, now: () => now });
+  const ids: number[] = [];
+  try {
+    for (const [event, session] of [["PostToolUse", "a"], ["Stop", "a"], ["PostToolUseFailure", "a"], ["PostToolUse", "b"]]) {
+      const result = capture.append({ project, agent: "claude", event: event!, excerpt: text, paths: [], session: session!.repeat(16) });
+      if (!("id" in result)) throw Error("fixture capture unexpectedly spooled"); ids.push(result.id);
+    }
+  } finally { capture.close(); }
+  const expected = [ids[1]!, ids[3]!], store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => now });
+  try { expect(store.search(text, { project, limit: 2 }).hits.map(hit => hit.capture?.id)).toEqual(expected); }
+  finally { store.close(); }
+  const mcp = createMemoryMcp({ cwd: root, base, project });
+  try {
+    const result = await mcp.tools.amem_search({ query: text, limit: 2 }) as { hits: { capture?: { id: number } }[] };
+    expect(result.hits.map(hit => hit.capture?.id)).toEqual(expected);
+  } finally { mcp.close(); }
+});
+
 test("store keeps the legacy curated position when the conversational weight would cross it", () => {
   const root = mkdtempSync(join(tmpdir(), "amem-curated-slot-")); roots.push(root);
   const base = join(root, "memory"); let clock = now - 20 * 86400_000;
