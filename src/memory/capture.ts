@@ -650,11 +650,15 @@ export class CaptureStore {
   /** Generic SQLite index maintenance also covers older writers sharing this file. */
   private ensureBriefSummaryIndex(bounded: boolean): void {
     if (this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_summaries_v1' AND type='index'").get()) return;
-    if (bounded) {
-      const count = (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n;
-      if (count > 128) return;
-    }
-    this.db.run("CREATE INDEX IF NOT EXISTS rows_brief_summaries_v1 ON rows(project,at,id) WHERE event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)");
+    const build = () => {
+      if (bounded) {
+        const count = (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n;
+        if (count > 128) return;
+      }
+      this.db.run("CREATE INDEX IF NOT EXISTS rows_brief_summaries_v1 ON rows(project,at,id) WHERE event IN ('Recap','Compact') AND (subagent IS NULL OR subagent != 1)");
+    };
+    // Keep the small-store decision and build atomic against a concurrent older writer.
+    if (bounded) this.db.transaction(build).immediate(); else build();
   }
 
   /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */
