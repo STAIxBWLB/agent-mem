@@ -47,7 +47,7 @@ test("default setup CLI previews every target with no commands, home writes or c
     const plan = JSON.parse(await runCli(["setup", target, "--json"], f.context));
     expect(plan.mode).toBe("preview"); expect(plan.targets).toEqual(target === "all" ? targets.filter(value => value !== "all" && value !== "agy") : [target]);
     for (const action of plan.actions) if (["claude", "codex", "pi"].includes(action.target)) expect(action.version.output).toBe(`${action.target} 0.0.0-fixture`);
-    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "jcode", "opencode", "gemini", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
+    expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "opencode", "gemini", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
 });

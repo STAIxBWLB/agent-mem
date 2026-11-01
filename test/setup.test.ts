@@ -256,7 +256,7 @@ test.skipIf(process.env.AMEM_CODEX_NATIVE_SMOKE !== "1")("real Codex isolated em
 test("setup preview inventories every target without commands, files or confirmation", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home), shown = f.plan();
   expect(shown.targets).toEqual([...SETUP_ALL_TARGETS]); expect(shown.mode).toBe("preview"); expect(shown.actions).toHaveLength(SETUP_ALL_TARGETS.length);
-  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "jcode" || action.target === "opencode" || action.target === "gemini" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
+  for (const action of shown.actions) { expect(action.files).toHaveLength(action.target === "qwen" || action.target === "opencode" || action.target === "gemini" ? 1 : 2); expect(action.receipt).toBe(join(f.home, "memory", "setup", `${action.target}.json`)); expect(action.state).toBe("not installed"); }
   expect(shown.actions.find(row => row.target === "kimi")?.registration).toBeNull();
   let confirmations = 0;
   const output = await runSetup("all", "preview", { ...f.options, json: true, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
@@ -701,28 +701,6 @@ for (const enabled of [false, true]) test(`Qwen hook controls remain user-owned 
   expect(image(file).mode).toBe(before.mode);
 });
 
-test("Jcode setup is direct MCP-only with one private receipt and no native invocation or hook", () => {
-  const f = fixture(); seedOtherFiles(f);
-  const config = join(f.env.JCODE_HOME!, "config.toml"); put(config, '[hooks]\nsession_end = "user-existing-hook"\n', 0o640);
-  const action = f.plan("jcode", "apply").actions[0]!, file = action.files[0]!, before = image(file), hookBefore = image(config);
-  expect(action.files).toEqual([join(f.env.JCODE_HOME!, "mcp.json")]);
-  expect(action.registration).toBeNull(); expect(action.commands).toEqual([]); expect(action.hooks).toEqual([]);
-  expect(action.lifecycle).toContain("MCP only");
-  expect(f.plan("jcode").notes.join("\n")).toContain("capture and ingest hooks are unavailable");
-  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: ["jcode"], unchanged: [] });
-  expect(f.calls).toEqual([]); expect(image(config)).toEqual(hookBefore);
-  const installed = JSON.parse(text(file));
-  expect(installed.servers.amem).toEqual({ command: f.bun, args: ["--smol", f.entry, "mcp"], shared: false });
-  expect(installed.servers.other).toEqual({ command: "other-server", args: ["keep"] });
-  expect(installed.mcpServers).toBeUndefined();
-  expect(f.receipt("jcode").changes).toHaveLength(1);
-  expect(lstatSync(f.receiptFile("jcode")).mode & 0o077).toBe(0);
-  const applied = image(file);
-  expect(applySetup(f.plan("jcode", "apply"), f.options)).toEqual({ applied: [], unchanged: ["jcode"] });
-  expect(image(file)).toEqual(applied); expect(f.calls).toEqual([]);
-  undoSetup(f.plan("jcode", "undo"), f.options); expect(image(file)).toEqual(before); expect(image(config)).toEqual(hookBefore);
-});
-
 test("Jcode legacy alias registration preserves unrelated raw values and semantic undo", () => {
   const f = fixture(), file = f.file("jcode");
   const original = '{ "mcpServers": {"other":{"command":"user-server","raw":9007199254740993}}, "unknown":1e99 }\n';
@@ -766,9 +744,9 @@ test("JCODE_HOME refuses empty and relative values before any setup effect", () 
     expect(snapshot(f.home)).toEqual(before);
   }
   const env = { ...f.env }; delete env.JCODE_HOME;
-  expect(planSetup("jcode", "preview", { ...f.options, env }).actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json")]);
+  expect(planSetup("jcode", "preview", { ...f.options, env }).actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json"), join(f.home, ".jcode", "config.toml")]);
   const absolute = join(f.home, "absolute jcode ");
-  expect(planSetup("jcode", "preview", { ...f.options, env: { ...env, JCODE_HOME: absolute } }).actions[0]!.files).toEqual([join(absolute, "mcp.json")]);
+  expect(planSetup("jcode", "preview", { ...f.options, env: { ...env, JCODE_HOME: absolute } }).actions[0]!.files).toEqual([join(absolute, "mcp.json"), join(absolute, "config.toml")]);
   expect(snapshot(f.home)).toEqual(before); expect(f.calls).toEqual([]);
 });
 
@@ -786,7 +764,7 @@ test("Jcode canonicalizes the HOME alias but refuses a named config-directory sy
   symlinkSync(f.home, alias); cleanup.push(() => rmSync(alias, { force: true }));
   const env = { ...f.env, HOME: alias, JCODE_HOME: join(alias, ".jcode") }, options = { ...f.options, env };
   const plan = planSetup("jcode", "apply", options);
-  expect(plan.actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json")]);
+  expect(plan.actions[0]!.files).toEqual([join(f.home, ".jcode", "mcp.json"), join(f.home, ".jcode", "config.toml")]);
   expect(applySetup(plan, options).applied).toEqual(["jcode"]);
   expect(JSON.parse(text(plan.actions[0]!.files[0]!)).servers.amem.shared).toBe(false);
   expect(undoSetup(planSetup("jcode", "undo", options), options).restored).toEqual(["jcode"]);

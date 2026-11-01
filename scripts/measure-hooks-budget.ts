@@ -17,7 +17,7 @@ import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 
-const RUNS = { plain: 40, contention: 15, sessionStart: 20 }, WALL_MS = 150, RSS_MB = 100;
+const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample { wallMs: number; rssMB: number; cliRssMB: number; recordedRssMB: number; rawRssMB: number }
@@ -25,7 +25,7 @@ async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
-const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
+const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
 let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 function members(pgid: number): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -35,16 +35,16 @@ function members(pgid: number): number[] {
     return match && Number(match[2]) === pgid ? [Number(match[1])] : [];
   });
 }
-function pendingInvocation(event: string, excerpt: string): boolean {
+function pendingInvocation(event: string, excerpt: string, agent = "claude"): boolean {
   const dir = join(f.base, "hook-spool");
   for (const folder of [dir, join(dir, ".capacity")]) for (const name of existsSync(folder) ? readdirSync(folder) : []) {
-    if (!/^hook-(?:v2-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
+    if (!/^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
     try {
       const file = join(folder, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.mode & 0o077 || stat.size > 72 * 1024) continue;
       const row = JSON.parse(readFileSync(file, "utf8")), after = lstatSync(file);
       if (stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) continue;
-      if (row.schema === "agent-mem.hook-capture" && row.format === 2 && row.cwd === f.cwd && row.capture?.agent === "claude" && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
+      if (row.schema === "agent-mem.hook-capture" && row.format === (agent === "claude" ? 2 : 3) && row.cwd === f.cwd && row.capture?.agent === agent && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
     } catch { /* Incomplete/unreadable evidence is never the positive deferral exception. */ }
   }
   return false;
@@ -58,20 +58,27 @@ function invocationId(event: string, excerpt: string): number {
   const match = /^budget public result (\d+)$/.exec(excerpt.slice(prefix.length));
   return match ? Number(match[1]) : 0;
 }
-function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false): Sample {
+// #203: `jcode` runs the real `bin/amem.js hook jcode` with jcode v0.99.1's observer contract: no stdin, every field in the environment.
+// It stages and drains through the PostToolUse pipeline, so the same R1 process and R2 wall/RSS checks apply unchanged.
+function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false, jcode = false): Sample {
   const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
   const start = performance.now();
   // Observe each fixed owned child as well as the outer CLI group; native metadata supervisors also own detached groups.
   // The test preload and its append overhead conservatively count inside actual CLI wall/RSS measurements.
-  const result = Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
+  const result = jcode
+    ? Bun.spawnSync([hookBin, "hook", "jcode"], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}`, JCODE_HOOKS_DISABLED: "1", JCODE_HOOK_EVENT: "post_tool", JCODE_HOOK_SESSION_ID: "p3-budget", JCODE_HOOK_CWD: f.cwd,
+      JCODE_HOOK_TOOL_NAME: "Read", JCODE_HOOK_TOOL_INPUT: JSON.stringify(input.tool_input), JCODE_HOOK_TOUCHED_PATHS: join(f.cwd, "src", "public.ts"), JCODE_HOOK_STATUS: "error", JCODE_HOOK_ERROR: input.tool_response, JCODE_HOOK_DURATION_MS: "1" },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 })
+    : Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
+  if (jcode && result.stdout.length) throw new Error("jcode observer hook wrote stdout");
   const wallMs = performance.now() - start;
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
   // Register every observed group before any assertion, including a malformed/extra-worker observation.
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
   const evidence = observer.evidence().slice(beforeEvidence).filter(row => row.pid === result.pid);
-  const pending = workers.length === 0 && pendingInvocation(event, invocationExcerpt(event, input.tool_response));
+  const pending = workers.length === 0 && (jcode ? pendingInvocation("PostToolUseFailure", invocationExcerpt("PostToolUse", input.tool_response), "jcode") : pendingInvocation(event, invocationExcerpt(event, input.tool_response)));
   try {
     const observation = verifyHookProcessObservation(event, workers, evidence, pending);
     if (observation.deferred) {
@@ -225,7 +232,9 @@ try {
   writeFileSync(repoLog, `${repoLines.join("\n")}\n`); repoLines.length = 0; Bun.gc(true);
   if (statSync(repoLog).size < 1_000_000) throw new Error("repo log fixture is smaller than 1 MB");
   const sessionStartRepoLog = await samples("sessionStartRepoLog", RUNS.sessionStart, () => invoke("SessionStart", "sessionStartRepoLog", true));
-  const groups = { plain: summarize("plain", plain), spoolAndExit: summarize("spoolAndExit", contended), sessionStart: summarize("sessionStart", sessionStart), sessionStartRepoLog: summarize("sessionStartRepoLog", sessionStartRepoLog), drain: summarize("drain", drains) };
+  // #203, after the Claude capture accounting above: jcode post_tool observers (a failed call, so the excerpt is the error text).
+  const jcode = await samples("jcode", RUNS.jcode, () => invoke("PostToolUse", "jcode", false, true));
+  const groups = { plain: summarize("plain", plain), spoolAndExit: summarize("spoolAndExit", contended), sessionStart: summarize("sessionStart", sessionStart), sessionStartRepoLog: summarize("sessionStartRepoLog", sessionStartRepoLog), drain: summarize("drain", drains), jcode: summarize("jcode", jcode) };
   // Timeout legs keep hard R1/RSS checks and retry one evidenced wall stall under the same limit.
   // Logical sample counts and limits stay unchanged; physical stalls are counted separately.
   const timeoutPaths = [];

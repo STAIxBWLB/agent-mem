@@ -54,7 +54,8 @@ export function resolveSetupPaths(env: SetupEnvironment = process.env, givenHome
     kimi: [join(kimi, "mcp.json"), join(kimi, "config.toml")],
     pi: [join(pi, "mcp.json"), join(pi, "extensions", "amem-session.ts")],
     qwen: [join(qwen, "settings.json")],
-    jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json")],
+    // #203: config.toml carries the jcode [hooks] capture entries.
+    jcode: [join(root("JCODE_HOME", ".jcode"), "mcp.json"), join(root("JCODE_HOME", ".jcode"), "config.toml")],
     opencode: [join(opencodeConfigRoot(env, home), "opencode", "opencode.json")],
     gemini: [geminiSettingsPath(env, home)],
     agy: workspaceRoot ? [join(workspaceRoot, ".agents", "mcp_config.json")] : [],
