@@ -64,7 +64,7 @@ export interface DoctorReport {
     /** #188, additive: present only when the project's curated logs hold forget or prune operations. Informational; status is always ok. */
     masked?: Section;
     /** #202, additive: applied native setup registrations checked against the shared path resolver. */
-    setup: Section;
+    setup?: Section;
   };
 }
 

@@ -1,0 +1,395 @@
+{
+  "claude-default": {
+    "preview": {
+      "plan": {
+        "targets": [
+          "claude"
+        ],
+        "mode": "preview",
+        "actions": [
+          {
+            "target": "claude",
+            "available": true,
+            "version": {
+              "output": null,
+              "verified": null,
+              "matches": null
+            },
+            "files": [
+              "<HOME>/.claude.json",
+              "<HOME>/.claude/settings.json"
+            ],
+            "receipt": "<HOME>/memory/setup/claude.json",
+            "registration": [
+              "claude",
+              "mcp",
+              "add",
+              "--scope",
+              "user",
+              "--transport",
+              "stdio",
+              "amem",
+              "--",
+              "<BUN>",
+              "--smol",
+              "<HOME>/package with space/bin/amem.js",
+              "mcp"
+            ],
+            "lifecycle": "seven bounded native hooks",
+            "hooks": [
+              {
+                "event": "SessionStart",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart",
+                "timeout": 1
+              },
+              {
+                "event": "UserPromptSubmit",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit",
+                "timeout": 1
+              },
+              {
+                "event": "PreToolUse",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse",
+                "timeout": 1
+              },
+              {
+                "event": "PostToolUse",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse",
+                "timeout": 1
+              },
+              {
+                "event": "PostToolUseFailure",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure",
+                "timeout": 1
+              },
+              {
+                "event": "Stop",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop",
+                "timeout": 1
+              },
+              {
+                "event": "SessionEnd",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd",
+                "timeout": 1
+              }
+            ],
+            "mcpChange": "add",
+            "commands": [
+              [
+                "claude",
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "--transport",
+                "stdio",
+                "amem",
+                "--",
+                "<BUN>",
+                "--smol",
+                "<HOME>/package with space/bin/amem.js",
+                "mcp"
+              ]
+            ],
+            "state": "not installed"
+          }
+        ],
+        "notes": [
+          "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.",
+          "Native registration commands run in a private staging HOME; only the listed configuration files are published.",
+          "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.",
+          "No AGENTS.md, CLAUDE.md or rule files are edited.",
+          "A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.",
+          "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."
+        ]
+      },
+      "text": "amem setup preview: 1 target, 1 with MCP changes\n\nATTENTION   claude: MCP add (not installed)\n            version unknown; unverified (no verified version recorded)\n            file     <HOME>/.claude.json\n            file     <HOME>/.claude/settings.json\n            receipt  <HOME>/memory/setup/claude.json\n            command  'claude' 'mcp' 'add' '--scope' 'user' '--transport' 'stdio' 'amem' '--' '<BUN>' '--smol' '<HOME>/package with space/bin/amem.js' 'mcp'\n            hook     SessionStart: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart (timeout 1)\n            hook     UserPromptSubmit: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit (timeout 1)\n            hook     PreToolUse: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse (timeout 1)\n            hook     PostToolUse: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse (timeout 1)\n            hook     PostToolUseFailure: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure (timeout 1)\n            hook     Stop: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop (timeout 1)\n            hook     SessionEnd: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd (timeout 1)\n            seven bounded native hooks\n\nNotes:\n  - Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.\n  - Native registration commands run in a private staging HOME; only the listed configuration files are published.\n  - Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.\n  - No AGENTS.md, CLAUDE.md or rule files are edited.\n  - A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.\n  - Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients.\n\nNext: amem setup claude --apply writes without a prompt; --json prints the full plan"
+    },
+    "appliedFiles": [
+      {
+        "file": "<HOME>/.claude.json",
+        "bytes": "{\n  \"mcpServers\": {\n    \"amem\": {\n      \"command\": \"<BUN>\",\n      \"args\": [\n        \"--smol\",\n        \"<HOME>/package with space/bin/amem.js\",\n        \"mcp\"\n      ]\n    }\n  }\n}\n"
+      },
+      {
+        "file": "<HOME>/.claude/settings.json",
+        "bytes": "{\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"UserPromptSubmit\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PreToolUse\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PostToolUse\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PostToolUseFailure\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"Stop\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      }
+    ]
+  },
+  "claude-custom": {
+    "preview": {
+      "plan": {
+        "targets": [
+          "claude"
+        ],
+        "mode": "preview",
+        "actions": [
+          {
+            "target": "claude",
+            "available": true,
+            "version": {
+              "output": null,
+              "verified": null,
+              "matches": null
+            },
+            "files": [
+              "<HOME>/custom config/.claude.json",
+              "<HOME>/custom config/settings.json"
+            ],
+            "receipt": "<HOME>/memory/setup/claude.json",
+            "registration": [
+              "claude",
+              "mcp",
+              "add",
+              "--scope",
+              "user",
+              "--transport",
+              "stdio",
+              "amem",
+              "--",
+              "<BUN>",
+              "--smol",
+              "<HOME>/package with space/bin/amem.js",
+              "mcp"
+            ],
+            "lifecycle": "seven bounded native hooks",
+            "hooks": [
+              {
+                "event": "SessionStart",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart",
+                "timeout": 1
+              },
+              {
+                "event": "UserPromptSubmit",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit",
+                "timeout": 1
+              },
+              {
+                "event": "PreToolUse",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse",
+                "timeout": 1
+              },
+              {
+                "event": "PostToolUse",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse",
+                "timeout": 1
+              },
+              {
+                "event": "PostToolUseFailure",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure",
+                "timeout": 1
+              },
+              {
+                "event": "Stop",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop",
+                "timeout": 1
+              },
+              {
+                "event": "SessionEnd",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd",
+                "timeout": 1
+              }
+            ],
+            "mcpChange": "add",
+            "commands": [
+              [
+                "claude",
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "--transport",
+                "stdio",
+                "amem",
+                "--",
+                "<BUN>",
+                "--smol",
+                "<HOME>/package with space/bin/amem.js",
+                "mcp"
+              ]
+            ],
+            "state": "not installed"
+          }
+        ],
+        "notes": [
+          "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.",
+          "Native registration commands run in a private staging HOME; only the listed configuration files are published.",
+          "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.",
+          "No AGENTS.md, CLAUDE.md or rule files are edited.",
+          "A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.",
+          "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."
+        ]
+      },
+      "text": "amem setup preview: 1 target, 1 with MCP changes\n\nATTENTION   claude: MCP add (not installed)\n            version unknown; unverified (no verified version recorded)\n            file     <HOME>/custom config/.claude.json\n            file     <HOME>/custom config/settings.json\n            receipt  <HOME>/memory/setup/claude.json\n            command  'claude' 'mcp' 'add' '--scope' 'user' '--transport' 'stdio' 'amem' '--' '<BUN>' '--smol' '<HOME>/package with space/bin/amem.js' 'mcp'\n            hook     SessionStart: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart (timeout 1)\n            hook     UserPromptSubmit: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit (timeout 1)\n            hook     PreToolUse: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse (timeout 1)\n            hook     PostToolUse: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse (timeout 1)\n            hook     PostToolUseFailure: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure (timeout 1)\n            hook     Stop: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop (timeout 1)\n            hook     SessionEnd: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd (timeout 1)\n            seven bounded native hooks\n\nNotes:\n  - Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.\n  - Native registration commands run in a private staging HOME; only the listed configuration files are published.\n  - Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.\n  - No AGENTS.md, CLAUDE.md or rule files are edited.\n  - A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.\n  - Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients.\n\nNext: amem setup claude --apply writes without a prompt; --json prints the full plan"
+    },
+    "appliedFiles": [
+      {
+        "file": "<HOME>/custom config/.claude.json",
+        "bytes": "{\n  \"mcpServers\": {\n    \"amem\": {\n      \"command\": \"<BUN>\",\n      \"args\": [\n        \"--smol\",\n        \"<HOME>/package with space/bin/amem.js\",\n        \"mcp\"\n      ]\n    }\n  }\n}\n"
+      },
+      {
+        "file": "<HOME>/custom config/settings.json",
+        "bytes": "{\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionStart\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"UserPromptSubmit\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook UserPromptSubmit\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PreToolUse\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PreToolUse\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PostToolUse\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUse\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"PostToolUseFailure\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook PostToolUseFailure\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"Stop\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook Stop\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ],\n    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' hook SessionEnd\",\n            \"timeout\": 1\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      }
+    ]
+  },
+  "codex-default": {
+    "preview": {
+      "plan": {
+        "targets": [
+          "codex"
+        ],
+        "mode": "preview",
+        "actions": [
+          {
+            "target": "codex",
+            "available": true,
+            "version": {
+              "output": null,
+              "verified": "0.165.0",
+              "matches": null
+            },
+            "files": [
+              "<HOME>/.codex/config.toml",
+              "<HOME>/.codex/hooks.json"
+            ],
+            "receipt": "<HOME>/memory/setup/codex.json",
+            "registration": [
+              "codex",
+              "mcp",
+              "add",
+              "amem",
+              "--",
+              "<BUN>",
+              "--smol",
+              "<HOME>/package with space/bin/amem.js",
+              "mcp"
+            ],
+            "lifecycle": "SessionEnd incremental ingest",
+            "hooks": [
+              {
+                "event": "SessionEnd",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json",
+                "timeout": 3
+              }
+            ],
+            "mcpChange": "add",
+            "commands": [
+              [
+                "codex",
+                "mcp",
+                "add",
+                "amem",
+                "--",
+                "<BUN>",
+                "--smol",
+                "<HOME>/package with space/bin/amem.js",
+                "mcp"
+              ]
+            ],
+            "state": "not installed"
+          }
+        ],
+        "notes": [
+          "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.",
+          "Native registration commands run in a private staging HOME; only the listed configuration files are published.",
+          "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.",
+          "No AGENTS.md, CLAUDE.md or rule files are edited.",
+          "A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.",
+          "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."
+        ]
+      },
+      "text": "amem setup preview: 1 target, 1 with MCP changes\n\nATTENTION   codex: MCP add (not installed)\n            version unknown; verified 0.165.0\n            file     <HOME>/.codex/config.toml\n            file     <HOME>/.codex/hooks.json\n            receipt  <HOME>/memory/setup/codex.json\n            command  'codex' 'mcp' 'add' 'amem' '--' '<BUN>' '--smol' '<HOME>/package with space/bin/amem.js' 'mcp'\n            hook     SessionEnd: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json (timeout 3)\n            SessionEnd incremental ingest\n\nNotes:\n  - Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.\n  - Native registration commands run in a private staging HOME; only the listed configuration files are published.\n  - Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.\n  - No AGENTS.md, CLAUDE.md or rule files are edited.\n  - A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.\n  - Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients.\n\nNext: amem setup codex --apply writes without a prompt; --json prints the full plan"
+    },
+    "appliedFiles": [
+      {
+        "file": "<HOME>/.codex/config.toml",
+        "bytes": "\"mcp_servers\".\"amem\" = { \"command\" = \"<BUN>\", \"args\" = [\"--smol\", \"<HOME>/package with space/bin/amem.js\", \"mcp\"] }\n"
+      },
+      {
+        "file": "<HOME>/.codex/hooks.json",
+        "bytes": "{\n  \"hooks\": {\n    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json\",\n            \"timeout\": 3\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      }
+    ]
+  },
+  "codex-custom": {
+    "preview": {
+      "plan": {
+        "targets": [
+          "codex"
+        ],
+        "mode": "preview",
+        "actions": [
+          {
+            "target": "codex",
+            "available": true,
+            "version": {
+              "output": null,
+              "verified": "0.165.0",
+              "matches": null
+            },
+            "files": [
+              "<HOME>/custom config/config.toml",
+              "<HOME>/custom config/hooks.json"
+            ],
+            "receipt": "<HOME>/memory/setup/codex.json",
+            "registration": [
+              "codex",
+              "mcp",
+              "add",
+              "amem",
+              "--",
+              "<BUN>",
+              "--smol",
+              "<HOME>/package with space/bin/amem.js",
+              "mcp"
+            ],
+            "lifecycle": "SessionEnd incremental ingest",
+            "hooks": [
+              {
+                "event": "SessionEnd",
+                "command": "'<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json",
+                "timeout": 3
+              }
+            ],
+            "mcpChange": "add",
+            "commands": [
+              [
+                "codex",
+                "mcp",
+                "add",
+                "amem",
+                "--",
+                "<BUN>",
+                "--smol",
+                "<HOME>/package with space/bin/amem.js",
+                "mcp"
+              ]
+            ],
+            "state": "not installed"
+          }
+        ],
+        "notes": [
+          "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.",
+          "Native registration commands run in a private staging HOME; only the listed configuration files are published.",
+          "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.",
+          "No AGENTS.md, CLAUDE.md or rule files are edited.",
+          "A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.",
+          "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."
+        ]
+      },
+      "text": "amem setup preview: 1 target, 1 with MCP changes\n\nATTENTION   codex: MCP add (not installed)\n            version unknown; verified 0.165.0\n            file     <HOME>/custom config/config.toml\n            file     <HOME>/custom config/hooks.json\n            receipt  <HOME>/memory/setup/codex.json\n            command  'codex' 'mcp' 'add' 'amem' '--' '<BUN>' '--smol' '<HOME>/package with space/bin/amem.js' 'mcp'\n            hook     SessionEnd: '<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json (timeout 3)\n            SessionEnd incremental ingest\n\nNotes:\n  - Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.\n  - Native registration commands run in a private staging HOME; only the listed configuration files are published.\n  - Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.\n  - No AGENTS.md, CLAUDE.md or rule files are edited.\n  - A private <HOME>/memory/setup/setup.lock serializes mutations; temporary <TMP>/amem-setup-* staging homes are removed.\n  - Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients.\n\nNext: amem setup codex --apply writes without a prompt; --json prints the full plan"
+    },
+    "appliedFiles": [
+      {
+        "file": "<HOME>/custom config/config.toml",
+        "bytes": "\"mcp_servers\".\"amem\" = { \"command\" = \"<BUN>\", \"args\" = [\"--smol\", \"<HOME>/package with space/bin/amem.js\", \"mcp\"] }\n"
+      },
+      {
+        "file": "<HOME>/custom config/hooks.json",
+        "bytes": "{\n  \"hooks\": {\n    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"'<BUN>' --smol '<HOME>/package with space/bin/amem.js' ingest codex --json\",\n            \"timeout\": 3\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      }
+    ]
+  }
+}
+
