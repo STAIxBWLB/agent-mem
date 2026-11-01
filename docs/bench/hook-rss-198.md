@@ -6,11 +6,41 @@ Issue #198 keeps the existing 150 ms p95 / 100 MB peak limits, handler and clean
 
 The existing harness defines production RSS as a conservative sum of counted exec-image peaks: the hook, its Bun worker when launched, and overlapping native supervisor images. The metric now labels that scope as `owned-images`. External Git/ps command descendants are not independently measured; raw reaped values remain diagnostics. This receipt does not establish a whole-process-tree RSS bound.
 
-Each sample carries `rssSource` and counts for `VmHWM`, `VmPeak-bound`, platform rusage, raw fallback and unavailable telemetry. On Linux, a known production image reading is the gate; outer CLI wait4 remains raw diagnostic because resource usage survives exec. Missing or fallback-only provenance fails the measurement even when its numeric RSS is small. Darwin retains its platform-rusage accounting.
+Each new measurement profile carries the literal coverage `images: bun+supervisor; descendants: not measured`, plus `rssSource` and per-image source counts. The private conservative virtual-memory tag is `vmpeak-bound`; its wire source code remains 1 and the existing `vmpeakBound` numeric counter is unchanged. On Linux, a known production image reading is the gate; outer CLI wait4 remains raw diagnostic because resource usage survives exec. Missing or fallback-only provenance fails the measurement even when its numeric RSS is small. Darwin retains its platform-rusage accounting.
 
 [Linux getrusage documentation](https://man7.org/linux/man-pages/man2/getrusage.2.html) describes preserved exec resource metrics and the largest-child meaning of child maxRSS. [The proc status documentation](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html) defines VmPeak as peak virtual size and marks VmHWM inaccurate. The live dev-image shell reproduced VmPeak 2672 KiB with VmHWM/VmRSS 0 while still running. RSS cannot exceed its process image's peak virtual size, so a positive VmPeak supplies a labeled conservative upper bound when VmHWM is zero. A missing VmHWM and VmPeak remains unknown; a large virtual bound still exceeds the unchanged gate.
 
 Native supervisors emit bounded numeric terminal receipts before watchdog teardown, using shell builtins. Failed telemetry writes cannot terminate the reaper through SIGPIPE. Bun workers send bounded numeric intent/start/completion frames inside the existing 8 KiB channel; the parent samples still-live images before kill and retains valid snapshots across later empty zombie reads. No model, network, resident process or new runtime dependency is added.
+
+## Literal post-merge main series
+
+Before any source edit, the clean worktree at literal merged origin/main `c2d6ba9ff602faf00b728191ed9650251a0596c5` ran one predeclared ten-suite batch on dgx02, CPU=2 and Bun 1.4.2. Each suite ran the unchanged ordinary/jcode R2 harness followed by the transcript R2 harness. All 10 suites (20 workload exits) passed. There was no replacement suite or expanded schedule. The JSON receipt retains every emitted report, internal group attempt, exit code and 3667 physical transcript samples/invocations, with raw logs under `/home/dev/tmp/amem-198/post-merge-main-c2d6ba9/`. Literal main emits ordinary group aggregates/source totals; the follow-up adds ordinary per-sample profiles so the scope label is explicit in each recorded sample.
+
+The earlier hosted 90 MB target is withdrawn: main 884e90f already reached 94.7 MB on a cold Ubuntu Stop in hosted run 41345173905. The unchanged 100 MB gate and fail-closed unknown provenance apply to every run. A future rss-miss remains a regression. These ten runs are literal post-merge-main evidence, separate from the candidate-based series below and from the later follow-up validation.
+
+| Literal main workload | Calls across ten suites | Wall p95 range, ms | Maximum RSS, MB |
+|---|---:|---:|---:|
+| plain | 400 | 74.17-80.58 | 80.47 |
+| spoolAndExit | 150 | 72.12-80.95 | 75.25 |
+| sessionStart | 200 | 61.73-65.63 | 44.61 |
+| sessionStartRepoLog | 200 | 65.31-67.69 | 46.36 |
+| drain | 10 | 77.84-87.09 | 75.25 |
+| jcode | 400 | 72.52-79.16 | 75.25 |
+| Stop | 400 | 83.81-94.01 | 83.97 |
+| SessionEnd | 400 | 83.86-93.09 | 78.75 |
+| StopBurst | 2867 | 112.81-114.62 | 91.86 |
+
+## Descendant API characterization
+
+A separate single PostToolUse invocation on dgx02/Bun 1.4.2 observed two owned native supervisors and one Bun worker. The harness held the outer CLI's Bun Subprocess handle; its reported raw maxRSS was 40,370,176 bytes. That is a handle-level diagnostic, not a tree maximum or an R2 sample. Git was present in the supervisor argv. Git and watchdog sleep are spawned natively below those supervisors, so neither has an individual Bun handle from which the harness can read completed maxRSS. Both descendant results are explicitly null / not measured. No wrapper, dependency or descendant value was added to the gate.
+
+[Bun's resourceUsage API](https://bun.sh/reference/bun/Subprocess/resourceUsage) takes no PID and returns the represented process's usage only after exit; maxRSS is in bytes. The pinned-runtime invocation confirms that API on the owned CLI handle, while topology establishes the missing descendant ownership. The full characterization object is retained in the JSON receipt; raw result: `/home/dev/tmp/amem-198/followup-a6a77c7/characterization.json`.
+
+## Follow-up changes and validation
+
+The common measurement profile supplies the exact coverage literal and preserves fail-closed source/scope checks. Ordinary/jcode group reports now retain each existing sample profile instead of discarding it in aggregation; transcript, timeout and same-runner baseline profiles already spread the common result. This is report-only metadata and does not change a verdict, numeric bound, timing count or retry. The `vmpeak-bound` source remains wire code 1; the `vmpeakBound` counter and all RSS arithmetic are unchanged. Individually named tests cover HWM present, HWM zero with a bound and both image fields missing. The summary-index regression captures the actual read SQL and checks EXPLAIN for `rows_brief_summaries_v1` with no temporary B-tree; no production index/query change is made.
+
+Focused validation at `a6a77c7` passed 37 tests, tsc and boundary; the characterization ran once. An earlier test-only type error was corrected before any resource workload. Full final-head gates and post-edit resource results are reported in the follow-up PR after these receipt bytes are frozen. The earlier series below retain their original labels and outcomes.
 
 ## Consecutive series
 
