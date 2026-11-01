@@ -692,7 +692,8 @@ export class CaptureStore {
     if (indexed) {
       const meta = this.db.query("SELECT key,value FROM meta WHERE key IN ('brief-v1-max','brief-v1-through')").all() as { key: string; value: string }[];
       const values = new Map(meta.map(row => [row.key, Number(row.value)]));
-      partial = values.size !== 2 || values.get("brief-v1-max") !== values.get("brief-v1-through");
+      const max = values.get("brief-v1-max"), through = values.get("brief-v1-through");
+      partial = !Number.isSafeInteger(max) || !Number.isSafeInteger(through) || max! < 0 || through! < 0 || max !== through;
       rows = this.db.query("SELECT r.* FROM brief_summaries_v1 AS b INDEXED BY brief_summaries_v1_recent JOIN rows AS r ON r.id=b.id WHERE b.project=? AND r.project=b.project AND r.event IN ('Recap','Compact') AND (r.subagent IS NULL OR r.subagent != 1) ORDER BY b.at DESC,b.id DESC LIMIT ?")
         .all(this.key, limit + 1) as RawRow[];
     }
