@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
+import { drainHookCaptures, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { readCaptureDrops } from "../src/memory/metrics.ts";
@@ -27,7 +27,7 @@ async function drain(f: ReturnType<typeof fixture>) {
 const v017 = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v017/src/hook-spool.ts")).href;
 /** 0.17.0 runs one ordinary hook: home-wide maintenance via stageHookCapture, then its drain for the same cwd. */
 function runV017(f: ReturnType<typeof fixture>, excerpt: string) {
-  const script = `const { drainHookCaptures, stageHookCapture } = await import(${JSON.stringify(v017)});
+  const script = `const { drainHookCaptures, stageHookCapture, stageTranscriptCapture } = await import(${JSON.stringify(v017)});
 const options = { cwd: ${JSON.stringify(f.cwd)}, base: ${JSON.stringify(f.base)} };
 await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: ${JSON.stringify(excerpt)} }, options);
 const appended = [];
@@ -116,4 +116,16 @@ test("AC3: a candidate row of an unknown kind is skipped and counted, not thrown
     expect(store.list({ project: f.project, limit: 1 }).map(candidate => candidate.id)).toEqual([id]);
     expect(store.skippedUnknownKinds).toBe(3);
   } finally { store.close(); }
+});
+
+test("summary events use format 3 names ignored by old readers and replay once", async () => {
+  const f = fixture(), input = { agent: "claude", event: "Recap", at: new Date().toISOString(), excerpt: "summary format boundary" };
+  const staged = (await stageTranscriptCapture(input, f.options))!;
+  expect(staged.name).toMatch(/^hook-v3-/);
+  expect(JSON.parse(readFileSync(join(spool(f.base), staged.name), "utf8"))).toMatchObject({ format: 3 });
+  expect(runV017(f, "old ordinary capture").captured).toBe(1);
+  expect(pending(f.base)).toEqual([staged.name]);
+  expect((await drain(f)).rows).toHaveLength(1);
+  await stageTranscriptCapture(input, f.options);
+  expect((await drain(f)).rows).toHaveLength(1);
 });
