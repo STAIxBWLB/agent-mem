@@ -117,6 +117,50 @@ test("store keeps the legacy curated position when the conversational weight wou
   } finally { capture.close(); store.close(); }
 });
 
+test("a current tool row beats aged Stop rows in the same session in capture and store search", () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-recency-session-")); roots.push(root);
+  const base = join(root, "memory"), oldAt = new Date(now - 60 * 86400_000).toISOString(), session = "9".repeat(16);
+  const capture = new CaptureStore({ memoryDir: base, project, now: () => now, retentionDays: 90 });
+  const dir = capture.dir;
+  let current: number;
+  try {
+    // Thirty-two aged Stops would fill a weighted raw-BM25 LIMIT before this current tool row.
+    for (let i = 0; i < 31; i++) {
+      const row = capture.append({ project, agent: "claude", event: "Stop", excerpt: text, paths: [], session, at: oldAt });
+      if (!("id" in row)) throw Error("fixture capture unexpectedly spooled");
+    }
+    const fresh = capture.append({ project, agent: "claude", event: "PostToolUse", excerpt: text, paths: [], session, at: new Date(now).toISOString() });
+    const lastOld = capture.append({ project, agent: "claude", event: "Stop", excerpt: text, paths: [], session, at: oldAt });
+    if (!("id" in fresh) || !("id" in lastOld)) throw Error("fixture capture unexpectedly spooled");
+    current = fresh.id;
+  } finally { capture.close(); }
+  expect(captureSearch(dir, text, 1, undefined, { now })[0]!.row.id).toBe(current);
+  const legacyWindow = captureSearch(dir, text, 32, undefined, { weightEvents: false, onePerSession: false });
+  expect(legacyWindow).toHaveLength(32);
+  expect(legacyWindow.map(row => row.rank).every(rank => rank === legacyWindow[0]!.rank)).toBe(true);
+  const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => now });
+  try {
+    const hits = store.search(text, { project, limit: 1, captureRetentionDays: 90 }).hits;
+    expect(hits.map(hit => hit.capture?.id)).toEqual([current]);
+  } finally { store.close(); }
+});
+
+test("10,000 same-session matches return one best row within a bounded query interval", () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-duplicate-heavy-")); roots.push(root);
+  const base = join(root, "memory"), capture = new CaptureStore({ memoryDir: base, project, now: () => now }), dir = capture.dir;
+  capture.close(); // Create the owned schema/triggers before seeding, outside the timed query.
+  const db = new Database(join(dir, "capture.db")), session = "8".repeat(16), bulk = "bulk-session-needle";
+  try {
+    const insert = db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id, session, subagent) VALUES (?, ?, ?, ?, NULL, '[]', 'ok', ?, ?, NULL, ?, NULL)");
+    db.transaction(() => {
+      for (let i = 0; i < 10_000; i++) insert.run(new Date(now).toISOString(), project, "claude", "Stop", bulk, Buffer.byteLength(bulk) + 98, session);
+    }).immediate();
+  } finally { db.close(); }
+  const started = performance.now(), hits = captureSearch(dir, bulk, 2, undefined, { now }), elapsed = performance.now() - started;
+  expect(hits).toHaveLength(1); expect(hits[0]!.row.id).toBe(1); expect(hits[0]!.row.session).toBe(session);
+  expect(elapsed).toBeLessThan(1000);
+});
+
 test("exhausted sessions shorten library and MCP results without padding or changing the curated cohort", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-exhausted-sessions-")); roots.push(root);
   const base = join(root, "memory"); let clock = now - 365 * 86400_000;
