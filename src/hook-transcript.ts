@@ -1,3 +1,4 @@
+import { assertFormatFloor } from "./memory/formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
@@ -88,6 +89,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
   const value = object(input);
   if (!value || options.policy?.host || typeof value.transcript_path !== "string" || typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256 || performance.now() >= options.deadline) return;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
+  assertFormatFloor(base, "hook-spool");
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return;
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   if (!await policy.screen(value)) return;
@@ -171,6 +173,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
     }
+    assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
     db.run("COMMIT");
   } finally {

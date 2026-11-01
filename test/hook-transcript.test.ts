@@ -143,3 +143,17 @@ test("a parent alias cannot hide a configured denied transcript location", async
   expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
   expect(await f.drain()).toHaveLength(0);
 });
+
+test("a hook-spool floor refuses staging and leaves the transcript cursor untouched for a supported reader", async () => {
+  const f = fixture();
+  f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "recap after reader upgrade" });
+  mkdirSync(f.base, { recursive: true });
+  const floor = join(f.base, "formats.json");
+  writeFileSync(floor, JSON.stringify([{ surface: "hook-spool", minReader: "99.0.0", since: "2026-11-01" }]));
+  await expect(f.scan()).rejects.toMatchObject({ code: "format_floor" });
+  expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
+  const { stageTranscriptCapture } = await import("../src/hook-spool.ts");
+  expect(await stageTranscriptCapture({ agent: "claude", event: "Recap", at, excerpt: "direct below-floor summary" }, { cwd: f.cwd, base: f.base })).toBeUndefined();
+  writeFileSync(floor, "[]"); await f.scan();
+  expect((await f.drain()).map(row => row.excerpt)).toEqual(["recap after reader upgrade"]);
+});
