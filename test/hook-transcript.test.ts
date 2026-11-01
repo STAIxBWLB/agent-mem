@@ -1,8 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanHookTranscriptTail, transcriptSummary, HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
+import * as spool from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readCaptureDrops } from "../src/memory/metrics.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
@@ -58,6 +60,25 @@ test("rotation and truncation replays share content receipts", async () => {
   f.add(row); await f.scan(); expect(await f.drain()).toHaveLength(1);
   renameSync(f.transcript, f.transcript + ".old"); f.add(row); await f.scan(); expect(await f.drain()).toHaveLength(1);
   writeFileSync(f.transcript, ""); await f.scan(); f.add(row); await f.scan(); expect(await f.drain()).toHaveLength(1);
+});
+
+test("a deadline after one summary commits its prefix and resumes the remaining kinds", async () => {
+  const f = fixture(), title = { type: "ai-title", aiTitle: "partial title", timestamp: at };
+  f.add(title, { type: "system", subtype: "away_summary", content: "partial recap", timestamp: at },
+    { type: "user", isCompactSummary: true, message: { content: "partial compact" }, timestamp: at });
+  const options = { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000 }, stage = spool.stageTranscriptCapture;
+  const stopAfterFirst = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args: Parameters<typeof stage>) => {
+    const result = await stage(...args); options.deadline = -1; return result;
+  });
+  try { await scanHookTranscriptTail(f.input, options); expect(stopAfterFirst).toHaveBeenCalledTimes(1); }
+  finally { stopAfterFirst.mockRestore(); }
+  const file = readdirSync(join(f.base, "hook-transcripts")).find(name => name.endsWith(".db"))!;
+  const db = new Database(join(f.base, "hook-transcripts", file), { readonly: true });
+  try { expect((db.query("SELECT offset FROM cursor").get() as { offset: number }).offset).toBe(Buffer.byteLength(JSON.stringify(title) + "\n")); }
+  finally { db.close(); }
+  expect((await f.drain()).map(row => row.event)).toEqual(["Title"]);
+  await f.scan(); await f.scan();
+  expect((await f.drain()).map(row => row.event).sort()).toEqual(["Compact", "Recap", "Title"]);
 });
 
 test("full summary screens precede byte caps and private spans are removed", async () => {
