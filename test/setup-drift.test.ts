@@ -214,8 +214,9 @@ test("doctor surfaces setup drift and leaves the memory home unchanged", async (
       home: f.memory, homeSource: "test", cwd, project: memoryProjectKey(cwd), aliases: [], now: Date.now(), env: f.env,
       openCurated: base => new MemoryStore({ memoryDir: base, deferPromotions: true }),
     });
-    expect(report.sections.setup.status).toBe("attention");
-    expect((report.sections.setup.entries as { entry: string }[]).some(row => row.entry === "hooks.SessionStart")).toBe(true);
+    expect(report.sections.setup).toBeDefined();
+    expect(report.sections.setup!.status).toBe("attention");
+    expect((report.sections.setup!.entries as { entry: string }[]).some(row => row.entry === "hooks.SessionStart")).toBe(true);
     expect(tree(f.memory)).toEqual(before);
   } finally {
     if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
