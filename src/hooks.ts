@@ -111,54 +111,66 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const metadata = await parentProject(options, base, workDeadline);
   if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false, ...(transcript !== undefined ? { transcript: { stopReason: "deadline" as const } } : {}) };
-  const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
-  const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-  // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
-  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
-    policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
-  const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
-    { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
-  let exited = false;
-  const tracker = new HookWorkerRss(child.pid);
-  const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
-  const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
-    if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
-    if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
-    result.transcript = { ...result.transcript, ...value };
-  });
-  const exit = child.exited.then(code => { exited = true; return code; });
-  const stop = () => {
-    if (exited) return;
-    tracker.captureLive();
-    // The still-live leader is the detached process we just spawned, so its group is ours.
-    // The capture-only worker owns no native helper; those handles were reaped in this parent.
-    try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* Already exited. */ } }
-  };
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = { context: unavailable, ...metadata.usage, captured: false, valid: false,
+    rssSources: combineRssSources(metadata.usage.rssSources), transcript: undefined as HookTranscriptProgress | undefined };
+  let owned: ReturnType<typeof Bun.spawn> | undefined, exited = false;
   try {
-    const answer = await Promise.race([
-      Promise.all([exit, output]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
-    ]);
-    if (!answer || !answer[1]) return result;
-    const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
-    if (parsed.complete !== true) return result;
-    if (parsed.rssTelemetryValid !== true) tracker.invalidate();
-    if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
-    if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
-    result.captured = parsed.captured === true; result.valid = parsed.valid === true;
-    return result;
-  } catch { return result; }
+    const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
+    const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
+    // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
+    const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
+      policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
+    const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
+      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
+    owned = child;
+    result.rssSources.unavailable++;
+    const exit = child.exited.then(code => { exited = true; return code; });
+    const tracker = new HookWorkerRss(child.pid);
+    const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
+      if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
+      if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
+      result.transcript = { ...result.transcript, ...value };
+    });
+    const stop = () => {
+      if (exited) return;
+      tracker.captureLive();
+      // The still-live leader is the detached process we just spawned, so its group is ours.
+      // The capture-only worker owns no native helper; those handles were reaped in this parent.
+      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* Already exited. */ } }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answer = await Promise.race([
+        Promise.all([exit, output]),
+        new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+      ]);
+      if (!answer || !answer[1]) return result;
+      const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
+      if (parsed.complete !== true) return result;
+      if (parsed.rssTelemetryValid !== true) tracker.invalidate();
+      if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
+      if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
+      result.captured = parsed.captured === true; result.valid = parsed.valid === true;
+      return result;
+    } catch { return result; }
+    finally {
+      if (timer) clearTimeout(timer);
+      stop();
+      await exit;
+      // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
+      const workerRawKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
+      result.rawRssKB = metadata.usage.rawRssKB + workerRawKB;
+      if (await output === undefined) tracker.invalidate();
+      const accounting = tracker.finish(workerRawKB);
+      result.rssKB = metadata.usage.rssKB + accounting.rssKB; result.rssSources = combineRssSources(metadata.usage.rssSources, accounting.rssSources);
+    }
+  } catch { result.valid = false; return result; }
   finally {
-    if (timer) clearTimeout(timer);
-    stop();
-    await exit;
-    // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
-    const workerRawKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-    result.rawRssKB = metadata.usage.rawRssKB + workerRawKB;
-    if (await output === undefined) tracker.invalidate();
-    const accounting = tracker.finish(workerRawKB);
-    result.rssKB = metadata.usage.rssKB + accounting.rssKB; result.rssSources = combineRssSources(metadata.usage.rssSources, accounting.rssSources);
+    // Even setup or accounting failure after spawn cannot leave an owned image live.
+    if (owned) {
+      if (!exited) try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already gone. */ } }
+      await owned.exited;
+    }
   }
 }
 

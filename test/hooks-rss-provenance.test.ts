@@ -72,3 +72,18 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     expect(() => measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576)).toThrow("provenance unknown");
   } finally { f.close(); }
 });
+
+test("worker spawn refusal retains the completed native image sources and pending capture", async () => {
+  const f = hookFixture(), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts"), preload = join(f.root, "spawn-refusal.ts"), marker = join(f.root, "spawn-refused");
+  writeFileSync(preload, `import {writeFileSync} from 'node:fs';const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>{if(Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}){writeFileSync(${JSON.stringify(marker)},'refused');throw Error('fixture worker spawn refusal');}return spawn(argv,options);};`);
+  try {
+    await f.seed();
+    const result = f.runFunctional("PostToolUse", { prompt: "spawn-refusal capture" }, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(existsSync(marker)).toBe(true);
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!, sources = metric.rssSources!;
+    expect(sources.unavailable).toBe(0); expect(sources.vmhwm + sources.vmpeakBound + sources.platformRusage).toBe(3);
+    expect(() => measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576)).not.toThrow();
+    expect(f.runFunctional("PostToolUse", { prompt: "spawn-refusal recovery" }).exitCode).toBe(0);
+    expect(f.rows().filter(row => row.excerpt === "spawn-refusal capture")).toHaveLength(1);
+  } finally { f.close(); }
+});
