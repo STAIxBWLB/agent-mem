@@ -75,7 +75,7 @@ function pendingCaptures(f: ReturnType<typeof fixture>, event: string, excerpt: 
   const dir = join(f.base, "hook-spool");
   const matches = existsSync(dir) ? readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
     .map(name => JSON.parse(readFileSync(join(dir, name), "utf8")))
-    .filter(value => value.schema === "agent-mem.hook-capture/v1" && value.cwd === f.cwd && value.capture?.event === event && value.capture?.excerpt === excerpt) : [];
+    .filter(value => value.schema === "agent-mem.hook-capture" && value.format === 2 && value.cwd === f.cwd && value.capture?.event === event && value.capture?.excerpt === excerpt) : [];
   for (const value of matches) {
     expect(value.capture.agent).toBe("claude"); expect(Number.isFinite(Date.parse(value.capture.at))).toBe(true);
     expect(Array.isArray(value.capture.paths)).toBe(true); expect(value.capture.paths.length).toBeLessThanOrEqual(32);

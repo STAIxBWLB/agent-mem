@@ -13,15 +13,18 @@ import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 
-const SCHEMA = "agent-mem.hook-capture/v1";
+// #199: v1 records (closed key set, no format field) are read, never written. Every 0.14-0.17 decoder deletes a record it cannot verify,
+// so a record that adds a field publishes under a name the v1 pattern does not match (`hook-v2-`); old versions then ignore it
+// (they still count it toward their file and byte caps). A later format that adds fields takes a new prefix again.
+const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-";
 const RECORD_BYTES = HOOK_INPUT_BYTES + 8192, MAX_FILES = 256, MAX_BYTES = 2 * 1024 * 1024;
 const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
 // ponytail: a finite native admission reserve covers deferred replay, not unlimited locked intake.
 // Upgrade: coordinated append-only capacity accounting and observable backpressure at exhaustion.
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
-const namePattern = /^(hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
+const namePattern = /^(hook-(?:v2-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
-interface Record { schema: typeof SCHEMA; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
+interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
 interface Options { cwd: string; base: string; policy?: StandalonePolicyOptions; deferAtCapacity?: true }
@@ -264,17 +267,21 @@ function claimOwned(base: string, name: string, file: OwnedFile): OwnedFile | un
   const owned = { ...file, file: claim };
   return owns(owned) ? owned : undefined;
 }
-function decoded(file: OwnedFile): { value: Record; bytes: Buffer } | undefined {
+/** `unknown`: a valid envelope (cwd, nonce, scope) under an unknown or newer schema. It stays pending until the TTL, never read as corrupt. */
+function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: true } | undefined {
   if (file.initial.size > RECORD_BYTES) return undefined; // Positively oversized: do not materialize its body.
   const bytes = Buffer.alloc(file.initial.size);
   if (readSync(file.fd, bytes, 0, bytes.length, 0) !== bytes.length || !owns(file)) throw new Error("hook record changed");
   try {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record;
-    if (!value || typeof value !== "object" || Array.isArray(value) || ![5, 6].includes(Object.keys(value).length)
-      || Object.keys(value).some(key => !["schema", "cwd", "scope", "root", "nonce", "capture"].includes(key))
-      || value.root !== undefined && (typeof value.root !== "string" || !/^[a-f0-9]{64}$/.test(value.root))
-      || value.schema !== SCHEMA || typeof value.cwd !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
+    if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.cwd !== "string" || typeof value.nonce !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
       || value.scope !== null && (typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope))) return undefined;
+    const v1 = value.schema === SCHEMA && !("format" in value), current = value.schema === FAMILY && value.format === FORMAT;
+    if (!v1 && !current) return typeof value.schema === "string" ? { value, bytes, unknown: true } : undefined;
+    const keys = current ? 1 : 0;
+    if (![5 + keys, 6 + keys].includes(Object.keys(value).length)
+      || Object.keys(value).some(key => !["schema", "cwd", "scope", "root", "nonce", "capture", ...current ? ["format"] : []].includes(key))
+      || value.root !== undefined && (typeof value.root !== "string" || !/^[a-f0-9]{64}$/.test(value.root))) return undefined;
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
@@ -394,7 +401,11 @@ function retireUnresolved(base: string, _admittingCwd: string | undefined, inven
         const record = decoded(file);
         const valid = record && hash(record.value.cwd) === match[2] && record.value.nonce === match[4] && (record.value.scope ?? "0".repeat(64)) === match[3];
         let reason: CaptureDropReason | undefined;
-        if (valid) {
+        if (valid && record.unknown) {
+          // #199: a newer writer's record waits for a reader that knows it, then leaves with a counted reason, never at once.
+          if (Date.now() - row.modified < RETIRE_AFTER_MS) continue;
+          reason = "unknown_schema_expired";
+        } else if (valid) {
           if (Date.now() - Date.parse(record.value.capture.at) < RETIRE_AFTER_MS) continue;
           try { const cwd = lstatSync(record.value.cwd); if (!cwd.isDirectory() || cwd.isSymbolicLink()) reason = "cwd_removed"; }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
@@ -485,7 +496,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
-  const record: Record = { schema: SCHEMA, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
+  const record: Record = { schema: FAMILY, format: FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   let destination = dir, deferred = false, backlog = false;
@@ -514,7 +525,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
       deferred = true;
     }
   }
-  const name = `hook-${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
+  const name = `${PREFIX}${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
   finally { rmSync(temporary, { force: true }); }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
@@ -555,6 +566,14 @@ export async function drainHookCaptures(options: Options & { project: string; ex
       const record = decoded(claim);
       if (!record || record.value.cwd !== cwd || record.value.scope !== null && record.value.scope !== stamp || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;
+      }
+      // #199: an unknown or newer schema stays claimed and pending (later passes reclaim it) until the TTL, then retires with a counted reason.
+      // ponytail: pending unknown records still take drain slots oldest first; a writer that adds fields uses a new prefix, so this is the fallback only.
+      if (record.unknown) {
+        if (Date.now() - row.modified < RETIRE_AFTER_MS) { blocked++; continue; }
+        appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "unknown_schema_expired" }]);
+        if (!retireClaim(base, claim, false)) blocked++;
+        continue;
       }
       const value = record.value, c = value.capture;
       if (value.scope === null) { blocked++; continue; }

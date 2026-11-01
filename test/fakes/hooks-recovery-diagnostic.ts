@@ -38,7 +38,7 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  if(contents.split(caught).length!==2)throw new Error('recovery catch anchor changed');
  contents=contents.replace(caught,'    } catch(error) { globalThis.__recoveryNote(24, /lock|busy/i.test(error?.message??"")?1:2); blocked++; } // Transient failure');
  add('  const queued = inventory.filter(row => !retired.has(row.name));','globalThis.__recoveryNote(25,inventory.length,retired.size);');
- add('  const name = \`hook-\${hash(cwd)}-\${scope ?? \"0\".repeat(64)}-\${nonce}.json\`, temporary = join(writing, name);','globalThis.__recoveryNote(27,Number(deferred),Number(backlog));');
+ add('  const name = \`\${PREFIX}\${hash(cwd)}-\${scope ?? \"0\".repeat(64)}-\${nonce}.json\`, temporary = join(writing, name);','globalThis.__recoveryNote(27,Number(deferred),Number(backlog));');
  }
  return {loader:'ts',contents};});}});
 const spawn=Bun.spawn.bind(Bun);

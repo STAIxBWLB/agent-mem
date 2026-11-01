@@ -21,7 +21,8 @@
     "@staix/agent-mem-v011": "npm:@staix/agent-mem@0.11.0",
     "@staix/agent-mem-v012": "npm:@staix/agent-mem@0.12.0",
     "@staix/agent-mem-v013": "npm:@staix/agent-mem@0.13.0",
-    "@staix/agent-mem-v015": "npm:@staix/agent-mem@0.15.0"
+    "@staix/agent-mem-v015": "npm:@staix/agent-mem@0.15.0",
+    "@staix/agent-mem-v017": "npm:@staix/agent-mem@0.17.0"
   },
   "exports": {
     ".": "./src/index.ts",

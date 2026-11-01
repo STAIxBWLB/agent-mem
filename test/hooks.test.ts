@@ -32,7 +32,7 @@ function pendingCaptures(f: ReturnType<typeof hookFixture>, item: AcceptedCaptur
   const matches = [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder)
     .filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
     .map(name => JSON.parse(readFileSync(join(folder, name), "utf8"))) : [])
-    .filter(value => value.schema === "agent-mem.hook-capture/v1" && value.cwd === f.cwd && value.capture?.event === item.event && value.capture?.excerpt === item.excerpt);
+    .filter(value => value.schema === "agent-mem.hook-capture" && value.format === 2 && value.cwd === f.cwd && value.capture?.event === item.event && value.capture?.excerpt === item.excerpt);
   for (const value of matches) {
     expect(value.capture.agent).toBe("claude"); expect(Number.isFinite(Date.parse(value.capture.at))).toBe(true);
     expect(Array.isArray(value.capture.paths)).toBe(true); expect(value.capture.paths.length).toBeLessThanOrEqual(32);
