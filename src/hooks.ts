@@ -108,7 +108,8 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
   const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
     if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
-    result.transcript = value;
+    if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
+    result.transcript = { ...result.transcript, ...value };
   });
   const exit = child.exited.then(code => { exited = true; return code; });
   const stop = () => {

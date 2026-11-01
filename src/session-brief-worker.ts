@@ -63,17 +63,15 @@ if (import.meta.main) {
     const policy = createStandalonePolicy(configuredPolicyOptions(options.base!, options.cwd, options.policy)), event = options.event;
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) stop();
     const expectedScope = hookCaptureScope(options.cwd, options.base!);
-    let project: string;
+    let project: string | undefined;
     // Overlap the shared resolver's existing origin/metadata reads on a cold cache;
     // serial native launches can exhaust every hook before any binding or replay is published.
     // ponytail: cold identity must still fit one hook deadline. Revalidated durable
     // identity progress is the upgrade if slower native reads keep exhausting that slice.
     try { project = resolveAlias(options.base!, await resolveHookProjectAsync({ cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining, maintainCache: event !== "SessionStart", prefetch: true }, nativeUsage)); }
-    catch {
-      if (expectedScope !== undefined) quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
-      project = stop();
-    }
-    if ((event === "Stop" || event === "SessionEnd") && options.transcript !== undefined) {
+    catch { /* Native cleanup has settled; independently bound transcript admission can still proceed. */ }
+    if ((event === "Stop" || event === "SessionEnd") && options.transcript !== undefined
+      && (project !== undefined || expectedScope !== undefined && hookCaptureScope(options.cwd, options.base!) === expectedScope)) {
       try {
         const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
         // Metadata helpers have been reaped and their numeric receipts sent before scanning.
@@ -84,6 +82,10 @@ if (import.meta.main) {
           deadline: Math.min(performance.now() + remaining() - 20, performance.now() + 60) });
         if (scanned) progress(scanned);
       } catch { /* A transcript failure must not discard the ordinary hook capture. */ }
+    }
+    if (project === undefined) {
+      if (expectedScope !== undefined) quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
+      stop();
     }
     let captured = false;
     // Normal SessionStart keeps the parent's durable stage for later replay and spends
