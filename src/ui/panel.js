@@ -109,6 +109,31 @@ export default (host) => {
           project ? btn("Forget this project...", () => act({ action: "project_forget" }), "btn danger") : null)));
       return out;
     },
+    recap(s) {
+      const brief = s.brief;
+      if (!brief || typeof brief.context !== "string") return [ui.empty("Recap unavailable", "The current SessionStart brief could not be computed.")];
+      const coverage = brief.coverage ?? {};
+      const sections = ["work", "curated", "capture", "repo"].filter((key) => Object.hasOwn(coverage, key));
+      const rows = sections.map((key) => {
+        const value = coverage[key];
+        const detail = value && typeof value === "object" ? JSON.stringify(value) : String(value);
+        return { title: key, sub: line(detail, 180) };
+      });
+      const tokens = Number.isSafeInteger(brief.tokens) && brief.tokens >= 0 ? `At most ${brief.tokens} tokens` : "Token upper bound unavailable";
+      const generated = typeof s.generatedAt === "string" ? s.generatedAt : "unavailable";
+      return [
+        ui.notice("Computed now for this snapshot; this is not a copy of a prior session's injected brief.", "neutral"),
+        h("section", { class: "card amem-card" },
+          h("h3", { text: "Coverage" }),
+          ui.rows(rows, (row) => ui.row(row)) ?? ui.empty("No coverage details"),
+          h("dl", { class: "ui-provenance" },
+            h("dt", { text: "Status" }), h("dd", { text: brief.partial === true ? "Partial" : "Complete" }),
+            h("dt", { text: "Token bound" }), h("dd", { text: tokens }),
+            h("dt", { text: "Generated" }), h("dd", { text: generated }))),
+        s.repoAbsent === true ? h("p", { class: "amem-sub", text: "Repository section absent: the console has no repository binding." }) : null,
+        h("section", { class: "card amem-card" }, h("h3", { text: "SessionStart context" }), h("pre", { class: "amem-pre", text: brief.context })),
+      ].filter(Boolean);
+    },
   };
 
   host.onSnapshot((s) => {

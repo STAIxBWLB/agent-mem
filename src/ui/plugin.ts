@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryMcp } from "../mcp-memory.ts";
+import { sessionStartBrief } from "../session-brief.ts";
+import { withBriefSnapshot } from "../memory/doctor.ts";
 import { MCP_TOOLS } from "../mcp.ts";
 import { CandidateStore, type Candidate, type CandidateInput } from "../memory/candidates.ts";
 import { candidateOverlapsBatch } from "../memory/candidate-overlaps.ts";
@@ -99,11 +101,12 @@ export const plugin = {
     api: 1 as const, tool: "amem", version: VERSION, title: "Memory", icon: "memory", pollMs: 15_000,
     panels: [
       { id: "review", title: "Review", order: 1 },
-      { id: "find", title: "Search", order: 2 },
-      { id: "timeline", title: "Timeline", order: 3 },
-      { id: "work", title: "Work lists", order: 4 },
-      { id: "goals", title: "Goals", order: 5 },
-      { id: "capacity", title: "Capacity", order: 6 },
+      { id: "recap", title: "Recap", order: 2 },
+      { id: "find", title: "Search", order: 3 },
+      { id: "timeline", title: "Timeline", order: 4 },
+      { id: "work", title: "Work lists", order: 5 },
+      { id: "goals", title: "Goals", order: 6 },
+      { id: "capacity", title: "Capacity", order: 7 },
     ],
     commands: [
       { id: "gc", title: "Evict expired capture rows", hint: "amem gc", action: "gc" },
@@ -247,6 +250,15 @@ export const plugin = {
     async function panel(name: string, args: Args, project: string): Promise<Args> {
       switch (name) {
         case "review": return { ...(await pending(project, true)), selected: str(args.id) ?? null };
+        case "recap": {
+          const revision = policyVersion(), generatedAt = new Date().toISOString();
+          assertProjectActive(base, project);
+          const brief = await withBriefSnapshot(base, project, measureOnly => sessionStartBrief({ cwd: base, base, project,
+            repository: false, policy: configuredPolicyOptions(base), measureOnly }));
+          assertProjectActive(base, project);
+          if (policyVersion() !== revision) throw Error("recap policy changed");
+          return { brief, generatedAt, repoAbsent: true };
+        }
         case "find": {
           const q = str(args.q);
           if (!q) return { q: "", hits: [] };
