@@ -85,7 +85,7 @@ if (import.meta.main) {
     }
     if (project === undefined) {
       if (expectedScope !== undefined) quarantineHookScope({ cwd: options.cwd, base: options.base!, scope: expectedScope });
-      stop();
+      project = stop();
     }
     let captured = false;
     // Normal SessionStart keeps the parent's durable stage for later replay and spends
