@@ -4293,6 +4293,10 @@
       {
         "raw": "final-progress-n64-{normal,cpu1}/",
         "outcome": "Head4315493: normal405/CPU1 712 actual calls, firstp95 116.57/133.03ms, allp95 115.13/128.15ms, peak85.75/84.86MB, maxfollowups9/18, maxreason-onlystreak0/1, unknown0. All zero-summary calls independently verified deadline/full before firstuncommittedstage boundary; latest strictguard rerun reported inPR."
+      },
+      {
+        "raw": "final-progress-strict-{normal,cpu1}/",
+        "outcome": "Strict04d normal passed. CPU1coldburst6/call1 had knownRSS andactualdeadline but cursororacle raisedSQLITE_READONLY_ROLLBACK. Oracle nowlabels lastverifiedoffset rollback_pending onlyfor exacterror/deadline/no offsetreceipt, leaves journal untouched fornexttimedhook recovery."
       }
     ],
     "finalMaxAdditionalInvocations": 64,
