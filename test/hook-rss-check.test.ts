@@ -13,7 +13,7 @@ test("a plausible small numeric RSS does not pass with missing or unknown proven
 });
 
 test("each platform profile declares counted images and unmeasured descendants", () => {
-  for (const platform of ["linux", "darwin"]) {
+  for (const platform of ["linux", "darwin"] as const) {
     expect(measuredHookRss(sample, 40, platform).rssCoverage).toBe("images: bun+supervisor; descendants: not measured");
   }
 });

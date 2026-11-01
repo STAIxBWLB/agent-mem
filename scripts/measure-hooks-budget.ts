@@ -1,5 +1,5 @@
 import { measuredHookRss } from "./hook-rss-check.ts";
-import { combineRssSources, type HookRssSources } from "../src/hook-resources.ts";
+import { combineRssSources } from "../src/hook-resources.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** #13 P3 actual executable R1/R2 receipt. Never invokes a model, account, personal config or plugin installer.
