@@ -4285,8 +4285,13 @@
       {
         "raw": "native-first-final-standard/",
         "outcome": "Full2431pass7skip2fail; bothfailures are numeric recovery-diagnostic needle for renameddeadlineStop. Assertions/timeouts retained, fixture needle updated."
+      },
+      {
+        "raw": "native-first-final-n24-cpu1/",
+        "outcome": "84focused pass486assertions;779transcriptcalls659resumes,max21followups,firstp95132.62ms/allp95128.14ms,peak87.47MB,unknown0;ordinaryR2/R1/packpass. Reviewer replacedN24margin withprogressfloor,3stallrule,N64hangguard."
       }
     ],
-    "finalMaxAdditionalInvocations": 24
+    "finalMaxAdditionalInvocations": 64,
+    "progressFloor": "Each call adds a new durable summary or names cap/deadline/spool_full;3consecutive reason-only calls failstall."
   }
 }
