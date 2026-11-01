@@ -108,7 +108,7 @@ export function assertHookMetric(before: string, after: string): void {
 export interface HookExpectation { project: string; cwd: string; event: string; agent: string; marker: string }
 function pendingIdentity(item: any): string | undefined {
   if (typeof item?.path !== "string") return undefined;
-  return /^hook-spool\/(?:\.capacity\/)?(hook-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json)(?:\.draining-[a-f0-9]{24})?$/.exec(item.path)?.[1];
+  return /^hook-spool\/(?:\.capacity\/)?(hook-(?:v2-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json)(?:\.draining-[a-f0-9]{24})?$/.exec(item.path)?.[1];
 }
 export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, beforeRaw: unknown, raw: unknown, expected: HookExpectation): void {
   assertHookMetric(beforeMetrics, afterMetrics);
@@ -120,8 +120,8 @@ export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, 
   const retained = before.captureKnown === true && evidence.captureKnown === true && Array.isArray(evidence.rows) && evidence.rows.some((row: any) => Number.isSafeInteger(row.id) && row.id > 0 && !oldRows.has(row.id) && row.project === expected.project && capture(row));
   const pending = before.pendingKnown === true && evidence.pendingKnown === true && Array.isArray(evidence.pending) && evidence.pending.some((item: any) => {
     if (!item || !pendingIdentity(item) || oldPending.has(pendingIdentity(item)) || item.type !== "file" || item.nlink !== 1 || item.project !== expected.project || typeof item.path !== "string") return false;
-    const name = /^hook-spool\/(?:\.capacity\/)?hook-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
-    return !!name && name[1] === createHash("sha256").update(expected.cwd).digest("hex") && row?.schema === "agent-mem.hook-capture/v1" && row.cwd === expected.cwd && row.nonce === name[3]
+    const name = /^hook-spool\/(?:\.capacity\/)?hook-(?:v2-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
+    return !!name && name[1] === createHash("sha256").update(expected.cwd).digest("hex") && (row?.schema === "agent-mem.hook-capture/v1" || row?.schema === "agent-mem.hook-capture" && row.format === 2) && row.cwd === expected.cwd && row.nonce === name[3]
       && (row.scope === null ? name[2] === "0".repeat(64) : row.scope === name[2]) && capture(row.capture) && typeof row.capture.at === "string" && Number.isFinite(Date.parse(row.capture.at));
   });
   requireSmoke(retained || pending, "installed hook metric lacks the matching durable capture or pending record");
@@ -314,7 +314,7 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     const hookOutput = await cli(["hook", "PostToolUse"], JSON.stringify({ session_id: "installed-smoke", hook_event_name: "PostToolUse", cwd: projectDir, tool_name: "Read", tool_input: { file_path: "public.txt" }, tool_response: HOOK_MARKER }));
     assertPostToolUseOutput(hookOutput); verifyRules();
     requireSmoke(existsSync(metrics), "installed native hook did not load its metric path");
-    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: HOOK_MARKER });
+    assertHookEvidence(beforeMetrics, readFileSync(metrics, "utf8"), beforeArtifacts, await inspect(), { project: seed.project, cwd: projectDir, event: "PostToolUse", agent: "claude", marker: `public.txt\n${HOOK_MARKER}` });
     requireSmoke(readFileSync(nativeCalls, "utf8") === registrations, "installed MCP or hook unexpectedly invoked a native coding client");
     const networkCalls = join(home, "network-calls"), networkTripwire = join(app, "ingest-network-tripwire.ts");
     writeFileSync(networkTripwire, `import {appendFileSync} from 'node:fs';import {createRequire} from 'node:module';

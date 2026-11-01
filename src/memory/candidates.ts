@@ -38,6 +38,7 @@ export type CandidateInput = { project: string } & (
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
 export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null }
 export interface ConsolidationReview { status: Exclude<CandidateStatus, "pending">; acceptedNoteId: string | null }
+const KINDS: readonly string[] = ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] satisfies CandidateInput["kind"][];
 export interface CandidateFilter { project: string; status?: CandidateStatus | "all"; kind?: CandidateInput["kind"]; limit?: number }
 export interface CounterKey { entryId: string; project: string; task?: string | null; turn?: string | null; session?: string | null; deliveryId: string }
 export interface CounterValues { rendered?: number | null; delivered?: number | null; cited?: number | null }
@@ -187,8 +188,12 @@ export class CandidateStore {
       this.db.query("DELETE FROM counters WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY at DESC, rowid DESC) AS rank FROM counters) WHERE rank > ?)").run(COUNTER_RETENTION.count);
     }).immediate();
   }
-  private decode(row: { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null }): Candidate {
-    const input = JSON.parse(row.payload) as CandidateInput; validate(input);
+  /** #199: rows of a kind this version does not know (a newer writer's) are skipped and counted here, never thrown. */
+  skippedUnknownKinds = 0;
+  private decode(row: { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null }): Candidate | undefined {
+    const input = JSON.parse(row.payload) as CandidateInput;
+    if (input && typeof input === "object" && !KINDS.includes(input.kind)) { this.skippedUnknownKinds++; return undefined; }
+    validate(input);
     if (hash({ schema: "agent-mem.candidate/v1", input }) !== row.id) throw new Error("candidate content hash mismatch");
     return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id };
   }
@@ -230,14 +235,16 @@ export class CandidateStore {
     return row ? { status: row.status, acceptedNoteId: row.note_id } : undefined;
   }
   list(filter: CandidateFilter): Candidate[] {
-    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"].includes(filter.kind)) throw new Error("invalid candidate filter");
+    if (!text(filter.project, 400) || filter.status !== undefined && !["pending", "accepting", "accepted", "rejected", "all"].includes(filter.status) || filter.kind !== undefined && !KINDS.includes(filter.kind)) throw new Error("invalid candidate filter");
     const limit = filter.limit ?? CANDIDATE_RETENTION.count;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANDIDATE_RETENTION.count) throw new Error("candidate limit must be 1..500");
     this.prune();
     const where = ["project IN (SELECT value FROM json_each(?))"], bind: (string | number)[] = [this.scope(filter.project)];
     if (filter.status === undefined) where.push("status IN ('pending', 'accepting')"); else if (filter.status !== "all") { where.push("status = ?"); bind.push(filter.status); }
     if (filter.kind) { where.push("kind = ?"); bind.push(filter.kind); }
-    return (this.db.query(`SELECT * FROM candidates WHERE ${where.join(" AND ")} ORDER BY at DESC, rowid DESC LIMIT ?`).all(...bind, limit) as Parameters<CandidateStore["decode"]>[0][]).map(row => this.decode(row));
+    // #199: unknown kinds are skipped before LIMIT, so a newer writer's rows never displace a supported candidate; they are still counted.
+    this.skippedUnknownKinds += (this.db.query(`SELECT count(*) AS n FROM candidates WHERE ${where.join(" AND ")} AND kind NOT IN (SELECT value FROM json_each(?))`).get(...bind, JSON.stringify(KINDS)) as { n: number }).n;
+    return (this.db.query(`SELECT * FROM candidates WHERE ${where.join(" AND ")} AND kind IN (SELECT value FROM json_each(?)) ORDER BY at DESC, rowid DESC LIMIT ?`).all(...bind, JSON.stringify(KINDS), limit) as Parameters<CandidateStore["decode"]>[0][]).flatMap(row => this.decode(row) ?? []);
   }
   recordCounter(key: CounterKey, values: CounterValues, verdict: CandidateVerdict): string {
     publicOnly(verdict); const normalized = counterKey(key);

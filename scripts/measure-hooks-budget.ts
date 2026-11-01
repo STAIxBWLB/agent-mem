@@ -38,16 +38,25 @@ function members(pgid: number): number[] {
 function pendingInvocation(event: string, excerpt: string): boolean {
   const dir = join(f.base, "hook-spool");
   for (const folder of [dir, join(dir, ".capacity")]) for (const name of existsSync(folder) ? readdirSync(folder) : []) {
-    if (!/^hook-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
+    if (!/^hook-(?:v2-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
     try {
       const file = join(folder, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.mode & 0o077 || stat.size > 72 * 1024) continue;
       const row = JSON.parse(readFileSync(file, "utf8")), after = lstatSync(file);
       if (stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) continue;
-      if (row.schema === "agent-mem.hook-capture/v1" && row.cwd === f.cwd && row.capture?.agent === "claude" && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
+      if (row.schema === "agent-mem.hook-capture" && row.format === 2 && row.cwd === f.cwd && row.capture?.agent === "claude" && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
     } catch { /* Incomplete/unreadable evidence is never the positive deferral exception. */ }
   }
   return false;
+}
+function invocationExcerpt(event: "PostToolUse" | "SessionStart", response: string): string {
+  return event === "PostToolUse" ? `src/public.ts\n${response}` : response;
+}
+function invocationId(event: string, excerpt: string): number {
+  const prefix = event === "PostToolUse" ? "src/public.ts\n" : event === "SessionStart" ? "" : undefined;
+  if (prefix === undefined || !excerpt.startsWith(prefix)) return 0;
+  const match = /^budget public result (\d+)$/.exec(excerpt.slice(prefix.length));
+  return match ? Number(match[1]) : 0;
 }
 function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false): Sample {
   const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
@@ -62,7 +71,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   // Register every observed group before any assertion, including a malformed/extra-worker observation.
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
   const evidence = observer.evidence().slice(beforeEvidence).filter(row => row.pid === result.pid);
-  const pending = workers.length === 0 && pendingInvocation(event, input.tool_response);
+  const pending = workers.length === 0 && pendingInvocation(event, invocationExcerpt(event, input.tool_response));
   try {
     const observation = verifyHookProcessObservation(event, workers, evidence, pending);
     if (observation.deferred) {
@@ -91,7 +100,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   // Bun child rusage maxRSS is bytes; process.resourceUsage().maxRSS uses a different unit.
   const cliRssMB = result.resourceUsage.maxRSS / 1048576, recordedRssMB = metric.rssMB!;
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
-  if (!(Math.max(cliRssMB, recordedRssMB) < RSS_MB)) throw new Error("actual hook exceeded R2 peak RSS");
+  if (!(Math.max(cliRssMB, recordedRssMB) < RSS_MB)) throw new Error(`actual hook exceeded R2 peak RSS: ${JSON.stringify({ event, group, invocation: invocations, wallMs: round(wallMs), cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB })}`);
   if (event === "SessionStart") {
     const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: Math.max(cliRssMB, recordedRssMB), wallLimitMs: WALL_MS });
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
@@ -155,7 +164,7 @@ try {
     const check = new CaptureStore({ memoryDir: f.base, project: f.project });
     let rows: number[];
     try { rows = check.rows().flatMap(row => {
-      const match = /^budget public result (\d+)$/.exec(row.excerpt), id = match ? Number(match[1]) : 0;
+      const id = invocationId(row.event, row.excerpt);
       return id >= 1 && id <= acceptedWorkload ? [id] : [];
     }); } finally { check.close(); }
     if (new Set(rows).size !== rows.length) throw new Error("capture replay duplicated a workload event");
@@ -169,8 +178,8 @@ try {
       const pending = [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].flatMap(folder => inventory(folder).filter(row => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(row.name)).map(row => {
         let invocation: number | null = null, scopeKnown = false;
         if (row.regular && row.bytes <= 72 * 1024) try {
-          const value = JSON.parse(readFileSync(join(folder, row.name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
-          invocation = match ? Number(match[1]) : null; scopeKnown = typeof value.scope === "string";
+          const value = JSON.parse(readFileSync(join(folder, row.name), "utf8")), id = invocationId(value.capture?.event ?? "", value.capture?.excerpt ?? "");
+          invocation = id || null; scopeKnown = typeof value.scope === "string";
         } catch (error) { console.error(JSON.stringify({ diagnostic: "hook-drain-unreadable", name: row.name, code: (error as NodeJS.ErrnoException).code ?? "invalid_record" })); }
         return { ...row, invocation, scopeKnown };
       }));
@@ -185,17 +194,17 @@ try {
   const recorded = new Map<number, string>(), pending = new Map<number, string>();
   try {
     for (const row of finalStore.rows()) {
-      const match = /^budget public result (\d+)$/.exec(row.excerpt); if (!match) continue;
-      const id = Number(match[1]); if (recorded.has(id)) throw new Error("capture duplicated an accepted invocation");
+      const id = invocationId(row.event, row.excerpt); if (!id) continue;
+      if (recorded.has(id)) throw new Error("capture duplicated an accepted invocation");
       recorded.set(id, row.at);
     }
   } finally { finalStore.close(); }
   const pendingDir = join(f.base, "hook-spool");
   for (const dir of [pendingDir, join(pendingDir, ".capacity")]) for (const name of existsSync(dir) ? readdirSync(dir) : []) {
     if (!/^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)) continue;
-    const value = JSON.parse(readFileSync(join(dir, name), "utf8")), match = /^budget public result (\d+)$/.exec(value.capture?.excerpt ?? "");
-    if (!match || value.cwd !== f.cwd) throw new Error("pending fixture capture unavailable");
-    const id = Number(match[1]); if (pending.has(id)) throw new Error("pending fixture capture duplicated");
+    const value = JSON.parse(readFileSync(join(dir, name), "utf8")), id = invocationId(value.capture?.event ?? "", value.capture?.excerpt ?? "");
+    if (!id || value.cwd !== f.cwd) throw new Error("pending fixture capture unavailable");
+    if (pending.has(id)) throw new Error("pending fixture capture duplicated");
     pending.set(id, value.capture.at);
   }
   for (let id = 1; id <= invocations; id++) {

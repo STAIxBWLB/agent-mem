@@ -75,7 +75,7 @@ function pendingCaptures(f: ReturnType<typeof fixture>, event: string, excerpt: 
   const dir = join(f.base, "hook-spool");
   const matches = existsSync(dir) ? readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))
     .map(name => JSON.parse(readFileSync(join(dir, name), "utf8")))
-    .filter(value => value.schema === "agent-mem.hook-capture/v1" && value.cwd === f.cwd && value.capture?.event === event && value.capture?.excerpt === excerpt) : [];
+    .filter(value => value.schema === "agent-mem.hook-capture" && value.format === 2 && value.cwd === f.cwd && value.capture?.event === event && value.capture?.excerpt === excerpt) : [];
   for (const value of matches) {
     expect(value.capture.agent).toBe("claude"); expect(Number.isFinite(Date.parse(value.capture.at))).toBe(true);
     expect(Array.isArray(value.capture.paths)).toBe(true); expect(value.capture.paths.length).toBeLessThanOrEqual(32);
@@ -128,6 +128,8 @@ test("AC3 actual executable hooks and SessionStart context do not attempt networ
   for (const event of hookEvents) {
     const receiptCount = f.receipts().length, captureIds = new Set(f.rows().map(row => row.id));
     const excerpt = `network original ${event}`;
+    const toolEvent = event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure";
+    const expectedExcerpt = toolEvent ? `src/public.ts\n${excerpt}` : excerpt;
     const result = f.child([hookBin, "hook", event], JSON.stringify({ hook_event_name: event, cwd: f.cwd, session_id: "network-fixture", prompt: excerpt, tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: excerpt }));
     expect(result.exitCode).toBe(0);
     expect(f.receipts().slice(receiptCount)).toEqual(event === "SessionStart" ? [{ kind: "parent-brief" }] : [{ kind: "spawned" }, { kind: "loaded" }]);
@@ -136,8 +138,8 @@ test("AC3 actual executable hooks and SessionStart context do not attempt networ
       expect(f.receipts()).toEqual([{ kind: "parent-brief" }]);
     }
     expect(f.attempts()).toEqual([]);
-    replayOffline(f, event, excerpt);
-    expect(f.rows().filter(row => !captureIds.has(row.id) && row.event === event && row.excerpt === excerpt && row.project === f.project)).toHaveLength(1);
+    replayOffline(f, event, expectedExcerpt);
+    expect(f.rows().filter(row => !captureIds.has(row.id) && row.event === event && row.excerpt === expectedExcerpt && row.project === f.project)).toHaveLength(1);
   }
   expect(f.rows().some(row => row.event === "PostToolUse")).toBe(true);
 });
