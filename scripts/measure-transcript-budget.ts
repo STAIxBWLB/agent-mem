@@ -126,9 +126,10 @@ async function measure() {
     }
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
       const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), firstInvocationWallP95Ms = p95(rows.filter(row => row.followUp === 0).map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
+      const rss = rows.map(row => row.rssMB).sort((a, b) => a - b), medianRssMB = (rss[Math.floor((rss.length - 1) / 2)]! + rss[Math.floor(rss.length / 2)]!) / 2;
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
-        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssPass: peakRssMB < 100 };
+        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssPass: peakRssMB < 100 };
     });
     return { groups, samples };
   } finally { f.close(); }
