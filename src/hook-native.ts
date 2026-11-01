@@ -33,6 +33,9 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
   try { observer = usage.observe?.(); } catch { observationFailed = true; }
   const child = Bun.spawn(["/bin/sh", "-c", SUPERVISOR, "amem-hook-native", marker, String(remaining / 1000), ...argv],
     { env, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  // A real owned image cannot disappear from provenance if collection/cleanup throws.
+  usage.rssSources = combineRssSources(usage.rssSources);
+  usage.rssSources.unavailable++;
   try { observer?.started(child.pid); } catch { observationFailed = true; }
   let exited = false, ownPeak = 0;
   let reportedPeak = 0, reportedVirtual = 0, ownVirtual = 0, receiptValid = true;
@@ -70,6 +73,7 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     const selected = selectHookRss(process.platform, Math.max(ownPeak, receiptValid ? reportedPeak : 0), raw, Math.max(ownVirtual, receiptValid ? reportedVirtual : 0));
     usage.rawRssKB = Math.max(usage.rawRssKB, raw);
     usage.rssKB = Math.max(usage.rssKB, selected.kb);
+    usage.rssSources!.unavailable--;
     usage.rssSources = combineRssSources(usage.rssSources, rssSource(selected));
     try { observer?.finished(selected); } catch { observationFailed = true; }
     if (observationFailed) usage.rssSources.unavailable++;
@@ -126,9 +130,9 @@ export async function hookNative(argv: readonly string[], env: NodeJS.ProcessEnv
     // their adopting reaper can remove those PIDs (we cannot waitpid a non-child).
     await exit;
     await rssReceipt;
+    recordUsage();
     try { child.stdin.end(); } catch { /* pipe closed with the owned leader */ }
     await reader.cancel().catch(() => {}); reader.releaseLock();
-    recordUsage();
   }
 }
 

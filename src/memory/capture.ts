@@ -386,7 +386,7 @@ export class CaptureStore {
     if (!fts5Available()) return; // the R5 fallback: capture rows are stored, search skips this tier
     const build = () => {
       const had = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get();
-      if (this.hookBudget && !had && (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n > 128) throw new Error("capture cold index deferred");
+      if (this.hookBudget && !had && this.db.query("SELECT 1 FROM rows LIMIT 1").get()) throw new Error("capture cold index deferred");
       this.db.run("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(body, content='rows', content_rowid='id')");
       this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ai AFTER INSERT ON rows BEGIN INSERT INTO fts (rowid, body) VALUES (new.id, new.excerpt); END");
       this.db.run("CREATE TRIGGER IF NOT EXISTS rows_ad AFTER DELETE ON rows BEGIN INSERT INTO fts (fts, rowid, body) VALUES ('delete', old.id, old.excerpt); END");
