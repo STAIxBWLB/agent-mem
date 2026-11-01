@@ -465,10 +465,7 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim), match = namePattern.exec(row.name)!;
       const valid = !!record && record.value.cwd === cwd && record.value.scope === options.scope && record.value.nonce === match[4];
-      if (!valid) {
-        appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "malformed_publication" }]);
-        if (retireClaim(base, claim, false)) retired++;
-      }
+      if (!valid && retireClaim(base, claim, false)) retired++;
     } catch { /* A transient failure or foreign replacement is never treated as acknowledgement. */ }
     finally { if (file) closeSync(file.fd); }
   }
