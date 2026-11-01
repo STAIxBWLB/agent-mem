@@ -212,7 +212,10 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
   if ((event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input) {
     try {
       const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
-      await scanHookTranscriptTail(input, { ...options, base, deadline });
+      // Leave ordinary capture publication time even when a tail contains many summaries.
+      // ponytail: scan work gets at most 60 ms with a 20 ms admission reserve; upgrade
+      // to deadline-aware individual storage operations rather than widening R2.
+      await scanHookTranscriptTail(input, { ...options, base, deadline: Math.min(deadline - 20, performance.now() + 60) });
     }
     catch { /* A transcript failure must not discard the ordinary hook capture. */ }
   }
