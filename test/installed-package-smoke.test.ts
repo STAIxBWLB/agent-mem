@@ -6,7 +6,9 @@ import { delimiter, dirname, join } from "node:path";
 import { realPath } from "../src/memory/platform.ts";
 import { allowlistedSmokeEnv, assertAgySetupPreview, assertHookEvidence, assertHookMetric, assertHomeUnchanged, assertInstalledAlias, assertInstalledEntry, assertInstalledModule, assertMcpResult, assertNoHubBranding, assertPostToolUseOutput, assertSetupApplied, assertSetupPreview, assertSmokeCliArgs, createReapWaiter, probeSmokeLauncher, probeSmokeSetupTerminal, preservingCleanup, registeredSmokeCommand, snapshotPrivateHome } from "../scripts/smoke-installed-package.ts";
 const HOME = "/isolated/home", APP = join(HOME, "app"), ROOT = join(APP, "node_modules", "@staix", "agent-mem"), ENTRY = join(ROOT, "bin", "amem.js"), CHECKOUT = "/workspace/agent-mem", TMP = join(HOME, "tmp");
-const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini"], actions: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: ["kimi", "jcode", "opencode"].includes(target) ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: target === "jcode" || target === "opencode" || target === "gemini" ? [] : [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
+// #203: jcode plans its two lifecycle capture hooks, single-quoted like setup.ts.
+const jcodeHooks = () => ["post_tool", "turn_end"].map(event => ({ event, command: `'/runtime/bun' --smol '${ENTRY}' hook jcode` }));
+const plan = () => ({ mode: "preview", targets: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini"], actions: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini"].map(target => ({ target, files: [join(HOME, "clients", target, "config")], receipt: join(HOME, "memory", "setup", `${target}.json`), registration: ["kimi", "jcode", "opencode"].includes(target) ? null : [target, "mcp", "add", "amem", "--", "/runtime/bun", ENTRY, "mcp"], hooks: target === "opencode" || target === "gemini" ? [] : target === "jcode" ? jcodeHooks() : [{ command: `bun ${ENTRY} ${target === "kimi" ? "ingest kimi" : "hook PostToolUse"}` }] })) });
 
 test("installed smoke guards require the artifact bin outside checkout and child TMPDIR", () => {
   expect(() => assertInstalledEntry(ENTRY, ROOT, CHECKOUT, TMP)).not.toThrow();
@@ -59,6 +61,9 @@ test("installed smoke setup validation rejects apply, missing targets and escape
   expect(assertSetupPreview(plan(), HOME, ENTRY)).toHaveLength(16);
   expect(() => assertSetupPreview({ ...plan(), mode: "apply" }, HOME, ENTRY)).toThrow();
   expect(() => assertSetupPreview({ ...plan(), actions: plan().actions.slice(1) }, HOME, ENTRY)).toThrow();
+  for (const hooks of [[], jcodeHooks().slice(0, 1), jcodeHooks().map(hook => ({ ...hook, command: hook.command.replace(" hook jcode", " hook Stop") }))]) {
+    const stale = plan(); stale.actions[5]!.hooks = hooks; expect(() => assertSetupPreview(stale, HOME, ENTRY)).toThrow();
+  }
   const outside = plan(); outside.actions[0]!.files = ["/real-user/config"];
   expect(() => assertSetupPreview(outside, HOME, ENTRY)).toThrow("escaped");
 });

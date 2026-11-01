@@ -48,6 +48,8 @@ export function allowlistedSmokeEnv(home: string, runtimePath: string): NodeJS.P
     BUN_INSTALL: join(home, ".bun"), BUN_INSTALL_CACHE_DIR: join(home, ".cache", "bun"), npm_config_cache: join(home, ".cache", "npm"), npm_config_userconfig: join(home, ".config", "npmrc"), npm_config_globalconfig: join(home, ".config", "global-npmrc"), npm_config_prefix: join(home, ".npm-prefix"), npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", TZ: "UTC", NO_COLOR: "1", TERM: "dumb" };
 }
+/** Setup's hook quoting (src/setup.ts `quote`): single quotes, with embedded quotes closed and escaped. */
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 export function assertSetupPreview(value: unknown, home: string, entry: string): string[] {
   const plan = object(value);
   requireSmoke(plan.mode === "preview" && JSON.stringify(plan.targets) === JSON.stringify(["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini"]) && Array.isArray(plan.actions) && plan.actions.length === 8, "installed setup did not return the all-target dry-run plan");
@@ -55,7 +57,10 @@ export function assertSetupPreview(value: unknown, home: string, entry: string):
   const files: string[] = [];
   for (const raw of plan.actions) { const action = object(raw); requireSmoke(Array.isArray(action.files) && action.files.length > 0 && typeof action.receipt === "string", "installed setup inventory is incomplete");
     if (action.registration !== null) requireSmoke(Array.isArray(action.registration) && action.registration.includes(entry), "installed setup registration uses a stale package entry");
-    requireSmoke(Array.isArray(action.hooks) && (action.target === "jcode" || action.target === "opencode" || action.target === "gemini" ? action.hooks.length === 0 : action.hooks.length > 0) && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed client hooks use a stale package entry");
+    requireSmoke(Array.isArray(action.hooks) && (action.target === "opencode" || action.target === "gemini" ? action.hooks.length === 0 : action.hooks.length > 0) && action.hooks.every((hook: any) => typeof hook.command === "string" && hook.command.includes(entry)), "installed client hooks use a stale package entry");
+    // #203: jcode's two lifecycle observers each run the single-quoted `<bun> --smol <entry> hook jcode` command.
+    if (action.target === "jcode") requireSmoke(JSON.stringify(action.hooks.map((hook: any) => hook.event)) === '["post_tool","turn_end"]'
+      && action.hooks.every((hook: any) => hook.command.endsWith(` --smol ${shellQuote(entry)} hook jcode`) && hook.command.startsWith("'")), "installed jcode hooks are not the post_tool/turn_end `hook jcode` commands");
     for (const file of [...action.files, action.receipt]) { requireSmoke(typeof file === "string" && isAbsolute(file) && inside(home, file), "installed setup escaped its isolated HOME"); files.push(file); }
   }
   return files;
@@ -297,7 +302,13 @@ mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bu
     for (const action of [...plan.actions, ...agyPlan.actions]) {
       const source = readFileSync(action.files[0], "utf8"), document = object(action.target === "codex" ? Bun.TOML.parse(source) : JSON.parse(source));
       const server = object(document[action.target === "codex" ? "mcp_servers" : action.target === "jcode" ? "servers" : action.target === "opencode" ? "mcp" : "mcpServers"]).amem;
-      if (action.target === "jcode") { requireSmoke(object(server).shared === false && action.hooks.length === 0, "Jcode registration must be private per session and MCP-only"); requireSmoke(!Object.hasOwn(document, "mcpServers") && !existsSync(join(env.JCODE_HOME!, "config.toml")), "Jcode setup wrote an alias or hook configuration"); }
+      if (action.target === "jcode") {
+        requireSmoke(object(server).shared === false && !Object.hasOwn(document, "mcpServers"), "Jcode registration must be private per session under canonical servers");
+        // #203: config.toml carries exactly amem's `hook jcode` command on post_tool and turn_end (the clean HOME had no user hooks).
+        const hooks = object(object(Bun.TOML.parse(readFileSync(join(env.JCODE_HOME!, "config.toml"), "utf8"))).hooks);
+        const planned = action.hooks.map((hook: any) => hook.command);
+        requireSmoke(hooks.post_tool === planned[0] && hooks.turn_end === planned[1] && Object.keys(hooks).sort().join() === "post_tool,turn_end", "Jcode setup did not install exactly its post_tool and turn_end capture hooks");
+      }
       if (action.target === "gemini") requireSmoke(action.hooks.length === 0 && !existsSync(join(home, ".gemini", "config", "mcp_config.json")), "Gemini CLI registration must be MCP-only and never write the Antigravity file");
       if (action.target === "opencode") requireSmoke(object(server).type === "local" && object(server).cwd === undefined && action.hooks.length === 0 && !existsSync(join(dirname(action.files[0]), "plugins")), "OpenCode registration must be a local MCP-only server bound to the session directory");
       if (action.target === "agy") requireSmoke(object(server).cwd === projectDir && action.hooks.length === 0, "Antigravity registration has the wrong workspace binding");
