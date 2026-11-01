@@ -84,6 +84,15 @@ test("a deadline after one summary commits its prefix and resumes the remaining 
   expect((await f.drain()).map(row => row.event).sort()).toEqual(["Compact", "Recap", "Title"]);
 });
 
+test("a full spool reports its stop reason without advancing the unadmitted row", async () => {
+  const f = fixture(); f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "wait for capacity" });
+  const full = spyOn(spool, "stageTranscriptCapture").mockImplementation(async () => { throw new spool.HookSpoolFull(); });
+  try { expect(await f.scan()).toEqual({ offset: 0, stopReason: "spool_full" }); }
+  finally { full.mockRestore(); }
+  expect(await f.drain()).toHaveLength(0);
+  await f.scan(); await f.scan(); expect(await f.drain()).toHaveLength(1);
+});
+
 test("full summary screens precede byte caps and private spans are removed", async () => {
   const f = fixture();
   f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "public ".repeat(400) + " ghp_" + "A".repeat(36) },

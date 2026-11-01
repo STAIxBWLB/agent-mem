@@ -27,6 +27,9 @@ function durable(f: ReturnType<typeof hookFixture>, digest: string) {
   return new Set([...stored, ...pending].map(key));
 }
 async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, expected: ReadonlySet<string>) {
+  const previousHome = process.env.HOME;
+  // Replay under the same HOME binding that admitted this fixture's real CLI records.
+  process.env.HOME = f.env.HOME;
   const store = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
   try {
     // No additional hook calls: replay only already-durable receipts to verify idempotence.
@@ -38,9 +41,9 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
       const counts = new Map<string, number>(); for (const row of rows) counts.set(key(row), (counts.get(key(row)) ?? 0) + 1);
       throw Error("transcript summary replay lost or duplicated a row: " + JSON.stringify({ stored: rows.length, unique: counts.size, expected: expected.size,
         duplicateCounts: [...counts].filter(([, count]) => count > 1).map(([value, count]) => ({ key: createHash("sha256").update(value).digest("hex"), count })),
-        missing: [...expected].filter(value => !counts.has(value)).map(value => createHash("sha256").update(value).digest("hex")), durable: durable(f, digest).size }));
+        missingCount: [...expected].filter(value => !counts.has(value)).length, durable: durable(f, digest).size }));
     }
-  } finally { store.close(); }
+  } finally { store.close(); if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
 }
 async function measure() {
   let f = hookFixture();
