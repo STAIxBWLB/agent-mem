@@ -44,7 +44,7 @@ Bun.plugin({name:'hook-stage-markers',setup(b){b.onLoad({filter:/(session-brief-
   contents="globalThis.__amemHookStage('entry');"+contents;
   mark('const options = JSON.parse','input-start');mark('if (!Number.isFinite(options.deadlineAt)','input-done');
   mark('const expectedScope = hookCaptureScope','scope-start');
-  mark('const project = resolveAlias','project-start');mark('let captured = false;','project-done');
+  mark('let project: string | undefined;','project-start');mark('let captured = false;','project-done');
   mark('const { CaptureStore } = await import','capture-import');
   mark('await emit({ context: "", captured','capture-done');
  }else if(path.endsWith('/hook-project.ts')){

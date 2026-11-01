@@ -25,7 +25,7 @@ test("a positively observed pre-spawn deadline branch has zero children and dura
     expect(late.workers).toEqual([]); expect(late.pending).toBe(true);
     expect(late.evidence.filter(row => row.phase === "deadline_skip")).toHaveLength(1);
     expect(verifyHookProcessObservation("PostToolUse", late.workers, late.evidence, late.pending)).toEqual({ deferred: true });
-    expect(control.result.exitCode, control.result.stderr.toString()).toBe(0); expect(control.workers).toHaveLength(1);
+    expect(control.result.exitCode, control.result.stderr.toString()).toBe(0); expect(control.workers.filter(row => row.kind === "worker")).toHaveLength(1);
     expect(control.evidence.filter(row => row.phase === "deadline_skip")).toEqual([]);
     expect(verifyHookProcessObservation("PostToolUse", control.workers, control.evidence, control.pending)).toEqual({ deferred: false });
   } finally { late.f.close(); control.f.close(); }
@@ -34,7 +34,7 @@ test("a positively observed pre-spawn deadline branch has zero children and dura
 test("the zero-worker exception never accepts missing receipts, a second worker, false deadline evidence or absent pending intake", () => {
   const late = fixture(true), control = fixture(false);
   try {
-    expect(control.result.exitCode, control.result.stderr.toString()).toBe(0); expect(control.workers).toHaveLength(1);
+    expect(control.result.exitCode, control.result.stderr.toString()).toBe(0); expect(control.workers.filter(row => row.kind === "worker")).toHaveLength(1);
     expect(() => verifyHookProcessObservation("PostToolUse", [], control.evidence, true)).toThrow("owned-process observation");
     expect(() => verifyHookProcessObservation("PostToolUse", [...control.workers, ...control.workers], control.evidence, true)).toThrow("owned-process observation");
     expect(() => verifyHookProcessObservation("PostToolUse", [], late.evidence.filter(row => row.phase !== "deadline_skip"), true)).toThrow("owned-process observation");

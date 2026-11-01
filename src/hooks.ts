@@ -12,7 +12,7 @@ import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 
-import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
 const HANDLER_MS = 140;
@@ -68,13 +68,14 @@ async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefi
 }
 const publicBefore = async (policy: MemoryPolicy, value: unknown, deadline: number) => await before(policy.screen(value), deadline) === true;
 
-async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void): Promise<string | undefined> {
+async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void): Promise<string | undefined> {
   const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
   let length = 0, pending = "", body = "";
   const line = (text: string) => {
     if (!text) return;
     const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown };
     if (onRss && Object.hasOwn(value, "rss")) onRss(value.rss);
+    else if (onTranscript && Object.hasOwn(value, "transcript")) onTranscript(value.transcript);
     else { if (body) throw new Error("worker output bound"); body = text; }
   };
   try {
@@ -105,22 +106,26 @@ async function parentProject(options: HookOptions, base: string, deadline: numbe
 
 /** Only capture work uses a short-lived owned child; native handles remain in this CLI.
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const metadata = await parentProject(options, base, workDeadline);
-  if (!metadata.receipt || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false };
+  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false, ...(transcript !== undefined ? { transcript: { stopReason: "deadline" as const } } : {}) };
   const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
   const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
   // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
-  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
+  const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
     policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
   const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
     { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
   let exited = false;
   const tracker = new HookWorkerRss(child.pid);
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
-  const output = boundedOutput(child.stdout, value => tracker.frame(value));
+  const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
+    if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
+    if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
+    result.transcript = { ...result.transcript, ...value };
+  });
   const exit = child.exited.then(code => { exited = true; return code; });
   const stop = () => {
     if (exited) return;
@@ -133,7 +138,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   try {
     const answer = await Promise.race([
       Promise.all([exit, output]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+      new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
     ]);
     if (!answer || !answer[1]) return result;
     const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
@@ -221,42 +226,12 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
   finally { result.rssKB = usage.rssKB; result.rawRssKB = usage.rawRssKB; result.rssSources = usage.rssSources; }
 }
 
-/** A transcript final hook uses one Bun image, with only directly owned native helpers. */
-async function transcriptInParent(input: unknown, options: HookOptions, base: string, deadline: number, pending: PendingHookCapture) {
-  const metadata = await parentProject(options, base, deadline - WORKER_CLEANUP_MS);
-  const { cwd, scope, project, usage } = metadata;
-  const captureRemaining = () => deadline - performance.now();
-  const result = { context: unavailable, captured: false, valid: false, rssKB: usage.rssKB, rawRssKB: usage.rawRssKB,
-    rssSources: usage.rssSources, transcript: undefined as HookTranscriptProgress | undefined };
-  try {
-    if (input !== null && typeof input === "object" && "transcript_path" in input) try {
-      const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
-      if (project !== undefined || scope !== undefined && hookCaptureScope(cwd, base) === scope) {
-        result.transcript = await scanHookTranscriptTail(input, { ...options, cwd, base, deadline: Math.min(deadline - 20, performance.now() + 60) });
-      }
-    } catch { /* Ordinary durable capture remains independent of transcript failure. */ }
-    if (project === undefined || scope === undefined || captureRemaining() < 8) return result;
-    const { CaptureStore } = await import("./memory/capture.ts");
-    let store: InstanceType<typeof CaptureStore> | undefined;
-    try {
-      const drained = await drainHookCaptures({ ...options, cwd, base, project: resolveAlias(base, project), expectedScope: scope, timeRemaining: captureRemaining }, (row, receipt) => {
-        store ??= new CaptureStore({ memoryDir: base, project: resolveAlias(base, project), cwd, busyTimeoutMs: 0, hookBudget: captureRemaining });
-        return store.append({ ...row, project: store.key }, { receipt });
-      });
-      result.captured = drained.captured.includes(pending.name);
-      result.valid = hookCaptureScope(cwd, base) === scope;
-    } finally { store?.close(); }
-    return result;
-  } catch { return result; }
-}
-
 /** A full pending tier must still be drainable. Recover bounded old records before retrying
  * publication; this path uses one helper too, and the current normalized event stays pending. */
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
-  const work = (pending: PendingHookCapture) => event === "Stop" || event === "SessionEnd"
-    ? transcriptInParent(input, options, base, deadline, pending)
-    : hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event);
+  const transcript = (event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input && typeof input.transcript_path === "string" ? input : undefined;
+  const work = (pending: PendingHookCapture) => hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript);
   let result: Awaited<ReturnType<typeof work>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }

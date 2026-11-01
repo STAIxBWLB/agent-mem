@@ -39,7 +39,7 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
     const scan = events.findIndex(event => event.phase === "scan"), native = events.filter(event => event.phase === "native");
     expect(scan).toBeGreaterThan(0); expect(native.length).toBeGreaterThan(0);
     expect(events.slice(scan).some(event => event.phase === "native")).toBe(false);
-    expect(native.every(event => event.known && event.pid === events[scan]!.pid)).toBe(true);
+    expect(native.every(event => event.known && event.pid === result.pid)).toBe(true);
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
     {
@@ -59,4 +59,47 @@ test("a final hook reaps blocked directly owned metadata before writing known RS
   const f = hookFixture();
   try { await f.seed(); const result = await hookTimeoutProbe(f, "Stop", true); expect(result.remainingProcesses).toBe(0); }
   finally { f.close(); }
+});
+
+for (const platform of ["linux", "darwin-codepath"] as const) test("a slow synchronous capture statement remains killable with known child provenance: " + platform, async () => {
+  const f = hookFixture(), preload = join(f.root, "slow-store.ts"), entered = join(f.root, "slow-store-entered"), transcript = join(f.root, "slow-transcript.jsonl");
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "summary before slow store" }) + "\n");
+  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
+if(${JSON.stringify(platform === "darwin-codepath")})Object.defineProperty(process,'platform',{value:'darwin'});
+globalThis.__slowCapture=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
+Bun.plugin({name:'slow-store',setup(b){b.onLoad({filter:/[/]memory[/]capture\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),anchor='  constructor(opts: CaptureOptions) {';
+ if(source.split(anchor).length!==2)throw Error('slow store anchor changed');
+ return {loader:'ts',contents:source.replace(anchor,anchor+'(globalThis as any).__slowCapture();')};
+});}});
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
+  try {
+    await f.seed();
+    const result = f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    expect(metric.wallMs).toBeLessThan(2200); expect(rssSourcesKnown(metric.rssSources!)).toBe(true); expect(metric.rssSources!.unavailable).toBe(0);
+    if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
+    // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
+    expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
+    expect(f.rows().filter(row => row.excerpt === "summary before slow store")).toHaveLength(1);
+  } finally { f.close(); }
+});
+
+for (const event of ["Stop", "SessionEnd"] as const) test("the next SessionStart sees the previous final summary: " + event, async () => {
+  const f = hookFixture(), transcript = join(f.root, "fresh-summary.jsonl");
+  try {
+    await f.seed();
+    for (let session = 0; session < 3; session++) {
+      const marker = "fresh " + event + " " + session, at = new Date(Date.now() + session * 1000).toISOString();
+      writeFileSync(transcript, [ { type: "system", subtype: "away_summary", timestamp: at, content: marker + " recap" },
+        { type: "user", isCompactSummary: true, timestamp: at, message: { content: marker + " compact" } } ].map(row => JSON.stringify(row)).join("\n") + "\n");
+      expect(f.runFunctional(event, { session_id: "previous-" + session, transcript_path: transcript }).exitCode).toBe(0);
+      const next = f.runFunctional("SessionStart", { session_id: "next-" + session });
+      expect(next.exitCode, next.stderr.toString()).toBe(0);
+      const context = JSON.parse(next.stdout.toString()).hookSpecificOutput.additionalContext;
+      expect(context).toContain(marker + " recap"); expect(context).toContain(marker + " compact");
+    }
+  } finally { f.close(); }
 });

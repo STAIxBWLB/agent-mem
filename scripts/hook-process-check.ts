@@ -15,7 +15,7 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
     if (buns.length !== 0 || native.length < 1 || native.length > 65 || skipped.length) fail();
     return { deferred: false };
   }
-  if (native.length || buns.length > 1 || checks.length !== 1) fail();
+  if (native.length > 64 || buns.length > 1 || checks.length !== 1) fail();
   if (buns.length === 1) {
     if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000) fail();
     return { deferred: false };

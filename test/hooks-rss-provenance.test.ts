@@ -48,3 +48,27 @@ Bun.plugin({name:'native-usage-fault',setup(b){b.onLoad({filter:/hook-native\\.t
     expect(() => measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576)).toThrow("provenance unknown");
   } finally { f.close(); }
 });
+
+test("malformed transcript progress cannot certify otherwise known RSS", async () => {
+  const f = hookFixture(), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  const preload = join(f.root, "progress-fault.ts"), marker = join(f.root, "progress-fault-entered"), transcript = join(f.root, "transcript.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "public progress fixture" }) + "\n");
+  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
+globalThis.__progressFault=()=>writeFileSync(${JSON.stringify(marker)},'entered');
+Bun.plugin({name:'progress-write-fault',setup(b){b.onLoad({filter:/session-brief-worker\\.ts$/},({path})=>{
+ const contents=readFileSync(path,'utf8'),needle='JSON.stringify({ transcript })';
+ if(contents.split(needle).length!==2)throw Error('progress fault anchor changed');
+ return {loader:'ts',contents:contents.replace(needle,'(globalThis.__progressFault(),JSON.stringify({transcript:{stopReason:"invalid"}}))')};
+});}});
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
+`);
+  try {
+    await f.seed();
+    const result = f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(result.stdout.length).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    expect(metric.rssSources!.unavailable).toBeGreaterThan(0);
+    expect(() => measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576)).toThrow("provenance unknown");
+  } finally { f.close(); }
+});
