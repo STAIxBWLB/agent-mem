@@ -118,3 +118,10 @@ test("subagent summaries keep attribution and project policy refuses PII and den
   await f.scan(); const rows = await f.drain();
   expect(rows).toHaveLength(1); expect(rows[0]?.subagent).toBe(true);
 });
+
+test("untimed content keeps its first fallback timestamp after rotation", async () => {
+  const f = fixture(), row = { type: "system", subtype: "away_summary", content: "untimed recap" };
+  f.add(row); await f.scan(); const first = await f.drain();
+  renameSync(f.transcript, f.transcript + ".old"); f.add(row); await f.scan();
+  expect(await f.drain()).toEqual(first);
+});

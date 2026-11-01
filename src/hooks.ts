@@ -1,4 +1,3 @@
-import { scanHookTranscriptTail } from "./hook-transcript.ts";
 import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
@@ -211,7 +210,10 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
   if (event === "Stop" || event === "SessionEnd") {
-    try { await scanHookTranscriptTail(input, { ...options, base, deadline }); }
+    try {
+      const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+      await scanHookTranscriptTail(input, { ...options, base, deadline });
+    }
     catch { /* A transcript failure must not discard the ordinary hook capture. */ }
   }
   let result: Awaited<ReturnType<typeof hookWorker>> | undefined;

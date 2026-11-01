@@ -53,6 +53,7 @@ function cursorDatabase(file: string, dev: string, ino: string): Database {
   const db = new Database(file);
   try {
     db.run("PRAGMA busy_timeout = 0");
+    db.run("CREATE TABLE IF NOT EXISTS fallback (digest TEXT PRIMARY KEY, at TEXT NOT NULL)");
     db.run("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL, dev TEXT NOT NULL, ino TEXT NOT NULL, size INTEGER NOT NULL, title TEXT NOT NULL, at TEXT NOT NULL, readStart INTEGER NOT NULL, readAt TEXT NOT NULL, skipping INTEGER NOT NULL CHECK(skipping IN (0,1)))");
     // Persist the fallback read time before publication: crash/replay uses the same timestamp.
     db.query("INSERT OR IGNORE INTO cursor VALUES (1,0,?,?,0,'','',0,?,0)").run(dev, ino, new Date().toISOString());
@@ -119,7 +120,16 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
         const title = summary.event === "Title" ? hash(summary.text) : "";
         if (!title || title !== cursor.title) {
           try {
-            const staged = await stageTranscriptCapture({ agent: "claude", event: summary.event, excerpt: summary.text, at: summary.at ?? (cursor.at || cursor.readAt), session,
+            let at = summary.at ?? cursor.at;
+            if (!at) {
+              // Native timestamps normally identify summaries. Untimed content retains its
+              // first fallback across rotation, so an unchanged row cannot get a new receipt.
+              const digest = hash(JSON.stringify([summary.event, summary.text, summary.subagent ?? false]));
+              db.query("INSERT OR IGNORE INTO fallback VALUES (?,?)").run(digest, cursor.readAt);
+              at = (db.query("SELECT at FROM fallback WHERE digest=?").get(digest) as { at: string }).at;
+              if (!timestamp(at)) throw new Error("transcript cursor unavailable");
+            }
+            const staged = await stageTranscriptCapture({ agent: "claude", event: summary.event, excerpt: summary.text, at, session,
               ...(summary.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true });
             if (staged && title) cursor.title = title;
           } catch (error) {
