@@ -38,13 +38,13 @@ function members(pgid: number): number[] {
 function pendingInvocation(event: string, excerpt: string, agent = "claude"): boolean {
   const dir = join(f.base, "hook-spool");
   for (const folder of [dir, join(dir, ".capacity")]) for (const name of existsSync(folder) ? readdirSync(folder) : []) {
-    if (!/^hook-(?:v2-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
+    if (!/^hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json(?:\.draining-[a-f0-9]{24})?$/.test(name)) continue;
     try {
       const file = join(folder, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.mode & 0o077 || stat.size > 72 * 1024) continue;
       const row = JSON.parse(readFileSync(file, "utf8")), after = lstatSync(file);
       if (stat.dev !== after.dev || stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) continue;
-      if (row.schema === "agent-mem.hook-capture" && row.format === 2 && row.cwd === f.cwd && row.capture?.agent === agent && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
+      if (row.schema === "agent-mem.hook-capture" && row.format === (agent === "claude" ? 2 : 3) && row.cwd === f.cwd && row.capture?.agent === agent && row.capture?.event === event && row.capture?.excerpt === excerpt) return true;
     } catch { /* Incomplete/unreadable evidence is never the positive deferral exception. */ }
   }
   return false;

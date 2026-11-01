@@ -17,13 +17,15 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 // #199: v1 records (closed key set, no format field) are read, never written. Every 0.14-0.17 decoder deletes a record it cannot verify,
 // so a record that adds a field publishes under a name the v1 pattern does not match (`hook-v2-`); old versions then ignore it
 // (they still count it toward their file and byte caps). A later format that adds fields takes a new prefix again.
-const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-";
+// #203: format 3 (`hook-v3-`) carries every record 0.18.0 cannot decode, today jcode-agent rows; 0.14-0.18 match neither
+// `hook-` nor `hook-v2-` for it, so they leave it alone. Claude native rows stay format 2, byte for byte, so 0.18.0 keeps draining them.
+const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-", FORMAT_V3 = 3, PREFIX_V3 = "hook-v3-";
 const RECORD_BYTES = HOOK_INPUT_BYTES + 8192, MAX_FILES = 256, MAX_BYTES = 2 * 1024 * 1024;
 const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
 // ponytail: a finite native admission reserve covers deferred replay, not unlimited locked intake.
 // Upgrade: coordinated append-only capacity accounting and observable backpressure at exhaustion.
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
-const namePattern = /^(hook-(?:v2-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
+const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
@@ -284,7 +286,8 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record;
     if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.cwd !== "string" || typeof value.nonce !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
       || value.scope !== null && (typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope))) return undefined;
-    const v1 = value.schema === SCHEMA && !("format" in value), current = value.schema === FAMILY && value.format === FORMAT;
+    const v1 = value.schema === SCHEMA && !("format" in value), v3 = value.schema === FAMILY && value.format === FORMAT_V3;
+    const current = value.schema === FAMILY && value.format === FORMAT || v3;
     if (!v1 && !current) return typeof value.schema === "string" ? { value, bytes, unknown: true } : undefined;
     const keys = current ? 1 : 0;
     if (![5 + keys, 6 + keys].includes(Object.keys(value).length)
@@ -293,7 +296,7 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
-      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || !(HOOK_EVENTS as readonly string[]).includes(c.event)
+      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude") === v3 || !(HOOK_EVENTS as readonly string[]).includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
@@ -504,7 +507,9 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   if (toolEvent && capture.excerpt === "[secret-screened]") return undefined;
   if (!await policy.screen({ cwd, capture })) return undefined;
   const scope = hookCaptureScope(cwd, base) ?? null, nonce = randomBytes(16).toString("hex");
-  const record: Record = { schema: FAMILY, format: FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
+  // Claude rows keep 0.18.0's format 2; any other agent needs format 3 so a 0.18.0 drain cannot retire it as corrupt.
+  const v3 = capture.agent !== "claude";
+  const record: Record = { schema: FAMILY, format: v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   let destination = dir, deferred = false, backlog = false;
@@ -533,7 +538,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
       deferred = true;
     }
   }
-  const name = `${PREFIX}${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
+  const name = `${v3 ? PREFIX_V3 : PREFIX}${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
   finally { rmSync(temporary, { force: true }); }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };

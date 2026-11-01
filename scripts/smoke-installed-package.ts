@@ -108,7 +108,7 @@ export function assertHookMetric(before: string, after: string): void {
 export interface HookExpectation { project: string; cwd: string; event: string; agent: string; marker: string }
 function pendingIdentity(item: any): string | undefined {
   if (typeof item?.path !== "string") return undefined;
-  return /^hook-spool\/(?:\.capacity\/)?(hook-(?:v2-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json)(?:\.draining-[a-f0-9]{24})?$/.exec(item.path)?.[1];
+  return /^hook-spool\/(?:\.capacity\/)?(hook-(?:v[23]-)?[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json)(?:\.draining-[a-f0-9]{24})?$/.exec(item.path)?.[1];
 }
 export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, beforeRaw: unknown, raw: unknown, expected: HookExpectation): void {
   assertHookMetric(beforeMetrics, afterMetrics);
@@ -120,7 +120,7 @@ export function assertHookEvidence(beforeMetrics: string, afterMetrics: string, 
   const retained = before.captureKnown === true && evidence.captureKnown === true && Array.isArray(evidence.rows) && evidence.rows.some((row: any) => Number.isSafeInteger(row.id) && row.id > 0 && !oldRows.has(row.id) && row.project === expected.project && capture(row));
   const pending = before.pendingKnown === true && evidence.pendingKnown === true && Array.isArray(evidence.pending) && evidence.pending.some((item: any) => {
     if (!item || !pendingIdentity(item) || oldPending.has(pendingIdentity(item)) || item.type !== "file" || item.nlink !== 1 || item.project !== expected.project || typeof item.path !== "string") return false;
-    const name = /^hook-spool\/(?:\.capacity\/)?hook-(?:v2-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
+    const name = /^hook-spool\/(?:\.capacity\/)?hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json(?:\.draining-[a-f0-9]{24})?$/.exec(item.path), row = item.value;
     return !!name && name[1] === createHash("sha256").update(expected.cwd).digest("hex") && (row?.schema === "agent-mem.hook-capture/v1" || row?.schema === "agent-mem.hook-capture" && row.format === 2) && row.cwd === expected.cwd && row.nonce === name[3]
       && (row.scope === null ? name[2] === "0".repeat(64) : row.scope === name[2]) && capture(row.capture) && typeof row.capture.at === "string" && Number.isFinite(Date.parse(row.capture.at));
   });

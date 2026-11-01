@@ -68,7 +68,8 @@ const age = (f: ReturnType<typeof fixture>, days: number) => {
 test("AC2: a newer schema stays pending through drain and maintenance until the TTL, then retires with a counted reason", async () => {
   const f = fixture();
   const staged = (await stageHookCapture("PostToolUse", { tool_response: "from the future" }, f.options))!;
-  rewrite(f, staged.name, value => { value.format = 3; value.extra = { added: true }; });
+  // #203 made format 3 real (hook-v3-), so the unknown newer format here is 4.
+  rewrite(f, staged.name, value => { value.format = 4; value.extra = { added: true }; });
   expect((await drain(f)).rows).toEqual([]);
   await stageHookCapture("PostToolUse", { tool_response: "maintenance pass" }, { cwd: f.root, base: f.base });
   expect(pending(f.base).some(name => name.startsWith(staged.name))).toBe(true);
