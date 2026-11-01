@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.18.0
 
 - Claude tool capture prepends a deterministic, screened tool-input line (512 UTF-8 bytes, within the total excerpt cap). Selected-project capture recall refills the existing capture slots with a fixed conversational-event weight and one best row per session, preserving the curated cohort; timeline/show retain every row. Capture schema and existing rows are unchanged (#196).
 - **Console Recap panel** (#194). On demand, shows the selected project's current SessionStart context with screened coverage, partial status, conservative token bound and generation time. It is a fresh machine-policy read from private scratch, not a stored copy of a previous session's injected brief; no repository section is available in the console and no hook output or capture data is added.
