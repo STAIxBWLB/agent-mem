@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { hookNative, hookProcessSignature } from "../src/hook-native.ts";
+import { hookNative, hookProcessSignature, type HookNativeUsage } from "../src/hook-native.ts";
+import * as resources from "../src/hook-resources.ts";
 import { processSignature } from "../src/memory/platform.ts";
 
 function existsPid(pid: number): boolean {
@@ -111,4 +112,14 @@ test("the exit observation barrier does not mistake a running child for a reaped
     child.kill("SIGKILL"); await child.exited;
     expect((await observedPidExit(child.pid, 500)).gone).toBe(true);
   } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
+});
+
+test.skipIf(process.platform !== "linux")("terminal supervisor telemetry survives a missing late parent VmHWM read", async () => {
+  const lateRead = spyOn(resources, "processImageRssKB").mockReturnValue(undefined);
+  try {
+    const usage: HookNativeUsage = { rssKB: 0, rawRssKB: 0 };
+    expect(await hookNative(["/usr/bin/printf", "metadata\n"], { PATH: process.env.PATH }, () => 1000, usage)).toEqual({ status: 0, stdout: "metadata\n" });
+    expect(usage.rssSources).toEqual({ vmhwm: 1, platformRusage: 0, rawFallback: 0, unavailable: 0 });
+    expect(usage.rssKB).toBeGreaterThan(0);
+  } finally { lateRead.mockRestore(); }
 });
