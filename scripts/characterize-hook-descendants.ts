@@ -22,10 +22,10 @@ try {
   // authorized per-descendant observer is the upgrade, never an inferred tree total.
   const reason = "resourceUsage() belongs to a Bun-spawned handle after exit. The harness owns the CLI handle; Git and watchdog sleep are spawned natively below supervisors and have no separate Bun handles.";
   console.log(JSON.stringify({ characterization: "hook-descendants/v1", platform: process.platform, bun: Bun.version,
-    invocations: 1, includedInGate: false, rssCoverage: HOOK_RSS_COVERAGE,
+    invocations: 1, includedInGate: false, gateCoverage: HOOK_RSS_COVERAGE,
     cliRawMaxRssBytes: child.resourceUsage()?.maxRSS ?? null, cliUsageScope: "outer CLI handle only; raw rusage is not a process-tree maximum",
     observedOwnedImages: { supervisors: supervisors.length, workers: images.filter(row => row.kind === "worker").length },
-    nativeCommandsObserved: [...new Set(supervisors.map(row => basename(row.argv[6]!)))],
+    nativeCommandsInSupervisorArgv: [...new Set(supervisors.map(row => basename(row.argv[6]!)))],
     descendants: ["git", "sleep"].map(command => ({ command, maxRssBytes: null, status: "not measured", reason })) }, null, 2));
 } finally {
   if (owned) { if (!exited) owned.kill("SIGKILL"); await owned.exited; }
