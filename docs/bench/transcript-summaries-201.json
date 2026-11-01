@@ -588,7 +588,7 @@
       ]
     },
     {
-      "commit": "04df65e78dd0",
+      "commit": "04df65e78dd05b24b4ca385280a1ef13aad59e8d",
       "experiment": "Eight admissions per invocation; did not resolve RSS gate and was reverted.",
       "attempts": [
         {

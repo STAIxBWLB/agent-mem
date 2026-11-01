@@ -32,7 +32,7 @@ A later workload adds 100 distinct title revisions after the three initial summa
 | `ea5fc73` | 87.45 ms / 82.25 MB | 88.59 ms / 77 MB | 117.71 ms / 101.50 MB | RSS miss |
 | `04df65e` | 92.03 ms / 78.75 MB | 93.31 ms / 77 MB | 112.65 ms / 129.50 MB | RSS miss |
 
-The second head tested an eight-admission ceiling. It did not resolve the RSS gate and that extra ceiling was withdrawn. Its 14 over-limit samples had CLI RSS at most 50.54 MB and raw production RSS at most 90.79 MB, while recorded production RSS reached 129.50 MB. The exact accounting cause remains unconfirmed; #198 covers that work. Production RSS accounting was not changed, and no retry followed either RSS miss.
+The second head tested an eight-admission ceiling. It did not resolve the RSS gate and that extra ceiling was withdrawn. Its 14 over-limit samples had CLI RSS at most 50.54 MB and raw production RSS at most 90.79 MB, while recorded production RSS reached 129.50 MB. The exact accounting cause remains unconfirmed; #198 covers that work. Production RSS accounting was not changed, and the budget helper did not retry either RSS miss.
 
 The current production source is byte-identical to `ea5fc73`. Both failed attempts, group probes, outlier samples and raw log filenames are retained in the numeric receipt. The complete physical sample streams remain in `transcript-ea5fc73.log` and `transcript-04df65e.log`. AC4 remains unmet.
 
