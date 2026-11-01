@@ -49,3 +49,10 @@ test("a second teardown read after exit cannot erase an earlier valid live snaps
   const value = t.finish(128 * 1024, "linux");
   expect(value.rssKB).toBe(37672); expect(rssSourcesKnown(value.rssSources)).toBe(true);
 });
+
+test("platform worker rusage remains a floor for the combined report rather than being added twice", () => {
+  const t = new HookWorkerRss(100); t.frame([0]); start(t, 1, 101);
+  t.frame([2, 1, 5000, 5000, 2, 0]); t.frame([3, 35000, 35000, 2]);
+  expect(t.finish(40000, "darwin").rssKB).toBe(40000);
+  expect(t.finish(45000, "darwin").rssKB).toBe(45000);
+});

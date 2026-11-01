@@ -62,7 +62,8 @@ export class HookWorkerRss {
     const self = this.self;
     const hwm = Math.max(this.image.hwmKB ?? 0, self?.source === "VmHWM" ? self.kb : 0);
     const virtual = Math.max(this.image.virtualKB ?? 0, self?.source === "VmPeak-bound" ? self.kb : 0);
-    const own = selectHookRss(platform, hwm, rawWorkerKB, virtual);
+    const ownRaw = platform !== "linux" && self?.source === "platform-rusage" ? self.kb : rawWorkerKB;
+    const own = selectHookRss(platform, hwm, ownRaw, virtual);
     const sources = [rssSource(own)];
     const native = new Map<number, HookRssReading>();
     for (const [id, value] of this.native) {
@@ -78,6 +79,7 @@ export class HookWorkerRss {
     }
     const rssSources = combineRssSources(...sources);
     if (this.invalid) rssSources.unavailable++;
-    return { rssKB: own.kb + nativeKB, rawRssKB: rawWorkerKB, rssSources };
+    const combined = own.kb + nativeKB;
+    return { rssKB: platform === "linux" ? combined : Math.max(combined, rawWorkerKB), rawRssKB: rawWorkerKB, rssSources };
   }
 }
