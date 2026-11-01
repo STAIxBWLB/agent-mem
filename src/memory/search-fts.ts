@@ -1,4 +1,4 @@
-import { captureEventWeight, captureEventWeightSql, captureWeightedScore, rankedScoreSql, rankedScoreSqlDetails, type ScoreFactors } from "./search-score.ts";
+import { captureEventWeightSql, rankedScoreSql, rankedScoreSqlDetails, type ScoreFactors } from "./search-score.ts";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -275,7 +275,7 @@ export class ScreenedSearchIndex<T> {
 }
 
 interface RawCaptureRow { id: number; at: string; project: string; agent: string; event: string; tool: string | null; paths: string; status: string | null; excerpt: string; session?: string | null; subagent?: number | null }
-export interface CaptureSearchOptions { weightEvents?: boolean; onePerSession?: boolean; now?: number; candidateWindow?: number }
+export interface CaptureSearchOptions { weightEvents?: boolean; onePerSession?: boolean; now?: number }
 
 /**
  * The capture leg of #13 search: BM25 over the excerpts of one capture shard (`machine/<id>` of a project shard,
@@ -287,43 +287,39 @@ export function captureSearch(dir: string, q: string, limit: number, notBefore?:
   const match = ftsTerms(q);
   if (!match || !Number.isSafeInteger(limit) || limit < 1 || !fts5Available() || !existsSync(join(dir, "capture.db"))) return [];
   const weightEvents = options.weightEvents !== false, onePerSession = options.onePerSession ?? weightEvents;
-  const pageSize = onePerSession ? Math.max(options.candidateWindow ?? Math.max(limit * 4, 32), 1) : limit;
   const eventWeight = captureEventWeightSql("r.event");
   const weightedOrder = `bm25(fts) * ${eventWeight}, r.id`;
-  const order = weightEvents ? weightedOrder : "rank";
-  const selected = new Map<string, { row: CaptureRow; rank: number; rawWeightedRank: number }>(); let offset = 0;
+  const selected: { row: CaptureRow; rank: number }[] = [], groups = new Set<string>();
   let db: Database | undefined;
   try {
     db = new Database(join(dir, "capture.db"), { readonly: true });
     db.run("PRAGMA busy_timeout = 3000");
     if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'fts' AND type = 'table'").get()) return [];
-    // `notBefore` (retention cutoff, `since`) runs inside the query: rows past it never take a LIMIT slot.
-    for (;;) {
-      const matchWhere = notBefore === undefined ? "fts MATCH ?" : "fts MATCH ? AND r.at >= ?";
-      const sql = `SELECT r.*, bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE ${matchWhere} ORDER BY ${order} LIMIT ?${onePerSession ? " OFFSET ?" : ""}`;
-      const paging = onePerSession ? [pageSize, offset] : [limit];
-      const rows = (notBefore === undefined
-        ? db.query(sql).all(match, ...paging)
-        : db.query(sql).all(match, notBefore, ...paging)) as (RawCaptureRow & { rank: number })[];
-      for (const r of rows) {
-        const session = typeof r.session === "string" && /^[a-f0-9]{16}$/.test(r.session) ? r.session : undefined;
-        const group = onePerSession && session ? `session:${session}` : `row:${r.id}`;
-        const row: CaptureRow = { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt,
-          // #173 attribution, mirrored from capture-input.ts captureAttribution (this module stays import-light for the ablation harness).
-          ...(session ? { session } : {}), ...(r.subagent === 1 ? { subagent: true as const } : {}) };
-        const candidate = { row, rank: r.rank, rawWeightedRank: r.rank * (weightEvents ? captureEventWeight(r.event) : 1) }, previous = selected.get(group);
-        if (!previous || options.now !== undefined && onePerSession
-          && (captureWeightedScore(r.rank, r.event, r.at, options.now) > captureWeightedScore(previous.rank, previous.row.event, previous.row.at, options.now)
-            || captureWeightedScore(r.rank, r.event, r.at, options.now) === captureWeightedScore(previous.rank, previous.row.event, previous.row.at, options.now) && r.id < previous.row.id)) selected.set(group, candidate);
+    // Filter first, then sort once. In the grouped path the first row of each session is
+    // its best complete-score match, so stopping at limit cannot hide a better unread row.
+    const matchWhere = notBefore === undefined ? "fts MATCH ?" : "fts MATCH ? AND r.at >= ?";
+    const args: (string | number)[] = notBefore === undefined ? [match] : [match, notBefore];
+    const order = onePerSession
+      ? `${rankedScoreSql("bm25(fts)")} * ${weightEvents ? eventWeight : "1.0"} DESC, r.id`
+      : weightEvents ? weightedOrder : "rank";
+    // The capture tier is an existing score input, projected only for the shared SQL recipe.
+    const sql = `SELECT r.*, ${onePerSession ? "'capture' AS tier, " : ""}bm25(fts) AS rank FROM fts JOIN rows r ON r.id = fts.rowid WHERE ${matchWhere} ORDER BY ${order}${onePerSession ? "" : " LIMIT ?"}`;
+    args.push(onePerSession ? new Date(options.now ?? Date.now()).toISOString() : limit);
+    const statement = db.query(sql);
+    const rows = (onePerSession ? statement.iterate(...args) : statement.all(...args)) as Iterable<RawCaptureRow & { rank: number }>;
+    for (const r of rows) {
+      const session = typeof r.session === "string" && /^[a-f0-9]{16}$/.test(r.session) ? r.session : undefined;
+      if (onePerSession && session) {
+        if (groups.has(session)) continue;
+        groups.add(session);
       }
-      if (!onePerSession || selected.size >= limit || rows.length < pageSize) break;
-      offset += rows.length;
+      const row: CaptureRow = { id: r.id, at: r.at, project: r.project, agent: r.agent, event: r.event, tool: r.tool, paths: JSON.parse(r.paths) as string[], status: r.status, excerpt: r.excerpt,
+        // #173 attribution, mirrored from capture-input.ts captureAttribution (this module stays import-light for the ablation harness).
+        ...(session ? { session } : {}), ...(r.subagent === 1 ? { subagent: true as const } : {}) };
+      selected.push({ row, rank: r.rank });
+      if (selected.length === limit) break;
     }
-    const result = [...selected.values()];
-    if (weightEvents && options.now !== undefined) result.sort((a, b) =>
-      captureWeightedScore(b.rank, b.row.event, b.row.at, options.now!) - captureWeightedScore(a.rank, a.row.event, a.row.at, options.now!) || a.row.id - b.row.id);
-    else if (weightEvents) result.sort((a, b) => a.rawWeightedRank - b.rawWeightedRank || a.row.id - b.row.id);
-    return result.slice(0, limit).map(({ row, rank }) => ({ row, rank }));
+    return selected;
   } catch { return []; }
   finally { db?.close(); }
 }

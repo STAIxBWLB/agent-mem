@@ -13,7 +13,7 @@ import { memoryHome } from "./home.ts";
 import { machineId, type Machine } from "./machine.ts";
 import { assertProjectActive } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
-import { captureWeightedScore, rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
+import { rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
 export type { SearchScoreDetails } from "./search-score.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
@@ -1151,10 +1151,10 @@ export class MemoryStore {
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));
     const baseline = hits.slice(0, limit), captureSlots = baseline.filter(hit => hit.source === "capture").length;
     if (!captureSlots || !captureShard) return { engine: "fts5", hits: baseline };
-    // Search the weighted BM25 window independently and widen only when duplicates leave too few sessions.
-    // Recency ranks the retained session representatives; their exposed score remains the legacy unweighted score.
+    // Stream session representatives in complete weighted-score order; the legacy
+    // baseline above still owns noncapture slots and exposed scores remain unweighted.
     const weighted = captureSearch(captureShard, q, captureSlots, captureNotBefore,
-      { weightEvents: true, onePerSession: true, now, candidateWindow: Math.max(limit * 4, 32) });
+      { weightEvents: true, onePerSession: true, now });
     const replacements = weighted.map(({ row, rank }) => {
       const score = rankedScore(rank, "capture", row.at, now), hit: SearchHit = { source: "capture", score, capture: row };
       if (f.explain) hit.scoreDetails = rankedScoreDetails("capture", rank, "capture", row.at, now, score);
