@@ -268,7 +268,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const jcode = jcodeHookCapture(process.env);
       if (!jcode) return "";
       const result = await captureAndWork(jcode.event, jcode.input, { cwd: jcode.cwd, agent: "jcode" }, canonicalPath(memoryHome()), startedAt + deadlineMs - 3);
-      if (result) { childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; dropped = "dropped" in result && result.dropped === true; }
+      if (result) { childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true; }
       return "";
     }
     const reader = Bun.stdin.stream().getReader();
