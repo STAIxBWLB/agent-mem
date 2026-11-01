@@ -511,7 +511,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
 }
 
 /** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
-export async function stageTranscriptCapture(input: CaptureFields, options: Options): Promise<PendingHookCapture | undefined> {
+export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string): Promise<PendingHookCapture | undefined> {
   if (options.policy?.host || belowFloor(options.base) || input.agent !== "claude" || !["Title", "Recap", "Compact"].includes(input.event)) return;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
@@ -521,7 +521,7 @@ export async function stageTranscriptCapture(input: CaptureFields, options: Opti
     text => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, denyPaths: configured.denyPaths });
   if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) return;
-  return publishCapture(input.event, capture, options, hash(JSON.stringify(capture)).slice(0, 32));
+  return publishCapture(input.event, capture, options, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
 }
 
 function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {

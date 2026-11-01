@@ -159,7 +159,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
               if (!timestamp(at)) throw new Error("transcript cursor unavailable");
             }
             const staged = await stageTranscriptCapture({ agent: "claude", event: summary.event, excerpt: summary.text, at, session,
-              ...(summary.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true });
+              ...(summary.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true }, summary.event === "Title" ? `title:${cursor.offset + start}` : undefined);
             if (staged && title) cursor.title = title;
           } catch (error) {
             // Advance only through durable/refused rows; a full spool retries this line
