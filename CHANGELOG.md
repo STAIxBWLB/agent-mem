@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **Transcript hooks always account for their stop** (#221). A Claude Stop or SessionEnd hook with a transcript that runs out of time before or around its worker now records `transcriptStopReason: "deadline"`, but only when the remaining time measured at that exit is below the worker's start threshold; a hook that staging declines (policy, format floor, invalid input) still records no reason. A transcript scan that throws records the new reason `unavailable`, which no budget clause accepts as progress. Production deadlines and limits are unchanged.
+- **Compatibility with N-1 (0.19.0):** metrics, 0.19.0's `readMetrics` keeps any well-formed hook row and passes `transcriptStopReason` through without checking its value, and no 0.19.0 code path acts on that field, so a row with `unavailable` is read unchanged and ignored. The field is a measurement signal only. Hook spool, shards, candidates, indexes and sync: unchanged.
+
 ## 0.19.0
 
 - Hook budget profiles state `images: bun+supervisor; descendants: not measured` for each sample and spell the conservative source tag `vmpeak-bound`, retaining its wire code and numeric counters. The literal post-merge-main ten-suite receipt includes ordinary, jcode and transcript workloads; descendant usage remains a separate characterization, with no threshold, timeout, retry or dependency change (#198).

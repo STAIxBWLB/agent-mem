@@ -93,10 +93,16 @@ async function measure() {
           const db = new Database(file, { readonly: true });
           try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; offsetSource = "cursor"; }
           catch (error) {
+            // #221: cursorDatabase creates the file before its one init commit; a hook killed at its deadline in
+            // between leaves a schema-less file that the next call initializes. Uncreated, but only with a deadline stop.
+            const schemaless = /no such table: cursor/.test(String((error as Error).message)) && stopReason === "deadline" && metric.transcriptOffset === undefined && previous === 0;
+            if (schemaless) { offset = 0; offsetSource = "uncreated"; }
+            else {
             if ((error as { code?: string }).code !== "SQLITE_READONLY_ROLLBACK" || stopReason !== "deadline" || metric.transcriptOffset !== undefined) throw error;
             // This serial fixture has one offset-advancing transaction per call. Do not
             // heal its hot journal here: the next measured hook owns the recovery cost.
             offset = previous; offsetSource = "rollback_pending";
+            }
           } finally { db.close(); }
         }
         let rss: ReturnType<typeof measuredHookRss>;

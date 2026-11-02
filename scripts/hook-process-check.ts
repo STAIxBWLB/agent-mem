@@ -16,9 +16,19 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
     return { deferred: false };
   }
   if (native.length > 64 || buns.length > 1 || checks.length !== 1) fail();
+  const late = evidence.filter(row => row.phase === "late_check");
+  if (late.length > 1 || late.length === 1 && skipped.length) fail();
   if (buns.length === 1) {
     if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000) fail();
+    if (late.length === 1 && (!Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! < 5000)) fail();
     return { deferred: false };
+  }
+  // #221: the second pre-spawn exit, after native metadata. Accepted only with positive evidence measured at that guard:
+  // the first check passed, the late check saw under 5 ms left, and the capture stayed durably pending.
+  if (late.length === 1) {
+    if (attempts.length > 64 || !pending || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
+      || !Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! >= 5000) fail();
+    return { deferred: true };
   }
   if (attempts.length || skipped.length !== 1 || !pending || checks[0]!.host !== 0 || skipped[0]!.host !== 0 || skipped[0]!.remainingUs !== checks[0]!.remainingUs || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! >= 5000) fail();
   return { deferred: true };
