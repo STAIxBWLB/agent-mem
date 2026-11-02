@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
-        ref: [623a9cff904b5666ece4cd8eaaf4dd8968a84c80]
+        ref: [73a95623cabe1e8c78f2cee4e449e91de897e11d]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
