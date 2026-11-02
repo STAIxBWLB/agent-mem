@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HookSpoolFull, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { normalizeCaptureFields } from "../src/memory/capture-input.ts";
@@ -96,6 +96,38 @@ test("a newest native in a 31-summary foreign reserve is preferred over every ol
   const after = pending(f.base), loss = drops(f.base);
   expect(after).toHaveLength(32); expect(loss.scope_capacity).toBe(1); expect(loss.summary_capacity ?? 0).toBe(0);
   expect(32 + 1).toBe(after.length + (loss.scope_capacity ?? 0));
+});
+
+test("a cooperative 33-record reserve overshoot cannot prove native absence from its first 32 summaries", async () => {
+  const f = fixture(), foreign = foreignCwd(f, "overshot-reserve"), at = Date.now() - 120_000;
+  const source = await title(f, foreign, 0, at), dir = join(f.base, "hook-spool"), destination = join(dir, ".capacity");
+  const template = JSON.parse(readFileSync(join(dir, source.name), "utf8")) as Record<string, unknown>; rmSync(join(dir, source.name));
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  // Cooperative admission can race past the cap. The real directory iteration,
+  // rather than lexical order, determines which publication lies beyond the bound.
+  for (let index = 0; index < 33; index++) {
+    const nonce = index.toString(16).padStart(32, "0"), name = source.name.replace(/[a-f0-9]{32}\.json$/, nonce + ".json");
+    const capture = normalizeCaptureFields({ agent: "claude", event: "Title", at: new Date(at + index).toISOString(), excerpt: `overshot summary ${index}` });
+    writeFileSync(join(destination, name), JSON.stringify({ ...template, nonce, capture }), { mode: 0o600, flag: "wx" });
+  }
+  const lastEntry = () => {
+    const reader = opendirSync(destination);
+    try {
+      let name: string | undefined;
+      for (let index = 0; index < 33; index++) { const entry = reader.readSync(); expect(entry).not.toBeNull(); name = entry!.name; }
+      expect(reader.readSync()).toBeNull();
+      return name!;
+    } finally { reader.closeSync(); }
+  };
+  const hiddenName = lastEntry(), hiddenFile = join(destination, hiddenName), hidden = JSON.parse(readFileSync(hiddenFile, "utf8")) as Record<string, unknown>;
+  const capture = normalizeCaptureFields({ agent: "jcode", event: "PostToolUse", at: new Date(at + 33).toISOString(), excerpt: "native beyond reserve inventory bound" });
+  // Keep the same valid v3 name/nonce and inode: no rename can change enumeration order.
+  writeFileSync(hiddenFile, JSON.stringify({ ...hidden, capture }), { mode: 0o600 });
+  expect(lastEntry()).toBe(hiddenName);
+  const before = pending(f.base); expect(before).toHaveLength(33); expect(before.filter(row => row.event === "Title")).toHaveLength(32);
+  await expect(stageHookCapture("SessionStart", { prompt: "refuse incomplete all-summary proof" }, f.options)).rejects.toBeInstanceOf(HookSpoolFull);
+  unchanged(before); expect(pending(f.base)).toHaveLength(33);
+  expect(drops(f.base).summary_capacity ?? 0).toBe(0); expect(drops(f.base).scope_capacity ?? 0).toBe(0);
 });
 
 /** Raw immutable clones represent a previously accepted N-1 backlog, not new quota admission. */
