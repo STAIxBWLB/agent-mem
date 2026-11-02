@@ -34,13 +34,13 @@ if (import.meta.main) {
   const version = previousRelease(current, Object.keys(doc.versions));
   if (!version) throw new Error(`no published ${NAME} release at or below ${current}`);
   const dist = doc.versions[version]!.dist;
+  // Fail closed: the tarball must come from the registry host and carry a sha512 integrity to check against.
+  if (new URL(dist.tarball).host !== "registry.npmjs.org" || new URL(dist.tarball).protocol !== "https:") throw new Error(`unexpected tarball host for ${version}: ${dist.tarball}`);
+  if (!dist.integrity?.startsWith("sha512-")) throw new Error(`no sha512 integrity for ${version}`);
   const tarball = await fetch(dist.tarball);
   if (!tarball.ok) throw new Error(`tarball download failed: ${tarball.status}`);
   const bytes = new Uint8Array(await tarball.arrayBuffer());
-  if (dist.integrity?.startsWith("sha512-")) {
-    const digest = new Bun.CryptoHasher("sha512").update(bytes).digest("base64");
-    if (`sha512-${digest}` !== dist.integrity) throw new Error(`tarball integrity mismatch for ${version}`);
-  }
+  if (`sha512-${new Bun.CryptoHasher("sha512").update(bytes).digest("base64")}` !== dist.integrity) throw new Error(`tarball integrity mismatch for ${version}`);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `agent-mem-${version}.tgz`);
   writeFileSync(file, bytes);
