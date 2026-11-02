@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { stageHookCapture, drainHookCaptures } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { captureDropSummary } from "../src/memory/metrics.ts";
+import { seedHookBacklog } from "./fakes/hooks-backlog.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [], originalHome = process.env.HOME;
 afterEach(() => {
@@ -19,11 +20,11 @@ function age(file: string) {
   value.capture.at = old.toISOString(); writeFileSync(file, JSON.stringify(value)); utimesSync(file, old, old);
 }
 
-test("SessionStart skips active inventory and all retirement, retains known work, and publishes only its reserve", async () => {
+test("SessionStart skips active inventory and active retirement, retains known work, and publishes only its reserve", async () => {
   const f = fixture(); await f.seed();
   const preload = join(f.root, "session-no-maintenance.ts"), marker = join(f.root, "forbidden-session-scan"), spool = resolve(import.meta.dir, "../src/hook-spool.ts");
   // These are failure tripwires on the actual module, not substitutes for its policy or binding helpers.
-  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';Bun.plugin({name:'session-no-maintenance',setup(builder){builder.onLoad({filter:/hook-spool\\.ts$/},({path})=>{if(path!==${JSON.stringify(spool)})return;let source=readFileSync(path,'utf8');const active='  const dir = capacity ? join(directory(base), ".capacity")',retire='  const retired = new Set<string>();';if(source.split(active).length!==2||source.split(retire).length!==2)throw new Error('tripwire source moved');source=source.replace(active,${JSON.stringify(`  if (!capacity) { writeFileSync(${JSON.stringify(marker)}, "active"); throw new Error("SessionStart active inventory"); }\n`)}+active).replace(retire,${JSON.stringify(`  writeFileSync(${JSON.stringify(marker)}, "retirement"); throw new Error("SessionStart retirement");\n`)}+retire);return {loader:'ts',contents:source};});}});`);
+  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';Bun.plugin({name:'session-no-maintenance',setup(builder){builder.onLoad({filter:/hook-spool\\.ts$/},({path})=>{if(path!==${JSON.stringify(spool)})return;let source=readFileSync(path,'utf8');const active='  const dir = capacity ? join(directory(base), ".capacity") : directory(base), maximum = capacity',retire='  const retired = new Set<string>(), cwdHash';if(source.split(active).length!==2||source.split(retire).length!==2)throw new Error('tripwire source moved');source=source.replace(active,${JSON.stringify(`  if (!capacity) { writeFileSync(${JSON.stringify(marker)}, "active"); throw new Error("SessionStart active inventory"); }\n`)}+active).replace(retire,${JSON.stringify(`  if (!capacity) { writeFileSync(${JSON.stringify(marker)}, "retirement"); throw new Error("SessionStart active retirement"); }\n`)}+retire);return {loader:'ts',contents:source};});}});`);
   const result = f.runFunctional("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
   expect(result.exitCode, result.stderr.toString()).toBe(0); expect(result.stdout.length).toBeGreaterThan(0);
   expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
@@ -34,7 +35,27 @@ test("SessionStart skips active inventory and all retirement, retains known work
   expect(value.capture.event).toBe("SessionStart");
 });
 
-test("reserve-only SessionStart preserves exact-once replay and refuses at its unchanged file cap", async () => {
+for (const existingCursor of [false, true]) test("an aged reserve without pressure leaves maintenance cursors untouched: existing=" + existingCursor, async () => {
+  const f = fixture(), options = { cwd: f.cwd, base: f.base };
+  const first = (await stageHookCapture("SessionStart", { prompt: "aged reserve row" }, options))!;
+  const file = join(reserved(f.base), first.name); age(file);
+  const body = readFileSync(file, "utf8"), maintenance = join(f.base, "hook-spool", ".maintenance"), cursor = join(maintenance, "reserve");
+  if (existingCursor) {
+    mkdirSync(maintenance, { mode: 0o700 }); writeFileSync(cursor, "7", { mode: 0o600 });
+    utimesSync(cursor, new Date(0), new Date(0));
+  }
+  const before = existingCursor ? { body: readFileSync(cursor, "utf8"), modified: statSync(cursor).mtimeMs } : undefined;
+  const next = await stageHookCapture("SessionStart", { prompt: "room remains in reserve" }, options);
+  expect(next?.deferred).toBe(true); expect(publications(reserved(f.base))).toHaveLength(2);
+  expect(readFileSync(file, "utf8")).toBe(body); expect(captureDropSummary(f.base)).toEqual({});
+  expect(existsSync(maintenance)).toBe(existingCursor);
+  if (before) {
+    expect(readdirSync(maintenance)).toEqual(["reserve"]);
+    expect(readFileSync(cursor, "utf8")).toBe(before.body); expect(statSync(cursor).mtimeMs).toBe(before.modified);
+  }
+});
+
+test("reserve-only SessionStart preserves exact-once replay and refuses at its protected future-schema global file cap", async () => {
   const f = fixture(), options = { cwd: f.cwd, base: f.base };
   const first = await stageHookCapture("SessionStart", { prompt: "first reserved session" }, options);
   expect(first?.deferred).toBe(true); expect(publications(join(f.base, "hook-spool"))).toEqual([]);
@@ -45,22 +66,25 @@ test("reserve-only SessionStart preserves exact-once replay and refuses at its u
     expect((await drainHookCaptures({ ...options, project: f.project }, append)).captured).toEqual([]);
     expect(store.rows({ project: f.project })).toHaveLength(1);
   } finally { store.close(); }
-  for (let n = 0; n < 32; n++) expect(await stageHookCapture("SessionStart", { prompt: `retained session ${n}` }, options)).toBeDefined();
+  await seedHookBacklog(options, { active: 0, reserve: 32, futureSchema: true, label: "protected future session" });
   await expect(stageHookCapture("SessionStart", { prompt: "over reserve" }, options)).rejects.toThrow("hook storage full");
   expect(publications(reserved(f.base))).toHaveLength(32);
+  expect(publications(join(f.base, "hook-spool"))).toHaveLength(0);
+  expect(captureDropSummary(f.base)).toEqual({});
 });
 
-test("reserve-only SessionStart enforces its unchanged byte cap without inspecting active data", async () => {
+test("reserve-only SessionStart refuses a protected future-schema byte cap below its file cap", async () => {
   const f = fixture(), options = { cwd: f.cwd, base: f.base };
-  const input = { prompt: "경".repeat(2000), tool_input: { paths: Array.from({ length: 32 }, (_, n) => `src/${n}-` + "경".repeat(390)) } };
-  let accepted = 0;
-  for (; accepted < 32; accepted++) {
-    try { await stageHookCapture("SessionStart", input, options); }
-    catch (error) { expect((error as Error).message).toBe("hook storage full"); break; }
-  }
-  expect(accepted).toBeGreaterThan(0); expect(accepted).toBeLessThan(32);
-  const names = publications(reserved(f.base)); expect(names).toHaveLength(accepted);
-  expect(names.reduce((sum, name) => sum + statSync(join(reserved(f.base), name)).size, 0)).toBeLessThanOrEqual(256 * 1024);
+  await seedHookBacklog(options, { active: 0, reserve: 4, futureSchema: true, label: "protected future byte-bound session" });
+  const names = publications(reserved(f.base));
+  for (const name of names) { const file = join(reserved(f.base), name); writeFileSync(file, readFileSync(file, "utf8").padEnd(64 * 1024, " ")); }
+  const before = names.map(name => readFileSync(join(reserved(f.base), name), "utf8"));
+  await expect(stageHookCapture("SessionStart", { prompt: "over reserve bytes" }, options)).rejects.toThrow("hook storage full");
+  expect(publications(reserved(f.base))).toEqual(names); expect(names).toHaveLength(4);
+  expect(names.map(name => readFileSync(join(reserved(f.base), name), "utf8"))).toEqual(before);
+  expect(names.reduce((sum, name) => sum + statSync(join(reserved(f.base), name)).size, 0)).toBe(256 * 1024);
+  expect(publications(join(f.base, "hook-spool"))).toHaveLength(0);
+  expect(captureDropSummary(f.base)).toEqual({});
 });
 
 test("non-SessionStart maintains expired undrainable reserve even when active admission has room", async () => {

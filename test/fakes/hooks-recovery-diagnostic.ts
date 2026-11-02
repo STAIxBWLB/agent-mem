@@ -27,9 +27,9 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  }else{
  add('  if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp)','globalThis.__recoveryNote(20,options.timeRemaining?.()??-1,Number(!!stamp),Number(options.expectedScope===undefined||options.expectedScope===stamp));');
  add('  const policy = createStandalonePolicy(options.policy), dir = directory(base);','let __seen=0,__cwd=0,__stamp=0;');
- const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;';
+ const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);';
  if(contents.split(filter).length!==2)throw new Error('recovery stamp anchor changed');
- contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(m[3]===stamp)__stamp++;}return m&&m[2]===hash(cwd)&&m[3]===stamp;');
+ contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(accepts(m[3]))__stamp++;}return m&&m[2]===hash(cwd)&&accepts(m[3]);');
  add('  let remaining = DRAIN_BYTES, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
  add('    if (options.timeRemaining && options.timeRemaining() < 8','globalThis.__recoveryNote(21,options.timeRemaining?.()??-1,captured.length,blocked);');
  add('      append(input, hash(record.bytes));','globalThis.__recoveryNote(22,options.timeRemaining?.()??-1);');
@@ -38,7 +38,7 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  if(contents.split(caught).length!==2)throw new Error('recovery catch anchor changed');
  contents=contents.replace(caught,'    } catch(error) { globalThis.__recoveryNote(24, /lock|busy/i.test(error?.message??"")?1:2); blocked++; } // Transient failure');
  add('  const queued = inventory.filter(row => !retired.has(row.name));','globalThis.__recoveryNote(25,inventory.length,retired.size);');
- add('  const name = \`\${v3 ? PREFIX_V3 : PREFIX}\${hash(cwd)}-\${scope ?? \"0\".repeat(64)}-\${nonce}.json\`, temporary = join(writing, name);','globalThis.__recoveryNote(27,Number(deferred),Number(backlog));');
+ add('  const temporary = join(writing, name);','globalThis.__recoveryNote(27,Number(deferred),Number(backlog));');
  }
  return {loader:'ts',contents};});}});
 const spawn=Bun.spawn.bind(Bun);
