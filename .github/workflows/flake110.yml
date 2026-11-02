@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
-        ref: [945fdc8730242d0b99b4b3d3ff4fe331679762ec]
+        ref: [fe6907621ebb28a0acfbdda860d729f0ad6d1948]
         shard: [1]
     runs-on: ${{ matrix.os }}
     steps:
