@@ -48,6 +48,16 @@ jobs:
       - name: Installed tarball smoke in a clean HOME
         if: always() && !cancelled()
         run: bun scripts/smoke-installed-package.ts
+      # #199 AC6: this build against the previous published release on one shared home (spool, indexes, candidates, floors).
+      # The release is resolved from the registry against package.json, so no edit is needed per release.
+      - name: Previous-release (N-1) compatibility
+        if: always() && !cancelled()
+        env:
+          AMEM_PREV_REQUIRED: "1"
+        run: |
+          read -r AMEM_PREV_VERSION AMEM_PREV_ROOT < <(bun scripts/previous-release.ts "$RUNNER_TEMP/amem-prev")
+          echo "previous release: $AMEM_PREV_VERSION"
+          AMEM_PREV_ROOT="$AMEM_PREV_ROOT" bun test --timeout 20000 test/previous-release.test.ts
       # npm 11 normalizes the manifest at publish and warns (0.3.1: "./bin/amem.js"); keep package.json already normalized.
       - name: package.json needs no npm auto-correction
         if: always() && !cancelled()
