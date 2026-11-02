@@ -131,7 +131,8 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
       if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
       if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
-      result.transcript = { ...result.transcript, ...value };
+      // A reported scan fault stays reported: a later worker deadline frame cannot turn it into accepted progress (#221).
+      result.transcript = { ...result.transcript, ...value, ...(result.transcript?.stopReason === "unavailable" ? { stopReason: "unavailable" as const } : {}) };
     });
     const stop = () => {
       if (exited) return;
@@ -245,7 +246,12 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
 async function captureAndWork(event: string, input: unknown, options: HookOptions, base: string, deadline: number) {
   if (event === "SessionStart") return sessionInParent(input, options, base, deadline);
   const transcript = (event === "Stop" || event === "SessionEnd") && input !== null && typeof input === "object" && "transcript_path" in input && typeof input.transcript_path === "string" ? input : undefined;
-  const work = (pending: PendingHookCapture) => hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript);
+  // #221: a transcript-bearing hook that ends without worker progress reports `deadline` only on positive evidence:
+  // the remaining time, measured at that exit, is below the worker's own start threshold. Policy, floor or invalid-input
+  // exits keep reporting nothing, so they cannot pass for bounded progress.
+  const deadlineEvidence = () => transcript !== undefined && deadline - WORKER_CLEANUP_MS - performance.now() < 5;
+  const withDeadline = <T extends { transcript?: HookTranscriptProgress }>(value: T): T => value.transcript === undefined && deadlineEvidence() ? { ...value, transcript: { stopReason: "deadline" } } : value;
+  const work = async (pending: PendingHookCapture) => withDeadline(await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript));
   let result: Awaited<ReturnType<typeof work>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }
@@ -261,7 +267,11 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
       return { ...result, pending: false, dropped: true };
     }
   }
-  if (!pending) return result ? { ...result, pending: false } : undefined;
+  if (!pending) {
+    if (result) return { ...result, pending: false };
+    // Staging declined (policy, floor, invalid input) or ran out of time: only measured time makes it a deadline stop.
+    return deadlineEvidence() ? { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, pending: false, transcript: { stopReason: "deadline" as const } } : undefined;
+  }
   result ??= await work(pending);
   return { ...result, pending: !result.captured };
 }

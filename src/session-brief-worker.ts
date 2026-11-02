@@ -65,7 +65,7 @@ if (import.meta.main) {
         const scanned = await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
           deadline: Math.min(performance.now() + remaining() - 20, performance.now() + 60) });
         if (scanned) progress(scanned);
-      } catch { /* Ordinary durable capture is independent. */ }
+      } catch { progress({ stopReason: "unavailable" }); /* Ordinary durable capture is independent; the fault is reported, never counted as progress (#221). */ }
     }
     if (project === undefined) stop();
     let captured = false;

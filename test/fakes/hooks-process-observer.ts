@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
+export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
 export function hookProcessObserver(root: string, stallWorker = false) {
@@ -16,7 +16,10 @@ note('preload');
 Bun.plugin({name:'observe-worker-precheck',setup(builder){builder.onLoad({filter:/[/]hooks\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),guard='  if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };';
  if(source.split(guard).length!==2)throw new Error('worker precheck observation anchor changed');
- return {loader:'ts',contents:source.replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false};}')};
+ // #221: the post-metadata guard is a second pre-spawn exit; record its measured remaining time and whether identity resolved.
+ const late='  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return';
+ if(source.split(late).length!==2)throw new Error('worker late-check observation anchor changed');
+ return {loader:'ts',contents:source.replace(late,'  globalThis.__hookProcessNote("late_check",{remainingUs:Math.floor((workDeadline - performance.now())*1000),host:Number(!!metadata.receipt)});'+late).replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false};}')};
 });}});
 globalThis.__hookProcessNote=note;
 const original=Bun.spawn.bind(Bun);
@@ -46,7 +49,7 @@ if(stallWorker&&process.argv[1]===worker){
       if (!existsSync(evidence)) return [];
       return readFileSync(evidence, "utf8").split("\n").filter(Boolean).map(line => {
         const row = JSON.parse(line) as HookProcessEvidence;
-        if (!["preload", "precheck", "deadline_skip", "attempt", "returned"].includes(row.phase) || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !Number.isSafeInteger(row.loads) || row.loads <= 0) throw new Error("invalid numeric process evidence");
+        if (!["preload", "precheck", "deadline_skip", "late_check", "attempt", "returned"].includes(row.phase) || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !Number.isSafeInteger(row.loads) || row.loads <= 0) throw new Error("invalid numeric process evidence");
         return row;
       });
     },
