@@ -53,14 +53,12 @@ test("malformed transcript progress cannot certify otherwise known RSS", async (
   const f = hookFixture(), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   const preload = join(f.root, "progress-fault.ts"), marker = join(f.root, "progress-fault-entered"), transcript = join(f.root, "transcript.jsonl");
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "public progress fixture" }) + "\n");
-  // #226: the parent now scans, so the worker reports no progress of its own. The fault therefore emits the malformed
-  // progress frame directly once the worker has read its options; the provenance assertion below is unchanged.
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
 globalThis.__progressFault=()=>writeFileSync(${JSON.stringify(marker)},'entered');
 Bun.plugin({name:'progress-write-fault',setup(b){b.onLoad({filter:/session-brief-worker\\.ts$/},({path})=>{
- const contents=readFileSync(path,'utf8'),needle='    const options = JSON.parse(await readOptions())';
- if(contents.split(needle).length!==2||contents.split('JSON.stringify({ transcript })').length!==2)throw Error('progress fault anchor changed');
- return {loader:'ts',contents:contents.replace(needle,'    globalThis.__progressFault();progress({stopReason:"invalid"} as any);\\n'+needle)};
+ const contents=readFileSync(path,'utf8'),needle='JSON.stringify({ transcript })';
+ if(contents.split(needle).length!==2)throw Error('progress fault anchor changed');
+ return {loader:'ts',contents:contents.replace(needle,'(globalThis.__progressFault(),JSON.stringify({transcript:{stopReason:"invalid"}}))')};
 });}});
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
 `);
