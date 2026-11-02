@@ -10,6 +10,8 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { budgetGroup, r2RssLimitMB, rssVerdict, runnerFingerprint } from "./budget-attempt.ts";
+import { stallAdvisory } from "./hook-timing-check.ts";
+let stallWarned = false;
 
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
@@ -94,10 +96,16 @@ async function measure() {
           const db = new Database(file, { readonly: true });
           try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; offsetSource = "cursor"; }
           catch (error) {
+            // #221: cursorDatabase creates the file before its one init commit; a hook killed at its deadline in
+            // between leaves a schema-less file that the next call initializes. Uncreated, but only with a deadline stop.
+            const schemaless = /no such table: cursor/.test(String((error as Error).message)) && stopReason === "deadline" && metric.transcriptOffset === undefined && previous === 0;
+            if (schemaless) { offset = 0; offsetSource = "uncreated"; }
+            else {
             if ((error as { code?: string }).code !== "SQLITE_READONLY_ROLLBACK" || stopReason !== "deadline" || metric.transcriptOffset !== undefined) throw error;
             // This serial fixture has one offset-advancing transaction per call. Do not
             // heal its hot journal here: the next measured hook owns the recovery cost.
             offset = previous; offsetSource = "rollback_pending";
+            }
           } finally { db.close(); }
         }
         let rss: ReturnType<typeof measuredHookRss>;
@@ -118,7 +126,17 @@ async function measure() {
           || [...summaryEnds].some(([value, end]) => end <= offset && !available.has(value))) {
           throw Error("transcript budget scan progress unavailable: " + JSON.stringify(sample));
         }
-        if (reasonOnlyStreak >= 3) throw Error("transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample));
+        if (reasonOnlyStreak >= 3) {
+          const message = "transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample);
+          // ponytail: on hosted macOS only, this one clause (#221 finding B, worker start cost) is advisory (owner decision
+          // 2026-11-02, #226). Ceiling: that runner and this clause; every other progress, no-loss, RSS and wall clause, and
+          // this clause on dgx02, local runs and hosted ubuntu, stay hard failures. Upgrade path: the #226 killable-child
+          // scan redesign, then delete this branch.
+          if (!stallAdvisory(process.env)) throw Error(message);
+          if (!stallWarned) { console.warn(`::warning title=Transcript stall (advisory on hosted macOS, #226)::${message}`); stallWarned = true; }
+          console.log(JSON.stringify({ diagnostic: "transcript-budget-stall-advisory", ...sample }));
+          reasonOnlyStreak = 0;
+        }
         previous = offset; previousSummaries = durableSummaries; previousAvailable = available;
         if ([...expected].every(value => available.has(value))) { complete = true; break; }
       }

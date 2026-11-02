@@ -1,5 +1,11 @@
 import type { HookWorkerProcess, HookProcessEvidence } from "../test/fakes/hooks-process-observer.ts";
 
+/** The caller's durable-intake gate (#221): only an absent Bun worker makes a capture eligible for the pending check.
+ * Native metadata supervisors are observed as workers too, and a late deferral has them. */
+export function deferralPendingEligible(workers: readonly HookWorkerProcess[]): boolean {
+  return !workers.some(row => row.kind === "worker");
+}
+
 /** R1 observation contract. A deferred optional worker needs positive branch and durable-intake evidence. */
 export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStart", workers: readonly HookWorkerProcess[], evidence: readonly HookProcessEvidence[], pending: boolean): { deferred: boolean } {
   const buns = workers.filter(row => row.kind === "worker"), native = workers.filter(row => row.kind === "native");
@@ -16,9 +22,19 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
     return { deferred: false };
   }
   if (native.length > 64 || buns.length > 1 || checks.length !== 1) fail();
+  const late = evidence.filter(row => row.phase === "late_check");
+  if (late.length > 1 || late.length === 1 && skipped.length) fail();
   if (buns.length === 1) {
     if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000) fail();
+    if (late.length === 1 && (!Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! < 5000)) fail();
     return { deferred: false };
+  }
+  // #221: the second pre-spawn exit, after native metadata. Accepted only with positive evidence measured at that guard:
+  // the first check passed, the late check saw under 5 ms left, and the capture stayed durably pending.
+  if (late.length === 1) {
+    if (attempts.length > 64 || !pending || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
+      || !Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! >= 5000) fail();
+    return { deferred: true };
   }
   if (attempts.length || skipped.length !== 1 || !pending || checks[0]!.host !== 0 || skipped[0]!.host !== 0 || skipped[0]!.remainingUs !== checks[0]!.remainingUs || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! >= 5000) fail();
   return { deferred: true };

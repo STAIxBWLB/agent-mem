@@ -16,7 +16,7 @@ import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts
 import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
-import { verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
+import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = r2RssLimitMB("hooks");
@@ -80,7 +80,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   // Register every observed group before any assertion, including a malformed/extra-worker observation.
   for (const worker of workers) ownedWorkers.set(worker.pid, worker.detached);
   const evidence = observer.evidence().slice(beforeEvidence).filter(row => row.pid === result.pid);
-  const pending = workers.length === 0 && (jcode ? pendingInvocation("PostToolUseFailure", invocationExcerpt("PostToolUse", input.tool_response), "jcode") : pendingInvocation(event, invocationExcerpt(event, input.tool_response)));
+  const pending = deferralPendingEligible(workers) && (jcode ? pendingInvocation("PostToolUseFailure", invocationExcerpt("PostToolUse", input.tool_response), "jcode") : pendingInvocation(event, invocationExcerpt(event, input.tool_response)));
   try {
     const observation = verifyHookProcessObservation(event, workers, evidence, pending);
     if (observation.deferred) {
