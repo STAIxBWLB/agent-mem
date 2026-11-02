@@ -12,7 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        ref: [f63a0db683855c14a4dc60eea7ed8ff030feb2cf, 089d52962445a34f42d0075870d90a35bcf0b3ac]
+        ref: [f63a0db683855c14a4dc60eea7ed8ff030feb2cf]
+        shard: [1, 2, 3]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -30,6 +31,9 @@ jobs:
           a = "      const rows = f.rows();\n"
           assert s.count(a) == 1
           s = s.replace(a, a + "      if (!rows.some(row => row.event === \"Compact\" && row.excerpt.includes(marker + \" compact\")) || !rows.some(row => row.event === \"Recap\" && row.excerpt.includes(marker + \" recap\"))) console.log(\"FLAKE110 \" + JSON.stringify({ event, session, metric: readMetrics(f.base).filter(row => row.kind === \"hook\").at(-1) }));\n")
+          b = "    expect(f.rows().filter(row => row.excerpt === \"summary before slow store\")).toHaveLength(1);\n"
+          assert s.count(b) == 1
+          s = s.replace(b, "    if (f.rows().filter(row => row.excerpt === \"summary before slow store\").length !== 1) console.log(\"FLAKE110S \" + JSON.stringify({ platform, event, metrics: readMetrics(f.base).filter(row => row.kind === \"hook\").slice(-2) }));\n" + b)
           open(p, "w").write(s)
           PY
       - name: Loop the file 20 times
@@ -38,5 +42,5 @@ jobs:
             bun test test/hook-transcript-worker.test.ts > run.log 2>&1 || true
             echo "RUN $i $(grep -cE '^\(fail\)' run.log) failures"
             grep -E '^\(fail\)' run.log | sed "s/^/RUN $i /" || true
-            grep '^FLAKE110 ' run.log | sed "s/^/RUN $i /" || true
+            grep '^FLAKE110' run.log | sed "s/^/RUN $i /" || true
           done
