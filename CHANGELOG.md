@@ -6,6 +6,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - **A reader no longer refuses at the moment a public prune finishes** (#225). When the cooperating writer unlinked its intent and lock between a reader's open and fstat, the reader saw a link count of 0 and refused with `public prune view unavailable`, although its wait bound had time left. That disappearance is now treated like an absent file: the bytes read through the old descriptor are discarded and the path is resolved again within the same deadline. Any other link count, a foreign mode or a symlink still refuses, and the 3 s wait bound is unchanged.
 - **Compatibility with N-1 (0.19.0), #225:** no format change. This reader-side change does not alter the hook spool, shards, candidates, indexes or sync.
+- **Hosted R2 RSS gate uses p95 over a fixed count** (#228, owner decision 2026-11-02). The actual-hook budget scripts gate RSS on the nearest-rank p95 of each group's fixed samples (transcript groups: each logical run's peak, 40 per group) instead of the single maximum. The limit stays 100 MB everywhere except one named exception: hosted GitHub Linux transcript StopBurst gates at p95 < 110 MB until the unexplained shift of about 7 MB from 9986fe6 is understood. Every sample is still logged, unknown telemetry fails closed, nothing is retried, and each run logs a runner fingerprint. Measurement scripts only; no product code changes.
+- **Compatibility with N-1 (0.19.0), #228:** measurement scripts and documentation only. This change does not alter the hook spool, shards, candidates, indexes or sync.
 
 ## 0.19.0
 

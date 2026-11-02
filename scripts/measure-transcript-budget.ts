@@ -9,7 +9,7 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
-import { budgetGroup } from "./budget-attempt.ts";
+import { budgetGroup, r2RssLimitMB, rssVerdict, runnerFingerprint } from "./budget-attempt.ts";
 
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
@@ -52,6 +52,7 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 }
 async function measure() {
   let f = hookFixture();
+  runnerFingerprint();
   const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
@@ -127,9 +128,12 @@ async function measure() {
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
       const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), firstInvocationWallP95Ms = p95(rows.filter(row => row.followUp === 0).map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
       const rss = rows.map(row => row.rssMB).sort((a, b) => a - b), medianRssMB = (rss[Math.floor((rss.length - 1) / 2)]! + rss[Math.floor(rss.length / 2)]!) / 2;
+      // #228: one value per logical run (its peak over every follow-up), so the fixed count is RUNS and resumed bursts cannot dilute it.
+      const runPeaksMB = Array.from({ length: RUNS }, (_, index) => Math.max(...rows.filter(row => row.logicalRun === index + 1).map(row => row.rssMB)));
+      const rssGate = rssVerdict(runPeaksMB, r2RssLimitMB("transcript:" + event));
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
-        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssPass: peakRssMB < 100 };
+        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.pass };
     });
     return { groups, samples };
   } finally {

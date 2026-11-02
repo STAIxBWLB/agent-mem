@@ -7,7 +7,8 @@ function probe(flags: NodeJS.ProcessEnv, wallP95Ms = 195.3, peakRssMB = 75, prio
   const root = mkdtempSync(join(tmpdir(), "amem-budget-platform-")), summary = join(root, "summary.md");
   try {
     const file = resolve(import.meta.dir, "../scripts/hook-timing-check.ts");
-    const values = { wallP95Ms, peakRssMB, wallLimitMs: 150, rssLimitMB: 100 };
+    // #228: a uniform group of 40 samples, so its p95 is exactly `peakRssMB` (a NaN sample is unknown telemetry).
+    const values = { wallP95Ms, rssSamplesMB: Array.from({ length: 40 }, () => peakRssMB), wallLimitMs: 150, rssLimitMB: 100 };
     const script = `import {workloadBudget} from ${JSON.stringify(file)};process.exitCode=${priorExit};const result=workloadBudget('plain',${JSON.stringify(values)},${JSON.stringify({ ...flags, GITHUB_STEP_SUMMARY: summary })});if(!result.pass)process.exitCode=1;`;
     const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
     return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString(), summary: readFileSync(summary, "utf8") };
