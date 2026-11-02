@@ -54,8 +54,9 @@ if (import.meta.main) {
     stop();
   };
   // Ordinary hooks preload only the store, as before. They must not pay for a transcript module they never use.
+  let captureReady = false;
   const captureModule = import("./memory/capture.ts");
-  captureModule.catch(() => { /* Reported when the drain awaits it. */ });
+  captureModule.then(() => { captureReady = true; }, () => { /* Reported when the final drain awaits it. */ });
   const next = optionLines(), now = () => performance.timeOrigin + performance.now();
   let store: CaptureStore | undefined;
   try {
@@ -84,10 +85,14 @@ if (import.meta.main) {
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: () => end - now() })); } catch { /* A bound scan may still stage without a project. */ }
       return { options, expectedScope, project };
     })();
-    ready.catch(() => { /* The scan/final drain reports failure inside the owned helper. */ });
+    let receiptReady = false;
+    ready.then(() => { receiptReady = true; }, () => { /* The final drain reports failure inside the owned helper. */ });
     const budget = hookReplayBudget();
     let drainedCount = 0, captured = false, drainStarted = false;
-    const replay = async (until: number) => {
+    const replay = async (until: number, waitForReady = true) => {
+      // Scanning must not wait on native metadata or cold store imports between summary lines.
+      // The final replay may await them; publication/backpressure callbacks only use ready resources.
+      if (!waitForReady && (!receiptReady || !captureReady)) return false;
       if (!budget.files || !budget.bytes || until - now() < 8) return false;
       const context = await ready;
       if (!context?.project || context.expectedScope === undefined || Math.min(end, until) - now() < 8) return false;
@@ -118,8 +123,8 @@ if (import.meta.main) {
           const scanned = await scanHookTranscriptTail(scan.transcript, {
             cwd: scan.cwd, base: scan.base, policy: scan.policy, deadline: performance.now() + (scanEnd - now()),
             // Same existing oldest-first drain and one shared budget, never a new 32-file allowance per publication.
-            onPublication: async () => { await replay(scanEnd); },
-            onBackpressure: () => replay(scanEnd),
+            onPublication: async () => { await replay(scanEnd, false); },
+            onBackpressure: () => replay(scanEnd, false),
           });
           if (scanned) progress(scanned);
         } catch { progress({ stopReason: "unavailable" }); }

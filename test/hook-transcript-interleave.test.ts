@@ -171,3 +171,55 @@ try{
     expect(readMetrics(f.base).some(row => row.captureDrops !== undefined)).toBe(false);
   } finally { f.close(); }
 });
+
+test("publication callbacks stage both summaries before the worker waits for the parent's delayed native receipt", async () => {
+  const f = hookFixture(), transcript = join(f.root, "receipt-barrier.jsonl"), preload = join(f.root, "receipt-barrier.ts"), barrier = join(f.root, "receipt-barrier-result.json"), summary = summaries(transcript);
+  // A native receipt is withheld until BOTH publications exist. Awaiting that
+  // receipt from the first publication callback deadlocks the second one. The
+  // failed-barrier receipt makes the regression fail even if intake resumes later.
+  writeFileSync(preload, `import {existsSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+const base=${JSON.stringify(f.base)},cwd=${JSON.stringify(f.cwd)},home=${JSON.stringify(f.env.HOME)},barrier=${JSON.stringify(barrier)};
+if(process.env.HOME!==home)throw Error('receipt barrier requires its fixture HOME');
+(globalThis as any).__waitForSummaryPair=async(timeRemaining)=>{
+ const started=performance.now(),until=started+Math.min(750,Math.max(0,timeRemaining()-200));
+ let events=[];
+ do{
+  const found=new Set();
+  for(const folder of [join(base,'hook-spool'),join(base,'hook-spool','.capacity')]){
+   if(!existsSync(folder))continue;
+   for(const name of readdirSync(folder).filter(name=>name.startsWith('hook-v3-'))){
+    try{
+     const row=JSON.parse(readFileSync(join(folder,name),'utf8'));
+     if(row.cwd===cwd&&((row.capture?.event==='Recap'&&row.capture.excerpt===${JSON.stringify(summary.recap)})||(row.capture?.event==='Compact'&&row.capture.excerpt===${JSON.stringify(summary.compact)})))found.add(row.capture.event);
+    }catch{/* A concurrent publication is observed on the next bounded poll. */}
+   }
+  }
+  events=[...found].sort();
+  if(found.has('Recap')&&found.has('Compact')){writeFileSync(barrier,JSON.stringify({ready:true,events,parentPid:process.pid,waitMs:performance.now()-started}));return;}
+  if(performance.now()>=until)break;
+  await Bun.sleep(5);
+ }while(performance.now()<until);
+ writeFileSync(barrier,JSON.stringify({ready:false,events,parentPid:process.pid,waitMs:performance.now()-started}));
+ throw Error('both summaries must be staged before the native receipt is released');
+};
+Bun.plugin({name:'parent-receipt-after-summary-pair',setup(builder){builder.onLoad({filter:/[/]hook-project\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),anchor='options.onResolved?.(prepared.receipt(result)); return result;';
+ if(source.split(anchor).length!==2)throw Error('native receipt barrier anchor changed');
+ return {loader:'ts',contents:source.replace(anchor,'await (globalThis as any).__waitForSummaryPair(options.timeRemaining); '+anchor)};
+});}});
+`);
+  try {
+    await f.seed();
+    const result = f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, 1000);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(existsSync(barrier), "the parent native resolver reached the receipt barrier").toBe(true);
+    const released = JSON.parse(readFileSync(barrier, "utf8")) as { ready: boolean; events: string[]; parentPid: number };
+    expect(released.ready, "both publications must precede release of the parent receipt").toBe(true);
+    expect(released.events).toEqual(["Compact", "Recap"]); expect(released.parentPid).toBe(result.pid);
+    const rows = f.rows();
+    expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+  } finally { f.close(); }
+});
