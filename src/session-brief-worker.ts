@@ -42,6 +42,10 @@ if (import.meta.main) {
     await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
     stop();
   };
+  // #226: the worker boots while the scan child runs and gets its options only after the scan settles; load the capture
+  // store meanwhile so that its drain window is spent draining, not importing.
+  const captureModule = import("./memory/capture.ts");
+  captureModule.catch(() => { /* Reported where it is awaited. */ });
   try {
     const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
@@ -62,7 +66,7 @@ if (import.meta.main) {
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
     if (expectedScope !== undefined) {
-      const { CaptureStore } = await import("./memory/capture.ts");
+      const { CaptureStore } = await captureModule;
       let store: CaptureStore | undefined;
       try {
         const drained = await drainHookCaptures({ ...options, base: options.base!, project: project!, expectedScope, timeRemaining: remaining }, (input, receipt) => {
