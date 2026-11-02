@@ -27,11 +27,6 @@ export function workloadBudget(check: string, values: { group: string; wallP95Ms
   return { ...result, r2 };
 }
 
-/** #226 owner decision 2026-11-02: only the transcript reason-only stall clause, and only on hosted GitHub macOS, is
- * advisory. All three markers must match exactly, as for the macOS wall advisory. */
-export function stallAdvisory(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CI === "true" && env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "macOS";
-}
 
 /** Gate diagnostics only. This module is never imported by the shipped hook path. */
 export function singleAttemptTiming(check: string, passed: boolean, values: Record<string, number | boolean | null>, env: NodeJS.ProcessEnv = process.env): void {

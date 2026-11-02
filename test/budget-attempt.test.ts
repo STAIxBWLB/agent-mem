@@ -94,8 +94,8 @@ test("#228 reset: 150 MB ceiling per invocation, +10% regression over the runner
   expect(r2Verdict("g", { rssMB: forty(60), wallMs: forty(100, [330]) }, { env: mac, baseline, wallEnforced: false })).toMatchObject({ pass: true, wallMax: { enforced: false, overMax: 1 } });
   // Unknown RSS telemetry fails the ceiling closed.
   expect(r2Verdict("g", { rssMB: forty(60, [Number.NaN]), wallMs: wall }, { env: {}, baseline: local }).ceiling.pass).toBe(false);
-  // The transcript harness reports its maximum until task 103 (#226), as ruled; the committed baseline file parses and has no 110 override.
-  expect(TRANSCRIPT_WALL_MAX_ENFORCED).toBe(false);
+  // #226 (task 107): the transcript harness now enforces its maximum; the committed baseline file parses and has no 110 override.
+  expect(TRANSCRIPT_WALL_MAX_ENFORCED).toBe(true);
   const committed = loadR2Baseline();
   for (const runner of ["hosted-linux", "hosted-macos", "dgx02"] as const) for (const g of ["hooks:plain", "hooks:jcode", "transcript:Stop", "transcript:StopBurst"]) expect(committed.runners[runner]?.[g], `${runner} ${g}`).toBeGreaterThan(0);
 });
@@ -380,4 +380,17 @@ test("#228 reset: a hard 300 ms per-invocation miss is never re-measured away by
     { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
   expect(runs).toBe(1);
   expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
+});
+
+test("#228 ruling: after a slow-runner re-measure of a p95 wall miss, any second-attempt invocation over 300 ms fails the group", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  const receipts: { attempt: number; outcome: string }[] = [];
+  let runs = 0;
+  // Attempt 1: p95 wall miss only, on a slow runner, so it is re-measured. Attempt 2: p95 passes but one handler wall is 301 ms.
+  await expect(budgetGroup("injected", () => ({ run: ++runs }), result => result.run === 1
+    ? { wallPass: false, rssPass: true, wallMaxPass: true }
+    : { wallPass: true, rssPass: true, wallMaxPass: false },
+    { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
+  expect(runs).toBe(2);
+  expect(receipts.map(row => [row.attempt, row.outcome])).toEqual([[1, "wall-miss"], [2, "wall-max-miss"]]);
 });

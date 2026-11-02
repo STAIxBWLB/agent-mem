@@ -5,7 +5,7 @@ import { writeSync } from "node:fs";
 import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import { resolveAlias } from "./memory/aliases.ts";
-import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope } from "./hook-spool.ts";
 
 async function readOptions(): Promise<string> {
@@ -27,7 +27,6 @@ if (import.meta.main) {
   let owned = false;
   let rssTelemetryValid = true;
   const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
-  const progress = (transcript: HookTranscriptProgress) => { try { writeSync(1, JSON.stringify({ transcript }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   const stop = (): never => {
     if (!rssTelemetryValid) frame([4]);
@@ -44,11 +43,11 @@ if (import.meta.main) {
     stop();
   };
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; transcript?: unknown; deadlineAt: number; ownedGroup: boolean };
+    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
-    const deadlineStop = () => { if (options.transcript !== undefined) progress({ stopReason: "deadline" }); stop(); };
+    const deadlineStop = () => stop();
     if (remaining() <= 0) deadlineStop();
     setTimeout(deadlineStop, remaining()).unref();
     const event = options.event;
@@ -58,15 +57,7 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     let project: string | undefined;
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); } catch { /* Independently bound transcript intake can still proceed. */ }
-    if ((event === "Stop" || event === "SessionEnd") && options.transcript !== undefined
-      && (project !== undefined || expectedScope !== undefined && hookCaptureScope(options.cwd, options.base!) === expectedScope)) {
-      try {
-        const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
-        const scanned = await scanHookTranscriptTail(options.transcript, { cwd: options.cwd, base: options.base!, policy: options.policy,
-          deadline: Math.min(performance.now() + remaining() - 20, performance.now() + 60) });
-        if (scanned) progress(scanned);
-      } catch { progress({ stopReason: "unavailable" }); /* Ordinary durable capture is independent; the fault is reported, never counted as progress (#221). */ }
-    }
+    // #226: the transcript scan runs in its own killable child started at hook start (hook-transcript-scan.ts), never here.
     if (project === undefined) stop();
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.

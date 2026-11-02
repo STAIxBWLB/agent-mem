@@ -59,10 +59,11 @@ test("within-budget workloads pass on either runner and locally without a warnin
   }
 });
 
-test("#226: only the exact hosted GitHub macOS runner makes the transcript stall clause advisory", async () => {
-  const { stallAdvisory } = await import("../scripts/hook-timing-check.ts");
-  expect(stallAdvisory({ CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" })).toBe(true);
-  for (const env of [{}, { RUNNER_OS: "macOS" }, { CI: "true", RUNNER_OS: "macOS" }, { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" },
-    { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, { CI: "true", GITHUB_ACTIONS: "true" }, { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macos" }])
-    expect(stallAdvisory(env), JSON.stringify(env)).toBe(false);
+test("#226 (task 107): the transcript stall clause is strict on every runner; no advisory export remains", async () => {
+  const timing = await import("../scripts/hook-timing-check.ts");
+  expect("stallAdvisory" in timing).toBe(false);
+  const source = await Bun.file(new URL("../scripts/measure-transcript-budget.ts", import.meta.url)).text();
+  expect(source).not.toContain("stallAdvisory");
+  expect(source).not.toContain("transcript-budget-stall-advisory");
+  expect(source).toContain('throw Error("transcript summary progress stalled after three reason-only invocations: "');
 });

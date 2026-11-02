@@ -34,6 +34,8 @@ const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
+const R1_POST_EXIT_WINDOW_MS = 2000;
+let r1Lingering = 0, r1MaxSurvivalMs = 0;
 let invocations = 0, countedRetirements = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 let normalAccounting: { invocations: number; recorded: number; pending: number; pendingOnly: number; countedRetirements: number; retiredInvocations: number[] } | undefined;
 function members(pgid: number): number[] {
@@ -98,6 +100,13 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
     throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, rssSources: metric?.rssSources ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
   }
+  // #226 ruling (Q1): R1 judges owned groups after a fixed 2 s post-exit window; a SIGKILLed child may still be leaving
+  // uninterruptible I/O inside it. Survival time is recorded; after the window any survivor fails.
+  const exitAt = performance.now(), groupsOf = () => [result.pid, ...workers.filter(worker => worker.detached).map(worker => worker.pid)];
+  const anyAlive = () => groupsOf().some(group => members(group).length > 0) || workers.some(worker => { try { process.kill(worker.pid, 0); return true; } catch { return false; } });
+  const aliveAtExit = anyAlive();
+  while (anyAlive() && performance.now() - exitAt < R1_POST_EXIT_WINDOW_MS) Bun.sleepSync(10);
+  if (aliveAtExit) { r1Lingering++; r1MaxSurvivalMs = Math.max(r1MaxSurvivalMs, performance.now() - exitAt); }
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);
   ownedGroups.delete(result.pid);
@@ -296,7 +305,7 @@ try {
     const { pending: _pending, ...numeric } = sample;
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
-  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, postExitWindowMs: R1_POST_EXIT_WINDOW_MS, lingeringAtExit: r1Lingering, maxPostExitSurvivalMs: round(r1MaxSurvivalMs), checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
   return report;
 } finally {

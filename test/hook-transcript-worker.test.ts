@@ -7,12 +7,13 @@ import { rssSourcesKnown } from "../src/hook-resources.ts";
 
 for (const mode of ["normal", "identity_failure"] as const) test("native receipts precede transcript work: " + mode, async () => {
   const f = hookFixture(), phases = join(f.root, "phases.jsonl"), preload = join(f.root, "phases.ts"), transcript = join(f.root, "transcript.jsonl");
-  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  // #226: the scan now runs in its own child; both owned children load the phase recorder.
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts"), scanChild = resolve(import.meta.dir, "../src/hook-transcript-scan.ts");
   writeFileSync(phases, "");
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
-const phases=${JSON.stringify(phases)},worker=${JSON.stringify(worker)},preload=${JSON.stringify(preload)};
+const phases=${JSON.stringify(phases)},worker=${JSON.stringify(worker)},scanChild=${JSON.stringify(scanChild)},preload=${JSON.stringify(preload)};
 globalThis.__phase201=(phase,known)=>appendFileSync(phases,JSON.stringify({phase,pid:process.pid,known})+'\\n');
-const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',preload,...argv.slice(2)],options):spawn(argv,options);
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&(argv[2]===worker||argv[2]===scanChild)?spawn([argv[0],argv[1],'--preload',preload,...argv.slice(2)],options):spawn(argv,options);
 Bun.plugin({name:'transcript-order',setup(builder){
 if(${JSON.stringify(mode === "identity_failure")})builder.onLoad({filter:/[/]hook-project\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='options.onResolved?.(prepared.receipt(result)); return result;';
@@ -80,7 +81,8 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(metric.wallMs).toBeLessThan(2000); expect(rssSourcesKnown(metric.rssSources!)).toBe(true); expect(metric.rssSources!.unavailable).toBe(0);
-    if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
+    // #226: the dedicated scan child is a fifth owned image (parent, two native helpers, capture worker, scan child).
+    if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(5);
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
     expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
     expect(f.rows().filter(row => row.excerpt === "summary before slow store")).toHaveLength(1);
@@ -111,5 +113,33 @@ for (const event of ["Stop", "SessionEnd"] as const) test("the next SessionStart
       if (capture === "complete") { expect(context).toContain(marker + " recap"); expect(context).toContain(marker + " compact"); }
       else console.warn(`#215: ${event} session ${session} brief read capture=partial; inclusion not asserted`);
     }
+  } finally { f.close(); }
+});
+
+for (const event of ["Stop", "SessionEnd"] as const) test("#226: a scan child whose pipe outlives the kill cannot hold the hook past its bound: " + event, async () => {
+  // A child stuck in uninterruptible I/O cannot be emulated portably (SIGKILL always lands), so the fixture keeps the scan
+  // child's stdout open from a descendant that escaped its group (setsid). The parent must neither wait on that pipe nor
+  // keep its event loop alive for it: the hook returns inside the handler bound and reports a known RSS.
+  const f = hookFixture(), preload = join(f.root, "stuck-scan.ts"), entered = join(f.root, "stuck-scan-entered"), transcript = join(f.root, "stuck.jsonl");
+  const scanChild = resolve(import.meta.dir, "../src/hook-transcript-scan.ts");
+  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "stuck scan fixture", timestamp: new Date().toISOString() }) + "\n");
+  writeFileSync(preload, `import {writeFileSync} from 'node:fs';
+if(process.argv[1]===${JSON.stringify(scanChild)}){
+ Bun.spawn(['/usr/bin/env','perl','-e','use POSIX; POSIX::setsid(); sleep 3;'],{stdin:'ignore',stdout:'inherit',stderr:'ignore'});
+ writeFileSync(${JSON.stringify(entered)},'entered');
+ const until=performance.now()+3000;while(performance.now()<until){}
+}
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(scanChild)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
+  try {
+    await f.seed();
+    const started = performance.now();
+    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    const outerMs = performance.now() - started;
+    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    expect(metric.wallMs).toBeLessThan(300);
+    expect(outerMs).toBeLessThan(1500); // the CLI process itself exits; the escaped 3 s descendant does not hold it
+    expect(metric.transcriptStopReason).toBe("deadline");
+    expect(metric.transcriptOffset).toBeUndefined();
   } finally { f.close(); }
 });

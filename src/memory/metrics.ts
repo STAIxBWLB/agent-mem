@@ -4,7 +4,7 @@ import type { HookTranscriptStopReason } from "../hook-contract.ts";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {

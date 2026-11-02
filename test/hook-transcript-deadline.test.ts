@@ -84,7 +84,7 @@ test("the late-check evidence and the branch it records read one clock sample, a
   const source = readFileSync(observer.preload, "utf8");
   const hooks = readFileSync(resolve(import.meta.dir, "../src/hooks.ts"), "utf8");
   // Rebuild the instrumented guard exactly as the preload does, then run it with a clock that advances on every read.
-  const late = "  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return";
+  const late = "  if (!metadata.receipt || workDeadline - performance.now() < 5) return";
   expect(hooks.split(late)).toHaveLength(2);
   const lateObserved = /const lateObserved='([^']+)'/.exec(source)![1]!;
   expect(lateObserved.match(/performance\.now\(\)/g)).toHaveLength(1);                     // a single sample

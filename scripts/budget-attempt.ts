@@ -11,11 +11,9 @@ import { probeRunnerSpeed, runnerIsSlow, RUNNER_BASELINES, type RunnerBaseline, 
  * - a hard per-invocation wall maximum of 300 ms, stalled attempts included, beside the unchanged 140 ms handler and p95 < 150.
  * Origin: #13 set R2 as an absolute 100 MB peak; that is retired here in favour of ceiling plus regression. */
 export const R2_RSS_CEILING_MB = 150, R2_WALL_MAX_MS = 300, R2_REGRESSION = 0.10;
-/** ponytail: transcript 300 ms max: pending #226 (task 103). The transcript harness logs the maximum per sample but does not
- * enforce it; main d927292 on hosted ubuntu peaked at 330/312 ms through the worker's unbounded staging (the #226 finding).
- * Ceiling: that harness only; hooks and full-spool enforce it now. Upgrade path: task 103 (#226 killable scan child, with a
- * bounded parent wait after the kill) switches this to true. */
-export const TRANSCRIPT_WALL_MAX_ENFORCED = false;
+/** #226 (task 107): the transcript scan runs in a killable child with a bounded parent wait after the kill, so the transcript
+ * harness enforces the 300 ms per-invocation maximum like hooks and full-spool. */
+export const TRANSCRIPT_WALL_MAX_ENFORCED = true;
 export type RunnerKind = "hosted-linux" | "hosted-macos" | "dgx02" | "local";
 const GATED: readonly RunnerKind[] = ["hosted-linux", "hosted-macos", "dgx02"];
 /** Hosted runners are recognized by their exact GitHub markers. A dgx02 run sets AMEM_RUNNER=dgx02 explicitly (pass it through
