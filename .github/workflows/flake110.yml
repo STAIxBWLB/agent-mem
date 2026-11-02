@@ -11,8 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
-        ref: [77583e09fc9993b25d80b61e13130be35ad8590b]
+        os: [macos-latest, ubuntu-latest]
+        ref: [945fdc8730242d0b99b4b3d3ff4fe331679762ec]
         shard: [1]
     runs-on: ${{ matrix.os }}
     steps:
@@ -42,6 +42,7 @@ jobs:
             bun test test/hook-transcript-worker.test.ts > run.log 2>&1 || true
             echo "RUN $i $(grep -cE '^\(fail\)' run.log) failures"
             grep -E '^\(fail\)' run.log | sed "s/^/RUN $i /" || true
+            grep 'task110-margin' run.log | sed "s/^/RUN $i /" || true
             grep '^FLAKE110' run.log | sed "s/^/RUN $i /" || true
             awk '/^error:|Expected|Received|ENOENT/ {print "DETAIL " $0} /^\(fail\)/ {print "DETAIL " $0}' run.log | sed "s/^/RUN $i /" | head -40 || true
           done
