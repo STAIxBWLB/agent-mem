@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 test("a reboot-like device change keeps a pending record's stable scope and physical root drainable (#217)", () => {
@@ -56,9 +56,12 @@ rootStable:record.root===hash(stat.ino+':'+stat.birthtimeMs),captured:drained.ca
   } finally { f.close(); }
 });
 
-test("a published 0.18.0 writer's same-boot scope replays once, while its maintenance leaves stable-scope records pending (#217)", () => {
-  const f = hookFixture(), probe = join(f.root, "old-writer.ts"), source = resolve(import.meta.dir, "../src/hook-spool.ts"),
-    oldSource = resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018/src/hook-spool.ts");
+test("a published compatibility writer's same-boot scope replays once, while its maintenance leaves stable-scope records pending (#217)", () => {
+  const oldRoot = process.env.AMEM_COMPAT_ROOT ?? resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018");
+  if (!isAbsolute(oldRoot)) throw new Error("AMEM_COMPAT_ROOT must be an absolute published package root");
+  const oldSource = join(oldRoot, "src/hook-spool.ts"), oldVersion = (JSON.parse(readFileSync(join(oldRoot, "package.json"), "utf8")) as { version: string }).version;
+  if (typeof oldVersion !== "string" || !oldVersion) throw new Error("compatibility package version unavailable");
+  const f = hookFixture(), probe = join(f.root, "old-writer.ts"), source = resolve(import.meta.dir, "../src/hook-spool.ts");
   writeFileSync(probe, `import {existsSync,readFileSync} from 'node:fs';
 const current=await import(${JSON.stringify(source)}),old=await import(${JSON.stringify(oldSource)});
 const cwd=${JSON.stringify(f.cwd)},base=${JSON.stringify(f.base)},project=${JSON.stringify(f.project)},options={cwd,base};
@@ -75,14 +78,14 @@ await old.stageHookCapture('PostToolUse',{prompt:'old maintenance barrier'},opti
 const oldDrain=await old.drainHookCaptures({...options,project},()=>({id:3}));
 const preserved=existsSync(stableFile)&&readFileSync(stableFile,'utf8')===bytes;
 const stableDrain=await current.drainHookCaptures({...options,project,expectedScope:stableScope},(input)=>{appended.push(input.excerpt);return {id:4};});
-console.log(JSON.stringify({oldScopeDiffers:oldScope!==stableScope,first:first.captured,expected:staged.name,second:second.captured,
+console.log(JSON.stringify({version:${JSON.stringify(oldVersion)},oldScopeDiffers:oldScope!==stableScope,first:first.captured,expected:staged.name,second:second.captured,
 oldCaptured:oldDrain.captured.length,preserved,stableCaptured:stableDrain.captured,stableExpected:stable.name,appended}));
 `);
   try {
     const result = Bun.spawnSync([process.execPath, "--smol", probe], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe", timeout: 5000 });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(result.exitCode, `published ${oldVersion}: ${result.stderr.toString()}`).toBe(0);
     const report = JSON.parse(result.stdout.toString());
-    expect(report).toMatchObject({ oldScopeDiffers: true, second: [], oldCaptured: 1, preserved: true,
+    expect(report).toMatchObject({ version: oldVersion, oldScopeDiffers: true, second: [], oldCaptured: 1, preserved: true,
       appended: ["published old same-boot record", "stable publication survives old maintenance"] });
     expect(report.first).toEqual([report.expected]);
     expect(report.stableCaptured).toEqual([report.stableExpected]);
