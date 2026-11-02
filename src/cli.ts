@@ -17,7 +17,7 @@ import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./
 import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -134,6 +134,33 @@ export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO
 /** Honest native-shell defaults, matching every marker detectCliIdentity treats as non-console (invalid included). */
 export function agentMarked(env: Readonly<Record<string, string | undefined>>): boolean {
   return ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"].some(key => env[key] !== undefined);
+}
+
+/** #217 PR2: pure checks only (no home, source or store access), so a bad invocation is refused before anything is read. */
+function assertSpoolReplayArguments(path: readonly string[], options: Record<string, unknown>): void {
+  if (path[1] !== "replay") throw new AgentUsageError("usage: amem spool replay [--json] [--source <absolute dir>] | amem spool replay --apply --plan <file>");
+  const apply = options["--apply"] === true, planFile = options["--plan"], source = options["--source"];
+  if (apply && typeof planFile !== "string") throw new AgentUsageError("spool replay --apply needs --plan <saved preview>; run `amem spool replay --json > plan.json` first");
+  if (!apply && planFile !== undefined) throw new AgentUsageError("--plan is only used with --apply; drop it to preview, or add --apply to apply it");
+  if (apply && source !== undefined) throw new AgentUsageError("--source is fixed by the saved plan; drop --source when applying");
+  if (typeof planFile === "string" && (!planFile || planFile.includes("\0"))) throw new AgentUsageError("--plan is empty or contains a NUL byte; pass the saved preview's path");
+  if (source !== undefined) {
+    if (typeof source !== "string" || !source || source.includes("\0")) throw new AgentUsageError("--source is empty or contains a NUL byte; pass an absolute path to a private directory");
+    if (!isAbsolute(source)) throw new AgentUsageError("--source is a relative path; pass the absolute path of the parked directory");
+  }
+}
+/** Body-free preview text: counts by class, then each record's cwd, current project and class for explicit confirmation. */
+function replayPreviewText(plan: { records: { name: string; cwd: string; project: string | null; class: string; event: string | null }[]; counts: Record<string, number>; digest: string }): string {
+  const lines = [`spool replay preview (no record bodies shown; plan ${plan.digest.slice(0, 12)})`,
+    ...Object.entries(plan.counts).filter(([, n]) => n > 0).map(([cls, n]) => `  ${cls}: ${n}`)];
+  const byCwd = new Map<string, { project: string | null; classes: Map<string, number> }>();
+  for (const record of plan.records) {
+    const row = byCwd.get(record.cwd) ?? { project: record.project, classes: new Map() };
+    row.classes.set(record.class, (row.classes.get(record.class) ?? 0) + 1); byCwd.set(record.cwd, row);
+  }
+  for (const [cwd, row] of byCwd) lines.push(`  ${cwd || "(unreadable record)"} -> ${row.project ?? "(project unresolved)"}: ${[...row.classes].map(([c, n]) => `${c} ${n}`).join(", ")}`);
+  lines.push("Only replayable records are applied. To apply: amem spool replay --json > plan.json && amem spool replay --apply --plan plan.json");
+  return lines.join("\n");
 }
 
 /** Administrative metadata is checked as a complete value, never by stripping individual fields. */
@@ -340,7 +367,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       } catch { return false; } finally { try { candidates?.close(); } catch { /* optional telemetry cannot fail emitted output */ } }
     } });
   };
-  if (["migrate", "prune", "capacity", "gc", "project", "alias", "machine", "sync", "import", "dedupe", "consolidate"].includes(sub)) administrative({ command: parsed.path, arguments: args });
+  // #217 PR2: pure argument refusals for spool replay run first, before the administrative policy read touches the home.
+  if (sub === "spool") assertSpoolReplayArguments(parsed.path, options);
+  if (["migrate", "prune", "capacity", "gc", "project", "alias", "machine", "sync", "import", "dedupe", "consolidate", "spool"].includes(sub)) administrative({ command: parsed.path, arguments: args });
   if (sub === "consolidate") {
     const requested = typeof options["--project"] === "string" ? options["--project"] as string : boundProject();
     if (!requested.trim() || requested.length > 400 || requested.includes("\0")) throw Error("invalid consolidation project");
@@ -668,6 +697,24 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       try { report = evalStore(store, project, set, ks); } finally { store.close(); }
     }
     return options["--json"] ? JSON.stringify(report, null, 2) : evalText(report, builtin ? `built-in fixture ${file}` : file ?? "built-in fixture");
+  }
+  if (sub === "spool") {
+    // #217 PR2. Every argument refusal runs before any home, source or store access; both actors take this guarded
+    // preview/apply path (no marker-only ban, no generic TTY gate). The replay module is loaded only here.
+    // Argument refusals already ran in assertSpoolReplayArguments, before any home access.
+    const apply = options["--apply"] === true, planFile = options["--plan"], source = options["--source"];
+    const replay = await import("./hook-spool-replay.ts");
+    if (!apply) {
+      const plan = administrative(await replay.planHookSpoolReplay({ base: memoryHome(), ...(typeof source === "string" ? { source } : {}) }));
+      return options["--json"] === true ? JSON.stringify(plan, null, 2) : replayPreviewText(plan);
+    }
+    let saved: unknown;
+    try { saved = JSON.parse(readFileSync(planFile as string, "utf8")); }
+    catch { throw new Error(`cannot read the replay plan ${planFile as string}; run \`amem spool replay --json > plan.json\` and pass that file`); }
+    const plan = administrative(replay.parseReplayPlan(saved));
+    const receipt = administrative(await replay.applyHookSpoolReplay({ base: memoryHome(), plan }));
+    return options["--json"] === true ? JSON.stringify(receipt, null, 2)
+      : `replayed ${receipt.applied} (${receipt.spooled} via the capture spool), retired ${receipt.retired}, retained ${receipt.retained}; ${receipt.outcomes.filter(o => o.outcome === "skipped").length} skipped by the plan`;
   }
   if (sub === "capacity") {
     const share = options["--disk-share"];

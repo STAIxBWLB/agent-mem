@@ -43,6 +43,11 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
   eval: { description: "Replay a local question set against ranked store.search and report recall@k and MRR (no model, no network; the built-in synthetic set without --set, `--set ko` for the built-in Korean one)", options: { ...json,
     "--set": { description: "`ko` (the built-in Korean set) or a question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") } },
+  spool: { description: "Off-hook hook-spool maintenance (#217)", options: json, commands: {
+    replay: { description: "Preview (read-only, no record bodies) or apply a replay of orphaned or parked hook records; --apply takes the saved preview", mutates: "apply", options: { ...json,
+      "--source": { description: "Absolute path of a private parked directory to read instead of this home's hook spool", value: "path" },
+      "--apply": flag("Apply the saved preview given with --plan"), "--plan": { description: "Saved preview from `amem spool replay --json`", value: "path" } } },
+  } },
   gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
     ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },
   project: { description: "Per-project lifecycle and portable import/export (#15 D3, F17): one project only", options: json, commands: {
