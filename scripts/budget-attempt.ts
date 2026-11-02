@@ -29,6 +29,15 @@ export function runnerFingerprint(): { diagnostic: "runner-fingerprint"; platfor
   console.log(JSON.stringify(value));
   return value;
 }
+/** #228 (review P2): a logical sample whose first attempt stalled keeps the highest RSS seen across all its attempts,
+ * so a retry can never hide a high-RSS attempt from the p95 distribution. Wall stays the completed attempt's (the
+ * existing stall contract: a stall is a wall/deadline event, re-measured once). A stalled attempt without a finite
+ * positive RSS is unknown telemetry and fails the group closed. */
+export function keepAttemptRss<T extends { rssMB: number }>(completed: T, stalled: readonly BudgetAttempt<T>[]): T {
+  const stalledRss = stalled.filter(attempt => attempt.outcome === "stall").map(attempt => attempt.values?.rssMB);
+  if (stalledRss.some(value => typeof value !== "number" || !Number.isFinite(value) || value <= 0)) return { ...completed, rssMB: Number.NaN };
+  return { ...completed, rssMB: Math.max(completed.rssMB, ...(stalledRss as number[])) };
+}
 export class BudgetStall extends Error {
   constructor(message: string, readonly values: Record<string, number | string | boolean | null> = {}) { super(message); this.name = "BudgetStall"; }
 }

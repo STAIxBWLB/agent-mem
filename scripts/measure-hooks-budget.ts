@@ -7,7 +7,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, r2RssLimitMB, runnerFingerprint } from "./budget-attempt.ts";
+import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, r2RssLimitMB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -135,7 +135,11 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
-  for (let index = 0; index < count; index++) rows.push(await budgetSample(`${name}-${index + 1}`, run, budgetGroupRecorder<Sample>(name, stalledAttempts)));
+  for (let index = 0; index < count; index++) {
+    const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>(name, stalledAttempts);
+    const completed = await budgetSample(`${name}-${index + 1}`, run, attempt => { attempts.push(attempt); record(attempt); });
+    rows.push(keepAttemptRss(completed, attempts));
+  }
   return rows;
 }
 function summarize(name: string, samples: Sample[]) {

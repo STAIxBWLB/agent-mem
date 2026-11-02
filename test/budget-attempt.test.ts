@@ -30,6 +30,30 @@ test("retry policy leaves workload p95 and RSS verdicts strict under the unchang
   expect(workloadBudget("under both limits", { ...values, wallP95Ms: 149, rssSamplesMB: group(99) }, {}).pass).toBe(true);
 });
 
+test("#228 review P2: a stalled high-RSS attempt is never hidden by its low-RSS retry", async () => {
+  const { keepAttemptRss, rssVerdict } = await import("../scripts/budget-attempt.ts");
+  // The caller's real wiring: budgetSample records every attempt, then the logical sample keeps the highest RSS.
+  const group: { rssMB: number; wallMs: number }[] = [];
+  for (let index = 0; index < 40; index++) {
+    const attempts: BudgetAttempt<{ rssMB: number; wallMs: number }>[] = []; let call = 0;
+    const stalls = index < 3;   // three logical samples stall once at 130 MB, then retry at 60 MB
+    const completed = await budgetSample(`sessionStart-${index + 1}`, () => {
+      if (stalls && ++call === 1) throw new BudgetStall("SessionStart deadline produced empty context", { wallMs: 141, rssMB: 130 });
+      return { rssMB: 60, wallMs: 80 };
+    }, attempt => attempts.push(attempt));
+    group.push(keepAttemptRss(completed, attempts));
+  }
+  expect(group.slice(0, 3).map(row => row.rssMB)).toEqual([130, 130, 130]);
+  expect(group[0]!.wallMs).toBe(80);                                                   // wall stays the completed attempt's (unchanged stall contract)
+  const verdict = rssVerdict(group.map(row => row.rssMB), 100);
+  expect(verdict).toMatchObject({ pass: false, valueMB: 130, overLimit: 3 });           // without keepAttemptRss this group would pass at 60
+  expect(rssVerdict(group.map((row, index) => index < 3 ? 60 : row.rssMB), 100).pass).toBe(true);
+  // A stalled attempt with unknown RSS fails the sample closed.
+  expect(Number.isNaN(keepAttemptRss({ rssMB: 60 }, [{ diagnostic: "budget-attempt", check: "x", attempt: 1, outcome: "stall", values: {} }]).rssMB)).toBe(true);
+  // A failed (non-stall) attempt is not a retry path, and a pass-only history is untouched.
+  expect(keepAttemptRss({ rssMB: 60 }, [{ diagnostic: "budget-attempt", check: "x", attempt: 1, outcome: "pass", result: { rssMB: 60 } }]).rssMB).toBe(60);
+});
+
 test("#228: RSS gates on the nearest-rank p95 of a fixed count, never on one outlier and never diluted", async () => {
   const { rssVerdict, r2RssLimitMB, R2_RSS_LIMIT_MB } = await import("../scripts/budget-attempt.ts");
   const forty = (base: number, high: number[]) => [...Array.from({ length: 40 - high.length }, () => base), ...high];
