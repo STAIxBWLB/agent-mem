@@ -15,7 +15,7 @@ export async function seedHookBacklog(options: { cwd: string; base: string }, co
   const template = JSON.parse(readFileSync(source, "utf8")) as { capture: NormalizedCaptureFields };
   rmSync(source);
   const reserve = join(active, ".capacity");
-  if (reserveCount) mkdirSync(reserve, { mode: 0o700 });
+  if (reserveCount) mkdirSync(reserve, { recursive: true, mode: 0o700 });
   for (let i = 0; i < counts.active + reserveCount; i++) {
     const { tool, status, ...fields } = template.capture;
     const capture = normalizeCaptureFields({ ...fields, excerpt: `${counts.label} ${i}`, ...(tool === null ? {} : { tool }), ...(status === null ? {} : { status }) });
