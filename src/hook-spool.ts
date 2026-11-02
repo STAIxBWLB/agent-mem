@@ -55,14 +55,15 @@ function privateDirectory(dir: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   chmodSync(dir, 0o700);
 }
-function entries(base: string, capacity = false): { name: string; size: number; modified: number }[] {
+function entries(base: string, capacity = false, coverage?: { complete: boolean }): { name: string; size: number; modified: number }[] {
+  if (coverage) coverage.complete = false;
   const dir = capacity ? join(directory(base), ".capacity") : directory(base), maximum = capacity ? CAPACITY_FILES : MAX_FILES, stat = lstatSync(dir, { throwIfNoEntry: false });
-  if (!stat) return [];
+  if (!stat) { if (coverage) coverage.complete = true; return []; }
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   const reader = opendirSync(dir), rows: { name: string; size: number; modified: number }[] = [];
   try {
     for (let scanned = 0; scanned <= maximum + 4; scanned++) {
-      const entry = reader.readSync(); if (!entry) return rows;
+      const entry = reader.readSync(); if (!entry) { if (coverage) coverage.complete = true; return rows; }
       if ([".writing", ".quarantine", ".capacity", ".maintenance"].includes(entry.name) && entry.isDirectory()) continue;
       if (rows.length === maximum) return rows;
       const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
@@ -544,8 +545,8 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
     // across the whole cap. Upgrade: a bounded derived classification cache.
     if (pressure() && !quota() && !nativeSeen && classified === inventory.length && held.length === inventory.length
       && held.every(item => owns(item.file))) {
-      const current = entries(base, capacity);
-      if (current.length === inventory.length && current.every(row => inventory.some(prior => prior.name === row.name && prior.size === row.size && prior.modified === row.modified))) {
+      const coverage = { complete: false }, current = entries(base, capacity, coverage);
+      if (coverage.complete && current.length === inventory.length && current.every(row => inventory.some(prior => prior.name === row.name && prior.size === row.size && prior.modified === row.modified))) {
         const victims = held.filter(item => item.group !== cwdHash).sort((a, b) => (groups.get(b.group) ?? 0) - (groups.get(a.group) ?? 0) || a.row.modified - b.row.modified || a.row.name.localeCompare(b.row.name));
         for (const victim of victims) {
           if (!pressure()) break;
