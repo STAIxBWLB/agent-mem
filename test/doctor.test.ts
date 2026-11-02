@@ -465,8 +465,8 @@ test("#217: doctor reports both full hook spool tiers without changing pending f
   expect(report.sections.spool).toMatchObject({ status: "attention", fill: "full", coverage: "complete", complete: true, claimed: 1,
     active: { files: 256, bytes: 256 * 7, maxFiles: 256, maxBytes: 2 * 1024 * 1024 },
     reserve: { files: 32, bytes: 32 * 8, maxFiles: 32, maxBytes: 256 * 1024 } });
-  expect(Number.isFinite(Date.parse(report.sections.spool.oldestAt))).toBe(true);
-  expect(report.sections.spool.hint).toContain("pending hook spool needs attention");
+  expect(Number.isFinite(Date.parse(report.sections.spool!.oldestAt))).toBe(true);
+  expect(report.sections.spool!.hint).toContain("pending hook spool needs attention");
   expect(exact(r)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
   expect(text).toMatch(/^ATTENTION +spool:/m);
@@ -492,7 +492,7 @@ for (const surface of ["active", "reserve"] as const) test("#217: a symlinked ho
   symlinkSync(target, linked);
   const before = tree(target), report = await doctor(r);
   expect(report.sections.spool).toMatchObject({ status: "unavailable", reason: "hook spool could not be read safely" });
-  expect(report.sections.spool.active).toBeUndefined();
+  expect(report.sections.spool!.active).toBeUndefined();
   expect(lstatSync(linked).isSymbolicLink()).toBe(true); expect(tree(target)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
   expect(text).toMatch(/^UNAVAILABLE +spool:/m); expect(text).not.toContain("active 0/256 files");
