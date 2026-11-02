@@ -50,13 +50,12 @@ Bun.plugin({name:'native-usage-fault',setup(b){b.onLoad({filter:/hook-native\\.t
 });
 
 test("malformed transcript progress cannot certify otherwise known RSS", async () => {
-  // #226: transcript progress now comes from the dedicated scan child, so the fault is injected there.
-  const f = hookFixture(), worker = resolve(import.meta.dir, "../src/hook-transcript-scan.ts");
+  const f = hookFixture(), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   const preload = join(f.root, "progress-fault.ts"), marker = join(f.root, "progress-fault-entered"), transcript = join(f.root, "transcript.jsonl");
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "public progress fixture" }) + "\n");
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
 globalThis.__progressFault=()=>writeFileSync(${JSON.stringify(marker)},'entered');
-Bun.plugin({name:'progress-write-fault',setup(b){b.onLoad({filter:/hook-transcript-scan\\.ts$/},({path})=>{
+Bun.plugin({name:'progress-write-fault',setup(b){b.onLoad({filter:/session-brief-worker\\.ts$/},({path})=>{
  const contents=readFileSync(path,'utf8'),needle='JSON.stringify({ transcript })';
  if(contents.split(needle).length!==2)throw Error('progress fault anchor changed');
  return {loader:'ts',contents:contents.replace(needle,'(globalThis.__progressFault(),JSON.stringify({transcript:{stopReason:"invalid"}}))')};

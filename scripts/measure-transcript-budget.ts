@@ -17,7 +17,7 @@ const RUNS = 40, MAX_FOLLOW_UPS = 64;
  * children alive at hook exit (the hook's own `abandonedChildren`) and how long the last one survived. Owned children are
  * found by this checkout's absolute helper paths, so nothing outside this run is judged; the hook itself is never polled. */
 const R1_POST_EXIT_WINDOW_MS = 2000;
-const OWNED_HELPERS = ["hook-transcript-scan.ts", "session-brief-worker.ts"].map(name => join(import.meta.dir, "..", "src", name));
+const OWNED_HELPERS = ["session-brief-worker.ts"].map(name => join(import.meta.dir, "..", "src", name));
 function ownedHelpers(): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid=,command="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
   if (result.exitCode !== 0) throw new Error("R1 process table unavailable");

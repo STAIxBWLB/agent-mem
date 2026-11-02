@@ -5,21 +5,27 @@ import { writeSync } from "node:fs";
 import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import { resolveAlias } from "./memory/aliases.ts";
-import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
+import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
 import { drainHookCaptures, hookCaptureScope } from "./hook-spool.ts";
 
-async function readOptions(): Promise<string> {
-  const reader = Bun.stdin.stream().getReader(), chunks: Uint8Array[] = []; let bytes = 0;
-  try {
+/** #226: options arrive as newline-delimited JSON. A transcript hook first sends the scan options, then (after native
+ * metadata) the drain options; other hooks send only the drain options. Total input stays bounded. */
+function optionLines(): () => Promise<string | undefined> {
+  const reader = Bun.stdin.stream().getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
+  let pending = "", bytes = 0, done = false;
+  return async () => {
     for (;;) {
-      const next = await reader.read(); if (next.done) break;
+      const at = pending.indexOf("\n");
+      if (at >= 0) { const line = pending.slice(0, at); pending = pending.slice(at + 1); return line; }
+      if (done) { const rest = pending; pending = ""; return rest || undefined; }
+      const next = await reader.read();
+      if (next.done) { done = true; pending += decoder.decode(); continue; }
       bytes += next.value.byteLength;
-      // Native input is at most64KiB; leave bounded room for fixed host options and policy literals.
-      if (bytes > HOOK_INPUT_BYTES + 32 * 1024) throw new Error("input bound");
-      chunks.push(next.value);
+      // Native input is at most 64 KiB, sent at most twice (scan, then drain); leave bounded room for fixed options.
+      if (bytes > 2 * HOOK_INPUT_BYTES + 32 * 1024) throw new Error("input bound");
+      pending += decoder.decode(next.value, { stream: true });
     }
-    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  };
 }
 
 // Fixed package helper, launched and reaped by each native hook; never registered or resident.
@@ -27,6 +33,7 @@ if (import.meta.main) {
   let owned = false;
   let rssTelemetryValid = true;
   const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
+  const progress = (transcript: HookTranscriptProgress) => { try { writeSync(1, JSON.stringify({ transcript }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   const stop = (): never => {
     if (!rssTelemetryValid) frame([4]);
@@ -42,12 +49,31 @@ if (import.meta.main) {
     await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
     stop();
   };
-  // #226: the worker boots while the scan child runs and gets its options only after the scan settles; load the capture
-  // store meanwhile so that its drain window is spent draining, not importing.
+  // Load the capture store while waiting for options, so a drain window is spent draining, not importing.
   const captureModule = import("./memory/capture.ts");
   captureModule.catch(() => { /* Reported where it is awaited. */ });
+  const next = optionLines();
   try {
-    const options = JSON.parse(await readOptions()) as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
+    let line = await next();
+    if (line === undefined) process.exit(0);
+    let first = JSON.parse(line) as Record<string, unknown>;
+    if (first.scan !== undefined) {
+      // #226: scan first, while the parent resolves native metadata. A fault is reported, never counted as progress (#221).
+      const scan = first.scan as { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number };
+      if (Number.isFinite(scan.deadlineAt) && hookCaptureScope(scan.cwd, scan.base) !== undefined) {
+        const remainingScan = () => scan.deadlineAt - (performance.timeOrigin + performance.now());
+        try {
+          const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+          const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
+            deadline: Math.min(performance.now() + remainingScan() - 20, performance.now() + 60) });
+          if (scanned) progress(scanned);
+        } catch { progress({ stopReason: "unavailable" }); }
+      }
+      line = await next();
+      if (line === undefined) process.exit(0);
+      first = JSON.parse(line) as Record<string, unknown>;
+    }
+    const options = first as unknown as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
@@ -61,7 +87,6 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     let project: string | undefined;
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); } catch { /* Independently bound transcript intake can still proceed. */ }
-    // #226: the transcript scan runs in its own killable child started at hook start (hook-transcript-scan.ts), never here.
     if (project === undefined) stop();
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
