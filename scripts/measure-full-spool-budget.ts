@@ -7,10 +7,11 @@ import { readCaptureDrops, readMetrics, type MetricSample } from "../src/memory/
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
 import { measuredHookRss } from "./hook-rss-check.ts";
 import { workloadBudget } from "./hook-timing-check.ts";
+import { r2RssLimitMB } from "./budget-attempt.ts";
 
 // Every sample starts with the pre-upgrade backlog, not the easier already-drained state.
 // There are no retries: even malformed, failed and over-budget samples enter the report.
-const RUNS = 40, WALL_MS = 150, RSS_MB = 100;
+const RUNS = 40, WALL_MS = 150, RSS_MB = r2RssLimitMB("full-spool");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -80,8 +81,11 @@ try {
         if (sample.after.active > 256 || sample.after.reserve > 32) throw new Error("full-spool admission exceeded unchanged tier caps");
       } catch (error) { if (!sample.wallMs) sample.wallMs = round(performance.now() - start); sample.error = (error as Error).message; }
     }
+    // #228: the RSS verdict is the nearest-rank p95 over the group's fixed 40 samples. A sample without measured RSS
+    // is unknown telemetry (NaN) and fails the group closed; the max stays as a diagnostic.
+    const rssSamplesMB = samples.map(sample => sample.rss?.rssMB ?? Number.NaN);
     const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(0, ...samples.map(sample => sample.rss?.rssMB ?? 0));
-    const verdict = workloadBudget(`full-spool-${name}`, { wallP95Ms, peakRssMB, wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
+    const verdict = workloadBudget(`full-spool-${name}`, { wallP95Ms, rssSamplesMB, wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
     groups[name] = { samples, wallP95Ms: round(wallP95Ms), peakRssMB: round(peakRssMB), pass: verdict.pass && samples.every(sample => sample.error === undefined) };
   }
 } catch (error) { fatal = (error as Error).message; }
