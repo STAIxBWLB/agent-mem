@@ -286,6 +286,8 @@ test("I2: a plan that failed on record 2 of 2 resumes: rerunning it applies reco
   const rows = f.rows().map(row => row.excerpt);
   expect(rows.filter(text => text.includes("resume first"))).toHaveLength(1);
   expect(rows.filter(text => text.includes("resume second"))).toHaveLength(1);
+  expect(receipt.outcomes.find(o => o.outcome === "absent")?.reason).toContain("nothing was appended");
+  expect(rows).toHaveLength(new Set(rows).size);
   expect(f.pending()).toEqual([]);
 });
 

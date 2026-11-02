@@ -299,7 +299,7 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
     try {
       for (const record of planned) {
         const item = byName.get(record.name);
-        if (!item) { receipt.absent++; receipt.outcomes.push({ name: record.name, outcome: "absent", reason: "already retired by this plan or taken by a drainer; nothing appended" }); continue; }
+        if (!item) { receipt.absent++; receipt.outcomes.push({ name: record.name, outcome: "absent", reason: "completed by an earlier run of this plan, or removed or drained by someone else; nothing was appended for it" }); continue; }
         const retain = (reason: string) => { receipt.retained++; receipt.outcomes.push({ name: record.name, outcome: "retained", reason }); };
         if (!item.path) { retain("unavailable"); continue; }
         // I3: one descriptor at a time. Re-open here and require the same inode, size, mtime and bytes the plan bound.
