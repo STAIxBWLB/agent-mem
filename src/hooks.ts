@@ -20,6 +20,9 @@ const HANDLER_MS = 140;
 // ponytail: reserve measured native teardown variance; an asynchronous hard-deadline transport
 // through storage/cleanup is the upgrade, not a longer external deadline.
 const WORKER_CLEANUP_MS = 25;
+/** #226: the parent transcript scan keeps the worker's former slice (at most 60 ms, and 20 ms short of the work deadline,
+ * which leaves the capture drain its start reserve). No handler deadline or budget changes. */
+const PARENT_SCAN_MS = 60, PARENT_SCAN_RESERVE_MS = 20;
 /** Programmatic host-only timing port. Native CLI registration never supplies this object. */
 export interface HookHostPorts { deadlineMs?: number }
 function handlerMs(host?: HookHostPorts): number {
@@ -115,6 +118,23 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false, ...(transcript !== undefined ? { transcript: { stopReason: "deadline" as const } } : {}) };
   const result = { context: unavailable, ...metadata.usage, captured: false, valid: false,
     rssSources: combineRssSources(metadata.usage.rssSources), transcript: undefined as HookTranscriptProgress | undefined };
+  // #226: the bounded transcript scan runs in this parent, after native metadata is reaped (#211 order) and before the
+  // worker spawns, so a cold or contended worker start cannot eat its slice. Same scanHookTranscriptTail (256 KiB,
+  // cursor, policy, floor, backpressure), lazily loaded only on this branch so other hooks gain no RSS. Once attempted,
+  // the worker receives no transcript, so a double scan is impossible.
+  if (transcript !== undefined) {
+    const scanDeadline = Math.min(workDeadline - PARENT_SCAN_RESERVE_MS, performance.now() + PARENT_SCAN_MS);
+    if (scanDeadline - performance.now() >= 1) {
+      try {
+        const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+        const scanned = await scanHookTranscriptTail(transcript, { cwd: options.cwd, base, policy: options.policy, deadline: scanDeadline });
+        if (scanned) result.transcript = scanned;
+      } catch { result.transcript = { stopReason: "unavailable" }; }   // #221: a fault is reported, never counted as progress
+    }
+    // With no time to start, nothing is reported here and captureAndWork's #221 positive-evidence rule decides.
+    transcript = undefined;
+    if (!metadata.receipt || workDeadline - performance.now() < 5) return result;
+  }
   let owned: ReturnType<typeof Bun.spawn> | undefined, exited = false;
   try {
     const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
