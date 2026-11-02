@@ -720,7 +720,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const plan = administrative(replay.parseReplayPlan(saved));
     const receipt = administrative(await replay.applyHookSpoolReplay({ base: memoryHome(), plan, confirmUnverifiable: options["--confirm-unverifiable"] === true }));
     return options["--json"] === true ? JSON.stringify(receipt, null, 2)
-      : `replayed ${receipt.applied} (${receipt.spooled} via the capture spool), retired ${receipt.retired}, retained ${receipt.retained}; ${receipt.outcomes.filter(o => o.outcome === "skipped").length} skipped by the plan`;
+      : `replayed ${receipt.applied} (${receipt.spooled} via the capture spool), retired ${receipt.retired}, retained ${receipt.retained}, ${receipt.absent} already gone; ${receipt.outcomes.filter(o => o.outcome === "skipped").length} skipped by the plan`;
   }
   if (sub === "capacity") {
     const share = options["--disk-share"];

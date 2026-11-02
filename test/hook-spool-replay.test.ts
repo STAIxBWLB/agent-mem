@@ -43,8 +43,9 @@ test("apply replays a replayable record exactly once, then retires its exact cla
   expect(receipt).toMatchObject({ applied: 1, retired: 1, retained: 0 });
   expect(f.rows().filter(row => row.excerpt.includes("replay me once"))).toHaveLength(1);
   expect(f.pending()).toEqual([]);
-  // The same plan again finds nothing to do; a fresh preview finds nothing either.
-  await expect(applyHookSpoolReplay({ base: f.base, plan })).rejects.toThrow("changed since the preview");
+  // The same plan again appends nothing (the record is absent, I2); a fresh preview finds nothing either.
+  expect(await applyHookSpoolReplay({ base: f.base, plan })).toMatchObject({ applied: 0, retired: 0, absent: 1 });
+  expect(f.rows().filter(row => row.excerpt.includes("replay me once"))).toHaveLength(1);
   expect((await planHookSpoolReplay({ base: f.base })).records).toEqual([]);
 });
 
@@ -263,4 +264,72 @@ test("a saved plan file round-trips and an edited one is refused", async () => {
   expect(parseReplayPlan(JSON.parse(JSON.stringify(plan))).digest).toBe(plan.digest);
   expect(() => parseReplayPlan({ ...plan, counts: { ...plan.counts, replayable: 9 } })).toThrow("edited after the preview");
   expect(() => parseReplayPlan({ schema: "nope" })).toThrow("not an amem spool replay plan");
+});
+
+test("I2: a plan that failed on record 2 of 2 resumes: rerunning it applies record 2 exactly once", async () => {
+  const f = fixture(); await f.seed();
+  await f.stage("resume first"); await Bun.sleep(5); await f.stage("resume second");
+  const plan = await planHookSpoolReplay({ base: f.base });
+  expect(plan.counts.replayable).toBe(2);
+  const realAppend = CaptureStore.prototype.append; let calls = 0;
+  const spy = spyOn(CaptureStore.prototype, "append").mockImplementation(function (this: CaptureStore, ...args: Parameters<typeof realAppend>) {
+    if (++calls === 2) throw new Error("injected failure on record 2");
+    return realAppend.apply(this, args);
+  });
+  try { await expect(applyHookSpoolReplay({ base: f.base, plan })).rejects.toThrow("injected failure on record 2"); }
+  finally { spy.mockRestore(); }
+  // Record 1 retired; record 2 sits under this plan's own claim.
+  expect(f.pending()).toHaveLength(1);
+  expect(f.pending()[0]).toContain(".draining-");
+  const receipt = await applyHookSpoolReplay({ base: f.base, plan });
+  expect(receipt).toMatchObject({ applied: 1, retired: 1, retained: 0, absent: 1 });
+  const rows = f.rows().map(row => row.excerpt);
+  expect(rows.filter(text => text.includes("resume first"))).toHaveLength(1);
+  expect(rows.filter(text => text.includes("resume second"))).toHaveLength(1);
+  expect(f.pending()).toEqual([]);
+});
+
+test("I2: a resumed plan still refuses when a present record changed", async () => {
+  const f = fixture(); await f.seed();
+  const one = await f.stage("stale first"); await Bun.sleep(5); const two = await f.stage("stale second");
+  const plan = await planHookSpoolReplay({ base: f.base });
+  rmSync(join(f.spool, one.name));
+  appendFileSync(join(f.spool, two.name), " ");
+  await expect(applyHookSpoolReplay({ base: f.base, plan })).rejects.toThrow("changed since the preview");
+  expect(f.rows().filter(row => row.excerpt.includes("stale second"))).toHaveLength(0);
+});
+
+test("I3: more records than the open-file limit preview completely or fail loudly, never silently short", async () => {
+  const f = fixture(); await f.seed();
+  // The hook path admits 64 active records per cwd, so park in batches (like the real orphan directory) to reach 100.
+  const parked = join(f.root, "hook-spool-orphans-fd"); mkdirSync(parked, { mode: 0o700 });
+  for (let i = 0; i < 100; i++) { const staged = await f.stage(`fd pressure ${i}`); renameSync(join(f.spool, staged.name), join(parked, staged.name)); }
+  expect(readdirSync(parked)).toHaveLength(100);
+  const script = join(f.root, "preview-fd.ts");
+  writeFileSync(script, `import { planHookSpoolReplay } from ${JSON.stringify(join(import.meta.dir, "../src/hook-spool-replay.ts"))};
+try { const plan = await planHookSpoolReplay({ base: ${JSON.stringify(f.base)}, source: ${JSON.stringify(parked)} }); console.log(JSON.stringify({ records: plan.records.length, counts: plan.counts })); }
+catch (error) { console.log(JSON.stringify({ code: (error as { code?: string }).code, message: String((error as Error).message) })); }
+`);
+  const run = Bun.spawnSync(["/bin/sh", "-c", `ulimit -n 64 && exec "${process.execPath}" "${script}"`], { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 30000 });
+  const out = run.stdout.toString().trim().split("\n").pop() ?? "";
+  expect(out, run.stderr.toString()).not.toBe("");
+  const result = JSON.parse(out) as { records?: number; counts?: Record<string, number>; code?: string; message?: string };
+  if (result.code !== undefined) {
+    expect(result.code).toBe("replay_resource_exhausted");
+    expect(result.message).toContain("ulimit -n");
+  } else {
+    expect(result.records).toBe(100);
+    expect(result.counts!.replayable).toBe(100);
+  }
+});
+
+test("I3: an open failure other than a vanished file fails the preview with its cause and next step", async () => {
+  const f = fixture(); await f.seed();
+  await f.stage("unreadable");
+  const name = f.pending()[0]!;
+  chmodSync(join(f.spool, name), 0o000);
+  try {
+    if (process.getuid?.() === 0) return; // root reads anyway
+    await expect(planHookSpoolReplay({ base: f.base })).rejects.toThrow(/EACCES.*ulimit -n|EACCES/);
+  } finally { chmodSync(join(f.spool, name), 0o600); }
 });

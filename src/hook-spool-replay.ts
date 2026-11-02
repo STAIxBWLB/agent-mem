@@ -71,8 +71,10 @@ export interface HookSpoolReplayPlan {
 export interface HookSpoolReplayReceipt {
   plan: string;
   applied: number; spooled: number; retired: number; retained: number;
+  /** Planned publications no longer present (a resumed plan's completed records, or ones a drainer took): no effect. */
+  absent: number;
   /** Per publication outcome; `applied_cleanup_failed` is still applied, never reported as not applied. */
-  outcomes: { name: string; outcome: "applied" | "spooled" | "applied_cleanup_failed" | "retained" | "skipped"; reason?: string }[];
+  outcomes: { name: string; outcome: "applied" | "spooled" | "applied_cleanup_failed" | "retained" | "skipped" | "absent"; reason?: string }[];
 }
 
 /** Every error says what failed and what to do next (REVIEW.md). */
@@ -124,29 +126,44 @@ function fileRevision(file: string): string {
 
 /** Strict, read-only project identity for the record's own cwd. It never touches the hook identity cache. */
 function strictProject(cwd: string): string | undefined {
-  try { return memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true }); } catch { return undefined; }
+  try { return memoryProjectKey(cwd, { repositoryIsolation: true, strictGitErrors: true }); }
+  catch (error) { if (exhausted(error)) throw resourceFailure(error)!; return undefined; }
 }
 
-interface Inspected { record: ReplayPlanRecord; owned?: HookSpoolOwnedFile }
+/** One inspected publication. No descriptor outlives its inspection (I3): apply re-opens each record when it reaches it. */
+interface Inspected { record: ReplayPlanRecord; path?: string }
+/** Descriptor or process-table exhaustion (or any other non-race open failure) must fail the run loudly, never look like a vanished file. */
+const RACE_CODES = new Set(["ENOENT", "ELOOP", "ENOTDIR"]);
+const exhausted = (error: unknown) => ["EMFILE", "ENFILE"].includes(String((error as { code?: unknown } | null)?.code));
+function resourceFailure(error: unknown): ReplayError | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code !== "string" || RACE_CODES.has(code)) return undefined;
+  return new ReplayError("replay_resource_exhausted", `reading the spool failed with ${code}${code === "EMFILE" || code === "ENFILE" ? " (too many open files)" : ""}`,
+    "raise the open-file limit (ulimit -n) or move part of the source into another private directory, then preview again");
+}
 async function inspect(home: string, dir: string, tier: ReplayPlanRecord["tier"], entry: string, stat: Stats, planDigest: string | undefined): Promise<Inspected> {
   const match = spool.namePattern.exec(entry)!, name = match[1]!;
   const claimSuffix = /\.draining-([a-f0-9]{24})$/.exec(entry)?.[1];
   const base: Omit<ReplayPlanRecord, "class" | "reasons" | "digest"> = { name, tier, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs,
     cwd: "", project: null, scope: null, event: null };
-  const finish = (cls: ReplayClass, reasons: ReplayClass[], digest: string, extra: Partial<ReplayPlanRecord> = {}, owned?: HookSpoolOwnedFile): Inspected =>
-    ({ record: { ...base, ...extra, class: cls, reasons, digest }, ...(owned ? { owned } : {}) });
-  if (claimSuffix !== undefined && (planDigest === undefined || claimSuffix !== claimFor(planDigest, name))) return finish("claimed_elsewhere", ["claimed_elsewhere"], "");
-  const owned = spool.openOwned(join(dir, entry));
-  const decoded = spool.decoded(owned);
-  const bytes = Buffer.alloc(Math.min(owned.initial.size, spool.RECORD_BYTES));
-  readSync(owned.fd, bytes, 0, bytes.length, 0);
+  const path = join(dir, entry);
+  const finish = (cls: ReplayClass, reasons: ReplayClass[], digest: string, extra: Partial<ReplayPlanRecord> = {}, readable = true): Inspected =>
+    ({ record: { ...base, ...extra, class: cls, reasons, digest }, ...(readable ? { path } : {}) });
+  if (claimSuffix !== undefined && (planDigest === undefined || claimSuffix !== claimFor(planDigest, name))) return finish("claimed_elsewhere", ["claimed_elsewhere"], "", {}, false);
+  const owned = spool.openOwned(path);
+  let decoded: ReturnType<typeof spool.decoded>, bytes: Buffer;
+  try {
+    decoded = spool.decoded(owned);
+    bytes = Buffer.alloc(Math.min(owned.initial.size, spool.RECORD_BYTES));
+    readSync(owned.fd, bytes, 0, bytes.length, 0);
+  } finally { closeSync(owned.fd); }
   const digest = hash(bytes), claimed = claimSuffix !== undefined ? { claimedBy: "this_plan" as const } : {};
-  if (!decoded) return finish("undecodable", ["undecodable"], digest, claimed, owned);
+  if (!decoded) return finish("undecodable", ["undecodable"], digest, claimed);
   const value = decoded.value, cwd = typeof value.cwd === "string" ? value.cwd : "";
   const event = typeof (value.capture as { event?: unknown } | undefined)?.event === "string" ? (value.capture as { event: string }).event : null;
-  if (decoded.unknown) return finish("unknown_schema", ["unknown_schema"], digest, { ...claimed, cwd, event }, owned);
-  if (value.nonce !== match[4] || value.cwd !== cwd || hash(cwd) !== match[2]) return finish("undecodable", ["undecodable"], digest, { ...claimed, cwd, event }, owned);
-  if (!lstatSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return finish("cwd_missing", ["cwd_missing"], digest, { ...claimed, cwd, event }, owned);
+  if (decoded.unknown) return finish("unknown_schema", ["unknown_schema"], digest, { ...claimed, cwd, event });
+  if (value.nonce !== match[4] || value.cwd !== cwd || hash(cwd) !== match[2]) return finish("undecodable", ["undecodable"], digest, { ...claimed, cwd, event });
+  if (!lstatSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return finish("cwd_missing", ["cwd_missing"], digest, { ...claimed, cwd, event });
   const physical = realPath(cwd);
   const scope = hookCaptureScope(physical, home) ?? null;
   const project = strictProject(physical);
@@ -166,7 +183,7 @@ async function inspect(home: string, dir: string, tier: ReplayPlanRecord["tier"]
   if (unverifiable) reasons.unshift("physical_identity_unverifiable");
   const cls = reasons[0] ?? "replayable";
   const confirmable = unverifiable && reasons.length === 1 ? { confirmable: true as const } : {};
-  return finish(cls, reasons.length ? reasons : ["replayable"], digest, { ...claimed, ...confirmable, cwd, event, scope, project: canonical }, owned);
+  return finish(cls, reasons.length ? reasons : ["replayable"], digest, { ...claimed, ...confirmable, cwd, event, scope, project: canonical });
 }
 
 function captureInput(c: { agent: string; event: string; at: string; paths: string[]; tool: string | null; status: string | null; excerpt: string; session?: string; subagent?: boolean }, project: string): CaptureInput {
@@ -213,7 +230,11 @@ async function survey(home: string, dirs: HookSpoolReplayPlan["source"], digest:
     const tier = dir.kind === "explicit" ? "source" : dir.dir.endsWith("/.capacity") ? "capacity" : "active";
     for (const { entry, stat } of listPublications(dir.dir)) {
       try { out.push(await inspect(home, dir.dir, tier, entry, stat, digest)); }
-      catch { /* vanished or replaced between list and open: it is simply not in this plan */ }
+      catch (error) {
+        const failure = resourceFailure(error);
+        if (failure) throw failure;
+        /* vanished or replaced between list and open: it is simply not in this plan */
+      }
     }
   }
   return out;
@@ -226,7 +247,6 @@ export async function planHookSpoolReplay(options: { base: string; source?: stri
   if (spool.belowFloor(home)) throw new ReplayError("replay_format_floor", "this home records a hook-spool format floor above this amem", "upgrade amem to the floor's version, then preview again");
   const dirs = sources(home, options.source);
   const inspected = await survey(home, dirs, undefined);
-  for (const item of inspected) if (item.owned) closeSync(item.owned.fd);
   const records = inspected.map(item => item.record), counts = zeroCounts();
   for (const record of records) counts[record.class]++;
   const body: Omit<HookSpoolReplayPlan, "digest"> = { schema: REPLAY_PLAN_SCHEMA, home, source: dirs, revisions: bindings(home, records), records, counts, needsConfirmation: confirmationGroups(records) };
@@ -256,12 +276,15 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
   if (dirs.some((dir, index) => !dir || dir.dev !== plan.source[index]!.dev || dir.ino !== plan.source[index]!.ino))
     throw new ReplayError("replay_source_changed", "a source directory was replaced since the preview", "preview again and apply the new plan");
   const current = await survey(home, plan.source, plan.digest);
-  try {
+  {
     const byName = new Map(current.map(item => [item.record.name, item]));
     for (const planned of plan.records) {
       if (!applicable(planned, confirm)) continue;
       const now = byName.get(planned.name)?.record;
-      if (!now || now.dev !== planned.dev || now.ino !== planned.ino || now.size !== planned.size || now.digest !== planned.digest
+      // I2: a planned publication that is gone (no source name and no claim under this plan's suffix) has no effect here.
+      // It was retired by an earlier run of this plan or taken by a live drainer that captured it; nothing is appended for it.
+      if (!now) continue;
+      if (now.dev !== planned.dev || now.ino !== planned.ino || now.size !== planned.size || now.digest !== planned.digest
         || now.class !== planned.class || JSON.stringify(now.reasons) !== JSON.stringify(planned.reasons) || now.confirmable !== planned.confirmable
         || now.project !== planned.project || now.scope !== planned.scope || now.cwd !== planned.cwd)
         throw new ReplayError("replay_plan_stale", `${planned.name} changed since the preview (identity, bytes, scope, project or policy)`, "preview again and apply the new plan");
@@ -270,29 +293,40 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
     if (JSON.stringify(bindings(home, plan.records)) !== JSON.stringify(plan.revisions))
       throw new ReplayError("replay_plan_stale", "a policy, alias or lifecycle input changed since the preview", "preview again and apply the new plan");
 
-    const receipt: HookSpoolReplayReceipt = { plan: plan.digest, applied: 0, spooled: 0, retired: 0, retained: 0, outcomes: [] };
+    const receipt: HookSpoolReplayReceipt = { plan: plan.digest, applied: 0, spooled: 0, retired: 0, retained: 0, absent: 0, outcomes: [] };
     const planned = plan.records.filter(record => applicable(record, confirm)).sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
-    let store: CaptureStore | undefined, storeProject: string | undefined;
+    let store: CaptureStore | undefined, storeProject: string | undefined, held: HookSpoolOwnedFile | undefined;
     try {
       for (const record of planned) {
-        const item = byName.get(record.name)!;
-        if (!item.owned) { receipt.retained++; receipt.outcomes.push({ name: record.name, outcome: "retained", reason: "unavailable" }); continue; }
+        const item = byName.get(record.name);
+        if (!item) { receipt.absent++; receipt.outcomes.push({ name: record.name, outcome: "absent", reason: "already retired by this plan or taken by a drainer; nothing appended" }); continue; }
+        const retain = (reason: string) => { receipt.retained++; receipt.outcomes.push({ name: record.name, outcome: "retained", reason }); };
+        if (!item.path) { retain("unavailable"); continue; }
+        // I3: one descriptor at a time. Re-open here and require the same inode, size, mtime and bytes the plan bound.
+        let owned: HookSpoolOwnedFile;
+        try { owned = spool.openOwned(item.path); }
+        catch (error) { const failure = resourceFailure(error); if (failure) throw failure; retain("unavailable"); continue; }
+        held = owned;
+        if (owned.initial.dev !== record.dev || owned.initial.ino !== record.ino || owned.initial.size !== record.size || owned.initial.mtimeMs !== record.mtimeMs) { retain("identity_changed"); closeSync(owned.fd); held = undefined; continue; }
         // Decision B: claim under the plan's own deterministic suffix (an existing own claim is already that name).
-        const claim = item.record.claimedBy === "this_plan" ? item.owned : spool.claimAs(item.owned, `${record.name}`, claimFor(plan.digest, record.name));
-        if (!claim) { receipt.retained++; receipt.outcomes.push({ name: record.name, outcome: "retained", reason: "claim_lost" }); continue; }
+        const claim = item.record.claimedBy === "this_plan" ? owned : spool.claimAs(owned, `${record.name}`, claimFor(plan.digest, record.name));
+        if (!claim) { retain("claim_lost"); closeSync(owned.fd); held = undefined; continue; }
+        held = claim;
         const decoded = spool.decoded(claim);
-        if (!decoded || decoded.unknown) { receipt.retained++; receipt.outcomes.push({ name: record.name, outcome: "retained", reason: "decode_changed" }); continue; }
+        if (!decoded || decoded.unknown || hash(decoded.bytes) !== record.digest) { retain("decode_changed"); closeSync(claim.fd); held = undefined; continue; }
         // One CaptureStore at a time: close the previous project's store before opening the next one.
         if (storeProject !== record.project) { store?.close(); store = new CaptureStore({ memoryDir: home, project: record.project!, cwd: realPath(record.cwd) }); storeProject = record.project!; }
         const result = store!.append(captureInput(decoded.value.capture as never, record.project!), { receipt: hash(decoded.bytes) });
         const spooled = "spooled" in result;
         if (spooled) receipt.spooled++; else receipt.applied++;
-        if (spool.retireOwned(claim)) { receipt.retired++; receipt.outcomes.push({ name: record.name, outcome: spooled ? "spooled" : "applied" }); }
+        const retired = spool.retireOwned(claim);
+        closeSync(claim.fd); held = undefined;
+        if (retired) { receipt.retired++; receipt.outcomes.push({ name: record.name, outcome: spooled ? "spooled" : "applied" }); }
         else receipt.outcomes.push({ name: record.name, outcome: "applied_cleanup_failed", reason: "the claim changed after the append; the row is recorded and the claim is kept" });
       }
-    } finally { store?.close(); }
+    } finally { store?.close(); if (held) try { closeSync(held.fd); } catch { /* already closed */ } }
     for (const record of plan.records) if (!applicable(record, confirm)) receipt.outcomes.push({ name: record.name, outcome: "skipped",
       reason: record.confirmable ? "physical_identity_unverifiable: needs --confirm-unverifiable" : record.class });
     return receipt;
-  } finally { for (const item of current) if (item.owned) try { closeSync(item.owned.fd); } catch { /* already closed */ } }
+  }
 }
