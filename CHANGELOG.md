@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **A reader no longer refuses at the moment a public prune finishes** (#225). When the cooperating writer unlinked its intent and lock between a reader's open and fstat, the reader saw a link count of 0 and refused with `public prune view unavailable`, although its wait bound had time left. That disappearance is now treated like an absent file: the bytes read through the old descriptor are discarded and the path is resolved again within the same deadline. Any other link count, a foreign mode or a symlink still refuses, and the 3 s wait bound is unchanged.
+- **Compatibility with N-1 (0.19.0), #225:** no format change. This reader-side change does not alter the hook spool, shards, candidates, indexes or sync.
+
 ## 0.19.0
 
 - Hook budget profiles state `images: bun+supervisor; descendants: not measured` for each sample and spell the conservative source tag `vmpeak-bound`, retaining its wire code and numeric counters. The literal post-merge-main ten-suite receipt includes ordinary, jcode and transcript workloads; descendant usage remains a separate characterization, with no threshold, timeout, retry or dependency change (#198).
