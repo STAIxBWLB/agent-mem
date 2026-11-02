@@ -15,7 +15,7 @@ import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memor
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
-const HANDLER_MS = 140;
+export const HANDLER_MS = 140;
 // A timed-out child must be reaped and metrics flushed inside the unchanged handler/R2 budgets.
 // ponytail: reserve measured native teardown variance; an asynchronous hard-deadline transport
 // through storage/cleanup is the upgrade, not a longer external deadline.

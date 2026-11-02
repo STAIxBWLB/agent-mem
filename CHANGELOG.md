@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **A final transcript hook no longer misses its last summary on a slow machine** (task 110, Refs #226). The scan's 60 ms of work now counts from the end of its own setup (policy, cursor database, read), and the scan module loads while the worker waits for its options, so a slow runner no longer spends the window before the first summary line. The scan still ends 25 ms before the work deadline, so the drain that makes those summaries durable keeps time for its first record. Hosted macOS had missed a Compact summary in about 1 of 10 runs; this predates 0.20.0.
+- **Compatibility with N-1 (0.19.0), task 110:** no format change. The hook spool, shards, candidates, indexes, metrics and sync are unchanged.
+
 ## 0.20.0
 
 - **A reader no longer refuses at the moment a public prune finishes** (#225). When the cooperating writer unlinked its intent and lock between a reader's open and fstat, the reader saw a link count of 0 and refused with `public prune view unavailable`, although its wait bound had time left. That disappearance is now treated like an absent file: the bytes read through the old descriptor are discarded and the path is resolved again within the same deadline. Any other link count, a foreign mode or a symlink still refuses, and the 3 s wait bound is unchanged.

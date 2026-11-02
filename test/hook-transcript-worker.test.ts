@@ -4,6 +4,16 @@ import { join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { rssSourcesKnown } from "../src/hook-resources.ts";
+import { HANDLER_MS } from "../src/hooks.ts";
+import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
+/** Task 110 (ruling a): a test that must reach a worker point runs the functional entry with this explicit host deadline, and
+ * asserts the bound relative to it with the product contract's own post-deadline allowance (R2 300 ms max minus the 140 ms
+ * handler), derived from the constants so a change to either moves these tests. The real 140 ms behaviour under kill stays
+ * covered unchanged by the hosted budget harness (scripts/measure-transcript-budget.ts, handler max and the 300 ms max). */
+// Margin seen (task 110, hosted run 41525396437, 20 file runs per OS): the drain-first stall was reached at drainStartMs
+// 41-111 ms on macOS (p50 58) and 51-66 ms on ubuntu, so 1000 ms leaves about 9x headroom on the slowest hosted runner.
+const HOST_DEADLINE_MS = 1000;
+const POST_DEADLINE_ALLOWANCE_MS = R2_WALL_MAX_MS - HANDLER_MS;
 
 for (const mode of ["normal", "identity_failure"] as const) test("native receipts precede transcript work: " + mode, async () => {
   const f = hookFixture(), phases = join(f.root, "phases.jsonl"), preload = join(f.root, "phases.ts"), transcript = join(f.root, "transcript.jsonl");
@@ -105,7 +115,9 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.wallMs).toBeLessThan(2000); expect(rssSourcesKnown(metric.rssSources!)).toBe(true); expect(metric.rssSources!.unavailable).toBe(0);
+    // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms
+    // behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
+    expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); expect(rssSourcesKnown(metric.rssSources!)).toBe(true); expect(metric.rssSources!.unavailable).toBe(0);
     if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
     expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
@@ -157,13 +169,14 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
   try {
     await f.seed();
     const started = performance.now();
-    // The real executable and its unchanged 140 ms handler: the worker is killed at its deadline, not after the 3 s block.
-    const result = f.run(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    // Explicit host deadline so the worker reliably reaches the stuck point on a slow runner (task 110); the bound is relative
+    // to it. The real 140 ms behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
+    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, HOST_DEADLINE_MS);
     const outerMs = performance.now() - started;
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.wallMs).toBeLessThan(300);
-    expect(outerMs).toBeLessThan(1500); // the CLI process itself exits; the escaped 3 s descendant does not hold it
+    expect(metric.wallMs).toBeLessThan(HOST_DEADLINE_MS + POST_DEADLINE_ALLOWANCE_MS);
+    expect(outerMs).toBeLessThan(HOST_DEADLINE_MS + 1500); // the CLI process itself exits; the escaped 3 s descendant does not hold it
     expect(metric.transcriptStopReason).toBe("deadline");
     expect(metric.transcriptOffset).toBeUndefined();
     expect(metric.drainSkipped).toBe(1);
@@ -221,32 +234,38 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
 
 for (const event of ["Stop", "SessionEnd"] as const) test("#226 (#231): the kill bound holds on the drain-first path with a slow drain: " + event, async () => {
   // Drain-first was rejected before because a blocked first drain starved the scan: the worker was never killed in time and
-  // the summary was lost. Here the drain is blocked on purpose (a 3 s synchronous capture append) with 20+ records pending:
-  // the real 140 ms hook must still return inside 300 ms, count the skip and what it drained, and leave nothing alive after
+  // the summary was lost. Here the drain is blocked on purpose with 20+ records pending. The stall sits where the drain-first
+  // path is always reached once the drain options arrive: after the worker reports drainStartMs (drained 0) and before
+  // drainHookCaptures. A stall inside the first capture append (the old fixture) was often never reached on a slow hosted
+  // macOS runner before the real deadline (task 110: 16 of 20 loops), so the test had not exercised the path at all.
+  // Then:
+  // the hook must still return inside its bound, count the skip and what it drained, and leave nothing alive after
   // the 2 s post-exit window. The summary is not lost: the scan only reads; its staged rows stay pending for the next hook.
   const f = hookFixture(), preload = join(f.root, "slow-drain.ts"), entered = join(f.root, "slow-drain-entered"), transcript = join(f.root, "slow-drain.jsonl");
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "slow drain title", timestamp: new Date().toISOString() }) + "\n");
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
-globalThis.__slowAppend=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
-Bun.plugin({name:'slow-drain',setup(b){b.onLoad({filter:/[/]memory[/]capture\\.ts$/},({path})=>{
- const s=readFileSync(path,'utf8'),a='  append(input: CaptureInput, options: CaptureAppendOptions = {}): CaptureAppend {';
- if(s.split(a).length!==2)throw Error('slow append anchor changed');
- return {loader:'ts',contents:s.replace(a,a+'(globalThis as any).__slowAppend();')};
+globalThis.__slowDrain=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
+Bun.plugin({name:'slow-drain',setup(b){b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
+ const s=readFileSync(path,'utf8'),a='        const drainStartedLeft = remaining(), drainStartedAt = performance.now();';
+ if(s.split(a).length!==2)throw Error('slow drain anchor changed');
+ return {loader:'ts',contents:s.replace(a,'        (globalThis as any).__slowDrain();'+a)};
 });}});
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
   try {
     await f.seed(); await stagePressure(f, 20);
     const started = performance.now();
-    const result = f.run(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    // Explicit host deadline so the worker reliably reaches the drain-first stall on a slow runner (task 110); the bound is
+    // relative to it. The real 140 ms behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
+    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, HOST_DEADLINE_MS);
     const outerMs = performance.now() - started;
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.wallMs).toBeLessThan(300);
-    expect(outerMs).toBeLessThan(1500);
+    expect(metric.wallMs).toBeLessThan(HOST_DEADLINE_MS + POST_DEADLINE_ALLOWANCE_MS);
+    expect(outerMs).toBeLessThan(HOST_DEADLINE_MS + 1500);
     expect(metric.drainSkipped).toBe(1);
     expect(metric.drainStartMs).toBeGreaterThanOrEqual(0);
-    expect(metric.drained).toBe(0);                               // killed inside its first append: nothing committed, nothing lost
+    expect(metric.drained).toBe(0);                               // stalled before its first record (the startMs frame says drained 0): nothing committed, nothing lost
     expect(metric.captureDrops).toBeUndefined();
     // R1: nothing of this hook is alive after the 2 s post-exit window.
     const until = performance.now() + 2000;

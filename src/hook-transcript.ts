@@ -14,7 +14,9 @@ export const HOOK_TRANSCRIPT_BYTES = 256 * 1024;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 type SummaryEvent = "Title" | "Recap" | "Compact";
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
-interface Options { cwd: string; base: string; deadline: number; policy?: StandalonePolicyOptions }
+/** `deadline` is the hard end of the scan. With `workBudgetMs`, the line loop gets that budget measured from the end of setup
+ * (policy, cursor database, read), never past `deadline` (#226 task 110: on a slow runner setup ate a fixed window). */
+interface Options { cwd: string; base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions }
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const timestamp = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
 
@@ -127,7 +129,10 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
     let start = 0, stopReason: HookTranscriptProgress["stopReason"];
-    while (start < length && performance.now() < options.deadline) {
+    const workStart = performance.now();
+    // The caller's deadline is read live (a caller may move it); the work budget only adds an earlier end after setup.
+    const due = () => performance.now() >= options.deadline || options.workBudgetMs !== undefined && performance.now() - workStart >= options.workBudgetMs;
+    while (start < length && !due()) {
       const newline = bytes.indexOf(10, start);
       if (cursor.skipping) {
         start = newline < 0 ? length : newline + 1;
@@ -177,7 +182,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
     }
-    if (!stopReason && start < length && performance.now() >= options.deadline) stopReason = "deadline";
+    if (!stopReason && start < length && due()) stopReason = "deadline";
     if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";
     assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
