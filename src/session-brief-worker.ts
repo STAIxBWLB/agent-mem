@@ -12,6 +12,11 @@ const DRAIN_FIRST_PENDING = 16;
 /** Task 110: the scan ends this long before the work deadline so the drain keeps time for at least its first record. Basis: a
  * first committed record costs 1.7-2.3 ms locally (cold store open included); hosted macOS drained 2-3 records per final hook. */
 const DRAIN_RESERVE_MS = 25;
+/** The scan's own commit allowance before the work deadline (unchanged since #221). */
+const SCAN_COMMIT_MS = 20;
+/** Time a scan leaves before the work deadline: a scan before the drain also leaves the drain its reserve; a deferred scan,
+ * which runs after its drain, keeps only its commit allowance. Exported for the guard test. */
+export const scanReserveMs = (afterDrain: boolean) => afterDrain ? SCAN_COMMIT_MS : DRAIN_RESERVE_MS;
 
 /** #226: options arrive as newline-delimited JSON. A transcript hook first sends the scan options, then (after native
  * metadata) the drain options; other hooks send only the drain options. Total input stays bounded. */
@@ -72,18 +77,21 @@ if (import.meta.main) {
     // start: on a slow runner the scan would otherwise spend the whole slice and the spool would livelock (#231 hosted macOS).
     // The count is one bounded readdir and fails closed to the default order.
     let deferred: Scan | undefined;
-    const runScan = async (scan: Scan, until: number) => {
+    const runScan = async (scan: Scan, until: number, afterDrain = false) => {
       if (!Number.isFinite(scan.deadlineAt) || hookCaptureScope(scan.cwd, scan.base) === undefined) return;
       const left = () => Math.min(scan.deadlineAt, until) - (performance.timeOrigin + performance.now());
       // The scan's line loop gets at most 60 ms of work, counted after its own setup (task 110: setup ate a fixed window on a slow
       // runner and the final hook missed a summary). It still ends DRAIN_RESERVE_MS before the slice end, so the drain that makes
       // those summaries durable keeps time for at least its first record. A deferred scan recomputes from what is left.
       // Out of time is a deadline stop, never a silent call (#221): the harness and the metric must see why nothing advanced.
-      if (left() - DRAIN_RESERVE_MS < 5) { progress({ stopReason: "deadline" }); return; }
+      // A scan before the drain leaves DRAIN_RESERVE_MS for it; a deferred scan runs after its drain and keeps only its own
+      // 20 ms commit allowance (task 110: reserving drain time there stalled ubuntu StopBurst).
+      const reserve = scanReserveMs(afterDrain);
+      if (left() - reserve < 5) { progress({ stopReason: "deadline" }); return; }
       try {
         const { scanHookTranscriptTail } = await transcriptModule;
         const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
-          deadline: performance.now() + left() - DRAIN_RESERVE_MS, workBudgetMs: 60 });
+          deadline: performance.now() + left() - reserve, workBudgetMs: 60 });
         if (scanned) progress(scanned);
       } catch { progress({ stopReason: "unavailable" }); /* #221: a scan fault is reported, never counted as progress. */ }
     };
@@ -109,7 +117,7 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     let project: string | undefined;
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); } catch { /* Independently bound transcript intake can still proceed. */ }
-    if (project === undefined) { if (deferred) await runScan(deferred, options.deadlineAt); stop(); }
+    if (project === undefined) { if (deferred) await runScan(deferred, options.deadlineAt, true); stop(); }
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
     if (expectedScope !== undefined) {
@@ -133,7 +141,7 @@ if (import.meta.main) {
         captured = drained.captured.includes(options.current);
       } finally { store?.close(); }
     }
-    if (deferred) await runScan(deferred, options.deadlineAt);
+    if (deferred) await runScan(deferred, options.deadlineAt, true);
     if (hookCaptureScope(options.cwd, options.base!) !== expectedScope) stop();
     await emit({ context: "", captured, valid: true });
   } catch { if (owned) stop(); process.exitCode = 1; }

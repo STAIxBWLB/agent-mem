@@ -276,3 +276,32 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     expect(readdirSync(join(f.base, "hook-spool")).filter(name => name.startsWith("hook-")).length).toBeGreaterThanOrEqual(20);
   } finally { f.close(); }
 });
+
+test("task 110: a deferred scan (after its drain) keeps only its commit allowance; a scan before the drain also leaves the drain reserve", async () => {
+  const { scanReserveMs } = await import("../src/session-brief-worker.ts");
+  // The guard is `left - reserve < 5`. With 28 ms left, a deferred scan (reserve 20) still scans; a scan before the drain
+  // (reserve 25) stops. If the two are swapped back, a deferred scan would stop and StopBurst stalls (ubuntu, PR #235).
+  const left = 28;
+  expect(left - scanReserveMs(true) < 5).toBe(false);
+  expect(left - scanReserveMs(false) < 5).toBe(true);
+  expect(scanReserveMs(true)).toBeLessThan(scanReserveMs(false));
+  // Through the real worker: 20 pending (drain-first), a slow drain that leaves 28 ms of the slice, and the deferred scan
+  // must still advance the transcript (an offset, not a bare deadline stop).
+  const f = hookFixture(), preload = join(f.root, "late-drain.ts"), transcript = join(f.root, "late-drain.jsonl");
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "late drain title", timestamp: new Date().toISOString() }) + "\n");
+  writeFileSync(preload, `import {readFileSync} from 'node:fs';
+Bun.plugin({name:'late-drain',setup(b){b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
+ const s=readFileSync(path,'utf8'),a='    if (deferred) await runScan(deferred, options.deadlineAt, true);';
+ if(s.split(a).length!==2)throw Error('deferred scan anchor changed');
+ return {loader:'ts',contents:s.replace(a,'    { const until=options.deadlineAt-28; while(performance.timeOrigin+performance.now()<until){} }\\n'+a)};
+});}});
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
+  try {
+    await f.seed(); await stagePressure(f, 20);
+    expect(f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, HOST_DEADLINE_MS).exitCode).toBe(0);
+    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    expect(metric.drained).toBeGreaterThan(0);
+    expect(metric.transcriptOffset).toBeGreaterThan(0);
+  } finally { f.close(); }
+});
