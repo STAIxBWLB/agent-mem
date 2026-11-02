@@ -68,16 +68,17 @@ async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefi
 }
 const publicBefore = async (policy: MemoryPolicy, value: unknown, deadline: number) => await before(policy.screen(value), deadline) === true;
 
-async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void, register?: (cancel: () => void) => void): Promise<string | undefined> {
+async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void, register?: (cancel: () => void) => void, onDrain?: (value: unknown) => void): Promise<string | undefined> {
   const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
   // #226: after a bounded reap the parent abandons this pipe; cancelling it leaves no pending read holding the event loop.
   register?.(() => { reader.cancel().catch(() => {}); });
   let length = 0, pending = "", body = "";
   const line = (text: string) => {
     if (!text) return;
-    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown };
+    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown; drain?: unknown };
     if (onRss && Object.hasOwn(value, "rss")) onRss(value.rss);
     else if (onTranscript && Object.hasOwn(value, "transcript")) onTranscript(value.transcript);
+    else if (onDrain && Object.hasOwn(value, "drain")) onDrain(value.drain);
     else { if (body) throw new Error("worker output bound"); body = text; }
   };
   try {
@@ -122,6 +123,10 @@ async function boundedWait<T>(work: Promise<T>): Promise<{ value?: T; late: bool
 let abandonedChildren = 0;
 /** Transcript hooks whose worker was killed before its drain finished; their staged records stay durable and pending. */
 let drainSkipped = 0;
+/** #226 instrumentation: the last worker drain's start (ms after hook start) and committed record count. */
+let lastDrain: { startMs: number; drained: number } | undefined;
+/** Hook start on the performance clock, set by the entry points, so a worker can report times relative to it. */
+let hookStartedAt = performance.now();
 
 /** Only capture work uses a short-lived owned child; native handles remain in this CLI.
  * #226 (ruling b): a transcript hook boots that one worker at hook start, in parallel with native metadata. The worker
@@ -136,6 +141,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   let owned: Bun.Subprocess<"pipe", "pipe", "ignore"> | undefined, exited = false, killed = false, cancelOutput: (() => void) | undefined;
   let tracker: HookWorkerRss | undefined, output: Promise<string | undefined> | undefined, exit: Promise<number> | undefined;
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
+  const drainProgress: { startMs?: number; drained?: number } = {};
   const spawn = () => {
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
       { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
@@ -147,7 +153,12 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
       if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
       // A reported scan fault stays reported: a later worker deadline frame cannot turn it into accepted progress (#221).
       result.transcript = { ...result.transcript, ...value, ...(result.transcript?.stopReason === "unavailable" ? { stopReason: "unavailable" as const } : {}) };
-    }, cancel => { cancelOutput = cancel; });
+    }, cancel => { cancelOutput = cancel; }, value => {
+      // #226 instrumentation: bounded numeric drain progress; anything else is ignored, never trusted.
+      const row = value as { startMs?: unknown; drained?: unknown } | null;
+      if (row && typeof row.startMs === "number" && Number.isFinite(row.startMs) && row.startMs >= 0 && row.startMs < 10_000) drainProgress.startMs = row.startMs;
+      if (row && Number.isSafeInteger(row.drained) && (row.drained as number) >= 0 && (row.drained as number) <= 1024) drainProgress.drained = row.drained as number;
+    });
     return child;
   };
   const send = (line: object) => { try { owned!.stdin.write(JSON.stringify(line) + "\n"); owned!.stdin.flush(); } catch { /* A dead worker reports nothing. */ } };
@@ -175,7 +186,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     result.rssSources.unavailable++;
     // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
     // Without a receipt the worker still finishes the scan and reports it, but drains nothing.
-    send({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline, policy });
+    send({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline, hookStartAt: performance.timeOrigin + hookStartedAt, policy });
     close();
     const answer = await Promise.race([
       Promise.all([exit!, output!]),
@@ -205,6 +216,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
       const accounting = tracker!.finish(workerRawKB);
       const usage = metadata?.usage ?? { rssKB: 0, rawRssKB: 0, rssSources: emptyRssSources() };
       result.rssKB = usage.rssKB + accounting.rssKB; result.rawRssKB = usage.rawRssKB + workerRawKB; result.rssSources = combineRssSources(usage.rssSources, accounting.rssSources);
+      if (drainProgress.startMs !== undefined) lastDrain = { startMs: drainProgress.startMs, drained: drainProgress.drained ?? 0 };
       if (early && killed) {
         // #221: a kill without accepted progress is a deadline stop; a kill also skips this call's drain (ruling b).
         if (result.transcript?.offset === undefined && result.transcript?.stopReason !== "unavailable") result.transcript = { stopReason: "deadline" };
@@ -317,6 +329,7 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
 export async function runHook(event: string, input: unknown, options: HookOptions, host?: HookHostPorts): Promise<HookReceipt> {
   const now = performance.now(), started = options.startedAt !== undefined && Number.isFinite(options.startedAt) && options.startedAt <= now ? options.startedAt : now;
   const deadline = started + handlerMs(host);
+  hookStartedAt = started;
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false, dropped = false;
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
@@ -338,13 +351,14 @@ export async function runHook(event: string, input: unknown, options: HookOption
   finally {
     if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
       rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
-      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
 /** Bounded stdin and a fixed overall handler budget; failures produce no native decision and exit successfully. */
 export async function hookMain(args: readonly string[], startedAt = performance.now(), host?: HookHostPorts): Promise<string> {
   const deadlineMs = handlerMs(host);
+  hookStartedAt = startedAt;
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
@@ -388,7 +402,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const self = hookRssReading();
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
-        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
+        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }

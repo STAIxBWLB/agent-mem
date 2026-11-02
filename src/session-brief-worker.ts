@@ -6,7 +6,9 @@ import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./hook-contract.ts";
-import { drainHookCaptures, hookCaptureScope } from "./hook-spool.ts";
+import { drainHookCaptures, hookCaptureScope, hookPendingCount } from "./hook-spool.ts";
+/** #226: at or above this many pending publications for the cwd (a quarter of its 64 active share) the worker drains first. */
+const DRAIN_FIRST_PENDING = 16;
 
 /** #226: options arrive as newline-delimited JSON. A transcript hook first sends the scan options, then (after native
  * metadata) the drain options; other hooks send only the drain options. Total input stays bounded. */
@@ -34,6 +36,7 @@ if (import.meta.main) {
   let rssTelemetryValid = true;
   const frame = (rss: number[]) => { try { writeSync(1, JSON.stringify({ rss }) + "\n"); } catch { rssTelemetryValid = false; } };
   const progress = (transcript: HookTranscriptProgress) => { try { writeSync(1, JSON.stringify({ transcript }) + "\n"); } catch { rssTelemetryValid = false; } };
+  const drain = (value: { startMs?: number; drained: number }) => { try { writeSync(1, JSON.stringify({ drain: value }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
   const stop = (): never => {
     if (!rssTelemetryValid) frame([4]);
@@ -57,23 +60,33 @@ if (import.meta.main) {
     let line = await next();
     if (line === undefined) process.exit(0);
     let first = JSON.parse(line) as Record<string, unknown>;
+    type Scan = { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number };
+    // #226: scan on the first line, while the parent resolves native metadata. Under spool pressure (16+ of this cwd's pending
+    // publications, a quarter of its 64 active share) the scan is deferred until after the drain, so the drain is guaranteed to
+    // start: on a slow runner the scan would otherwise spend the whole slice and the spool would livelock (#231 hosted macOS).
+    // The count is one bounded readdir and fails closed to the default order.
+    let deferred: Scan | undefined;
+    const runScan = async (scan: Scan, until: number) => {
+      if (!Number.isFinite(scan.deadlineAt) || hookCaptureScope(scan.cwd, scan.base) === undefined) return;
+      const left = () => Math.min(scan.deadlineAt, until) - (performance.timeOrigin + performance.now());
+      // The scan never runs past 60 ms and leaves 20 ms of its slice for its own commit; a deferred scan recomputes from what is left.
+      if (left() - 20 < 5) return;
+      try {
+        const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+        const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
+          deadline: performance.now() + Math.min(60, left() - 20) });
+        if (scanned) progress(scanned);
+      } catch { progress({ stopReason: "unavailable" }); /* #221: a scan fault is reported, never counted as progress. */ }
+    };
     if (first.scan !== undefined) {
-      // #226: scan first, while the parent resolves native metadata. A fault is reported, never counted as progress (#221).
-      const scan = first.scan as { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number };
-      if (Number.isFinite(scan.deadlineAt) && hookCaptureScope(scan.cwd, scan.base) !== undefined) {
-        const remainingScan = () => scan.deadlineAt - (performance.timeOrigin + performance.now());
-        try {
-          const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
-          const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
-            deadline: Math.min(performance.now() + remainingScan() - 20, performance.now() + 60) });
-          if (scanned) progress(scanned);
-        } catch { progress({ stopReason: "unavailable" }); }
-      }
+      const scan = first.scan as Scan;
+      if (hookPendingCount(scan.cwd, scan.base) >= DRAIN_FIRST_PENDING) deferred = scan;
+      else await runScan(scan, Number.POSITIVE_INFINITY);
       line = await next();
       if (line === undefined) process.exit(0);
       first = JSON.parse(line) as Record<string, unknown>;
     }
-    const options = first as unknown as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean };
+    const options = first as unknown as BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean; hookStartAt?: number };
     if (!Number.isFinite(options.deadlineAt) || options.ownedGroup !== true) process.exit(0);
     owned = true;
     const remaining = () => options.deadlineAt - (performance.timeOrigin + performance.now());
@@ -87,20 +100,27 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     let project: string | undefined;
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); } catch { /* Independently bound transcript intake can still proceed. */ }
-    if (project === undefined) stop();
+    if (project === undefined) { if (deferred) await runScan(deferred, options.deadlineAt); stop(); }
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
     if (expectedScope !== undefined) {
       const { CaptureStore } = await captureModule;
       let store: CaptureStore | undefined;
       try {
+        // #226 instrumentation: when the drain started (relative to the hook start the parent passed) and how many records it
+        // committed, sent before and during the drain so a kill still reports them. A killed drain keeps every record it finished.
+        drain({ startMs: Math.round(performance.timeOrigin + performance.now() - (options.hookStartAt ?? options.deadlineAt)), drained: 0 });
+        let drainedCount = 0;
         const drained = await drainHookCaptures({ ...options, base: options.base!, project: project!, expectedScope, timeRemaining: remaining }, (input, receipt) => {
           store ??= new CaptureStore({ memoryDir: options.base!, project: project!, busyTimeoutMs: 0, cwd: options.cwd });
-          return store.append(input, { receipt });
+          const appended = store.append(input, { receipt });
+          drain({ drained: ++drainedCount });
+          return appended;
         });
         captured = drained.captured.includes(options.current);
       } finally { store?.close(); }
     }
+    if (deferred) await runScan(deferred, options.deadlineAt);
     if (hookCaptureScope(options.cwd, options.base!) !== expectedScope) stop();
     await emit({ context: "", captured, valid: true });
   } catch { if (owned) stop(); process.exitCode = 1; }

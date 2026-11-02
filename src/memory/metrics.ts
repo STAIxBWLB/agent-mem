@@ -4,7 +4,7 @@ import type { HookTranscriptStopReason } from "../hook-contract.ts";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {
