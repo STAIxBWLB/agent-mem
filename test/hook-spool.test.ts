@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { drainHookCaptures, hookCapturePending, hookCaptureScope, quarantineHookScope, stageHookCapture } from "../src/hook-spool.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { normalizeCaptureFields, type NormalizedCaptureFields } from "../src/memory/capture-input.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookRecoveryDiagnostic } from "./fakes/hooks-recovery-diagnostic.ts";
@@ -20,7 +21,7 @@ function fixture(remote?: string) {
     age(days: number) {
       const dir = join(f.base, "hook-spool");
       for (const name of readdirSync(dir).filter(name => /^hook-.*\.json$/.test(name))) {
-        const file = join(dir, name), row = JSON.parse(readFileSync(file, "utf8")); row.capture.at = new Date(Date.now() - days * 24 * 3600_000).toISOString(); writeFileSync(file, JSON.stringify(row));
+        const file = join(dir, name), row = JSON.parse(readFileSync(file, "utf8")), at = new Date(Date.now() - days * 24 * 3600_000); row.capture.at = at.toISOString(); writeFileSync(file, JSON.stringify(row)); utimesSync(file, at, at);
       }
     },
     pending() {
@@ -31,6 +32,27 @@ function fixture(remote?: string) {
     },
   };
 }
+
+/** Published N-1 homes may already exceed the new cooperative per-cwd share. Seed valid
+ * immutable publications directly so admission does not evict the backlog being tested. */
+async function legacyBacklog(options: { cwd: string; base: string }, prompts: string[], input: Record<string, unknown> = {}, maximumBytes = Infinity): Promise<number> {
+  const staged = await stageHookCapture("PostToolUse", { ...input, prompt: prompts[0] }, options);
+  expect(staged).toBeDefined();
+  const dir = join(options.base, "hook-spool"), source = join(dir, staged!.name);
+  const template = JSON.parse(readFileSync(source, "utf8")) as { nonce: string; capture: NormalizedCaptureFields };
+  rmSync(source);
+  let bytes = 0, count = 0;
+  for (const prompt of prompts) {
+    const { tool, status, ...fields } = template.capture;
+    const capture = normalizeCaptureFields({ ...fields, excerpt: prompt, ...(tool === null ? {} : { tool }), ...(status === null ? {} : { status }) });
+    const nonce = count.toString(16).padStart(32, "0"), body = JSON.stringify({ ...template, nonce, capture });
+    if (bytes + Buffer.byteLength(body) > maximumBytes) break;
+    writeFileSync(join(dir, staged!.name.replace(/[a-f0-9]{32}\.json$/, nonce + ".json")), body, { mode: 0o600, flag: "wx" });
+    bytes += Buffer.byteLength(body); count++;
+  }
+  return count;
+}
+const capacityDrops = (base: string) => readMetrics(base).filter(row => row.captureDropReason === "scope_capacity").reduce((sum, row) => sum + (row.captureDrops ?? 0), 0);
 
 test("pending hook stages contain bounded normalized capture fields, never the raw native envelope", async () => {
   const f = fixture();
@@ -106,12 +128,56 @@ test("changed Git control scope stays pending instead of attaching to the newly 
   } finally { store.close(); }
 });
 
-test("the exact pending-file cap remains drainable without eviction", async () => {
+test("an N-1 backlog at the exact pending-file cap drains one bounded batch without admission loss", async () => {
   const f = fixture();
-  for (let i = 0; i < 256; i++) expect(await stageHookCapture("PostToolUse", { prompt: `bounded pending ${i}` }, f.options)).toBeDefined();
-  await expect(stageHookCapture("PostToolUse", { prompt: "over cap" }, f.options)).rejects.toThrow("hook storage full");
+  expect(await legacyBacklog(f.options, Array.from({ length: 256 }, (_, i) => `bounded pending ${i}`))).toBe(256);
   const result = await drainHookCaptures({ ...f.options, project: f.project }, () => ({ id: 1 }));
   expect(result.captured).toHaveLength(32); expect(f.pending()).toHaveLength(224);
+  expect(capacityDrops(f.base)).toBe(0);
+});
+
+for (const [event, share] of [["PostToolUse", 64], ["SessionStart", 8]] as const) test(`fair-share admission keeps ${share} ${event} rows and counts the displaced oldest row`, async () => {
+  const f = fixture();
+  for (let i = 0; i <= share; i++) {
+    const staged = await stageHookCapture(event, { prompt: `share ${i}` }, f.options);
+    expect(staged).toBeDefined();
+    if (i === 0) {
+      const older = new Date(Date.now() - 10_000);
+      utimesSync(join(f.base, "hook-spool", ...(event === "SessionStart" ? [".capacity"] : []), staged!.name), older, older);
+    }
+  }
+  expect(f.pending()).toHaveLength(share);
+  expect(f.pending().some(row => row.value.capture.excerpt === "share 0")).toBe(false);
+  expect(f.pending().some(row => row.value.capture.excerpt === `share ${share}`)).toBe(true);
+  expect(f.pending().length + capacityDrops(f.base)).toBe(share + 1);
+  expect(capacityDrops(f.base)).toBe(1);
+});
+
+test("a failed loss receipt cannot evict a replayable row under fair-share pressure", async () => {
+  const f = fixture();
+  for (let i = 0; i < 64; i++) await stageHookCapture("PostToolUse", { prompt: `receipt-protected ${i}` }, f.options);
+  const before = f.pending().map(row => JSON.stringify(row.value)).sort();
+  mkdirSync(join(f.base, "metrics.jsonl"));
+  await expect(stageHookCapture("PostToolUse", { prompt: "not acknowledged" }, f.options)).rejects.toThrow("hook storage full");
+  // Claims may be renamed, but every original byte-bearing record remains recoverable.
+  expect(f.pending().map(row => JSON.stringify(row.value)).sort()).toEqual(before);
+  rmSync(join(f.base, "metrics.jsonl"), { recursive: true });
+  expect(await stageHookCapture("PostToolUse", { prompt: "receipt restored" }, f.options)).toBeDefined();
+  expect(f.pending().length + capacityDrops(f.base)).toBe(65);
+  expect(f.pending().filter(row => row.value.capture.excerpt === "receipt restored")).toHaveLength(1);
+});
+
+for (const outcome of ["ENOENT", "ENOTDIR"] as const) test("one-hour orphan retirement requires positive cwd absence, not another path error: " + outcome, async () => {
+  const f = fixture(), parent = join(f.cwd, "nested"), cwd = join(parent, "orphan");
+  mkdirSync(cwd, { recursive: true });
+  await stageHookCapture("PostToolUse", { prompt: "own cwd evidence" }, { ...f.options, cwd });
+  f.age(2 / 24);
+  rmSync(parent, { recursive: true });
+  if (outcome === "ENOTDIR") writeFileSync(parent, "a file is not evidence that the nested cwd was deleted");
+  expect(await stageHookCapture("PostToolUse", { prompt: "healthy admission" }, f.options)).toBeDefined();
+  const lost = readMetrics(f.base).filter(row => row.captureDropReason === "cwd_removed").reduce((sum, row) => sum + (row.captureDrops ?? 0), 0);
+  expect(lost).toBe(outcome === "ENOENT" ? 1 : 0);
+  expect(f.pending().filter(row => row.value.cwd === cwd)).toHaveLength(outcome === "ENOENT" ? 0 : 1);
 });
 
 test("an already expired hook deadline still publishes durable capture before optional work", async () => {
@@ -125,10 +191,10 @@ test("an already expired hook deadline still publishes durable capture before op
 });
 
 
-for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional ${event} retains a full-tier event and drains its backlog exactly once within 24 following invocations`, async () => {
+for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional ${event} retains a full-tier event and accounts for replay or pressure retirement within 24 following invocations`, async () => {
   const f = fixture();
   const accepted = Array.from({ length: 256 }, (_, i) => `backlog ${i}`);
-  for (const prompt of accepted) await stageHookCapture("PostToolUse", { prompt }, f.options);
+  expect(await legacyBacklog(f.options, accepted)).toBe(256);
   accepted.push("full queue follow-up");
   const probe = hookRecoveryDiagnostic(f.root);
   const result = f.runFunctional(event, { prompt: "full queue follow-up" }, probe);
@@ -145,22 +211,22 @@ for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional $
   // 256 ordinary slots remain bounded; only already-screened native intake uses the separate 32-slot reserve.
   expect(readdirSync(join(f.base, "hook-spool")).filter(name => /^hook-/.test(name)).length).toBeLessThanOrEqual(256);
   expect(pending.length).toBeLessThanOrEqual(288);
-  for (let invocation = 0; invocation < 24; invocation++) {
-    const complete = accepted.every(prompt => rows.filter(row => row.excerpt === prompt).length === 1 && !pending.some(row => row.value.capture.excerpt === prompt));
-    if (complete) break;
+  let following = 0;
+  for (let invocation = 0; invocation < 24 && pending.length > 0; invocation++) {
     const next = f.runFunctional("PostToolUse", { prompt: `replay barrier ${invocation}` }, probe);
     traces.push(next.stderr.toString()); expect(next.exitCode).toBe(0);
+    following++;
     rows = f.rows(); pending = f.pending();
   }
-  for (const prompt of accepted) {
-    expect(rows.filter(row => row.excerpt === prompt), traces.join("\n")).toHaveLength(1);
-    expect(pending.filter(row => row.value.capture.excerpt === prompt), traces.join("\n")).toHaveLength(0);
-  }
+  expect(pending, traces.join("\n")).toHaveLength(0);
+  expect(rows.length + capacityDrops(f.base), traces.join("\n")).toBe(accepted.length + following);
+  expect(new Set(rows.map(row => row.excerpt)).size).toBe(rows.length);
+  expect(rows.filter(row => row.excerpt === "full queue follow-up")).toHaveLength(1);
 });
 
 test("an expired full-tier hook still retains its next event in the bounded native reserve", async () => {
   const f = fixture();
-  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `expired backlog ${i}` }, f.options);
+  expect(await legacyBacklog(f.options, Array.from({ length: 256 }, (_, i) => `expired backlog ${i}`))).toBe(256);
   const { runHook } = await import("../src/hooks.ts");
   const result = await runHook("PostToolUse", { prompt: "expired full-tier current" }, { ...f.options, startedAt: performance.now() - 1000 });
   expect(result).toMatchObject({ captured: false, pending: true });
@@ -170,11 +236,12 @@ test("an expired full-tier hook still retains its next event in the bounded nati
     const noTime = await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 0 }, (input, receipt) => store.append(input, { receipt }));
     expect(noTime.captured).toHaveLength(0);
     // The same bounded replay consumes reserve plus backlog; constant 8ms proves progress at the threshold.
-    for (let invocation = 0; invocation < 9; invocation++) {
+    for (let invocation = 0; invocation < 9 && f.pending().length > 0; invocation++) {
       const next = await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 8 }, (input, receipt) => store.append(input, { receipt }));
       expect(next.captured.length).toBeGreaterThan(0);
     }
-    expect(store.rows()).toHaveLength(257); expect(f.pending()).toHaveLength(0);
+    expect(store.rows().length + capacityDrops(f.base)).toBe(257); expect(f.pending()).toHaveLength(0);
+    expect(capacityDrops(f.base)).toBe(32);
     expect(store.rows().filter(row => row.excerpt === "expired full-tier current")).toHaveLength(1);
     expect((await drainHookCaptures({ ...f.options, project: f.project, timeRemaining: () => 8 }, (input, receipt) => store.append(input, { receipt }))).captured).toHaveLength(0);
   } finally { store.close(); }
@@ -247,9 +314,7 @@ test("removed cwd records retire with a count and cannot become a replacement pr
 
 test("256 orphaned cwd records cannot disable actual hooks in another healthy cwd", async () => {
   const f = fixture(), removed = join(f.cwd, "orphaned-worktree"); mkdirSync(removed);
-  for (let index = 0; index < 256; index++) {
-    expect(await stageHookCapture("PostToolUse", { cwd: removed, prompt: `orphan canary ${index}` }, { ...f.options, cwd: removed })).toBeDefined();
-  }
+  expect(await legacyBacklog({ ...f.options, cwd: removed }, Array.from({ length: 256 }, (_, index) => `orphan canary ${index}`))).toBe(256);
   expect(f.pending()).toHaveLength(256);
   f.age(8);
   rmSync(removed, { recursive: true });
@@ -489,7 +554,7 @@ test("a full tier from another valid project retains this SessionStart and retur
   process.env.HOME = a.env.HOME;
   await a.seed();
   const foreign = { cwd: b.cwd, base: a.base };
-  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `foreign valid ${i}` }, foreign);
+  expect(await legacyBacklog(foreign, Array.from({ length: 256 }, (_, i) => `foreign valid ${i}`))).toBe(256);
   for (let i = 0; i < 6; i++) {
     const marker = `local full-tier ${i}`;
     const result = a.runFunctional("SessionStart", { prompt: marker });
@@ -505,7 +570,7 @@ test("a full tier from another valid project retains this SessionStart and retur
 
 test("SessionStart reserves its own slot without retiring valid foreign records", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
-  for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `minimum foreign ${i}` }, { cwd: b.cwd, base: a.base });
+  expect(await legacyBacklog({ cwd: b.cwd, base: a.base }, Array.from({ length: 256 }, (_, i) => `minimum foreign ${i}`))).toBe(256);
   const staged = await stageHookCapture("SessionStart", { prompt: "one reserved brief slot" }, { ...a.options, deferAtCapacity: true });
   expect(staged).toBeDefined();
   expect(a.pending().filter(row => row.value.cwd === b.cwd)).toHaveLength(256);
@@ -528,11 +593,7 @@ test("SessionStart byte exhaustion uses its reserve without erasing foreign reco
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   const foreign = { cwd: b.cwd, base: a.base };
   const input = { prompt: "b".repeat(2000), tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"p".repeat(370)}`) } };
-  let staged = 0;
-  for (; staged < 256; staged++) {
-    try { await stageHookCapture("PostToolUse", input, foreign); }
-    catch (error) { expect((error as Error).message).toBe("hook storage full"); break; }
-  }
+  const staged = await legacyBacklog(foreign, Array.from({ length: 256 }, () => input.prompt), input, 2 * 1024 * 1024);
   expect(staged).toBeGreaterThan(0); expect(staged).toBeLessThan(256);
   const payload = { prompt: "current byte-bound event", tool_input: { paths: Array.from({ length: 32 }, (_, i) => `src/${i}-${"가".repeat(350)}`) } };
   await expect(stageHookCapture("SessionStart", payload, { ...a.options, deferAtCapacity: true })).resolves.toBeDefined();

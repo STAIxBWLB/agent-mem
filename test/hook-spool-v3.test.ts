@@ -57,11 +57,12 @@ test("N-1: 0.18.0 maintenance and drain leave a pending jcode record alone; this
   expect(pending(f.base)).toEqual([]);
 });
 
-test("N-1: 0.18.0 still drains a Claude record this version stages (format 2 is unchanged)", async () => {
+test("N-1: 0.18.0 preserves a Claude record under the new stable scope for this reader", async () => {
   const f = fixture();
   await stageHookCapture("Stop", { session_id: "s", last_assistant_message: "claude from new version" }, f.options);
   const result = runV018(f, "barrier");
-  expect(result.appended).toContain("claude:claude from new version");
+  expect(result.appended).not.toContain("claude:claude from new version");
+  expect((await drain(f)).rows.map(row => row.excerpt)).toEqual(["claude from new version"]);
   expect(pending(f.base)).toEqual([]);
 });
 
