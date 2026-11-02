@@ -47,7 +47,8 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     const events = readFileSync(phases, "utf8").trim().split("\n").map(line => JSON.parse(line) as { phase: string; pid: number; known?: boolean });
     const scan = events.findIndex(event => event.phase === "scan"), native = events.filter(event => event.phase === "native");
-    expect(scan).toBeGreaterThan(0); expect(native.length).toBeGreaterThan(0);
+    // #226: the worker boots and scans at hook start, in parallel with native metadata, so the scan may be the first phase.
+    expect(scan).toBeGreaterThanOrEqual(0); expect(native.length).toBeGreaterThan(0);
     // #226 ruling (option a, kept for b): the worker now boots and scans at hook start, in parallel with native metadata, so
     // "no native receipt after the scan starts" no longer holds. #211's invariants are what the order protected:
     // 1. every native receipt is issued in the parent and is known;
