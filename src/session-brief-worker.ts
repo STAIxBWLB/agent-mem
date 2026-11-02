@@ -115,7 +115,7 @@ if (import.meta.main) {
     };
     let context: Awaited<typeof ready>;
     try {
-      if (scan) {
+      if (scan && hookCaptureScope(scan.cwd, scan.base) !== undefined) {
         const scanEnd = end - SCAN_COMMIT_MS;
         if (scanEnd - now() < 5) progress({ stopReason: "deadline" });
         else try {

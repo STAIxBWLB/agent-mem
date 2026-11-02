@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { appendFileSync, existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HOOK_REPLAY_MAX_BYTES, HOOK_REPLAY_MAX_FILES, stageHookCapture } from "../src/hook-spool.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
@@ -221,5 +222,57 @@ Bun.plugin({name:'parent-receipt-after-summary-pair',setup(builder){builder.onLo
     expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
     expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
     expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+  } finally { f.close(); }
+});
+
+for (const existing of [false, true]) test("an unavailable worker scope silently leaves publications and cursor untouched: " + (existing ? "existing cursor" : "new cursor"), async () => {
+  const f = hookFixture(), transcript = join(f.root, "scope-unavailable.jsonl"), preload = join(f.root, "scope-unavailable.ts");
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts"), scopeSeen = join(f.root, "scope-seen"), scanImported = join(f.root, "scan-imported");
+  const summary = { recap: "scope retry Recap", compact: "scope retry Compact" }, at = new Date().toISOString();
+  writeFileSync(transcript, "");
+  const cursor = () => {
+    const dir = join(f.base, "hook-transcripts"), file = existsSync(dir) ? readdirSync(dir).find(name => name.endsWith(".db")) : undefined;
+    if (!file) return undefined;
+    const db = new Database(join(dir, file), { readonly: true });
+    try { return db.query("SELECT * FROM cursor").get(); } finally { db.close(); }
+  };
+  // Only the owned worker loses scope. Native admission remains valid, as it can
+  // when identity becomes unavailable between parent admission and worker scan.
+  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
+if(process.argv[1]===${JSON.stringify(worker)})Bun.plugin({name:'unavailable-worker-scope',setup(builder){
+ builder.onLoad({filter:/[/]hook-spool\\.ts$/},({path})=>{
+  const source=readFileSync(path,'utf8'),anchor='  return captureScope(cwd, base, cacheValidity, extraGitConfig, false);';
+  if(source.split(anchor).length!==2)throw Error('scope refusal anchor changed');
+  return {loader:'ts',contents:source.replace(anchor,${JSON.stringify("writeFileSync(" + JSON.stringify(scopeSeen) + ", 'entered'); return undefined;")})};
+ });
+ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
+  writeFileSync(${JSON.stringify(scanImported)},'imported');return {loader:'ts',contents:readFileSync(path,'utf8')};
+ });
+}});
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
+`);
+  try {
+    await f.seed();
+    if (existing) {
+      appendFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "prior valid title", timestamp: at }) + "\n");
+      expect(f.runFunctional("Stop", { transcript_path: transcript }).exitCode).toBe(0);
+      expect(cursor()).toBeDefined();
+    }
+    const before = cursor();
+    appendFileSync(transcript, [
+      { type: "system", subtype: "away_summary", timestamp: at, content: summary.recap },
+      { type: "user", isCompactSummary: true, timestamp: at, message: { content: summary.compact } },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const blocked = f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    expect(blocked.exitCode, blocked.stderr.toString()).toBe(0); expect(blocked.stdout.length).toBe(0);
+    expect(existsSync(scopeSeen), "the owned worker reached the unavailable scope").toBe(true);
+    expect(existsSync(scanImported), "scope refusal happens before the scan import").toBe(false);
+    expect(cursor()).toEqual(before);
+    expect(pending(f).filter(row => row.event === "Recap" || row.event === "Compact")).toHaveLength(0);
+    expect(f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+    expect(f.runFunctional("Stop", { transcript_path: transcript }).exitCode).toBe(0);
+    const rows = f.rows();
+    expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
   } finally { f.close(); }
 });
