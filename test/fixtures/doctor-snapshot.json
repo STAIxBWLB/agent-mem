@@ -145,9 +145,16 @@
           "maxFiles": "number"
         },
         "claimed": "number",
+        "classificationCoverage": "string",
         "complete": "boolean",
         "coverage": "string",
         "fill": "string",
+        "kinds": {
+          "complete": "boolean",
+          "native": "number",
+          "summaries": "number",
+          "unclassified": "number"
+        },
         "oldestAt": "null",
         "reserve": {
           "bytes": "number",
@@ -295,9 +302,16 @@
           "maxFiles": "number"
         },
         "claimed": "number",
+        "classificationCoverage": "string",
         "complete": "boolean",
         "coverage": "string",
         "fill": "string",
+        "kinds": {
+          "complete": "boolean",
+          "native": "number",
+          "summaries": "number",
+          "unclassified": "number"
+        },
         "oldestAt": "null",
         "reserve": {
           "bytes": "number",

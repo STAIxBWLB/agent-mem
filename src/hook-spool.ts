@@ -28,6 +28,7 @@ const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+const summaryEvent = (event: string) => ["Title", "Recap", "Compact"].includes(event);
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
@@ -75,6 +76,7 @@ function entries(base: string, capacity = false): { name: string; size: number; 
 export function readHookSpoolStatus(base: string) {
   assertFormatFloor(base, "hook-spool");
   let claimed = 0, oldest = Infinity, complete = true;
+  const publications: { folder: string; name: string; size: number; modified: number }[] = [];
   const tier = (capacity: boolean) => {
     const dir = capacity ? join(directory(base), ".capacity") : directory(base);
     const maxFiles = capacity ? CAPACITY_FILES : MAX_FILES, maxBytes = capacity ? CAPACITY_BYTES : MAX_BYTES;
@@ -92,14 +94,33 @@ export function readHookSpoolStatus(base: string) {
         const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
         if (!item) { complete = false; continue; }
         files++; bytes += item.size; oldest = Math.min(oldest, item.mtimeMs);
+        publications.push({ folder: dir, name: entry.name, size: item.size, modified: item.mtimeMs });
         if (namePattern.test(entry.name) && entry.name.includes(".draining-")) claimed++;
       }
       complete = false;
       return { files, bytes, maxFiles, maxBytes };
     } finally { reader.closeSync(); }
   };
-  const active = tier(false), reserve = tier(true);
-  return { active, reserve, claimed, oldestAt: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null, complete };
+  const active = tier(false), reserve = tier(true), budget = maintenanceBudget();
+  let native = 0, summaries = 0;
+  for (const row of publications) {
+    const match = namePattern.exec(row.name);
+    if (!match || row.size > RECORD_BYTES) continue;
+    if (!budget.files || row.size > budget.bytes) break;
+    budget.files--; budget.bytes -= row.size;
+    let file: OwnedFile | undefined;
+    try {
+      file = openOwned(join(row.folder, row.name));
+      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
+      const record = decoded(file);
+      if (!record || record.unknown || hash(record.value.cwd) !== match[2] || (record.value.scope ?? "0".repeat(64)) !== match[3] || record.value.nonce !== match[4]) continue;
+      if (summaryEvent(record.value.capture.event)) summaries++; else native++;
+    } catch { /* Body classification stays unknown; metadata does not become a false zero. */ }
+    finally { if (file) closeSync(file.fd); }
+  }
+  const unclassified = active.files + reserve.files - native - summaries;
+  const kinds = { native, summaries, unclassified, complete: complete && unclassified === 0 };
+  return { active, reserve, claimed, oldestAt: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null, complete, kinds };
 }
 
 /** Validate ordinary Git value syntax even for ignored keys: invalid unused configuration can make
@@ -407,9 +428,9 @@ const RETIRE_AFTER_MS = 7 * 24 * 3600_000, MISSING_CWD_AFTER_MS = 3600_000;
 interface MaintenanceBudget { files: number; bytes: number }
 const maintenanceBudget = (): MaintenanceBudget => ({ files: DRAIN_FILES, bytes: DRAIN_BYTES });
 /** Private numeric maintenance cursor: each invocation inspects a different bounded slice. */
-function retirementCursor(base: string, capacity: boolean, length: number): { start: number; save(n: number): void } {
+function retirementCursor(base: string, capacity: boolean, length: number, pressure = false): { start: number; save(n: number): void } {
   const dir = join(directory(base), ".maintenance"); privateDirectory(dir);
-  const name = join(dir, capacity ? "reserve" : "active");
+  const name = join(dir, `${capacity ? "reserve" : "active"}${pressure ? "-pressure" : ""}`);
   let start = 0, file: OwnedFile | undefined;
   try {
     file = openOwned(name);
@@ -445,15 +466,18 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   if (!inventory.length || minimal && !pressured && !due) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let cursor: ReturnType<typeof retirementCursor>;
-  try { cursor = retirementCursor(base, capacity, active.length); } catch { return retired; }
+  try { cursor = retirementCursor(base, capacity, active.length, pressured); } catch { return retired; }
   let scanned = 0;
   const scopes = new Map<string, string | undefined>();
   // Pressure first visits the largest share; HOME variants of one cwd share one allowance.
-  const candidates = pressure() ? [...active].sort((a, b) => {
+  const ordered = pressure() ? [...active].sort((a, b) => {
     const group = (row: typeof a) => namePattern.exec(row.name)?.[2];
     const score = (row: typeof a) => { const key = group(row); return quota() ? Number(key === cwdHash) * (maximum + 1) : groups.get(key ?? "") ?? 0; };
     return score(b) - score(a) || a.modified - b.modified || a.name.localeCompare(b.name);
-  }) : active.slice(cursor.start).concat(active.slice(0, cursor.start));
+  }) : active;
+  const candidates = ordered.slice(cursor.start).concat(ordered.slice(0, cursor.start));
+  const held: { file: OwnedFile; row: typeof inventory[number]; group: string }[] = [];
+  let classified = 0, nativeSeen = false;
   try {
     for (const row of candidates) {
       if (!budget.files || scanned >= scanLimit || !pressure() && (minimal || pressured && !due)) break;
@@ -472,6 +496,9 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
           if (Date.now() - row.modified < RETIRE_AFTER_MS) continue;
           reason = "unknown_schema_expired";
         } else if (valid) {
+          classified++;
+          const summary = summaryEvent(record.value.capture.event);
+          if (!summary) nativeSeen = true;
           const age = Date.now() - Date.parse(record.value.capture.at);
           if (age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS) {
             try { lstatSync(record.value.cwd); }
@@ -486,7 +513,15 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
               else if (currentScope !== record.value.scope && captureScope(record.value.cwd, base, false, undefined, true) !== record.value.scope) reason = "undrainable_expired";
             }
           }
-          if (!reason && pressure() && (!quota() || match[2] === cwdHash)) reason = "scope_capacity";
+          if (!reason && pressure()) {
+            if (summary) {
+              // An advanced transcript cursor relies on accepted summaries. Hold their
+              // descriptors only to prove a complete all-summary foreign inventory.
+              if (!quota()) { held.push({ file, row, group: match[2]! }); file = undefined; }
+              continue;
+            }
+            if (!quota() || match[2] === cwdHash) reason = "scope_capacity";
+          }
           if (!reason) continue;
         }
         const claim = claimOwned(base, row.name, file);
@@ -504,7 +539,32 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
       } catch { /* Transient I/O and changed evidence stay pending. */ }
       finally { if (file) closeSync(file.fd); }
     }
-  } finally { try { cursor.save(cursor.start + Math.max(1, scanned)); } catch { /* A derived cursor never acknowledges capture. */ } }
+    // ponytail: a cap of summaries from four or more orphaned cwds can still
+    // refuse intake until TTL/replay: 32 files/256 KiB cannot prove native absence
+    // across the whole cap. Upgrade: a bounded derived classification cache.
+    if (pressure() && !quota() && !nativeSeen && classified === inventory.length && held.length === inventory.length
+      && held.every(item => owns(item.file))) {
+      const current = entries(base, capacity);
+      if (current.length === inventory.length && current.every(row => inventory.some(prior => prior.name === row.name && prior.size === row.size && prior.modified === row.modified))) {
+        const victims = held.filter(item => item.group !== cwdHash).sort((a, b) => (groups.get(b.group) ?? 0) - (groups.get(a.group) ?? 0) || a.row.modified - b.row.modified || a.row.name.localeCompare(b.row.name));
+        for (const victim of victims) {
+          if (!pressure()) break;
+          try {
+            const claim = claimOwned(base, victim.row.name, victim.file);
+            if (!claim || !owns(claim)) continue;
+            appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "summary_capacity" }]);
+            if (retireClaim(base, claim, false)) {
+              retired.add(victim.row.name); count--; bytes -= victim.row.size;
+              groups.set(victim.group, Math.max(0, (groups.get(victim.group) ?? 0) - 1));
+            }
+          } catch { /* Failed counting or changed ownership preserves the body. */ }
+        }
+      }
+    }
+  } finally {
+    for (const item of held) closeSync(item.file.fd);
+    try { cursor.save(retired.size ? 0 : cursor.start + Math.max(1, scanned)); } catch { /* A derived cursor never acknowledges capture. */ }
+  }
   return retired;
 }
 
@@ -635,6 +695,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
     deferred = true; backlog = reserved.length > 0;
   } else {
     const inventory = activeInventory ?? entries(base);
+    if (summaryEvent(event) && (!withinShare(inventory, MAX_FILES) || inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + incomingBytes > MAX_BYTES)) throw new HookSpoolFull();
     let reserved = reserveInventory ?? entries(base, true);
     // Split a nonempty two-tier backlog's inspection budget so neither tier starves.
     const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget, reserved.length ? DRAIN_FILES / 2 : DRAIN_FILES);

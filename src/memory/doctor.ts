@@ -366,7 +366,7 @@ function dropsSection(options: DoctorOptions): Section {
     ...(total ? { hint: "capture rows were dropped recently (see counts by reason); amem doctor --json keeps the numbers" } : {}) };
 }
 
-/** Metadata only: this does not claim, decode, replay or retire pending capture. */
+/** Bounded read-only inventory and classification; no replay, claim or retirement. */
 function spoolSection(options: DoctorOptions): Section {
   try {
     const inventory = readHookSpoolStatus(options.home);
@@ -375,6 +375,7 @@ function spoolSection(options: DoctorOptions): Section {
     const near = tiers.some(tier => tier.files >= tier.maxFiles * 0.9 || tier.bytes >= tier.maxBytes * 0.9);
     return { ...inventory, status: !inventory.complete ? "unavailable" : full || near ? "attention" : "ok",
       coverage: inventory.complete ? "complete" : "partial",
+      classificationCoverage: inventory.kinds.complete ? "complete" : "partial",
       fill: full ? "full" : near ? "nearly_full" : !inventory.complete ? "unknown" : tiers.some(tier => tier.files > 0) ? "pending" : "empty",
       ...(!inventory.complete ? { reason: "hook spool inventory is partial; reported file and byte counts are lower bounds" } : {}),
       ...(full || near ? { hint: "pending hook spool needs attention: capture can be dropped when both tiers fill; supported orphan recovery is pending" } : {}) };
@@ -553,7 +554,9 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
       const tier = detail[name] as { files: number; bytes: number; maxFiles: number; maxBytes: number };
       return `${name} ${tier.files}/${tier.maxFiles} files, ${tier.bytes}/${tier.maxBytes} bytes`;
     });
-    return [`${detail.fill}; ${tiers.join("; ")}; claimed ${detail.claimed}; oldest ${detail.oldestAt ?? "none observed"}; coverage ${detail.coverage}${detail.complete ? "" : " (counts are lower bounds)"}`];
+    const kinds = detail.kinds as { native: number; summaries: number; unclassified: number; complete: boolean };
+    return [`${detail.fill}; ${tiers.join("; ")}; claimed ${detail.claimed}; oldest ${detail.oldestAt ?? "none observed"}; coverage ${detail.coverage}${detail.complete ? "" : " (counts are lower bounds)"}`,
+      `native ${kinds.native}, summaries ${kinds.summaries}, unclassified ${kinds.unclassified}; classification ${detail.classificationCoverage}${kinds.complete ? "" : " (native and summary counts are lower bounds)"}`];
   }
   if (name === "setup" && Array.isArray(detail.entries)) {
     return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown }[]).map(item =>
