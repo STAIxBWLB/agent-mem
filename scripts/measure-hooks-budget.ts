@@ -310,4 +310,9 @@ const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
   rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
 }));
 
-await Bun.stdout.write(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2) + "\n");
+// Small atomic pipe writes avoid Bun 1.4.2's duplicated/truncated large-report prefix.
+const output = Buffer.from(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2) + "\n");
+for (let offset = 0; offset < output.length; offset += 512) {
+  const chunk = output.subarray(offset, offset + 512);
+  if (await Bun.stdout.write(chunk) !== chunk.byteLength) throw Error("incomplete hook budget report write");
+}
