@@ -41,7 +41,7 @@ if (import.meta.main) {
   };
   const drain = (value: { startMs?: number; drained: number }) => { try { writeSync(1, JSON.stringify({ drain: value }) + "\n"); } catch { rssTelemetryValid = false; } };
   frame([0]);
-  const stop = (): never => {
+  const stop: () => never = () => {
     if (!rssTelemetryValid) frame([4]);
     const self = hookRssReading(); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
     if (owned) try { process.kill(-process.pid, "SIGKILL"); } catch { /* A direct unowned invocation has no group. */ }

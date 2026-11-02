@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
-import { rssSourcesKnown } from "../src/hook-resources.ts";
+import { rssSourcesKnown, validRssSources } from "../src/hook-resources.ts";
 import { HANDLER_MS } from "../src/hooks.ts";
 import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
 /** Existing worker-path fixtures below use an explicit functional host deadline where named. Their relative bounds are
@@ -11,6 +11,19 @@ import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
  * CaptureStore stand-in, so reaching its append does not depend on cold capture-store imports. */
 const HOST_DEADLINE_MS = 1000;
 const POST_DEADLINE_ALLOWANCE_MS = R2_WALL_MAX_MS - HANDLER_MS;
+
+let metricFixture = 0;
+/** Hosted loops retain every native result, not just test failures. These numeric rows contain no source bodies. */
+function reportHookMetrics(f: ReturnType<typeof hookFixture>) {
+  const rows = readMetrics(f.base).filter(row => row.kind === "hook" && row.wallMs !== undefined);
+  const unknown = rows.filter(row => !validRssSources(row.rssSources) || !rssSourcesKnown(row.rssSources!)).length;
+  console.log(JSON.stringify({ diagnostic: "task110-metrics", fixture: ++metricFixture, calls: rows.length,
+    missing: rows.length === 0, abandonedChildren: rows.reduce((sum, row) => sum + (row.abandonedChildren ?? 0), 0),
+    unknownProvenanceRows: unknown + Number(rows.length === 0), drainSkipped: rows.reduce((sum, row) => sum + (row.drainSkipped ?? 0), 0),
+    metrics: rows.map(({ wallMs, abandonedChildren, drainSkipped, drainStartMs, drained, transcriptOffset, transcriptStopReason, rssSources }) =>
+      ({ wallMs, abandonedChildren, drainSkipped, drainStartMs, drained, transcriptOffset, transcriptStopReason, rssSources })) }));
+}
+
 
 for (const mode of ["normal", "identity_failure"] as const) test("native receipts precede transcript work: " + mode, async () => {
   const f = hookFixture(), phases = join(f.root, "phases.jsonl"), preload = join(f.root, "phases.ts"), transcript = join(f.root, "transcript.jsonl");
@@ -84,14 +97,14 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
       }
       expect(f.rows().some(row => row.event === "Title" && row.excerpt === "worker summary")).toBe(true);
     }
-  } finally { f.close(); }
+  } finally { reportHookMetrics(f); f.close(); }
 });
 
 test("a final hook reaps blocked directly owned metadata before writing known RSS", async () => {
   const { hookTimeoutProbe } = await import("./fakes/hooks-timeout-probe.ts");
   const f = hookFixture();
   try { await f.seed(); const result = await hookTimeoutProbe(f, "Stop", true); expect(result.remainingProcesses).toBe(0); }
-  finally { f.close(); }
+  finally { reportHookMetrics(f); f.close(); }
 });
 
 for (const platform of ["linux", "darwin-codepath"] as const) for (const event of ["Stop", "SessionEnd"] as const) test("a slow synchronous capture statement remains killable with known child provenance: " + platform + " " + event, async () => {
@@ -119,7 +132,7 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
     expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
     expect(f.rows().filter(row => row.excerpt === "summary before slow store")).toHaveLength(1);
-  } finally { f.close(); }
+  } finally { reportHookMetrics(f); f.close(); }
 });
 
 for (const event of ["Stop", "SessionEnd"] as const) test("the next SessionStart sees the previous final summary: " + event, async () => {
@@ -130,7 +143,10 @@ for (const event of ["Stop", "SessionEnd"] as const) test("the next SessionStart
       const marker = "fresh " + event + " " + session, at = new Date(Date.now() + session * 1000).toISOString();
       writeFileSync(transcript, [ { type: "system", subtype: "away_summary", timestamp: at, content: marker + " recap" },
         { type: "user", isCompactSummary: true, timestamp: at, message: { content: marker + " compact" } } ].map(row => JSON.stringify(row)).join("\n") + "\n");
-      expect(f.runFunctional(event, { session_id: "previous-" + session, transcript_path: transcript }).exitCode).toBe(0);
+      const final = f.runFunctional(event, { session_id: "previous-" + session, transcript_path: transcript });
+      console.log(JSON.stringify({ diagnostic: "task110-final-hook", event, session, exitCode: final.exitCode,
+        metric: readMetrics(f.base).filter(row => row.kind === "hook" && row.wallMs !== undefined).at(-1) }));
+      expect(final.exitCode).toBe(0);
       // #215: the freshness contract (#201) is that the final hook leaves both summaries as durable capture rows, whatever
       // the brief's timing. A runtime that leaves them pending in the spool fails here.
       const rows = f.rows();
@@ -146,7 +162,7 @@ for (const event of ["Stop", "SessionEnd"] as const) test("the next SessionStart
       if (capture === "complete") { expect(context).toContain(marker + " recap"); expect(context).toContain(marker + " compact"); }
       else console.warn(`#215: ${event} session ${session} brief read capture=partial; inclusion not asserted`);
     }
-  } finally { f.close(); }
+  } finally { reportHookMetrics(f); f.close(); }
 });
 
 for (const event of ["Stop", "SessionEnd"] as const) test("#226: a worker whose pipe outlives the kill cannot hold the hook past its bound: " + event, async () => {
@@ -178,7 +194,7 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     expect(metric.transcriptOffset).toBeUndefined();
     expect(metric.drainSkipped).toBe(1);
     expect(metric.captureDrops).toBeUndefined(); // a skipped drain is not a capture drop (ruling b)
-  } finally { f.close(); }
+  } finally { reportHookMetrics(f); f.close(); }
 });
 
 async function stagePressure(f: ReturnType<typeof hookFixture>, count: number) {
@@ -223,5 +239,5 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     const spool = join(f.base, "hook-spool"), retained = [spool, join(spool, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder)
       .filter(name => name.startsWith("hook-")).map(name => JSON.parse(readFileSync(join(folder, name), "utf8"))) : []);
     for (let index = 0; index < 20; index++) expect(retained.filter(row => row.capture.excerpt === `pressure ${index}`)).toHaveLength(1);
-  } finally { f.close(); }
+  } finally { reportHookMetrics(f); f.close(); }
 });
