@@ -83,7 +83,9 @@ Bun.plugin({name:'late-brief-budget',setup(b){b.onLoad({filter:/[/]hook-project\
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(existsSync(marker)).toBe(true);
     expect(JSON.parse(result.stdout.toString()).output.hookSpecificOutput.additionalContext).toContain(workMarker);
     expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog "))).toHaveLength(0);
-    const pending = () => [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].reduce((count, dir) => count + (existsSync(dir) ? readdirSync(dir).filter(name => name.startsWith("hook-")).length : 0), baselineRows = f.rows().length;
+    const pending = () => [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")]
+      .reduce((count, dir) => count + (existsSync(dir) ? readdirSync(dir).filter(name => name.startsWith("hook-")).length : 0), 0);
+    const baselineRows = f.rows().length;
     expect(pending()).toBe(257); // The deferred brief leaves all 256 pre-quota records and its reserve row intact.
     const replay = f.runFunctional("PostToolUse", { prompt: "following hook owns deferred replay" });
     expect(replay.exitCode, replay.stderr.toString()).toBe(0);
