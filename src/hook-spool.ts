@@ -794,3 +794,29 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   }
   return { captured, blocked };
 }
+
+/**
+ * #217 PR2: the narrow internal surface the CLI-only replay (src/hook-spool-replay.ts) reuses, so replay keeps exactly the
+ * hook path's owned-file, decoder and claim rules. No format or ownership fork; the replay module is never imported by hooks.
+ */
+export const hookSpoolReplayInternals = {
+  namePattern, RECORD_BYTES, MAX_FILES,
+  openOwned: (file: string) => openOwned(file),
+  owns: (file: OwnedFile) => owns(file),
+  decoded: (file: OwnedFile) => decoded(file),
+  belowFloor: (base: string) => belowFloor(base),
+  /** Claim under a caller-chosen deterministic suffix (#217 decision B: hash(plan digest, publication)), never a random one. */
+  claimAs(file: OwnedFile, name: string, suffix: string): OwnedFile | undefined {
+    const match = namePattern.exec(name);
+    if (!match || !/^[a-f0-9]{24}$/.test(suffix) || !owns(file)) return undefined;
+    const claim = join(dirname(file.file), `${match[1]}.draining-${suffix}`);
+    renameSync(file.file, claim);
+    const owned = { ...file, file: claim };
+    return owns(owned) ? owned : undefined;
+  },
+  /** Remove exactly the owned claim, only while it is still the inspected inode. */
+  retireOwned(file: OwnedFile): boolean { if (!owns(file)) return false; rmSync(file.file); return true; },
+};
+export type HookSpoolOwnedFile = OwnedFile;
+/** The 0.19.0-and-older device-bound scope for this cwd, computable only for the current boot (drain accepts it too). */
+export function hookLegacyCaptureScope(cwd: string, base: string): string | undefined { return captureScope(cwd, base, false, undefined, true); }
