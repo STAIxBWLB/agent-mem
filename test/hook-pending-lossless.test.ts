@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { stageHookCapture, drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
@@ -7,6 +7,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { appendAlias, resolveAlias } from "../src/memory/aliases.ts";
 import { appendMetrics, readMetrics } from "../src/memory/metrics.ts";
 import { runHook } from "../src/hooks.ts";
+import { seedHookBacklog } from "./fakes/hooks-backlog.ts";
 const clean: (() => void)[] = [], home = process.env.HOME;
 afterEach(() => { for (const close of clean.splice(0).reverse()) close(); if (home === undefined) delete process.env.HOME; else process.env.HOME = home; });
 function fixture() {
@@ -56,10 +57,10 @@ test("a transient unreadable scope cannot quarantine either old or newly staged 
   expect(f.pending().map(row => row.capture.excerpt)).toEqual(["during transient"]);
 });
 
-test("both full tiers preserve old events and report each dropped current event in receipt, metric and brief", async () => {
+test("both protected future-schema full tiers preserve unknown events and report each dropped current event in receipt, metric and brief", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   await a.seed();
-  for (let i = 0; i < 288; i++) await stageHookCapture("PostToolUse", { prompt: `foreign ${i}` }, { cwd: b.cwd, base: a.base, deferAtCapacity: true });
+  await seedHookBacklog({ cwd: b.cwd, base: a.base }, { active: 256, reserve: 32, futureSchema: true, label: "protected future foreign" });
   expect(a.pending()).toHaveLength(288);
   const result = await runHook("SessionStart", { prompt: "over capacity" }, a.options, { deadlineMs: 2000 });
   expect(result).toMatchObject({ captured: false, dropped: true, dropReason: "spool_full", dropCount: 1 });
@@ -116,8 +117,9 @@ function agePending(f: ReturnType<typeof fixture>, days: number) {
     if (!existsSync(dir)) continue;
     for (const name of readdirSync(dir).filter(name => /^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name))) {
       const file = join(dir, name), value = JSON.parse(readFileSync(file, "utf8"));
-      value.capture.at = new Date(Date.now() - days * 24 * 3600_000).toISOString();
-      writeFileSync(file, JSON.stringify(value));
+      const at = new Date(Date.now() - days * 24 * 3600_000);
+      value.capture.at = at.toISOString();
+      writeFileSync(file, JSON.stringify(value)); utimesSync(file, at, at);
     }
   }
 }
@@ -160,10 +162,18 @@ test("removed cwds retire with counts even behind a healthy first maintenance sl
   const a = fixture(), b = fixture(), removed = fixture(); process.env.HOME = a.env.HOME;
   for (let i = 0; i < 40; i++) await stageHookCapture("PostToolUse", { prompt: `healthy foreign ${i}` }, { cwd: b.cwd, base: a.base });
   await stageHookCapture("PostToolUse", { prompt: "removed body canary" }, { cwd: removed.cwd, base: a.base });
-  // The new retirement contract grants even missing cwd records a seven-day window.
-  for (const name of readdirSync(join(a.base, "hook-spool")).filter(name => /^hook-.*\.json$/.test(name))) { const file = join(a.base, "hook-spool", name), row = JSON.parse(readFileSync(file, "utf8")); if (row.cwd === removed.cwd) { row.capture.at = new Date(Date.now() - 8 * 24 * 3600_000).toISOString(); writeFileSync(file, JSON.stringify(row)); } }
+  // Positive absence can retire after one hour; both source and publication clocks exceed the grace.
+  for (const name of readdirSync(join(a.base, "hook-spool")).filter(name => /^hook-.*\.json$/.test(name))) {
+    const file = join(a.base, "hook-spool", name), row = JSON.parse(readFileSync(file, "utf8"));
+    const at = new Date(Date.now() - (row.cwd === removed.cwd ? 2 : 3) * 3600_000);
+    if (row.cwd === removed.cwd) { row.capture.at = at.toISOString(); writeFileSync(file, JSON.stringify(row)); }
+    utimesSync(file, at, at);
+  }
   renameSync(removed.cwd, removed.cwd + "-gone");
-  for (let i = 0; i < 3 && !losses(a, "cwd_removed"); i++) await stageHookCapture("PostToolUse", { prompt: `maintenance ${i}` }, a.options);
+  writeFileSync(join(a.base, "hook-spool", ".maintenance", "active"), "0");
+  await stageHookCapture("PostToolUse", { prompt: "first healthy maintenance slice" }, a.options);
+  expect(losses(a, "cwd_removed")).toBe(0);
+  for (let i = 0; i < 2 && !losses(a, "cwd_removed"); i++) await stageHookCapture("PostToolUse", { prompt: `maintenance ${i}` }, a.options);
   expect(losses(a, "cwd_removed")).toBe(1);
   expect(a.pending().some(row => row.capture.excerpt === "removed body canary")).toBe(false);
   expect(a.pending().filter(row => row.cwd === b.cwd)).toHaveLength(40);
@@ -192,10 +202,10 @@ test("a foreign drainable record older than seven days survives another project'
   } finally { store.close(); }
 });
 
-test("a missing cwd younger than seven days retains its body and loss count stays zero", async () => {
+test("a missing cwd younger than one hour retains its body and loss count stays zero", async () => {
   const a = fixture(), b = fixture(); process.env.HOME = a.env.HOME;
   await stageHookCapture("PostToolUse", { prompt: "temporarily unavailable cwd" }, { cwd: b.cwd, base: a.base });
-  agePending(a, 6); renameSync(b.cwd, b.cwd + "-unmounted");
+  agePending(a, 30 / (24 * 60)); renameSync(b.cwd, b.cwd + "-unmounted");
   await stageHookCapture("PostToolUse", { prompt: "maintenance during unmount" }, a.options);
   expect(a.pending().filter(row => row.cwd === b.cwd)).toHaveLength(1);
   expect(losses(a, "cwd_removed")).toBe(0);
