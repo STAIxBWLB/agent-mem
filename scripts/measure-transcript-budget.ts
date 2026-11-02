@@ -55,6 +55,7 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 async function measure() {
   let f = hookFixture();
   runnerFingerprint();
+  const handlerWalls: { event: string; metricWallMs: number }[] = [];
   const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
@@ -119,7 +120,9 @@ async function measure() {
         reasonOnlyStreak = newSummaries > 0 ? 0 : reasonOnlyStreak + 1;
         const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, offsetSource, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
-        if (!(wallMs <= R2_WALL_MAX_MS)) console.log(JSON.stringify({ diagnostic: "transcript-wall-max", marker: "transcript 300 ms max: pending #226 (task 103)", enforced: TRANSCRIPT_WALL_MAX_ENFORCED, event, logicalRun, followUp, wallMs }));
+        const metricWallMs = typeof metric.wallMs === "number" && Number.isFinite(metric.wallMs) ? metric.wallMs : Number.NaN;
+        handlerWalls.push({ event, metricWallMs });
+        if (!(metricWallMs <= R2_WALL_MAX_MS)) console.log(JSON.stringify({ diagnostic: "transcript-wall-max", marker: "transcript 300 ms max: pending #226 (task 103)", enforced: TRANSCRIPT_WALL_MAX_ENFORCED, event, logicalRun, followUp, metricWallMs, outerWallMs: wallMs }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
           || metric.transcriptOffset !== undefined && metric.transcriptOffset !== offset
           || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
@@ -150,7 +153,7 @@ async function measure() {
       // #228: one value per logical run (its peak over every follow-up), so the fixed count is RUNS and resumed bursts cannot dilute it.
       const runPeaksMB = Array.from({ length: RUNS }, (_, index) => Math.max(...rows.filter(row => row.logicalRun === index + 1).map(row => row.rssMB)));
       // #228 reset: 150 MB ceiling and baseline regression on the 40 run peaks; the 300 ms maximum is reported here until task 103 (#226).
-      const rssGate = r2Verdict("transcript:" + event, { rssMB: runPeaksMB, wallMs: rows.map(row => row.wallMs) }, { wallEnforced: TRANSCRIPT_WALL_MAX_ENFORCED });
+      const rssGate = r2Verdict("transcript:" + event, { rssMB: runPeaksMB, wallMs: handlerWalls.filter(row => row.event === event).map(row => row.metricWallMs) }, { wallEnforced: TRANSCRIPT_WALL_MAX_ENFORCED });
       if (rssGate.regression.message && !rssGate.regression.enforced) console.warn(`::warning title=R2 regression (reported, not enforced on ${rssGate.runner})::${rssGate.regression.message}`);
       if (rssGate.wallMax.overMax) console.warn(`::warning title=R2 300 ms maximum (${rssGate.wallMax.enforced ? "enforced" : "transcript 300 ms max: pending #226 (task 103)"})::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,

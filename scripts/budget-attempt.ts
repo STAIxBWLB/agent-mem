@@ -76,12 +76,13 @@ export function runnerFingerprint(): { diagnostic: "runner-fingerprint"; platfor
  * so a retry can never hide a high-RSS attempt from the p95 distribution. Wall stays the completed attempt's (the
  * existing stall contract: a stall is a wall/deadline event, re-measured once). A stalled attempt without a finite
  * positive RSS is unknown telemetry and fails the group closed. */
-/** #228 reset: the 300 ms per-invocation maximum counts every attempt, stalled ones included. The sample's own wallMs stays the
- * completed attempt's for the p95 contract; attemptWallMaxMs carries the highest wall seen across its attempts. */
-export function keepAttemptWall<T extends { wallMs: number }>(completed: T, attempts: readonly BudgetAttempt<T>[]): T & { attemptWallMaxMs: number } {
-  const stalled = attempts.filter(attempt => attempt.outcome === "stall").map(attempt => attempt.values?.wallMs);
-  if (stalled.some(value => typeof value !== "number" || !Number.isFinite(value) || value < 0)) return { ...completed, attemptWallMaxMs: Number.NaN };
-  return { ...completed, attemptWallMaxMs: Math.max(completed.wallMs, ...(stalled as number[])) };
+/** #228 reset (ruling option 3): the 300 ms per-invocation maximum is judged on the handler's own metric wallMs, across every
+ * attempt, stalled ones included. The sample's outer wallMs stays the completed attempt's for the p95 contract and is reported
+ * only; attemptWallMaxMs carries the highest metric wall seen. A missing or non-finite metric wall on any attempt fails closed. */
+export function keepAttemptWall<T extends { metricWallMs: number }>(completed: T, attempts: readonly BudgetAttempt<Partial<Record<"metricWallMs", unknown>>>[]): T & { attemptWallMaxMs: number } {
+  const values = [completed.metricWallMs, ...attempts.filter(attempt => attempt.outcome === "stall").map(attempt => attempt.values?.metricWallMs)];
+  if (values.some(value => typeof value !== "number" || !Number.isFinite(value) || value < 0)) return { ...completed, attemptWallMaxMs: Number.NaN };
+  return { ...completed, attemptWallMaxMs: Math.max(...(values as number[])) };
 }
 export function keepAttemptRss<T extends { rssMB: number }>(completed: T, stalled: readonly BudgetAttempt<T>[]): T {
   const stalledRss = stalled.filter(attempt => attempt.outcome === "stall").map(attempt => attempt.values?.rssMB);

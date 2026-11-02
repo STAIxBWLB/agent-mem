@@ -24,6 +24,8 @@ const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(va
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample extends ReturnType<typeof measuredHookRss> {
   wallMs: number;
+  /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
+  metricWallMs: number;
   countedRetirements: number;
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
@@ -154,7 +156,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
-  return { wallMs, ...rss, countedRetirements: retired, retirementReceipts };
+  return { wallMs, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
@@ -168,8 +170,8 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
   const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
-    wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? sample.wallMs), wallLimitMs: WALL_MS });
-  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
+    wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN), wallLimitMs: WALL_MS });
+  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
 }
 try {
   runnerFingerprint();

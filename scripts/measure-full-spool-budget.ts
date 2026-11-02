@@ -85,7 +85,8 @@ try {
     // is unknown telemetry (NaN) and fails the group closed; the max stays as a diagnostic.
     const rssSamplesMB = samples.map(sample => sample.rss?.rssMB ?? Number.NaN);
     const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(0, ...samples.map(sample => sample.rss?.rssMB ?? 0));
-    const verdict = workloadBudget(`full-spool-${name}`, { group: `full-spool:${name}`, wallP95Ms, rssSamplesMB, wallSamplesMs: samples.map(sample => sample.wallMs), wallLimitMs: WALL_MS });
+    const verdict = workloadBudget(`full-spool-${name}`, { group: `full-spool:${name}`, wallP95Ms, rssSamplesMB, wallSamplesMs: samples.map(sample => sample.metricWallMs ?? Number.NaN), wallLimitMs: WALL_MS });
+    console.log(JSON.stringify({ diagnostic: "full-spool-outer-wall", group: `full-spool:${name}`, outerWallMaxMs: Math.max(...samples.map(sample => sample.wallMs)), reportedOnly: true }));
     groups[name] = { samples, wallP95Ms: round(wallP95Ms), peakRssMB: round(peakRssMB), pass: verdict.pass && samples.every(sample => sample.error === undefined) };
   }
 } catch (error) { fatal = (error as Error).message; }

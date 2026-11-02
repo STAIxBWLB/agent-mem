@@ -100,12 +100,16 @@ test("#228 reset: 150 MB ceiling per invocation, +10% regression over the runner
   for (const runner of ["hosted-linux", "hosted-macos", "dgx02"] as const) for (const g of ["hooks:plain", "hooks:jcode", "transcript:Stop", "transcript:StopBurst"]) expect(committed.runners[runner]?.[g], `${runner} ${g}`).toBeGreaterThan(0);
 });
 
-test("#228 reset: the 300 ms maximum counts a stalled attempt's wall too", async () => {
+test("#228 reset: the 300 ms maximum is judged on the handler metric wall, stalled attempts included; the outer wall is not", async () => {
   const { keepAttemptWall } = await import("../scripts/budget-attempt.ts");
-  const stalled = [{ diagnostic: "budget-attempt" as const, check: "s-1", attempt: 1 as const, outcome: "stall" as const, values: { wallMs: 412, rssMB: 60 } }];
-  expect(keepAttemptWall({ wallMs: 90 }, stalled)).toEqual({ wallMs: 90, attemptWallMaxMs: 412 });
-  expect(Number.isNaN(keepAttemptWall({ wallMs: 90 }, [{ ...stalled[0]!, values: {} }]).attemptWallMaxMs)).toBe(true);
-  expect(keepAttemptWall({ wallMs: 90 }, []).attemptWallMaxMs).toBe(90);
+  const stalled = [{ diagnostic: "budget-attempt" as const, check: "s-1", attempt: 1 as const, outcome: "stall" as const, values: { wallMs: 900, metricWallMs: 312, rssMB: 60 } }];
+  // A stalled attempt's handler wall counts; its 900 ms outer wall (process-start jitter) does not.
+  expect(keepAttemptWall({ wallMs: 485, metricWallMs: 90 }, stalled)).toEqual({ wallMs: 485, metricWallMs: 90, attemptWallMaxMs: 312 });
+  // The completed attempt's outer 485 ms alone never decides the maximum.
+  expect(keepAttemptWall({ wallMs: 485, metricWallMs: 90 }, []).attemptWallMaxMs).toBe(90);
+  // Missing or non-finite metric walls fail closed, on the stalled or the completed attempt.
+  expect(Number.isNaN(keepAttemptWall({ wallMs: 90, metricWallMs: 90 }, [{ ...stalled[0]!, values: { wallMs: 120 } }]).attemptWallMaxMs)).toBe(true);
+  expect(Number.isNaN(keepAttemptWall({ wallMs: 90, metricWallMs: Number.NaN }, []).attemptWallMaxMs)).toBe(true);
 });
 
 test("group summaries count stalled physical attempts independently and retain every receipt", async () => {
