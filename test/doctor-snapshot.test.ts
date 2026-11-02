@@ -53,7 +53,11 @@ function rich() {
 }
 
 test("doctor --json keeps its documented shape (snapshot of keys, types and vocabulary)", async () => {
-  const snapshot = { schema: "amem.doctor/v1", populated: shape(await report(rich())), unused: shape(await report(rig())) };
+  const populated = await report(rich()), unused = await report(rig());
+  for (const body of [populated, unused]) expect(body).toMatchObject({ sections: { spool: {
+    classificationCoverage: "complete", kinds: { native: 0, summaries: 0, unclassified: 0, complete: true },
+  } } });
+  const snapshot = { schema: "amem.doctor/v1", populated: shape(populated), unused: shape(unused) };
   if (process.env.UPDATE_DOCTOR_SNAPSHOT === "1") writeFileSync(FIXTURE, JSON.stringify(snapshot, null, 2) + "\n");
   expect(existsSync(FIXTURE)).toBe(true);
   expect(snapshot).toEqual(JSON.parse(readFileSync(FIXTURE, "utf8")));

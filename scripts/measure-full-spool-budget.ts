@@ -90,5 +90,5 @@ finally {
   f.close();
 }
 const pass = fatal === undefined && Object.keys(groups).length === 3 && Object.values(groups).every(group => group.pass);
-console.log(JSON.stringify({ schema: "amem.full-spool-budget/v1", runsPerGroup: RUNS, retries: 0, wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups, ...(fatal ? { fatal } : {}), pass }, null, 2));
+await Bun.stdout.write(JSON.stringify({ schema: "amem.full-spool-budget/v1", runsPerGroup: RUNS, retries: 0, wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups, ...(fatal ? { fatal } : {}), pass }, null, 2) + "\n");
 if (!pass) process.exitCode = 1;

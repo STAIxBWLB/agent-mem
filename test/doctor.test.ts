@@ -63,7 +63,8 @@ test("doctor is read-only: a home that was never used stays absent, and the FIRS
   const empty = await doctor(r);
   expect(existsSync(r.memory)).toBe(false);                                   // nothing created for a home nobody used
   for (const name of ["duplicates", "stale", "index"]) expect(empty.sections[name].status).toBe("skipped");
-  expect(empty.sections.spool).toMatchObject({ status: "ok", fill: "empty", complete: true, active: { files: 0 }, reserve: { files: 0 } });
+  expect(empty.sections.spool).toMatchObject({ status: "ok", fill: "empty", complete: true, active: { files: 0 }, reserve: { files: 0 },
+    kinds: { native: 0, summaries: 0, unclassified: 0, complete: true }, classificationCoverage: "complete" });
   expect(empty.status).not.toBe("attention");                                  // nothing to check is not a problem
   r.note("a decision about caching"); r.capture("claude", new Date(Date.now() - 86400_000).toISOString());
   const pending = new CandidateStore({ memoryDir: r.memory }); pending.put({ project: r.project, kind: "memory", text: "a candidate" } as never, "public"); pending.close();
@@ -464,7 +465,8 @@ test("#217: doctor reports both full hook spool tiers without changing pending f
   const before = exact(r), report = await doctor(r);
   expect(report.sections.spool).toMatchObject({ status: "attention", fill: "full", coverage: "complete", complete: true, claimed: 1,
     active: { files: 256, bytes: 256 * 7, maxFiles: 256, maxBytes: 2 * 1024 * 1024 },
-    reserve: { files: 32, bytes: 32 * 8, maxFiles: 32, maxBytes: 256 * 1024 } });
+    reserve: { files: 32, bytes: 32 * 8, maxFiles: 32, maxBytes: 256 * 1024 },
+    kinds: { native: 0, summaries: 0, unclassified: 288, complete: false }, classificationCoverage: "partial" });
   expect(Number.isFinite(Date.parse(report.sections.spool!.oldestAt))).toBe(true);
   expect(report.sections.spool!.hint).toContain("pending hook spool needs attention");
   expect(exact(r)).toEqual(before);
@@ -472,6 +474,24 @@ test("#217: doctor reports both full hook spool tiers without changing pending f
   expect(text).toMatch(/^ATTENTION +spool:/m);
   expect(text).toContain("active 256/256 files"); expect(text).toContain("reserve 32/32 files");
   expect(text).toContain("claimed 1"); expect(text).not.toContain("amem spool replay");
+  expect(text).toContain("native 0, summaries 0, unclassified 288");
+  expect(text).toContain("classification partial (native and summary counts are lower bounds)");
+  expect(exact(r)).toEqual(before);
+});
+
+test("#217: doctor distinguishes known native and summary backlog without exposing capture bodies", async () => {
+  const r = rig(), { stageHookCapture, stageTranscriptCapture } = await import("../src/hook-spool.ts");
+  const options = { cwd: r.cwd, base: r.memory };
+  expect(await stageHookCapture("PostToolUse", { prompt: "native backlog body canary" }, options)).toBeDefined();
+  expect(await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt: "summary backlog body canary" }, options)).toBeDefined();
+  const before = exact(r), report = await doctor(r);
+  expect(report.sections.spool).toMatchObject({ status: "ok", fill: "pending", coverage: "complete", classificationCoverage: "complete",
+    kinds: { native: 1, summaries: 1, unclassified: 0, complete: true } });
+  const text = await doctor(r, ["doctor"]);
+  expect(text).toContain("native 1, summaries 1, unclassified 0; classification complete");
+  for (const canary of ["native backlog body canary", "summary backlog body canary"]) {
+    expect(JSON.stringify(report)).not.toContain(canary); expect(text).not.toContain(canary);
+  }
   expect(exact(r)).toEqual(before);
 });
 

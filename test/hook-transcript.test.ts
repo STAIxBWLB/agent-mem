@@ -201,3 +201,18 @@ test("untimed A-B-A title transitions survive and full-file rotation does not du
   f.add({ type: "ai-title", aiTitle: "A" }); await f.scan();
   expect(await f.drain()).toHaveLength(3);
 });
+
+test("a 100-title burst backpressures at the cwd share and resumes losslessly behind its cursor (#217)", async () => {
+  const f = fixture(), expected = Array.from({ length: 100 }, (_, i) => `share burst title ${i}`);
+  f.add(...expected.map(aiTitle => ({ type: "ai-title", aiTitle, timestamp: at })));
+  const first = await f.scan();
+  expect(first?.stopReason).toBe("spool_full");
+  expect(first?.offset).toBeGreaterThan(0); expect(first?.offset).toBeLessThan(Buffer.byteLength(readFileSync(f.transcript)));
+  let rows = await f.drain();
+  for (let pass = 0; pass < 5 && rows.length < expected.length; pass++) { await f.scan(); rows = await f.drain(); }
+  expect(rows.map(row => row.excerpt).sort()).toEqual([...expected].sort());
+  expect(new Set(rows.map(row => row.id)).size).toBe(100);
+  const loss = readCaptureDrops(f.base);
+  expect(loss.readable && (loss.counts.scope_capacity ?? 0)).toBe(0);
+  expect(loss.readable && (loss.counts.summary_capacity ?? 0)).toBe(0);
+});
