@@ -4,8 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
-- **A final transcript hook no longer misses its last summary on a slow machine** (task 110, Refs #226). The scan's 60 ms of work now counts from the end of its own setup (policy, cursor database, read), and the scan module loads while the worker waits for its options, so a slow runner no longer spends the window before the first summary line. One function now splits the worker's slice: a scan before the drain ends 25 ms before the slice end so the drain keeps time for its first record; when the spool is under pressure the drain commits its first record, stops 45 ms before the end so the worker exits on its own, and the deferred scan gets the rest up to its 20 ms commit allowance. Hosted macOS had missed a Compact summary in about 1 of 10 runs; this predates 0.20.0.
-- **Compatibility with N-1 (0.19.0), task 110:** no format change. The hook spool, shards, candidates, indexes, metrics and sync are unchanged.
+- **Final transcript hooks interleave scan and replay** (task 110, Refs #226). The single worker replays after durable summary publication, on actual spool backpressure, and once before exit, reusing one CaptureStore and one shared 32-file / 256 KiB replay allowance. The fixed 16-record order switch and 60/45 ms split are removed; the live hard deadline, 256 KiB transcript read, cursor commit allowance and bounded parent reap remain. Ordinary PostToolUse boot timing is unchanged, and its worker no longer imports the unused transcript module. Worker-path fixtures isolate a blocking append without importing the unrelated cold store implementation; native 140/300 ms bounds, unconditional entry, zero survivors and retained records remain checked.
+- **Compatibility with N-1 (0.19.0), task 110:** internal worker scheduling and IPC only, with no format or floor change. This change does not alter hook records, shards, candidates, indexes, metrics or sync.
 
 ## 0.20.0
 

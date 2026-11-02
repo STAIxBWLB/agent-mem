@@ -30,7 +30,7 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);';
  if(contents.split(filter).length!==2)throw new Error('recovery stamp anchor changed');
  contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(accepts(m[3]))__stamp++;}return m&&m[2]===hash(cwd)&&accepts(m[3]);');
- add('  let remaining = DRAIN_BYTES, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
+ add('  let remaining = budget.bytes, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
  add('    if (options.timeRemaining && options.timeRemaining() < 8','globalThis.__recoveryNote(21,options.timeRemaining?.()??-1,captured.length,blocked);');
  add('      append(input, hash(record.bytes));','globalThis.__recoveryNote(22,options.timeRemaining?.()??-1);');
  add('      if (owns(claim)) { rmSync(claim.file); captured.push(name); }','globalThis.__recoveryNote(23,options.timeRemaining?.()??-1);');

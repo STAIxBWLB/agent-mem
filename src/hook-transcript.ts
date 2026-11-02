@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
-import { HookSpoolFull, stageTranscriptCapture } from "./hook-spool.ts";
+import { HookSpoolFull, stageTranscriptCapture, type PendingHookCapture } from "./hook-spool.ts";
 import { appendMetrics } from "./memory/metrics.ts";
 import type { HookTranscriptProgress } from "./hook-contract.ts";
 
@@ -16,7 +16,11 @@ type SummaryEvent = "Title" | "Recap" | "Compact";
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
 /** `deadline` is the hard end of the scan. With `workBudgetMs`, the line loop gets that budget measured from the end of setup
  * (policy, cursor database, read), never past `deadline` (#226 task 110: on a slow runner setup ate a fixed window). */
-interface Options { cwd: string; base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions }
+interface Options { cwd: string; base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions;
+  /** Worker-local replay opportunities; no text crosses these callbacks. */
+  onPublication?: (pending: PendingHookCapture) => Promise<void>;
+  onBackpressure?: () => Promise<boolean>;
+}
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const timestamp = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
 
@@ -167,9 +171,16 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
               at = (db.query("SELECT at FROM fallback WHERE digest=?").get(digest) as { at: string }).at;
               if (!timestamp(at)) throw new Error("transcript cursor unavailable");
             }
-            const staged = await stageTranscriptCapture({ agent: "claude", event: summary.event, excerpt: summary.text, at, session,
-              ...(summary.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true }, summary.event === "Title" ? `title:${cursor.offset + start}` : undefined);
+            const publish = () => stageTranscriptCapture({ agent: "claude", event: summary!.event, excerpt: summary!.text, at, session,
+              ...(summary!.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true }, summary!.event === "Title" ? `title:${cursor.offset + start}` : undefined);
+            let staged: PendingHookCapture | undefined;
+            try { staged = await publish(); }
+            catch (error) {
+              if (!(error instanceof HookSpoolFull) || due() || !options.onBackpressure || !await options.onBackpressure() || due()) throw error;
+              staged = await publish(); // Same line/receipt, no second read or cursor advance on backpressure.
+            }
             if (staged && title) cursor.title = title;
+            if (staged) await options.onPublication?.(staged);
           } catch (error) {
             // Advance only through durable/refused rows; a full spool retries this line
             // after the ordinary hook worker drains earlier publications.

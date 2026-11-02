@@ -1,17 +1,14 @@
 import { expect, test } from "bun:test";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { rssSourcesKnown } from "../src/hook-resources.ts";
 import { HANDLER_MS } from "../src/hooks.ts";
 import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
-/** Task 110 (ruling a): a test that must reach a worker point runs the functional entry with this explicit host deadline, and
- * asserts the bound relative to it with the product contract's own post-deadline allowance (R2 300 ms max minus the 140 ms
- * handler), derived from the constants so a change to either moves these tests. The real 140 ms behaviour under kill stays
- * covered unchanged by the hosted budget harness (scripts/measure-transcript-budget.ts, handler max and the 300 ms max). */
-// Margin seen (task 110, hosted run 41525396437, 20 file runs per OS): the drain-first stall was reached at drainStartMs
-// 41-111 ms on macOS (p50 58) and 51-66 ms on ubuntu, so 1000 ms leaves about 9x headroom on the slowest hosted runner.
+/** Existing worker-path fixtures below use an explicit functional host deadline where named. Their relative bounds are
+ * not native 140 ms R2 proof. The native slow-append regression uses the real executable and a lightweight child-only
+ * CaptureStore stand-in, so reaching its append does not depend on cold capture-store imports. */
 const HOST_DEADLINE_MS = 1000;
 const POST_DEADLINE_ALLOWANCE_MS = R2_WALL_MAX_MS - HANDLER_MS;
 
@@ -191,115 +188,40 @@ async function stagePressure(f: ReturnType<typeof hookFixture>, count: number) {
   finally { if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous; }
 }
 
-for (const event of ["Stop", "SessionEnd"] as const) test("#226 (#231 macOS livelock): with 16+ pending records the worker drains before it scans and reports the drain: " + event, async () => {
-  const f = hookFixture(), transcript = join(f.root, "pressure.jsonl");
-  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "pressure title", timestamp: new Date().toISOString() }) + "\n");
-  try {
-    await f.seed(); await stagePressure(f, 20);
-    const result = f.runFunctional(event, { transcript_path: transcript });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.drained).toBeGreaterThan(0);                    // the drain ran and committed records
-    expect(metric.drainStartMs).toBeGreaterThanOrEqual(0);
-    expect(f.rows().filter(row => row.excerpt.includes("pressure ")).length).toBeGreaterThan(0);
-    // The deferred scan still runs with what is left (the functional 2 s budget leaves plenty): its title becomes durable.
-    expect(metric.transcriptOffset).toBeGreaterThan(0);
-  } finally { f.close(); }
-});
-
-test("#226 (#231 macOS livelock): below 16 pending the order stays scan-then-drain", async () => {
-  // Observed through the worker: the scan phase is recorded before the drain frame when the spool is small.
-  const f = hookFixture(), phases = join(f.root, "order.jsonl"), preload = join(f.root, "order.ts"), transcript = join(f.root, "order.jsonl.t");
-  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
-  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "order title", timestamp: new Date().toISOString() }) + "\n");
-  writeFileSync(phases, "");
-  writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
-globalThis.__order=(phase)=>appendFileSync(${JSON.stringify(phases)},phase+'\\n');
-Bun.plugin({name:'order',setup(b){
-b.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{const s=readFileSync(path,'utf8'),a='  const value = object(input);';if(s.split(a).length!==2)throw Error('scan anchor changed');return{loader:'ts',contents:s.replace(a,"  (globalThis as any).__order('scan');"+a)};});
-b.onLoad({filter:/[/]hook-spool\\.ts$/},({path})=>{const s=readFileSync(path,'utf8'),a='  let remaining = DRAIN_BYTES, blocked = 0;';if(s.split(a).length!==2)throw Error('drain anchor changed');return{loader:'ts',contents:s.replace(a,"  (globalThis as any).__order('drain');"+a)};});
-}});
-const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
-  try {
-    await f.seed(); await stagePressure(f, 3);
-    expect(f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }).exitCode).toBe(0);
-    const small = readFileSync(phases, "utf8").trim().split("\n");
-    expect(small.indexOf("scan")).toBeGreaterThanOrEqual(0); expect(small.indexOf("scan")).toBeLessThan(small.indexOf("drain"));
-    writeFileSync(phases, ""); await stagePressure(f, 20);
-    expect(f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }).exitCode).toBe(0);
-    const pressured = readFileSync(phases, "utf8").trim().split("\n");
-    expect(pressured.indexOf("drain")).toBeGreaterThanOrEqual(0); expect(pressured.indexOf("drain")).toBeLessThan(pressured.indexOf("scan"));
-  } finally { f.close(); }
-});
-
-for (const event of ["Stop", "SessionEnd"] as const) test("#226 (#231): the kill bound holds on the drain-first path with a slow drain: " + event, async () => {
-  // Drain-first was rejected before because a blocked first drain starved the scan: the worker was never killed in time and
-  // the summary was lost. Here the drain is blocked on purpose with 20+ records pending. The stall sits where the drain-first
-  // path is always reached once the drain options arrive: after the worker reports drainStartMs (drained 0) and before
-  // drainHookCaptures. A stall inside the first capture append (the old fixture) was often never reached on a slow hosted
-  // macOS runner before the real deadline (task 110: 16 of 20 loops), so the test had not exercised the path at all.
-  // Then:
-  // the hook must still return inside its bound, count the skip and what it drained, and leave nothing alive after
-  // the 2 s post-exit window. The summary is not lost: the scan only reads; its staged rows stay pending for the next hook.
+for (const event of ["Stop", "SessionEnd"] as const) test("#226 (#231): the native kill bound holds while an actual replay append is blocked: " + event, async () => {
   const f = hookFixture(), preload = join(f.root, "slow-drain.ts"), entered = join(f.root, "slow-drain-entered"), transcript = join(f.root, "slow-drain.jsonl");
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "slow drain title", timestamp: new Date().toISOString() }) + "\n");
-  writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
-globalThis.__slowDrain=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
-Bun.plugin({name:'slow-drain',setup(b){b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
- const s=readFileSync(path,'utf8'),a='        const drainEnd = sliceBudget(deferred ? "drain-first" : "scan-first", options.deadlineAt).drainEnd;';
- if(s.split(a).length!==2)throw Error('slow drain anchor changed');
- return {loader:'ts',contents:s.replace(a,'        (globalThis as any).__slowDrain();'+a)};
-});}});
+  // Replace only the worker's capture module. The append itself blocks, rather than a
+  // frame/phase marker before replay, while the parent keeps its real metadata path.
+  writeFileSync(preload, `import {writeFileSync} from 'node:fs';
+if(process.argv[1]===${JSON.stringify(worker)}){
+ globalThis.__slowDrain=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
+ Bun.plugin({name:'lightweight-blocking-replay-store',setup(builder){builder.onLoad({filter:/[/]memory[/]capture\\.ts$/},()=>({loader:'ts',contents:'export class CaptureStore { constructor(_opts: unknown) {} append() { (globalThis as any).__slowDrain(); return { id: 1 }; } close() {} }'}));}});
+}
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
   try {
     await f.seed(); await stagePressure(f, 20);
     const started = performance.now();
-    // Explicit host deadline so the worker reliably reaches the drain-first stall on a slow runner (task 110); the bound is
-    // relative to it. The real 140 ms behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
-    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, HOST_DEADLINE_MS);
+    const result = f.run(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
     const outerMs = performance.now() - started;
-    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(entered, "utf8")).toBe("entered"); // unconditional: the blocked append must actually be reached
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.wallMs).toBeLessThan(HOST_DEADLINE_MS + POST_DEADLINE_ALLOWANCE_MS);
-    expect(outerMs).toBeLessThan(HOST_DEADLINE_MS + 1500);
+    expect(metric.wallMs).toBeLessThan(300);
+    expect(outerMs).toBeLessThan(1500);
+    expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
     expect(metric.drainSkipped).toBe(1);
     expect(metric.drainStartMs).toBeGreaterThanOrEqual(0);
-    expect(metric.drained).toBe(0);                               // stalled before its first record (the startMs frame says drained 0): nothing committed, nothing lost
+    expect(metric.drained).toBe(0);
     expect(metric.captureDrops).toBeUndefined();
-    // R1: nothing of this hook is alive after the 2 s post-exit window.
     const until = performance.now() + 2000;
     const alive = () => Bun.spawnSync(["pgrep", "-f", worker]).stdout.toString().trim();
     while (alive() && performance.now() < until) await Bun.sleep(20);
     expect(alive()).toBe("");
-    // No loss: every staged record is still durable (pending) for the next hook.
-    expect(readdirSync(join(f.base, "hook-spool")).filter(name => name.startsWith("hook-")).length).toBeGreaterThanOrEqual(20);
+    // A killed append cannot consume any of the original accepted backlog, including its claimed first record.
+    const spool = join(f.base, "hook-spool"), retained = [spool, join(spool, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder)
+      .filter(name => name.startsWith("hook-")).map(name => JSON.parse(readFileSync(join(folder, name), "utf8"))) : []);
+    for (let index = 0; index < 20; index++) expect(retained.filter(row => row.capture.excerpt === `pressure ${index}`)).toHaveLength(1);
   } finally { f.close(); }
-});
-
-test("task 110: sliceBudget splits the slice deterministically for both orders", async () => {
-  const { sliceBudget, SCAN_WORK_MS, DRAIN_RESERVE_MS, SCAN_COMMIT_MS, DEFERRED_SCAN_MIN_MS, MIN_WINDOW_MS } = await import("../src/session-brief-worker.ts");
-  const end = 1000;
-  // scan-first: the scan works SCAN_WORK_MS after setup but ends DRAIN_RESERVE_MS before the slice end; the drain runs to the end.
-  const first = sliceBudget("scan-first", end);
-  expect(first.scanEnd(800)).toBe(800 + SCAN_WORK_MS);                    // a long slice: the work budget binds
-  expect(first.scanEnd(950)).toBe(end - DRAIN_RESERVE_MS);               // late setup: the drain reserve binds
-  expect(first.drainEnd).toBe(end);
-  // drain-first: the drain stops SCAN_COMMIT_MS + DEFERRED_SCAN_MIN_MS early; the deferred scan ends SCAN_COMMIT_MS before the end.
-  const deferred = sliceBudget("drain-first", end);
-  expect(deferred.drainEnd).toBe(end - SCAN_COMMIT_MS - DEFERRED_SCAN_MIN_MS);
-  expect(deferred.scanEnd(800)).toBe(800 + SCAN_WORK_MS);
-  expect(deferred.scanEnd(950)).toBe(end - SCAN_COMMIT_MS);
-  // The deferred scan always gets at least DEFERRED_SCAN_MIN_MS after a drain that ran to its end.
-  expect(deferred.scanEnd(deferred.drainEnd) - deferred.drainEnd).toBe(DEFERRED_SCAN_MIN_MS);
-  // Swapping the guards is visible: with 28 ms left a deferred scan has a window, a scan before the drain does not.
-  const late = end - 28;
-  expect(deferred.scanEnd(late) - late >= MIN_WINDOW_MS).toBe(true);
-  expect(first.scanEnd(late) - late >= MIN_WINDOW_MS).toBe(false);
-  // Short slice edge: with 10 ms left there is no scan window in either order; the drain-first drain end is already past, so the
-  // worker drains only its guaranteed first record.
-  const short = end - 10;
-  expect(first.scanEnd(short) - short < MIN_WINDOW_MS).toBe(true);
-  expect(deferred.scanEnd(short) - short < MIN_WINDOW_MS).toBe(true);
-  expect(deferred.drainEnd < short).toBe(true);
 });
