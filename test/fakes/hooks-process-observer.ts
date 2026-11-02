@@ -19,7 +19,9 @@ Bun.plugin({name:'observe-worker-precheck',setup(builder){builder.onLoad({filter
  // #221: the post-metadata guard is a second pre-spawn exit; record its measured remaining time and whether identity resolved.
  const late='  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return';
  if(source.split(late).length!==2)throw new Error('worker late-check observation anchor changed');
- return {loader:'ts',contents:source.replace(late,'  globalThis.__hookProcessNote("late_check",{remainingUs:Math.floor((workDeadline - performance.now())*1000),host:Number(!!metadata.receipt)});'+late).replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false};}')};
+ // One measurement drives both the evidence and the branch taken, as the first guard's instrumentation does.
+ const lateObserved='  const lateRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("late_check",{remainingUs:Math.floor(lateRemaining*1000),host:Number(!!metadata.receipt)});  if (!metadata.receipt && transcript === undefined || lateRemaining < 5) return';
+ return {loader:'ts',contents:source.replace(late,lateObserved).replace(guard,'  const observedRemaining = workDeadline - performance.now();globalThis.__hookProcessNote("precheck",{remainingUs:Math.floor(observedRemaining*1000),host:Number(!!options.policy?.host)});if(options.policy?.host||observedRemaining<5){if(!options.policy?.host)globalThis.__hookProcessNote("deadline_skip",{remainingUs:Math.floor(observedRemaining*1000),host:0});return {context:unavailable,rssKB:0,rawRssKB:0,captured:false,valid:false};}')};
 });}});
 globalThis.__hookProcessNote=note;
 const original=Bun.spawn.bind(Bun);

@@ -1,5 +1,11 @@
 import type { HookWorkerProcess, HookProcessEvidence } from "../test/fakes/hooks-process-observer.ts";
 
+/** The caller's durable-intake gate (#221): only an absent Bun worker makes a capture eligible for the pending check.
+ * Native metadata supervisors are observed as workers too, and a late deferral has them. */
+export function deferralPendingEligible(workers: readonly HookWorkerProcess[]): boolean {
+  return !workers.some(row => row.kind === "worker");
+}
+
 /** R1 observation contract. A deferred optional worker needs positive branch and durable-intake evidence. */
 export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStart", workers: readonly HookWorkerProcess[], evidence: readonly HookProcessEvidence[], pending: boolean): { deferred: boolean } {
   const buns = workers.filter(row => row.kind === "worker"), native = workers.filter(row => row.kind === "native");

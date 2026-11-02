@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { symlinkSync, writeFileSync } from "node:fs";
+import { symlinkSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { CONFIG_FILE } from "../src/memory/config.ts";
-import { verifyHookProcessObservation } from "../scripts/hook-process-check.ts";
-import type { HookProcessEvidence } from "./fakes/hooks-process-observer.ts";
+import { deferralPendingEligible, verifyHookProcessObservation } from "../scripts/hook-process-check.ts";
+import { hookProcessObserver, type HookProcessEvidence } from "./fakes/hooks-process-observer.ts";
 
 // #221: a transcript-bearing hook never ends silently. It reports `deadline` only when measured time proves it,
 // reports nothing for a policy refusal, and reports the non-accepted `unavailable` when the scan throws.
@@ -67,4 +67,35 @@ test("the owned-process contract accepts the post-metadata deadline exit only wi
   expect(() => verifyHookProcessObservation("PostToolUse", [nativeWorker], lateExit(3_000).filter(item => item.phase !== "late_check"), true)).toThrow("owned-process observation");
   expect(() => verifyHookProcessObservation("PostToolUse", [nativeWorker], [...lateExit(3_000), row("deadline_skip", { remainingUs: 60_000, host: 0 })], true)).toThrow("owned-process observation");
   expect(() => verifyHookProcessObservation("PostToolUse", [nativeWorker], [...lateExit(3_000), row("late_check", { remainingUs: 1_000, host: 1 })], true)).toThrow("owned-process observation");
+});
+
+test("a native-only late deferral is eligible for the durable-intake check; a Bun worker never is (codex P2)", () => {
+  // The caller's real gate: native supervisors are observed as workers, so `workers.length === 0` rejected this deferral.
+  expect(deferralPendingEligible([nativeWorker])).toBe(true);
+  expect(deferralPendingEligible([])).toBe(true);
+  expect(deferralPendingEligible([nativeWorker, { pid: 21, detached: true, argv: [], kind: "worker" }])).toBe(false);
+  const pending = deferralPendingEligible([nativeWorker]) && true;
+  expect(verifyHookProcessObservation("PostToolUse", [nativeWorker], lateExit(3_000), pending)).toEqual({ deferred: true });
+});
+
+test("the late-check evidence and the branch it records read one clock sample, at the 5 ms threshold (codex P2)", () => {
+  const f = hookFixture(); clean.push(f.close);
+  const observer = hookProcessObserver(f.root);
+  const source = readFileSync(observer.preload, "utf8");
+  const hooks = readFileSync(resolve(import.meta.dir, "../src/hooks.ts"), "utf8");
+  // Rebuild the instrumented guard exactly as the preload does, then run it with a clock that advances on every read.
+  const late = "  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return";
+  expect(hooks.split(late)).toHaveLength(2);
+  const lateObserved = /const lateObserved='([^']+)'/.exec(source)![1]!;
+  expect(lateObserved.match(/performance\.now\(\)/g)).toHaveLength(1);                     // a single sample
+  for (const [first, expected] of [[4.9995, "skip"], [5.0005, "continue"]] as const) {
+    let reads = 0; const notes: { remainingUs: number }[] = [];
+    const clock = { now: () => 100 - first + reads++ * 0.002 };   // each further read would move 2 µs across the threshold
+    const run = new Function("performance", "globalThis", "metadata", "transcript", "workDeadline", `${lateObserved} "skip"; return "continue";`);
+    const outcome = run(clock, { __hookProcessNote: (_: string, value: { remainingUs: number }) => notes.push(value) }, { receipt: {} }, {}, 100);
+    expect(outcome).toBe(expected);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.remainingUs < 5000).toBe(expected === "skip");                      // recorded value agrees with the branch
+    expect(reads).toBe(1);
+  }
 });
