@@ -1,0 +1,42 @@
+name: flake110
+# Task 110 measurement only: never merged. Runs test/hook-transcript-worker.test.ts 20x at two commits on both OSes.
+on:
+  pull_request:
+    paths: [".github/workflows/flake110.yml"]
+permissions:
+  contents: read
+jobs:
+  loop:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ref: [f63a0db, 089d529]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ matrix.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Instrument the freshness test (metric row on a miss)
+        run: |
+          python3 - <<'PY'
+          p = "test/hook-transcript-worker.test.ts"; s = open(p).read()
+          a = "      const rows = f.rows();\n"
+          assert s.count(a) == 1
+          s = s.replace(a, a + "      if (!rows.some(row => row.event === \"Compact\" && row.excerpt.includes(marker + \" compact\")) || !rows.some(row => row.event === \"Recap\" && row.excerpt.includes(marker + \" recap\"))) console.log(\"FLAKE110 \" + JSON.stringify({ event, session, metric: readMetrics(f.base).filter(row => row.kind === \"hook\").at(-1) }));\n")
+          open(p, "w").write(s)
+          PY
+      - name: Loop the file 20 times
+        run: |
+          for i in $(seq 1 20); do
+            bun test test/hook-transcript-worker.test.ts > run.log 2>&1 || true
+            echo "RUN $i $(grep -cE '^\(fail\)' run.log) failures"
+            grep -E '^\(fail\)' run.log | sed "s/^/RUN $i /" || true
+            grep '^FLAKE110 ' run.log | sed "s/^/RUN $i /" || true
+          done
