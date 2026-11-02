@@ -21,9 +21,9 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  add('  const workDeadline = deadline - WORKER_CLEANUP_MS;','globalThis.__recoveryNote(7,deadline-performance.now());');
  add('    if (!answer || !answer[1]) return result;','globalThis.__recoveryNote(8,workDeadline-performance.now(),Number(!!answer),answer?.[1]?.length??0);');
  }else if(path.endsWith('/session-brief-worker.ts')){
- add('    if (remaining() <= 0) deadlineStop();','globalThis.__recoveryNote(10,remaining());');
- add('    let captured = false;','globalThis.__recoveryNote(11,remaining());');
- add('        captured = drained.captured.includes(options.current);','globalThis.__recoveryNote(12,remaining(),drained.captured.length,drained.blocked);');
+ add('    if (now() >= end)','globalThis.__recoveryNote(10,end-now());');
+ add('    let drainedCount = 0, captured = false, drainStarted = false;','globalThis.__recoveryNote(11,end-now());');
+ add('      captured ||= drained.captured.includes(options.current);','globalThis.__recoveryNote(12,remaining(),drained.captured.length,drained.blocked);');
  }else{
  add('  if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp)','globalThis.__recoveryNote(20,options.timeRemaining?.()??-1,Number(!!stamp),Number(options.expectedScope===undefined||options.expectedScope===stamp));');
  add('  const policy = createStandalonePolicy(options.policy), dir = directory(base);','let __seen=0,__cwd=0,__stamp=0;');
