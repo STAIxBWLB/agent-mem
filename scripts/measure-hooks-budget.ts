@@ -201,7 +201,9 @@ try {
   // Capture is durable before optional work; a bounded series of real invocations observes replay.
   // Every barrier is included in R1 and R2, and every accepted event must appear exactly once.
   for (let pass = 0; pass < 4; pass++) {
-    drains.push(await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), budgetGroupRecorder<Sample>("drain", stalledAttempts)));
+    const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>("drain", stalledAttempts);
+    const completed = await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), attempt => { attempts.push(attempt); record(attempt); });
+    drains.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
     const check = new CaptureStore({ memoryDir: f.base, project: f.project });
     let rows: number[];
     try { rows = check.rows().flatMap(row => {
