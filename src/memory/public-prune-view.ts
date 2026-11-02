@@ -49,14 +49,18 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
     const deadline = Math.min(absoluteDeadline ?? Infinity, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
     const intentFile = join(home, PUBLIC_PRUNE_INTENT), lockFile = join(home, "profile.lock");
     if (!lstatSync(intentFile, { throwIfNoEntry: false }) && !lstatSync(lockFile, { throwIfNoEntry: false })) return;
+    // #225: a cooperating writer that finishes unlinks its intent, then its lock. If that lands between this reader's
+    // open and fstat, the fd's link count is 0. Only that is the normal disappearance (ENOENT): bytes read through the fd
+    // are discarded and the bounded loop re-resolves the path from scratch. Any other link count still refuses.
+    const unlinked = (stat: Stats): void => { if (stat.nlink === 0) throw Object.assign(new Error("publication unlinked while open"), { code: "ENOENT" }); };
     const small = (file: string, limit: number): Record<string, unknown> => {
       const before = lstatSync(file); privateStat(before); guard(before.size > 0 && before.size <= limit);
       const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        const opened = fstatSync(fd); privateStat(opened); guard(opened.size > 0 && opened.size <= limit);
+        const opened = fstatSync(fd); unlinked(opened); privateStat(opened); guard(opened.size > 0 && opened.size <= limit);
         const bytes = Buffer.alloc(opened.size + 1); let count = 0;
         while (count < bytes.length) { const read = readSync(fd, bytes, count, bytes.length - count, count); if (!read) break; count += read; }
-        const after = fstatSync(fd); privateStat(after); guard(count === opened.size && same(opened, after));
+        const after = fstatSync(fd); unlinked(after); privateStat(after); guard(count === opened.size && same(opened, after));
         const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count))); guard(object(parsed)); return parsed;
       } finally { closeSync(fd); }
     };
