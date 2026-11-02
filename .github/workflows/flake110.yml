@@ -11,8 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        ref: [f63a0db683855c14a4dc60eea7ed8ff030feb2cf]
+        os: [macos-latest, ubuntu-latest]
+        ref: [f63a0db683855c14a4dc60eea7ed8ff030feb2cf, 77583e09fc9993b25d80b61e13130be35ad8590b]
         shard: [1, 2, 3]
     runs-on: ${{ matrix.os }}
     steps:
@@ -43,4 +43,5 @@ jobs:
             echo "RUN $i $(grep -cE '^\(fail\)' run.log) failures"
             grep -E '^\(fail\)' run.log | sed "s/^/RUN $i /" || true
             grep '^FLAKE110' run.log | sed "s/^/RUN $i /" || true
+            grep -B6 -E '^\(fail\) (a slow synchronous|#226: a worker whose pipe)' run.log | grep -E 'Expected|Received|error:|ENOENT|^ *[0-9]+ \|' | sed "s/^/RUN $i DETAIL /" || true
           done
