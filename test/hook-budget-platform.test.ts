@@ -8,7 +8,9 @@ function probe(flags: NodeJS.ProcessEnv, wallP95Ms = 195.3, peakRssMB = 75, prio
   try {
     const file = resolve(import.meta.dir, "../scripts/hook-timing-check.ts");
     // #228: a uniform group of 40 samples, so its p95 is exactly `peakRssMB` (a NaN sample is unknown telemetry).
-    const values = { wallP95Ms, rssSamplesMB: Array.from({ length: 40 }, () => peakRssMB), wallLimitMs: 150, rssLimitMB: 100 };
+    // #228 reset: an inline baseline of 75 MB for hooks:plain on every runner, so 100 and 105 MB regress by more than 10%.
+    const baseline = { schema: "agent-mem.r2-baseline/v1", runners: { "hosted-macos": { "hooks:plain": 75 }, "hosted-linux": { "hooks:plain": 75 }, dgx02: { "hooks:plain": 75 }, local: { "hooks:plain": 75 } } };
+    const values = { group: "hooks:plain", wallP95Ms, rssSamplesMB: Array.from({ length: 40 }, () => peakRssMB), wallSamplesMs: Array.from({ length: 40 }, () => Number.isFinite(wallP95Ms) ? Math.min(wallP95Ms, 299) : wallP95Ms), wallLimitMs: 150, baseline };
     const script = `import {workloadBudget} from ${JSON.stringify(file)};process.exitCode=${priorExit};const result=workloadBudget('plain',${JSON.stringify(values)},${JSON.stringify({ ...flags, GITHUB_STEP_SUMMARY: summary })});if(!result.pass)process.exitCode=1;`;
     const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
     return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString(), summary: readFileSync(summary, "utf8") };
@@ -36,7 +38,7 @@ test("the same p95 miss fails Ubuntu, non-CI and every incomplete or incorrect r
   }
 });
 
-test("RSS at or above 100 MB remains hard even with a GitHub macOS p95 warning", () => {
+test("an RSS regression over the baseline remains hard even with a GitHub macOS p95 warning (#228 reset)", () => {
   for (const wall of [55, 195.3]) for (const rss of [100, 105]) {
     const result = probe(githubMac, wall, rss);
     expect(result.code).not.toBe(0); expect(result.out).toContain('"peakPass":false');

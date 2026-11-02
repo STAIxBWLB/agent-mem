@@ -9,7 +9,7 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
-import { budgetGroup, r2RssLimitMB, rssVerdict, runnerFingerprint } from "./budget-attempt.ts";
+import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
 import { stallAdvisory } from "./hook-timing-check.ts";
 let stallWarned = false;
 
@@ -119,6 +119,7 @@ async function measure() {
         reasonOnlyStreak = newSummaries > 0 ? 0 : reasonOnlyStreak + 1;
         const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, offsetSource, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+        if (!(wallMs <= R2_WALL_MAX_MS)) console.log(JSON.stringify({ diagnostic: "transcript-wall-max", marker: "transcript 300 ms max: pending #226 (task 103)", enforced: TRANSCRIPT_WALL_MAX_ENFORCED, event, logicalRun, followUp, wallMs }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
           || metric.transcriptOffset !== undefined && metric.transcriptOffset !== offset
           || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
@@ -148,7 +149,10 @@ async function measure() {
       const rss = rows.map(row => row.rssMB).sort((a, b) => a - b), medianRssMB = (rss[Math.floor((rss.length - 1) / 2)]! + rss[Math.floor(rss.length / 2)]!) / 2;
       // #228: one value per logical run (its peak over every follow-up), so the fixed count is RUNS and resumed bursts cannot dilute it.
       const runPeaksMB = Array.from({ length: RUNS }, (_, index) => Math.max(...rows.filter(row => row.logicalRun === index + 1).map(row => row.rssMB)));
-      const rssGate = rssVerdict(runPeaksMB, r2RssLimitMB("transcript:" + event));
+      // #228 reset: 150 MB ceiling and baseline regression on the 40 run peaks; the 300 ms maximum is reported here until task 103 (#226).
+      const rssGate = r2Verdict("transcript:" + event, { rssMB: runPeaksMB, wallMs: rows.map(row => row.wallMs) }, { wallEnforced: TRANSCRIPT_WALL_MAX_ENFORCED });
+      if (rssGate.regression.message && !rssGate.regression.enforced) console.warn(`::warning title=R2 regression (reported, not enforced on ${rssGate.runner})::${rssGate.regression.message}`);
+      if (rssGate.wallMax.overMax) console.warn(`::warning title=R2 300 ms maximum (${rssGate.wallMax.enforced ? "enforced" : "transcript 300 ms max: pending #226 (task 103)"})::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
         maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.pass };

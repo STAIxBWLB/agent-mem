@@ -7,7 +7,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, r2RssLimitMB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
+import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -19,7 +19,7 @@ import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 
-const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = r2RssLimitMB("hooks");
+const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample extends ReturnType<typeof measuredHookRss> {
@@ -161,13 +161,14 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
   for (let index = 0; index < count; index++) {
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>(name, stalledAttempts);
     const completed = await budgetSample(`${name}-${index + 1}`, run, attempt => { attempts.push(attempt); record(attempt); });
-    rows.push(keepAttemptRss(completed, attempts));
+    rows.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
   }
   return rows;
 }
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
-  const verdict = workloadBudget(name, { wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB), wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
+  const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
+    wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? sample.wallMs), wallLimitMs: WALL_MS });
   return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
 }
 try {
@@ -314,6 +315,7 @@ try {
 const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
   wallPass: Object.values(report.budgets.R2.groups).every(group => group.pass),
   rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
+  wallMaxPass: Object.values(report.budgets.R2.groups).every(group => group.r2.wallMax.pass),
 }));
 
 // Small atomic pipe writes avoid Bun 1.4.2's duplicated/truncated large-report prefix.

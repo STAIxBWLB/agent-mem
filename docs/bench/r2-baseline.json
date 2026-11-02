@@ -1,0 +1,58 @@
+{
+  "schema": "agent-mem.r2-baseline/v1",
+  "statistic": "nearest-rank p95 RSS (MB) per group; transcript groups use one value per logical run (its peak over every follow-up)",
+  "gate": "a group fails when its p95 exceeds its baseline by more than 10%; a hard 150 MB ceiling applies to every single invocation regardless",
+  "derivation": {
+    "hosted-linux": "median of the per-run group p95 across the retained main runs 9986fe6, e287ecf, 1b3ed5d, 85768a5 (#224), d927292 and 9aac257 (GitHub ubuntu-24.04). drain: median of its single sample across the same runs.",
+    "hosted-macos": "median of the per-run group p95 across the same retained main runs on GitHub macos-latest (macOS transcript StopBurst has 3 complete runs).",
+    "dgx02": "median of the group p95 across 3 unconstrained (no taskset) remote_dev verify runs at main 9aac257 on dgx02, 2026-11-02. Unconstrained, because CI also runs unconstrained; taskset runs characterize contention, not the steady baseline. A dgx02 run must set AMEM_RUNNER=dgx02 to be judged against these.",
+    "full-spool": "measure-full-spool-budget is not run by the hosted check, so only dgx02 carries full-spool baselines; a hosted run of it would need one recorded first."
+  },
+  "change": "baselines change only through a PR that links the evidence runs for the new values (#228 owner decision 2026-11-02)",
+  "runners": {
+    "hosted-linux": {
+      "hooks:plain": 87.52,
+      "hooks:spoolAndExit": 89.84,
+      "hooks:jcode": 87.59,
+      "hooks:sessionStart": 48.55,
+      "hooks:sessionStartRepoLog": 48.56,
+      "hooks:drain": 89.79,
+      "transcript:Stop": 94.81,
+      "transcript:SessionEnd": 94.83,
+      "transcript:StopBurst": 96.17
+    },
+    "hosted-macos": {
+      "hooks:plain": 65.19,
+      "hooks:spoolAndExit": 65.75,
+      "hooks:jcode": 65.28,
+      "hooks:sessionStart": 38.22,
+      "hooks:sessionStartRepoLog": 40.72,
+      "hooks:drain": 65.34,
+      "transcript:Stop": 72.74,
+      "transcript:SessionEnd": 72.75,
+      "transcript:StopBurst": 93.58
+    },
+    "dgx02": {
+      "hooks:plain": 71.75,
+      "hooks:spoolAndExit": 71.75,
+      "hooks:jcode": 70,
+      "hooks:sessionStart": 43.75,
+      "hooks:sessionStartRepoLog": 44.61,
+      "hooks:drain": 70,
+      "transcript:Stop": 78.75,
+      "transcript:SessionEnd": 78.75,
+      "transcript:StopBurst": 84,
+      "full-spool:active-full": 75.25,
+      "full-spool:active-and-reserve-full": 75.25,
+      "full-spool:session-start-full": 44.61
+    }
+  },
+  "notGated": {
+    "hosted-linux": {
+      "full-spool:*": "not gated: not run in CI"
+    },
+    "hosted-macos": {
+      "full-spool:*": "not gated: not run in CI"
+    }
+  }
+}
