@@ -1,5 +1,43 @@
 /** Measurement-only policy; never imported by the shipped hook or MCP path. */
+import { cpus, totalmem } from "node:os";
 import { probeRunnerSpeed, runnerIsSlow, RUNNER_BASELINES, type RunnerBaseline, type RunnerProbe } from "./runner-probe.ts";
+
+/** R2 hook RSS limit, MB. Every group and OS uses it unless named below (#228). */
+export const R2_RSS_LIMIT_MB = 100;
+/** ponytail: hosted ubuntu transcript StopBurst gates at p95 < 110 MB (owner decision 2026-11-02, #228). From main 9986fe6
+ * its whole distribution moved up about 7 MB on unchanged hook code and the same runner image; the cause is unknown.
+ * Ceiling: 110 MB on that one group and OS. Upgrade path: explain the shift (the runner fingerprint is logged beside
+ * every measurement run), then delete this entry so the group returns to R2_RSS_LIMIT_MB. */
+export const R2_RSS_LIMIT_OVERRIDES_MB: Readonly<Record<string, number>> = { "hosted-linux:transcript:StopBurst": 110 };
+/** The override applies only on a hosted GitHub Linux runner; local and dgx02 runs keep R2_RSS_LIMIT_MB. */
+export function r2RssLimitMB(group: string, env: NodeJS.ProcessEnv = process.env): number {
+  const runner = env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "Linux" ? "hosted-linux" : env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "macOS" ? "hosted-macos" : "local";
+  return R2_RSS_LIMIT_OVERRIDES_MB[`${runner}:${group}`] ?? R2_RSS_LIMIT_MB;
+}
+export interface RssVerdict { pass: boolean; statistic: "p95"; valueMB: number; peakMB: number; count: number; overLimit: number; limitMB: number }
+/** #228: the gate is the nearest-rank p95 over a fixed sample count, not the single maximum. Every sample is still
+ * reported by the caller; a non-finite or non-positive sample (unknown telemetry) fails the whole group closed. */
+export function rssVerdict(samplesMB: readonly number[], limitMB: number): RssVerdict {
+  const count = samplesMB.length, known = count > 0 && samplesMB.every(value => Number.isFinite(value) && value > 0);
+  const sorted = [...samplesMB].sort((a, b) => a - b), valueMB = known ? sorted[Math.ceil(count * 0.95) - 1]! : NaN, peakMB = known ? sorted[count - 1]! : NaN;
+  return { pass: known && Number.isFinite(limitMB) && valueMB < limitMB, statistic: "p95", valueMB, peakMB, count, overLimit: samplesMB.filter(value => !(value < limitMB)).length, limitMB };
+}
+/** Once per measurement run, beside the samples, so an RSS shift can be correlated with the runner (#228). */
+export function runnerFingerprint(): { diagnostic: "runner-fingerprint"; platform: string; arch: string; nproc: number; totalMemMB: number; cpuModel: string; runnerImage: string | null } {
+  const value = { diagnostic: "runner-fingerprint" as const, platform: process.platform, arch: process.arch, nproc: cpus().length, totalMemMB: Math.round(totalmem() / 1048576),
+    cpuModel: cpus()[0]?.model.trim() ?? "unknown", runnerImage: process.env.ImageOS && process.env.ImageVersion ? `${process.env.ImageOS} ${process.env.ImageVersion}` : null };
+  console.log(JSON.stringify(value));
+  return value;
+}
+/** #228 (review P2): a logical sample whose first attempt stalled keeps the highest RSS seen across all its attempts,
+ * so a retry can never hide a high-RSS attempt from the p95 distribution. Wall stays the completed attempt's (the
+ * existing stall contract: a stall is a wall/deadline event, re-measured once). A stalled attempt without a finite
+ * positive RSS is unknown telemetry and fails the group closed. */
+export function keepAttemptRss<T extends { rssMB: number }>(completed: T, stalled: readonly BudgetAttempt<T>[]): T {
+  const stalledRss = stalled.filter(attempt => attempt.outcome === "stall").map(attempt => attempt.values?.rssMB);
+  if (stalledRss.some(value => typeof value !== "number" || !Number.isFinite(value) || value <= 0)) return { ...completed, rssMB: Number.NaN };
+  return { ...completed, rssMB: Math.max(completed.rssMB, ...(stalledRss as number[])) };
+}
 export class BudgetStall extends Error {
   constructor(message: string, readonly values: Record<string, number | string | boolean | null> = {}) { super(message); this.name = "BudgetStall"; }
 }

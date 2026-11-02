@@ -23,10 +23,59 @@ for (const check of ["hook-SessionStart", "mcp-session"] as const) {
 
 test("retry policy leaves workload p95 and RSS verdicts strict under the unchanged limits", async () => {
   const { workloadBudget } = await import("../scripts/hook-timing-check.ts");
-  const values = { wallP95Ms: 150, peakRssMB: 80, wallLimitMs: 150, rssLimitMB: 100 };
+  const group = (mb: number) => Array.from({ length: 40 }, () => mb);
+  const values = { wallP95Ms: 150, rssSamplesMB: group(80), wallLimitMs: 150, rssLimitMB: 100 };
   expect(workloadBudget("injected p95 miss", values, {}).pass).toBe(false);
-  expect(workloadBudget("injected RSS miss", { ...values, wallP95Ms: 100, peakRssMB: 100 }, {}).pass).toBe(false);
-  expect(workloadBudget("under both limits", { ...values, wallP95Ms: 149, peakRssMB: 99 }, {}).pass).toBe(true);
+  expect(workloadBudget("injected RSS miss", { ...values, wallP95Ms: 100, rssSamplesMB: group(100) }, {}).pass).toBe(false);
+  expect(workloadBudget("under both limits", { ...values, wallP95Ms: 149, rssSamplesMB: group(99) }, {}).pass).toBe(true);
+});
+
+test("#228 review P2: a stalled high-RSS attempt is never hidden by its low-RSS retry", async () => {
+  const { keepAttemptRss, rssVerdict } = await import("../scripts/budget-attempt.ts");
+  // The caller's real wiring: budgetSample records every attempt, then the logical sample keeps the highest RSS.
+  const group: { rssMB: number; wallMs: number }[] = [];
+  for (let index = 0; index < 40; index++) {
+    const attempts: BudgetAttempt<{ rssMB: number; wallMs: number }>[] = []; let call = 0;
+    const stalls = index < 3;   // three logical samples stall once at 130 MB, then retry at 60 MB
+    const completed = await budgetSample(`sessionStart-${index + 1}`, () => {
+      if (stalls && ++call === 1) throw new BudgetStall("SessionStart deadline produced empty context", { wallMs: 141, rssMB: 130 });
+      return { rssMB: 60, wallMs: 80 };
+    }, attempt => attempts.push(attempt));
+    group.push(keepAttemptRss(completed, attempts));
+  }
+  expect(group.slice(0, 3).map(row => row.rssMB)).toEqual([130, 130, 130]);
+  expect(group[0]!.wallMs).toBe(80);                                                   // wall stays the completed attempt's (unchanged stall contract)
+  const verdict = rssVerdict(group.map(row => row.rssMB), 100);
+  expect(verdict).toMatchObject({ pass: false, valueMB: 130, overLimit: 3 });           // without keepAttemptRss this group would pass at 60
+  expect(rssVerdict(group.map((row, index) => index < 3 ? 60 : row.rssMB), 100).pass).toBe(true);
+  // A stalled attempt with unknown RSS fails the sample closed.
+  expect(Number.isNaN(keepAttemptRss({ rssMB: 60 }, [{ diagnostic: "budget-attempt", check: "x", attempt: 1, outcome: "stall", values: {} }]).rssMB)).toBe(true);
+  // A failed (non-stall) attempt is not a retry path, and a pass-only history is untouched.
+  expect(keepAttemptRss({ rssMB: 60 }, [{ diagnostic: "budget-attempt", check: "x", attempt: 1, outcome: "pass", result: { rssMB: 60 } }]).rssMB).toBe(60);
+});
+
+test("#228: RSS gates on the nearest-rank p95 of a fixed count, never on one outlier and never diluted", async () => {
+  const { rssVerdict, r2RssLimitMB, R2_RSS_LIMIT_MB } = await import("../scripts/budget-attempt.ts");
+  const forty = (base: number, high: number[]) => [...Array.from({ length: 40 - high.length }, () => base), ...high];
+  // One outlier out of 40 (as ubuntu Stop at 9986fe6 and c54f083): p95 is the 38th value, so it passes and is still counted.
+  expect(rssVerdict(forty(94.5, [102.6]), 100)).toMatchObject({ pass: true, valueMB: 94.5, peakMB: 102.6, count: 40, overLimit: 1 });
+  // Three over the limit out of 40 reach the p95 rank (the 38th value): fail. Two would not.
+  expect(rssVerdict(forty(94.5, [101, 102, 103]), 100).pass).toBe(false);
+  expect(rssVerdict(forty(94.5, [102, 103]), 100).pass).toBe(true);
+  // A shifted distribution fails (ubuntu StopBurst run peaks at c54f083, p95 105.3) under 100.
+  expect(rssVerdict(forty(104.5, [105.3, 105.5]), 100)).toMatchObject({ pass: false, overLimit: 40 });
+  // Unknown telemetry fails the whole group closed, whatever the other samples are.
+  for (const unknown of [Number.NaN, 0, -1, Number.POSITIVE_INFINITY]) expect(rssVerdict(forty(50, [unknown]), 100).pass).toBe(false);
+  expect(rssVerdict([], 100).pass).toBe(false);
+  expect(rssVerdict(forty(50, []), Number.NaN).pass).toBe(false);
+  // The limit is strict: p95 equal to the limit fails.
+  expect(rssVerdict(forty(100, []), 100).pass).toBe(false);
+  // Named per-runner and group limits: only hosted GitHub Linux transcript StopBurst is raised, to 110; everything else is 100.
+  const hostedLinux = { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, hostedMac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+  expect(R2_RSS_LIMIT_MB).toBe(100);
+  expect(r2RssLimitMB("transcript:StopBurst", hostedLinux)).toBe(110);
+  for (const [group, env] of [["transcript:StopBurst", hostedMac], ["transcript:StopBurst", {}], ["transcript:StopBurst", { RUNNER_OS: "Linux" }], ["transcript:Stop", hostedLinux], ["transcript:SessionEnd", hostedLinux], ["hooks", hostedLinux], ["hooks", hostedMac]] as const)
+    expect(r2RssLimitMB(group, env), `${JSON.stringify(env)}:${group}`).toBe(100);
 });
 
 test("group summaries count stalled physical attempts independently and retain every receipt", async () => {
