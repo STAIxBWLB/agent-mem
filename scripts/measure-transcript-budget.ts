@@ -9,8 +9,10 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
+import { stallAdvisory } from "./hook-timing-check.ts";
 import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
 
+let stallWarned = false;
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 /** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
  * leaving uninterruptible I/O may exist; after it any survivor fails R1. Per invocation the harness records the count of
@@ -155,8 +157,16 @@ async function measure() {
           throw Error("transcript budget scan progress unavailable: " + JSON.stringify(sample));
         }
         if (reasonOnlyStreak >= 3) {
-          // #226 (task 107): strict on every runner again; the hosted-macOS advisory from task 100 is removed.
-          throw Error("transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample));
+          const message = "transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample);
+          // ponytail: on hosted macOS only, this one clause (#221 finding B, worker start cost) is advisory (owner decision
+          // 2026-11-02, #226; restored after the #226 redesign still stalled on the 3-vCPU hosted macOS runner, run 41489559964).
+          // Ceiling: that runner and this clause; every other progress, no-loss, RSS and wall clause, and this clause on dgx02,
+          // local runs and hosted ubuntu, stay hard failures. Upgrade path: the post-0.20.0 early-receipt follow-up (send the
+          // drain receipt early when a cached identity exists, Refs #226), then delete this branch.
+          if (!stallAdvisory(process.env)) throw Error(message);
+          if (!stallWarned) { console.warn(`::warning title=Transcript stall (advisory on hosted macOS, #226)::${message}`); stallWarned = true; }
+          console.log(JSON.stringify({ diagnostic: "transcript-budget-stall-advisory", ...sample }));
+          reasonOnlyStreak = 0;
         }
         previous = offset; previousSummaries = durableSummaries; previousAvailable = available;
         if ([...expected].every(value => available.has(value))) { complete = true; break; }
