@@ -73,6 +73,7 @@ function entries(base: string, capacity = false): { name: string; size: number; 
 
 /** Read-only bounded metadata inventory. Counts are lower bounds when complete is false. */
 export function readHookSpoolStatus(base: string) {
+  assertFormatFloor(base, "hook-spool");
   let claimed = 0, oldest = Infinity, complete = true;
   const tier = (capacity: boolean) => {
     const dir = capacity ? join(directory(base), ".capacity") : directory(base);
@@ -597,6 +598,31 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
   let destination = dir, deferred = false, backlog = false;
   const budget = maintenanceBudget(), incomingBytes = Buffer.byteLength(bytes), cwdHash = hash(cwd);
   const withinShare = (rows: ReturnType<typeof entries>, maximum: number) => rows.filter(row => namePattern.exec(row.name)?.[2] === cwdHash).length < maximum / 4;
+  const name = `${v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
+  let activeInventory: ReturnType<typeof entries> | undefined, reserveInventory: ReturnType<typeof entries> | undefined;
+  if (["Title", "Recap", "Compact"].includes(event)) {
+    // Transcript cursor recovery can repeat a deterministic publication. An already
+    // durable identical body needs no new slot, including when a drainer owns it.
+    for (const capacity of [false, true]) {
+      const inventory = entries(base, capacity);
+      if (capacity) reserveInventory = inventory; else activeInventory = inventory;
+      for (const row of inventory) {
+        if (!namePattern.test(row.name) || row.name !== name && !row.name.startsWith(name + ".draining-")) continue;
+        if (!budget.files || row.size > budget.bytes) break;
+        budget.files--; budget.bytes -= row.size;
+        let existing: OwnedFile | undefined;
+        try {
+          existing = openOwned(join(capacity ? join(dir, ".capacity") : dir, row.name));
+          if (existing.initial.size !== incomingBytes) continue;
+          const held = Buffer.alloc(incomingBytes);
+          if (readSync(existing.fd, held, 0, held.length, 0) === held.length && owns(existing) && held.equals(Buffer.from(bytes))) {
+            return { name, cwd, receipt: hash(bytes), backlog: true, ...(capacity ? { deferred: true as const } : {}) };
+          }
+        } catch { /* Changed or unavailable evidence is not acknowledgement. */ }
+        finally { if (existing) closeSync(existing.fd); }
+      }
+    }
+  }
   if (event === "SessionStart") {
     // ponytail: reserve-only admission scans at most 32 metadata entries, not O(1).
     // Never inspect/retire the active tier on the brief deadline. Fixed-slot byte
@@ -608,8 +634,8 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
     if (!withinShare(reserved, CAPACITY_FILES) || reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
     deferred = true; backlog = reserved.length > 0;
   } else {
-    const inventory = entries(base);
-    let reserved = entries(base, true);
+    const inventory = activeInventory ?? entries(base);
+    let reserved = reserveInventory ?? entries(base, true);
     // Split a nonempty two-tier backlog's inspection budget so neither tier starves.
     const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget, reserved.length ? DRAIN_FILES / 2 : DRAIN_FILES);
     const queued = inventory.filter(row => !retired.has(row.name));
@@ -629,7 +655,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
       deferred = true;
     }
   }
-  const name = `${v3 ? PREFIX_V3 : PREFIX}${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
+  const temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
   finally { rmSync(temporary, { force: true }); }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
