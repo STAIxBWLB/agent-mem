@@ -56,7 +56,7 @@ test("malformed transcript progress cannot certify otherwise known RSS", async (
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
 globalThis.__progressFault=()=>writeFileSync(${JSON.stringify(marker)},'entered');
 Bun.plugin({name:'progress-write-fault',setup(b){b.onLoad({filter:/session-brief-worker\\.ts$/},({path})=>{
- const contents=readFileSync(path,'utf8'),needle='JSON.stringify({ transcript })';
+ const contents=readFileSync(path,'utf8'),needle='JSON.stringify({ transcript: lastProgress })';
  if(contents.split(needle).length!==2)throw Error('progress fault anchor changed');
  return {loader:'ts',contents:contents.replace(needle,'(globalThis.__progressFault(),JSON.stringify({transcript:{stopReason:"invalid"}}))')};
 });}});
