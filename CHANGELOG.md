@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Hook-spool pressure protection (#217, PR1): directory identity uses inode and birth time across reboots; per-cwd 64/8 active/reserve shares, one-hour retirement of positively missing cwds, and doctor fill/classification reporting make orphaned backlogs bounded and visible. Accepted summaries survive same-cwd pressure; new summaries backpressure without advancing the transcript cursor. Native retirement uses `scope_capacity`; proven foreign all-summary retirement uses `summary_capacity`, each counted before removal. SessionStart leaves maintenance cursors untouched when its reserve is not pressured.
+- **Compatibility with N-1 (0.19.0):** hook spool: upgrade every amem that shares the memory home. 0.19.0 cannot drain the new reboot-stable-scope records and can retire them after seven days; they need a current reader. The current reader accepts legacy scopes from the current boot, but pre-upgrade records bound to a previous boot's device stay pending until PR2's supported replay or the TTL. Shards, candidates, per-version indexes and sync are unchanged; no format floor is raised automatically.
+
 ## 0.19.0
 
 - Hook budget profiles state `images: bun+supervisor; descendants: not measured` for each sample and spell the conservative source tag `vmpeak-bound`, retaining its wire code and numeric counters. The literal post-merge-main ten-suite receipt includes ordinary, jcode and transcript workloads; descendant usage remains a separate characterization, with no threshold, timeout, retry or dependency change (#198).

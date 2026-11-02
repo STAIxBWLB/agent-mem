@@ -464,7 +464,7 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   const pressure = () => cwdHash !== undefined && (quota() || count >= maximum || bytes + incomingBytes > byteMaximum);
   const due = inventory.some(row => Date.now() - row.modified >= MISSING_CWD_AFTER_MS);
   const pressured = pressure();
-  if (!inventory.length || minimal && !pressured && !due) return retired;
+  if (!inventory.length || minimal && !pressured) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let cursor: ReturnType<typeof retirementCursor>;
   try { cursor = retirementCursor(base, capacity, active.length, pressured); } catch { return retired; }
