@@ -90,5 +90,11 @@ finally {
   f.close();
 }
 const pass = fatal === undefined && Object.keys(groups).length === 3 && Object.values(groups).every(group => group.pass);
-await Bun.stdout.write(JSON.stringify({ schema: "amem.full-spool-budget/v1", runsPerGroup: RUNS, retries: 0, wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups, ...(fatal ? { fatal } : {}), pass }, null, 2) + "\n");
+// Keep each write within POSIX's minimum atomic pipe size. Bun 1.4.2's large
+// stdout writes can repeat a partial 64 KiB prefix before the awaited remainder.
+const output = Buffer.from(JSON.stringify({ schema: "amem.full-spool-budget/v1", runsPerGroup: RUNS, retries: 0, wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups, ...(fatal ? { fatal } : {}), pass }, null, 2) + "\n");
+for (let offset = 0; offset < output.length; offset += 512) {
+  const chunk = output.subarray(offset, offset + 512);
+  if (await Bun.stdout.write(chunk) !== chunk.byteLength) throw Error("incomplete full-spool report write");
+}
 if (!pass) process.exitCode = 1;
