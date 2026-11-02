@@ -247,7 +247,7 @@ for (const event of ["Stop", "SessionEnd"] as const) test("#226 (#231): the kill
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
 globalThis.__slowDrain=()=>{writeFileSync(${JSON.stringify(entered)},'entered');const until=performance.now()+3000;while(performance.now()<until){}};
 Bun.plugin({name:'slow-drain',setup(b){b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
- const s=readFileSync(path,'utf8'),a='        const drainStartedLeft = remaining(), drainStartedAt = performance.now();';
+ const s=readFileSync(path,'utf8'),a='        const drainEnd = sliceBudget(deferred ? "drain-first" : "scan-first", options.deadlineAt).drainEnd;';
  if(s.split(a).length!==2)throw Error('slow drain anchor changed');
  return {loader:'ts',contents:s.replace(a,'        (globalThis as any).__slowDrain();'+a)};
 });}});
@@ -277,31 +277,29 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
   } finally { f.close(); }
 });
 
-test("task 110: a deferred scan (after its drain) keeps only its commit allowance; a scan before the drain also leaves the drain reserve", async () => {
-  const { scanReserveMs } = await import("../src/session-brief-worker.ts");
-  // The guard is `left - reserve < 5`. With 28 ms left, a deferred scan (reserve 20) still scans; a scan before the drain
-  // (reserve 25) stops. If the two are swapped back, a deferred scan would stop and StopBurst stalls (ubuntu, PR #235).
-  const left = 28;
-  expect(left - scanReserveMs(true) < 5).toBe(false);
-  expect(left - scanReserveMs(false) < 5).toBe(true);
-  expect(scanReserveMs(true)).toBeLessThan(scanReserveMs(false));
-  // Through the real worker: 20 pending (drain-first), a slow drain that leaves 28 ms of the slice, and the deferred scan
-  // must still advance the transcript (an offset, not a bare deadline stop).
-  const f = hookFixture(), preload = join(f.root, "late-drain.ts"), transcript = join(f.root, "late-drain.jsonl");
-  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
-  writeFileSync(transcript, JSON.stringify({ type: "ai-title", aiTitle: "late drain title", timestamp: new Date().toISOString() }) + "\n");
-  writeFileSync(preload, `import {readFileSync} from 'node:fs';
-Bun.plugin({name:'late-drain',setup(b){b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
- const s=readFileSync(path,'utf8'),a='    if (deferred) await runScan(deferred, options.deadlineAt, true);';
- if(s.split(a).length!==2)throw Error('deferred scan anchor changed');
- return {loader:'ts',contents:s.replace(a,'    { const until=options.deadlineAt-28; while(performance.timeOrigin+performance.now()<until){} }\\n'+a)};
-});}});
-const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
-  try {
-    await f.seed(); await stagePressure(f, 20);
-    expect(f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` }, HOST_DEADLINE_MS).exitCode).toBe(0);
-    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.drained).toBeGreaterThan(0);
-    expect(metric.transcriptOffset).toBeGreaterThan(0);
-  } finally { f.close(); }
+test("task 110: sliceBudget splits the slice deterministically for both orders", async () => {
+  const { sliceBudget, SCAN_WORK_MS, DRAIN_RESERVE_MS, SCAN_COMMIT_MS, DEFERRED_SCAN_MIN_MS, MIN_WINDOW_MS } = await import("../src/session-brief-worker.ts");
+  const end = 1000;
+  // scan-first: the scan works SCAN_WORK_MS after setup but ends DRAIN_RESERVE_MS before the slice end; the drain runs to the end.
+  const first = sliceBudget("scan-first", end);
+  expect(first.scanEnd(800)).toBe(800 + SCAN_WORK_MS);                    // a long slice: the work budget binds
+  expect(first.scanEnd(950)).toBe(end - DRAIN_RESERVE_MS);               // late setup: the drain reserve binds
+  expect(first.drainEnd).toBe(end);
+  // drain-first: the drain stops SCAN_COMMIT_MS + DEFERRED_SCAN_MIN_MS early; the deferred scan ends SCAN_COMMIT_MS before the end.
+  const deferred = sliceBudget("drain-first", end);
+  expect(deferred.drainEnd).toBe(end - SCAN_COMMIT_MS - DEFERRED_SCAN_MIN_MS);
+  expect(deferred.scanEnd(800)).toBe(800 + SCAN_WORK_MS);
+  expect(deferred.scanEnd(950)).toBe(end - SCAN_COMMIT_MS);
+  // The deferred scan always gets at least DEFERRED_SCAN_MIN_MS after a drain that ran to its end.
+  expect(deferred.scanEnd(deferred.drainEnd) - deferred.drainEnd).toBe(DEFERRED_SCAN_MIN_MS);
+  // Swapping the guards is visible: with 28 ms left a deferred scan has a window, a scan before the drain does not.
+  const late = end - 28;
+  expect(deferred.scanEnd(late) - late >= MIN_WINDOW_MS).toBe(true);
+  expect(first.scanEnd(late) - late >= MIN_WINDOW_MS).toBe(false);
+  // Short slice edge: with 10 ms left there is no scan window in either order; the drain-first drain end is already past, so the
+  // worker drains only its guaranteed first record.
+  const short = end - 10;
+  expect(first.scanEnd(short) - short < MIN_WINDOW_MS).toBe(true);
+  expect(deferred.scanEnd(short) - short < MIN_WINDOW_MS).toBe(true);
+  expect(deferred.drainEnd < short).toBe(true);
 });

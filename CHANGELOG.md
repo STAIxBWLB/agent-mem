@@ -4,7 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
-- **A final transcript hook no longer misses its last summary on a slow machine** (task 110, Refs #226). The scan's 60 ms of work now counts from the end of its own setup (policy, cursor database, read), and the scan module loads while the worker waits for its options, so a slow runner no longer spends the window before the first summary line. A scan that runs before the drain still ends 25 ms before the work deadline, so the drain that makes those summaries durable keeps time for its first record; a scan deferred until after its drain keeps only its own 20 ms commit allowance. Hosted macOS had missed a Compact summary in about 1 of 10 runs; this predates 0.20.0.
+- **A final transcript hook no longer misses its last summary on a slow machine** (task 110, Refs #226). The scan's 60 ms of work now counts from the end of its own setup (policy, cursor database, read), and the scan module loads while the worker waits for its options, so a slow runner no longer spends the window before the first summary line. One function now splits the worker's slice: a scan before the drain ends 25 ms before the slice end so the drain keeps time for its first record; when the spool is under pressure the drain commits its first record, stops 45 ms before the end so the worker exits on its own, and the deferred scan gets the rest up to its 20 ms commit allowance. Hosted macOS had missed a Compact summary in about 1 of 10 runs; this predates 0.20.0.
 - **Compatibility with N-1 (0.19.0), task 110:** no format change. The hook spool, shards, candidates, indexes, metrics and sync are unchanged.
 
 ## 0.20.0

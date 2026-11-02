@@ -9,14 +9,29 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./ho
 import { drainHookCaptures, hookCaptureScope, hookPendingCount } from "./hook-spool.ts";
 /** #226: at or above this many pending publications for the cwd (a quarter of its 64 active share) the worker drains first. */
 const DRAIN_FIRST_PENDING = 16;
-/** Task 110: the scan ends this long before the work deadline so the drain keeps time for at least its first record. Basis: a
- * first committed record costs 1.7-2.3 ms locally (cold store open included); hosted macOS drained 2-3 records per final hook. */
-const DRAIN_RESERVE_MS = 25;
-/** The scan's own commit allowance before the work deadline (unchanged since #221). */
-const SCAN_COMMIT_MS = 20;
-/** Time a scan leaves before the work deadline: a scan before the drain also leaves the drain its reserve; a deferred scan,
- * which runs after its drain, keeps only its commit allowance. Exported for the guard test. */
-export const scanReserveMs = (afterDrain: boolean) => afterDrain ? SCAN_COMMIT_MS : DRAIN_RESERVE_MS;
+/** Task 110: the scan's line work, counted from the end of its own setup. */
+export const SCAN_WORK_MS = 60;
+/** Task 110: a scan before the drain ends this long before the slice end so the drain keeps time for at least its first record.
+ * Basis: a first committed record costs 1.7-2.3 ms locally (cold store open included); hosted macOS drained 2-3 per final hook. */
+export const DRAIN_RESERVE_MS = 25;
+/** The scan's own commit allowance before the slice end (unchanged since #221). */
+export const SCAN_COMMIT_MS = 20;
+/** Task 110: the least scan time a drain-first worker keeps for its deferred scan. */
+export const DEFERRED_SCAN_MIN_MS = 25;
+
+/** Task 110 (ruling): the one place that splits a worker's slice between the transcript scan and the spool drain. All times are
+ * absolute on the same clock as `sliceEnd`; a window shorter than 5 ms means 'no time' (the scan then reports deadline, #221).
+ * - scan-first: the scan works up to SCAN_WORK_MS after its setup and ends DRAIN_RESERVE_MS before the slice end; the drain then
+ *   runs to the slice end.
+ * - drain-first: the drain always commits its first record, then stops SCAN_COMMIT_MS + DEFERRED_SCAN_MIN_MS before the slice
+ *   end; the deferred scan works up to SCAN_WORK_MS after its setup and ends SCAN_COMMIT_MS before the slice end. */
+export function sliceBudget(order: "scan-first" | "drain-first", sliceEnd: number) {
+  return order === "scan-first"
+    ? { scanEnd: (setupDone: number) => Math.min(setupDone + SCAN_WORK_MS, sliceEnd - DRAIN_RESERVE_MS), drainEnd: sliceEnd }
+    : { scanEnd: (setupDone: number) => Math.min(setupDone + SCAN_WORK_MS, sliceEnd - SCAN_COMMIT_MS), drainEnd: sliceEnd - SCAN_COMMIT_MS - DEFERRED_SCAN_MIN_MS };
+}
+/** A window shorter than this is treated as no time. */
+export const MIN_WINDOW_MS = 5;
 
 /** #226: options arrive as newline-delimited JSON. A transcript hook first sends the scan options, then (after native
  * metadata) the drain options; other hooks send only the drain options. Total input stays bounded. */
@@ -77,28 +92,25 @@ if (import.meta.main) {
     // start: on a slow runner the scan would otherwise spend the whole slice and the spool would livelock (#231 hosted macOS).
     // The count is one bounded readdir and fails closed to the default order.
     let deferred: Scan | undefined;
-    const runScan = async (scan: Scan, until: number, afterDrain = false) => {
+    const now = () => performance.timeOrigin + performance.now();
+    const runScan = async (scan: Scan, until: number, order: "scan-first" | "drain-first") => {
       if (!Number.isFinite(scan.deadlineAt) || hookCaptureScope(scan.cwd, scan.base) === undefined) return;
-      const left = () => Math.min(scan.deadlineAt, until) - (performance.timeOrigin + performance.now());
-      // The scan's line loop gets at most 60 ms of work, counted after its own setup (task 110: setup ate a fixed window on a slow
-      // runner and the final hook missed a summary). It still ends DRAIN_RESERVE_MS before the slice end, so the drain that makes
-      // those summaries durable keeps time for at least its first record. A deferred scan recomputes from what is left.
-      // Out of time is a deadline stop, never a silent call (#221): the harness and the metric must see why nothing advanced.
-      // A scan before the drain leaves DRAIN_RESERVE_MS for it; a deferred scan runs after its drain and keeps only its own
-      // 20 ms commit allowance (task 110: reserving drain time there stalled ubuntu StopBurst).
-      const reserve = scanReserveMs(afterDrain);
-      if (left() - reserve < 5) { progress({ stopReason: "deadline" }); return; }
+      // The split comes from sliceBudget (task 110). The scan's hard end is its slice limit (scanEnd with no setup cost); the line
+      // loop's SCAN_WORK_MS counts from the end of its own setup inside scanHookTranscriptTail. Out of time is a deadline stop,
+      // never a silent call (#221): the harness and the metric must see why nothing advanced.
+      const hardEnd = sliceBudget(order, Math.min(scan.deadlineAt, until)).scanEnd(Number.POSITIVE_INFINITY);
+      if (hardEnd - now() < MIN_WINDOW_MS) { progress({ stopReason: "deadline" }); return; }
       try {
         const { scanHookTranscriptTail } = await transcriptModule;
         const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
-          deadline: performance.now() + left() - reserve, workBudgetMs: 60 });
+          deadline: performance.now() + (hardEnd - now()), workBudgetMs: SCAN_WORK_MS });
         if (scanned) progress(scanned);
       } catch { progress({ stopReason: "unavailable" }); /* #221: a scan fault is reported, never counted as progress. */ }
     };
     if (first.scan !== undefined) {
       const scan = first.scan as Scan;
       if (hookPendingCount(scan.cwd, scan.base) >= DRAIN_FIRST_PENDING) deferred = scan;
-      else await runScan(scan, Number.POSITIVE_INFINITY);
+      else await runScan(scan, Number.POSITIVE_INFINITY, "scan-first");
       line = await next();
       if (line === undefined) process.exit(0);
       first = JSON.parse(line) as Record<string, unknown>;
@@ -117,7 +129,7 @@ if (import.meta.main) {
     if (event === "SessionStart") stop();
     let project: string | undefined;
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: remaining })); } catch { /* Independently bound transcript intake can still proceed. */ }
-    if (project === undefined) { if (deferred) await runScan(deferred, options.deadlineAt, true); stop(); }
+    if (project === undefined) { if (deferred) await runScan(deferred, options.deadlineAt, "drain-first"); stop(); }
     let captured = false;
     // An empty current name selects bounded full-tier recovery; SessionStart stays in the parent.
     if (expectedScope !== undefined) {
@@ -128,10 +140,12 @@ if (import.meta.main) {
         // committed, sent before and during the drain so a kill still reports them. A killed drain keeps every record it finished.
         drain({ startMs: Math.round(performance.timeOrigin + performance.now() - (options.hookStartAt ?? options.deadlineAt)), drained: 0 });
         let drainedCount = 0;
-        // Drain-first keeps a share of the slice for the deferred scan, so a backlog cannot starve transcript progress either:
-        // the drain always gets its first record, then stops once half of what was left at its start is spent.
-        const drainStartedLeft = remaining(), drainStartedAt = performance.now();
-        const drainRemaining = deferred ? () => drainedCount === 0 ? remaining() : Math.min(remaining(), drainStartedLeft / 2 - (performance.now() - drainStartedAt)) : remaining;
+        // Drain-first: the drain always commits its first record, then stops SCAN_COMMIT_MS + DEFERRED_SCAN_MIN_MS (45 ms) before
+        // the slice end (sliceBudget). Two reasons: the deferred scan keeps its time, and the worker finishes and exits on its own
+        // instead of being killed mid-write. A half-slice cap let a fast drain run into the deadline kill, and SQLite's write then
+        // outlived the 10 ms reap: abandoned workers went from 1 to 37 on hosted ubuntu (task 110, runs 41502941614 and 41530406951).
+        const drainEnd = sliceBudget(deferred ? "drain-first" : "scan-first", options.deadlineAt).drainEnd;
+        const drainRemaining = () => drainedCount === 0 ? remaining() : Math.min(remaining(), drainEnd - now());
         const drained = await drainHookCaptures({ ...options, base: options.base!, project: project!, expectedScope, timeRemaining: drainRemaining }, (input, receipt) => {
           store ??= new CaptureStore({ memoryDir: options.base!, project: project!, busyTimeoutMs: 0, cwd: options.cwd });
           const appended = store.append(input, { receipt });
@@ -141,7 +155,7 @@ if (import.meta.main) {
         captured = drained.captured.includes(options.current);
       } finally { store?.close(); }
     }
-    if (deferred) await runScan(deferred, options.deadlineAt, true);
+    if (deferred) await runScan(deferred, options.deadlineAt, "drain-first");
     if (hookCaptureScope(options.cwd, options.base!) !== expectedScope) stop();
     await emit({ context: "", captured, valid: true });
   } catch { if (owned) stop(); process.exitCode = 1; }
