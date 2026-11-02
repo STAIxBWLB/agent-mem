@@ -16,7 +16,7 @@ const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(va
 const round = (value: number) => Math.round(value * 100) / 100;
 type Rss = ReturnType<typeof measuredHookRss>;
 interface Sample {
-  invocation: number; wallMs: number; metricWallMs: number | null; exitCode: number | null; signal: string | null;
+  invocation: number; event: string; wallMs: number; metricWallMs: number | null; exitCode: number | null; signal: string | null;
   before: { active: number; reserve: number }; after?: { active: number; reserve: number };
   admitted?: boolean; drops?: Record<string, number>; metric?: MetricSample; rss?: Rss; error?: string;
 }
@@ -34,7 +34,7 @@ try {
   const dir = join(f.base, "hook-spool"), reserve = join(dir, ".capacity");
   const inventory = () => ({ active: readdirSync(dir).filter(name => name.startsWith("hook-")).length,
     reserve: existsSync(reserve) ? readdirSync(reserve).filter(name => name.startsWith("hook-")).length : 0 });
-  for (const [name, reserveCount] of [["active-full", 0], ["active-and-reserve-full", 32]] as const) {
+  for (const [name, reserveCount, hookEvent] of [["active-full", 0, "PostToolUse"], ["active-and-reserve-full", 32, "PostToolUse"], ["session-start-full", 32, "SessionStart"]] as const) {
     const samples: Sample[] = [];
     groups[name] = { samples, wallP95Ms: 0, peakRssMB: 0, pass: false };
     for (let invocation = 0; invocation < RUNS; invocation++) {
@@ -51,11 +51,11 @@ try {
       }
       writeFileSync(join(f.base, "metrics.jsonl"), "", { mode: 0o600 });
       const before = inventory(), marker = `full-spool-current-${name}-${invocation}`;
-      const sample: Sample = { invocation, before, wallMs: 0, metricWallMs: null, exitCode: null, signal: null };
+      const sample: Sample = { invocation, event: hookEvent, before, wallMs: 0, metricWallMs: null, exitCode: null, signal: null };
       samples.push(sample);
       const start = performance.now();
       try {
-        const result = f.run("PostToolUse", { prompt: marker });
+        const result = f.run(hookEvent, { prompt: marker });
         sample.wallMs = round(performance.now() - start);
         sample.exitCode = result.exitCode;
         sample.signal = result.signalCode === null || result.signalCode === undefined ? null : String(result.signalCode);
@@ -89,6 +89,6 @@ finally {
   if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
   f.close();
 }
-const pass = fatal === undefined && Object.keys(groups).length === 2 && Object.values(groups).every(group => group.pass);
+const pass = fatal === undefined && Object.keys(groups).length === 3 && Object.values(groups).every(group => group.pass);
 console.log(JSON.stringify({ schema: "amem.full-spool-budget/v1", runsPerGroup: RUNS, retries: 0, wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups, ...(fatal ? { fatal } : {}), pass }, null, 2));
 if (!pass) process.exitCode = 1;

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { drainHookCaptures, hookCapturePending, hookCaptureScope, quarantineHookScope, stageHookCapture } from "../src/hook-spool.ts";
+import { drainHookCaptures, hookCapturePending, hookCaptureScope, quarantineHookScope, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { normalizeCaptureFields, type NormalizedCaptureFields } from "../src/memory/capture-input.ts";
@@ -599,4 +599,16 @@ test("SessionStart byte exhaustion uses its reserve without erasing foreign reco
   await expect(stageHookCapture("SessionStart", payload, { ...a.options, deferAtCapacity: true })).resolves.toBeDefined();
   expect(a.pending().filter(row => row.value.capture.excerpt === "current byte-bound event")).toHaveLength(1);
   expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
+});
+
+for (const claimed of [false, true]) test("retrying an identical summary at quota does not evict another record: claimed=" + claimed, async () => {
+  const f = fixture(), input = { agent: "claude", event: "Title", at: new Date().toISOString(), excerpt: "repeat this summary" };
+  for (let i = 0; i < 63; i++) await stageHookCapture("PostToolUse", { prompt: `older retained row ${i}` }, f.options);
+  const first = (await stageTranscriptCapture(input, f.options, "stable-line"))!;
+  if (claimed) renameSync(join(f.base, "hook-spool", first.name), join(f.base, "hook-spool", first.name + ".draining-" + "a".repeat(24)));
+  const before = f.pending().map(row => row.value);
+  const repeated = await stageTranscriptCapture(input, f.options, "stable-line");
+  expect(repeated?.name).toBe(first.name); expect(repeated?.receipt).toBe(first.receipt);
+  expect(f.pending().map(row => row.value)).toEqual(before);
+  expect(capacityDrops(f.base)).toBe(0);
 });

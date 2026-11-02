@@ -462,7 +462,7 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
 export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
 export function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
   // Doctor reads every surface below, live or through a scratch copy: a floor on any of them refuses the whole report before anything is read (#199 AC5).
-  for (const surface of ["curated", "capture", "candidates", "work-lists"] as const) assertFormatFloor(options.home, surface);
+  for (const surface of ["curated", "capture", "candidates", "work-lists", "hook-spool"] as const) assertFormatFloor(options.home, surface);
   return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options));
 }
 async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {

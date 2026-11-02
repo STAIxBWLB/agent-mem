@@ -570,3 +570,11 @@ for (const withRealm of [false, true]) test(`doctor keeps all curated sections a
   expect(cli.sections.index.status).toBe("skipped");
   expect(exact(r)).toEqual(before);
 });
+
+test("#217: doctor preflights the hook-spool floor before inventory", async () => {
+  const r = rig(); mkdirSync(r.memory, { recursive: true });
+  writeFileSync(join(r.memory, "formats.json"), JSON.stringify([{ surface: "hook-spool", minReader: "99.0.0", since: "2026-11-02" }]));
+  const before = exact(r);
+  await expect(doctor(r)).rejects.toThrow("hook-spool format floor");
+  expect(exact(r)).toEqual(before);
+});
