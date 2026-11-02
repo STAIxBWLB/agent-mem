@@ -10,6 +10,7 @@
 ## Passes and findings
 
 - Run Bugs, Security, and spec/plan Compliance passes. For instruction files and prompts, also run Instruction prose: keep actionable rules, retain safety/permission boundaries, and move rationale to human documentation.
+- Error messages: a new or changed error, refusal or failure message a person or agent sees names the cause (what failed and why) and the next step (the command, setting or target that fixes it). When secrets, ids or paths must stay out, it names the cause class and how to check it. A message missing either is a finding; Important when it is the only signal of a blocked action (a CLI exit, a refused tool call), otherwise a nit.
 - Tag findings with pass, severity, evidence and provenance (introduced, pre-existing or indeterminate). Put pre-existing concerns in follow-up work rather than expanding the release.
 - Reserve Important for broken behavior, data leaks or policy breaches. Treat style and naming as nits; report at most two nits and count the remainder.
 - Skip generated-file formatting complaints, but review fixture compatibility and artifact correctness. There are no wholly excluded generated paths in this repository.
