@@ -70,7 +70,8 @@ if (import.meta.main) {
       if (!Number.isFinite(scan.deadlineAt) || hookCaptureScope(scan.cwd, scan.base) === undefined) return;
       const left = () => Math.min(scan.deadlineAt, until) - (performance.timeOrigin + performance.now());
       // The scan never runs past 60 ms and leaves 20 ms of its slice for its own commit; a deferred scan recomputes from what is left.
-      if (left() - 20 < 5) return;
+      // Out of time is a deadline stop, never a silent call (#221): the harness and the metric must see why nothing advanced.
+      if (left() - 20 < 5) { progress({ stopReason: "deadline" }); return; }
       try {
         const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
         const scanned = await scanHookTranscriptTail(scan.transcript, { cwd: scan.cwd, base: scan.base, policy: scan.policy,
@@ -111,7 +112,11 @@ if (import.meta.main) {
         // committed, sent before and during the drain so a kill still reports them. A killed drain keeps every record it finished.
         drain({ startMs: Math.round(performance.timeOrigin + performance.now() - (options.hookStartAt ?? options.deadlineAt)), drained: 0 });
         let drainedCount = 0;
-        const drained = await drainHookCaptures({ ...options, base: options.base!, project: project!, expectedScope, timeRemaining: remaining }, (input, receipt) => {
+        // Drain-first keeps a share of the slice for the deferred scan, so a backlog cannot starve transcript progress either:
+        // the drain always gets its first record, then stops once half of what was left at its start is spent.
+        const drainStartedLeft = remaining(), drainStartedAt = performance.now();
+        const drainRemaining = deferred ? () => drainedCount === 0 ? remaining() : Math.min(remaining(), drainStartedLeft / 2 - (performance.now() - drainStartedAt)) : remaining;
+        const drained = await drainHookCaptures({ ...options, base: options.base!, project: project!, expectedScope, timeRemaining: drainRemaining }, (input, receipt) => {
           store ??= new CaptureStore({ memoryDir: options.base!, project: project!, busyTimeoutMs: 0, cwd: options.cwd });
           const appended = store.append(input, { receipt });
           drain({ drained: ++drainedCount });
