@@ -429,7 +429,7 @@ function retirementCursor(base: string, capacity: boolean, length: number): { st
  * protection. A semantic/physical scope mismatch alone never proves a cwd was replaced.
  * ponytail: fair shares are cooperative admission, not an atomic multi-process quota.
  * Upgrade: coordinated byte/file reservations with crash recovery. */
-function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, budget = maintenanceBudget()): Set<string> {
+function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, budget = maintenanceBudget(), scanLimit = DRAIN_FILES): Set<string> {
   const retired = new Set<string>(), cwdHash = admittingCwd === undefined ? undefined : hash(admittingCwd);
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
   const maximum = capacity ? CAPACITY_FILES : MAX_FILES, byteMaximum = capacity ? CAPACITY_BYTES : MAX_BYTES, share = maximum / 4;
@@ -440,7 +440,8 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   const quota = () => cwdHash !== undefined && (groups.get(cwdHash) ?? 0) >= share;
   const pressure = () => cwdHash !== undefined && (quota() || count >= maximum || bytes + incomingBytes > byteMaximum);
   const due = inventory.some(row => Date.now() - row.modified >= MISSING_CWD_AFTER_MS);
-  if (!inventory.length || !pressure() && !due) return retired;
+  const pressured = pressure();
+  if (!inventory.length || minimal && !pressured && !due) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let cursor: ReturnType<typeof retirementCursor>;
   try { cursor = retirementCursor(base, capacity, active.length); } catch { return retired; }
@@ -454,7 +455,7 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
   }) : active.slice(cursor.start).concat(active.slice(0, cursor.start));
   try {
     for (const row of candidates) {
-      if (!budget.files || !pressure() && (!due || minimal)) break;
+      if (!budget.files || scanned >= scanLimit || !pressure() && (minimal || pressured && !due)) break;
       const match = namePattern.exec(row.name); if (!match) { scanned++; continue; }
       if (row.size <= RECORD_BYTES && row.size > budget.bytes) break;
       budget.files--; scanned++;
@@ -608,14 +609,18 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
     deferred = true; backlog = reserved.length > 0;
   } else {
     const inventory = entries(base);
-    const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget);
-    const queued = inventory.filter(row => !retired.has(row.name));
     let reserved = entries(base, true);
-    // Reserve maintenance must progress even while ordinary admission has space.
-    const retiredCapacity = retireUnresolved(base, undefined, reserved, 0, false, true, budget);
-    reserved = reserved.filter(row => !retiredCapacity.has(row.name));
+    // Split a nonempty two-tier backlog's inspection budget so neither tier starves.
+    const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget, reserved.length ? DRAIN_FILES / 2 : DRAIN_FILES);
+    const queued = inventory.filter(row => !retired.has(row.name));
+    const activeFits = withinShare(queued, MAX_FILES) && queued.length < MAX_FILES && queued.reduce((sum, row) => sum + row.size, 0) + incomingBytes <= MAX_BYTES;
+    // If active admission failed, reserve pressure gets the remaining budget first.
+    if (activeFits) {
+      const retiredCapacity = retireUnresolved(base, undefined, reserved, 0, false, true, budget);
+      reserved = reserved.filter(row => !retiredCapacity.has(row.name));
+    }
     backlog = queued.length > 0 || reserved.length > 0;
-    if (!withinShare(queued, MAX_FILES) || queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
+    if (!activeFits) {
       if (options.deferAtCapacity !== true) throw new HookSpoolFull();
       destination = join(dir, ".capacity"); privateDirectory(destination);
       const retiredReserve = retireUnresolved(base, cwd, reserved, incomingBytes, true, true, budget);
@@ -666,7 +671,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
       if (!claim) { blocked++; continue; }
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim);
-      if (!record || record.value.cwd !== cwd || record.value.scope !== null && !accepts(record.value.scope) || record.value.nonce !== match[4]) {
+      if (!record || record.value.cwd !== cwd || record.value.scope !== match[3] || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;
       }
       // #199: an unknown or newer schema stays claimed and pending (later passes reclaim it) until the TTL, then retires with a counted reason.
