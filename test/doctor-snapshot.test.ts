@@ -53,7 +53,11 @@ function rich() {
 }
 
 test("doctor --json keeps its documented shape (snapshot of keys, types and vocabulary)", async () => {
-  const snapshot = { schema: "amem.doctor/v1", populated: shape(await report(rich())), unused: shape(await report(rig())) };
+  const populated = await report(rich()), unused = await report(rig());
+  for (const body of [populated, unused]) expect(body).toMatchObject({ sections: { spool: {
+    classificationCoverage: "complete", kinds: { native: 0, summaries: 0, unclassified: 0, complete: true },
+  } } });
+  const snapshot = { schema: "amem.doctor/v1", populated: shape(populated), unused: shape(unused) };
   if (process.env.UPDATE_DOCTOR_SNAPSHOT === "1") writeFileSync(FIXTURE, JSON.stringify(snapshot, null, 2) + "\n");
   expect(existsSync(FIXTURE)).toBe(true);
   expect(snapshot).toEqual(JSON.parse(readFileSync(FIXTURE, "utf8")));
@@ -62,7 +66,7 @@ test("doctor --json keeps its documented shape (snapshot of keys, types and voca
 test("every section a consumer reads is present with a status, in a fixed order", async () => {
   const body = await report(rich()) as { schema: string; status: string; sections: Record<string, { status: string }> };
   expect(body.schema).toBe("amem.doctor/v1");
-  expect(Object.keys(body.sections)).toEqual(["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops", "setup"]);
+  expect(Object.keys(body.sections)).toEqual(["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops", "spool", "setup"]);
   for (const section of Object.values(body.sections)) expect(["ok", "attention", "unavailable"]).toContain(section.status);
   expect(body.status).toBe("attention");
 });

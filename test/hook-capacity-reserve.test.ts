@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { stageHookCapture, drainHookCaptures, hookCapturePending } from "../src/hook-spool.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { normalizeCaptureFields, type NormalizedCaptureFields } from "../src/memory/capture-input.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [];
@@ -13,10 +14,21 @@ const options = (f: ReturnType<typeof hookFixture>) => ({ cwd: f.cwd, base: f.ba
 const active = (f: ReturnType<typeof hookFixture>) => join(f.base, "hook-spool");
 const capacity = (f: ReturnType<typeof hookFixture>) => join(active(f), ".capacity");
 const names = (dir: string) => existsSync(dir) ? readdirSync(dir).filter(name => name.startsWith("hook-")) : [];
-async function full(f: ReturnType<typeof hookFixture>) {
-  for (let i = 0; i < 256; i++) expect(await stageHookCapture("PostToolUse", { prompt: `capacity original ${i}` }, options(f))).toBeDefined();
+/** A valid backlog from before cooperative quotas; public admission now holds one cwd to 64 slots. */
+async function full(f: ReturnType<typeof hookFixture>, protectedFuture = false) {
+  const staged = await stageHookCapture("PostToolUse", { prompt: "capacity template" }, options(f));
+  expect(staged).toBeDefined();
+  const source = join(active(f), staged!.name), template = JSON.parse(readFileSync(source, "utf8")) as { capture: NormalizedCaptureFields };
+  rmSync(source);
+  for (let i = 0; i < 256; i++) {
+    const { tool, status, ...fields } = template.capture;
+    const capture = normalizeCaptureFields({ ...fields, excerpt: `capacity original ${i}`, ...(tool === null ? {} : { tool }), ...(status === null ? {} : { status }) });
+    const nonce = i.toString(16).padStart(32, "0"), name = staged!.name.replace(/[a-f0-9]{32}\.json$/, nonce + ".json");
+    writeFileSync(join(active(f), name), JSON.stringify({ ...template, nonce, capture, ...(protectedFuture ? { schema: "agent-mem.hook-capture/v99" } : {}) }), { mode: 0o600, flag: "wx" });
+  }
   expect(names(active(f))).toHaveLength(256);
 }
+const pressureLoss = (f: ReturnType<typeof hookFixture>) => readMetrics(f.base).filter(row => row.captureDropReason === "scope_capacity").reduce((sum, row) => sum + (row.captureDrops ?? 0), 0);
 
 test("default active admission remains capped while explicit reserve retains the current normalized event", async () => {
   const f = fixture(); await full(f);
@@ -27,7 +39,9 @@ test("default active admission remains capped while explicit reserve retains the
   expect(first).toMatchObject({ deferred: true }); expect(hookCapturePending(f.base, first!.name)).toBe(true);
   // SessionStart does not inspect the active backlog, so it cannot report its presence.
   expect(first).not.toHaveProperty("backlog");
-  expect(names(active(f))).toHaveLength(256); expect(names(capacity(f))).toHaveLength(1);
+  expect(names(active(f))).toHaveLength(224); expect(names(capacity(f))).toHaveLength(1);
+  expect(names(active(f)).length + names(capacity(f)).length + pressureLoss(f)).toBe(257);
+  expect(pressureLoss(f)).toBe(32);
   expect(statSync(capacity(f)).mode & 0o777).toBe(0o700);
   expect(statSync(join(capacity(f), first!.name)).mode & 0o777).toBe(0o600);
   const value = JSON.parse(readFileSync(join(capacity(f), first!.name), "utf8"));
@@ -45,30 +59,39 @@ test("matching reserve drains exactly once with older active work inside the sha
     expect(first.captured[0]).not.toBe(staged!.name); expect(first.captured.length).toBeGreaterThan(0); expect(first.captured.length).toBeLessThanOrEqual(32);
     expect(hookCapturePending(f.base, staged!.name)).toBe(true);
     for (let pass = 0; pass < 9 && (names(active(f)).length || names(capacity(f)).length); pass++) await drainHookCaptures({ ...options(f), project: f.project, timeRemaining: () => 8 }, (input, receipt) => store.append(input, { receipt }));
-    expect(store.rows({ limit: 1000 })).toHaveLength(257);
+    expect(names(active(f)).length + names(capacity(f)).length).toBe(0);
+    expect(store.rows({ limit: 1000 }).length + pressureLoss(f)).toBe(257);
+    expect(pressureLoss(f)).toBe(32);
     expect(store.rows({ limit: 1000 }).filter(row => row.excerpt === "reserved exactly once")).toHaveLength(1);
     expect((await drainHookCaptures({ ...options(f), project: f.project }, (input, receipt) => store.append(input, { receipt }))).captured).toEqual([]);
   } finally { store.close(); }
 });
 
-test("reserve admits at most 32 files and keeps exhaustion explicit", async () => {
-  const f = fixture(); await full(f);
-  for (let i = 0; i < 32; i++) await expect(stageHookCapture("PostToolUse", { prompt: `reserve file ${i}` }, { ...options(f), deferAtCapacity: true })).resolves.toMatchObject({ deferred: true });
+test("32 protected future reserve files preserve the global file cap and keep exhaustion explicit", async () => {
+  const f = fixture(); await full(f, true); mkdirSync(capacity(f), { mode: 0o700 });
+  const sourceName = names(active(f))[0]!, original = JSON.parse(readFileSync(join(active(f), sourceName), "utf8"));
+  // Future schemas are intentionally protected under #199, unlike quota-evictable ordinary records.
+  for (let i = 0; i < 32; i++) {
+    const nonce = (256 + i).toString(16).padStart(32, "0"), name = sourceName.replace(/[a-f0-9]{32}\.json$/, nonce + ".json");
+    writeFileSync(join(capacity(f), name), JSON.stringify({ ...original, nonce }), { mode: 0o600 });
+  }
   await expect(stageHookCapture("PostToolUse", { prompt: "reserve exhausted" }, { ...options(f), deferAtCapacity: true })).rejects.toThrow("hook storage full");
   expect(names(active(f))).toHaveLength(256); expect(names(capacity(f))).toHaveLength(32);
+  expect(pressureLoss(f)).toBe(0);
 });
 
 test("reserve byte admission refuses beyond 256 KiB even below its file count", async () => {
-  const f = fixture(); await full(f); mkdirSync(capacity(f), { mode: 0o700 });
+  const f = fixture(); await full(f, true); mkdirSync(capacity(f), { mode: 0o700 });
   const sourceName = names(active(f))[0]!, original = JSON.parse(readFileSync(join(active(f), sourceName), "utf8"));
   for (let i = 0; i < 4; i++) {
     const value = { ...original, nonce: i.toString(16).padStart(32, "0") }, name = sourceName.replace(/[a-f0-9]{32}\.json$/, value.nonce + ".json");
-    // Valid normalized JSON, padded only with legal trailing whitespace to exercise byte admission.
+    // Valid future envelope, protected until TTL, padded only with legal trailing whitespace to exercise byte admission.
     writeFileSync(join(capacity(f), name), JSON.stringify(value).padEnd(64 * 1024, " "), { mode: 0o600 });
   }
   await expect(stageHookCapture("PostToolUse", { prompt: "byte exhausted" }, { ...options(f), deferAtCapacity: true })).rejects.toThrow("hook storage full");
   expect(names(capacity(f))).toHaveLength(4);
   expect(names(capacity(f)).reduce((sum, name) => sum + statSync(join(capacity(f), name)).size, 0)).toBe(256 * 1024);
+  expect(pressureLoss(f)).toBe(0);
 });
 
 test("wrong scope never replays reserve and policy retirement never becomes ordinary replay", async () => {
@@ -96,9 +119,9 @@ test("removed cwd reserve records retire only the needed slot with a counted bod
     const nonce = i.toString(16).padStart(32, "0"), name = stale!.name.replace(/[a-f0-9]{32}\.json$/, nonce + ".json");
     writeFileSync(join(capacity(f), name), JSON.stringify({ ...source, nonce }), { mode: 0o600 });
   }
-  for (const name of names(capacity(f))) { const file = join(capacity(f), name), row = JSON.parse(readFileSync(file, "utf8")); row.capture.at = new Date(Date.now() - 8 * 24 * 3600_000).toISOString(); writeFileSync(file, JSON.stringify(row)); }
-  rmSync(foreign.cwd, { recursive: true, force: true });
   await full(f);
+  for (const name of names(capacity(f))) { const file = join(capacity(f), name), row = JSON.parse(readFileSync(file, "utf8")), at = new Date(Date.now() - 2 * 3600_000); row.capture.at = at.toISOString(); writeFileSync(file, JSON.stringify(row)); utimesSync(file, at, at); }
+  rmSync(foreign.cwd, { recursive: true, force: true });
   await expect(stageHookCapture("SessionStart", { prompt: "after stale capacity" }, { ...options(f), deferAtCapacity: true })).resolves.toMatchObject({ deferred: true });
   expect(readMetrics(f.base).filter(row => row.captureDropReason === "cwd_removed").reduce((n,row) => n + (row.captureDrops ?? 0), 0)).toBe(1);
   expect(names(capacity(f))).toHaveLength(32);
@@ -113,7 +136,8 @@ test("a failed reserved append retains its claim inside reserve without overflow
   utimesSync(join(capacity(f), staged!.name), new Date(0), new Date(0));
   const failed = await drainHookCaptures({ ...options(f), project: f.project, timeRemaining: () => 8 }, () => { throw new Error("fixture append refused"); });
   expect(failed.captured).toEqual([]); expect(failed.blocked).toBeGreaterThan(0);
-  expect(names(active(f))).toHaveLength(256); expect(names(capacity(f))).toHaveLength(1);
+  expect(names(active(f))).toHaveLength(224); expect(names(capacity(f))).toHaveLength(1);
+  expect(names(active(f)).length + names(capacity(f)).length + pressureLoss(f)).toBe(257);
   expect(names(capacity(f))[0]).toStartWith(staged!.name + ".draining-");
   expect(hookCapturePending(f.base, staged!.name)).toBe(true);
   const store = new CaptureStore({ memoryDir: f.base, project: f.project });

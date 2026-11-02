@@ -137,6 +137,33 @@
         ],
         "status": "attention"
       },
+      "spool": {
+        "active": {
+          "bytes": "number",
+          "files": "number",
+          "maxBytes": "number",
+          "maxFiles": "number"
+        },
+        "claimed": "number",
+        "classificationCoverage": "string",
+        "complete": "boolean",
+        "coverage": "string",
+        "fill": "string",
+        "kinds": {
+          "complete": "boolean",
+          "native": "number",
+          "summaries": "number",
+          "unclassified": "number"
+        },
+        "oldestAt": "null",
+        "reserve": {
+          "bytes": "number",
+          "files": "number",
+          "maxBytes": "number",
+          "maxFiles": "number"
+        },
+        "status": "ok"
+      },
       "stale": {
         "checked": "number",
         "examples": [
@@ -266,6 +293,33 @@
         "entries": [],
         "reason": "string",
         "status": "skipped"
+      },
+      "spool": {
+        "active": {
+          "bytes": "number",
+          "files": "number",
+          "maxBytes": "number",
+          "maxFiles": "number"
+        },
+        "claimed": "number",
+        "classificationCoverage": "string",
+        "complete": "boolean",
+        "coverage": "string",
+        "fill": "string",
+        "kinds": {
+          "complete": "boolean",
+          "native": "number",
+          "summaries": "number",
+          "unclassified": "number"
+        },
+        "oldestAt": "null",
+        "reserve": {
+          "bytes": "number",
+          "files": "number",
+          "maxBytes": "number",
+          "maxFiles": "number"
+        },
+        "status": "ok"
       },
       "stale": {
         "reason": "string",

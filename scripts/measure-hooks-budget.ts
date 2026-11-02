@@ -22,13 +22,18 @@ import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = 100;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
-interface Sample extends ReturnType<typeof measuredHookRss> { wallMs: number }
+interface Sample extends ReturnType<typeof measuredHookRss> {
+  wallMs: number;
+  countedRetirements: number;
+  retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
+}
 async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
-let invocations = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
+let invocations = 0, countedRetirements = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
+let normalAccounting: { invocations: number; recorded: number; pending: number; pendingOnly: number; countedRetirements: number; retiredInvocations: number[] } | undefined;
 function members(pgid: number): number[] {
   const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
   if (result.exitCode !== 0) throw new Error("R1 process table unavailable");
@@ -63,7 +68,7 @@ function invocationId(event: string, excerpt: string): number {
 // #203: `jcode` runs the real `bin/amem.js hook jcode` with jcode v0.99.1's observer contract: no stdin, every field in the environment.
 // It stages and drains through the PostToolUse pipeline, so the same R1 process and R2 wall/RSS checks apply unchanged.
 function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false, jcode = false): Sample {
-  const before = readMetrics(f.base).filter(row => row.kind === "hook").length, beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
+  const before = readMetrics(f.base).at(-1), beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
   const start = performance.now();
   // Observe each fixed owned child as well as the outer CLI group; native metadata supervisors also own detached groups.
@@ -104,8 +109,26 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     ownedWorkers.delete(worker.pid);
   }
   if (result.exitCode !== 0 || result.signalCode) throw new Error(`hook executable failed: ${event}, exit=${result.exitCode}`);
-  const metrics = readMetrics(f.base).filter(row => row.kind === "hook"), metric = metrics.at(-1);
-  if (metrics.length !== before + 1 || !metric || !Number.isFinite(metric.rssMB) || !Number.isFinite(metric.wallMs) || metric.rssMB! <= 0 || metric.wallMs! < 0) throw new Error("actual hook failed to append a valid production metrics sample");
+  const metrics = readMetrics(f.base);
+  // Numeric retirement receipts can precede the handler's wall/RSS sample. Anchor
+  // to the old tail instead of comparing lengths across the rolling 200-row window.
+  const anchor = before === undefined ? -1 : metrics.findLastIndex(row => JSON.stringify(row) === JSON.stringify(before));
+  if (before !== undefined && anchor < 0) throw new Error("actual hook metrics lost the before-invocation tail anchor");
+  const added = metrics.slice(anchor + 1), handlers = added.filter(row => row.kind === "hook" && (row.wallMs !== undefined || row.rssMB !== undefined || row.rssSources !== undefined));
+  const metric = handlers[0];
+  if (handlers.length !== 1 || !metric || !Number.isFinite(metric.rssMB) || !Number.isFinite(metric.wallMs) || metric.rssMB! <= 0 || metric.wallMs! < 0) throw new Error("actual hook failed to append exactly one valid production wall/RSS sample");
+  if (metric.captureDrops !== undefined || metric.captureDropReason !== undefined) throw new Error("actual hook refused a normal-workload native capture");
+  const retirementReceipts: Sample["retirementReceipts"] = [];
+  for (const row of added) {
+    if (row === metric) continue;
+    if (row.kind !== "hook" || Object.keys(row).sort().join() !== "at,captureDropReason,captureDrops,kind" || row.captureDropReason !== "scope_capacity"
+      || !Number.isSafeInteger(row.captureDrops) || row.captureDrops! <= 0 || !Number.isFinite(Date.parse(row.at))) {
+      throw new Error("actual hook appended a non-scope-capacity or invalid extra metric");
+    }
+    retirementReceipts.push({ at: row.at, captureDrops: row.captureDrops!, captureDropReason: "scope_capacity" });
+  }
+  const retired = retirementReceipts.reduce((sum, row) => sum + row.captureDrops, 0);
+  countedRetirements += retired;
   // Bun child rusage maxRSS is bytes; process.resourceUsage().maxRSS uses a different unit.
   const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576), { cliRssMB, recordedRssMB } = rss;
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
@@ -130,7 +153,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
-  return { wallMs, ...rss };
+  return { wallMs, ...rss, countedRetirements: retired, retirementReceipts };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
@@ -198,6 +221,7 @@ try {
       throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
     }
   }
+  if (countedRetirements !== 0) throw new Error("plain or contended workload retired a native capture instead of replaying losslessly");
   const sessionStart = await samples("sessionStart", RUNS.sessionStart, () => invoke("SessionStart", "sessionStart"));
   const finalStore = new CaptureStore({ memoryDir: f.base, project: f.project });
   const recorded = new Map<number, string>(), pending = new Map<number, string>();
@@ -216,9 +240,15 @@ try {
     if (pending.has(id)) throw new Error("pending fixture capture duplicated");
     pending.set(id, value.capture.at);
   }
+  const retiredInvocations: number[] = [];
   for (let id = 1; id <= invocations; id++) {
-    if (!recorded.has(id) && !pending.has(id)) throw new Error(`accepted invocation has neither capture nor pending receipt (id=${id}, of ${invocations}, recorded=${recorded.size}, pending=${pending.size})`);
+    if (!recorded.has(id) && !pending.has(id)) retiredInvocations.push(id);
     if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
+  }
+  const pendingOnly = [...pending.keys()].filter(id => !recorded.has(id)).length;
+  normalAccounting = { invocations, recorded: recorded.size, pending: pending.size, pendingOnly, countedRetirements, retiredInvocations };
+  if (retiredInvocations.length !== countedRetirements || invocations !== recorded.size + pendingOnly + countedRetirements) {
+    throw new Error(`normal workload capture conservation failed: ${JSON.stringify(normalAccounting)}`);
   }
   // #15 T4 (after the capture accounting above, which counts PostToolUse and plain SessionStart runs only): the same real `bin/amem.js hook SessionStart`, with a 1 MiB `.amem/log.jsonl` (the repo scope's read cap) in the repository. The repo section must be bounded by the
   // hook's own deadline, so a log at the cap costs the hook no more than the budget it already has. This is a wall-time and RSS guard, not proof of the bounded read:
@@ -255,12 +285,13 @@ try {
     const { pending: _pending, ...numeric } = sample;
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
-  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
   return report;
 } finally {
   const deferralReport = { diagnostic: "R1-worker-deferrals", stalledAttemptsByGroup: Object.fromEntries(stalledAttempts), ...deferredWorkers, maxPlain: MAX_PLAIN_DEFERRED };
   console.error(JSON.stringify(deferralReport));
+  console.error(JSON.stringify({ diagnostic: "capture-retirement-accounting", invocations, countedRetirements, normalWorkload: normalAccounting ?? null }));
   if (process.env.GITHUB_STEP_SUMMARY) try { appendFileSync(process.env.GITHUB_STEP_SUMMARY, `R1 optional-worker deadline deferrals: plain ${deferredWorkers.plain}/${RUNS.plain} (maximum ${MAX_PLAIN_DEFERRED}), contention ${deferredWorkers.spoolAndExit}, drain ${deferredWorkers.drain}, SessionStart ${deferredWorkers.sessionStart}.\n`); } catch { /* The console retains the same numeric receipt if the summary is unavailable. */ }
   // Only groups created by this script, and only while a fresh process-table read still shows members.
   for (const group of ownedGroups) if (members(group).length) try { process.kill(-group, "SIGKILL"); } catch { /* an already-ended group is clean */ }
@@ -279,4 +310,9 @@ const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
   rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
 }));
 
-console.log(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2));
+// Small atomic pipe writes avoid Bun 1.4.2's duplicated/truncated large-report prefix.
+const output = Buffer.from(JSON.stringify({ ...measured.result, groupAttempts: measured.attempts }, null, 2) + "\n");
+for (let offset = 0; offset < output.length; offset += 512) {
+  const chunk = output.subarray(offset, offset + 512);
+  if (await Bun.stdout.write(chunk) !== chunk.byteLength) throw Error("incomplete hook budget report write");
+}

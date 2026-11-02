@@ -19,6 +19,7 @@ import { aliasedKeys, shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
 import { readSetupDrift } from "../setup-drift.ts";
+import { readHookSpoolStatus } from "../hook-spool.ts";
 
 /**
  * F15, `amem doctor`: one report over the memory home. It writes nothing into the home. Every check that needs a store (the notes, the brief, the index proof) runs on a
@@ -63,6 +64,8 @@ export interface DoctorReport {
     duplicates: Section; stale: Section; candidates: Section; capture: Section; brief: Section; index: Section; readers: Section; policy: Section; cadence: Section;
     /** Added after v1 shipped (#132); additive, so the schema stays amem.doctor/v1. */
     drops: Section;
+    /** #217, additive: bounded read-only home-wide hook backlog inventory. */
+    spool?: Section;
     /** #188, additive: present only when the project's curated logs hold forget or prune operations. Informational; status is always ok. */
     masked?: Section;
     /** #202, additive: applied native setup registrations checked against the shared path resolver. */
@@ -363,6 +366,22 @@ function dropsSection(options: DoctorOptions): Section {
     ...(total ? { hint: "capture rows were dropped recently (see counts by reason); amem doctor --json keeps the numbers" } : {}) };
 }
 
+/** Bounded read-only inventory and classification; no replay, claim or retirement. */
+function spoolSection(options: DoctorOptions): Section {
+  try {
+    const inventory = readHookSpoolStatus(options.home);
+    const tiers = [inventory.active, inventory.reserve];
+    const full = tiers.some(tier => tier.files >= tier.maxFiles || tier.bytes >= tier.maxBytes);
+    const near = tiers.some(tier => tier.files >= tier.maxFiles * 0.9 || tier.bytes >= tier.maxBytes * 0.9);
+    return { ...inventory, status: !inventory.complete ? "unavailable" : full || near ? "attention" : "ok",
+      coverage: inventory.complete ? "complete" : "partial",
+      classificationCoverage: inventory.kinds.complete ? "complete" : "partial",
+      fill: full ? "full" : near ? "nearly_full" : !inventory.complete ? "unknown" : tiers.some(tier => tier.files > 0) ? "pending" : "empty",
+      ...(!inventory.complete ? { reason: "hook spool inventory is partial; reported file and byte counts are lower bounds" } : {}),
+      ...(full || near ? { hint: "pending hook spool needs attention: capture can be dropped when both tiers fill; supported orphan recovery is pending" } : {}) };
+  } catch { return unavailable("hook spool could not be read safely"); }
+}
+
 /** F16: which CLIs ingest at SessionEnd (setup receipts), and the person-owned sync cadence. amem registers no sync hook (a hook may not do network work). */
 function cadenceSection(options: DoctorOptions): Section {
   const ingest: Record<string, string> = {};
@@ -444,7 +463,7 @@ function guardScratch(): { adopt: (dir: string) => void; release: () => void } {
 export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
 export function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
   // Doctor reads every surface below, live or through a scratch copy: a floor on any of them refuses the whole report before anything is read (#199 AC5).
-  for (const surface of ["curated", "capture", "candidates", "work-lists"] as const) assertFormatFloor(options.home, surface);
+  for (const surface of ["curated", "capture", "candidates", "work-lists", "hook-spool"] as const) assertFormatFloor(options.home, surface);
   return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options));
 }
 async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
@@ -497,7 +516,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let sections: DoctorReport["sections"];
   try {
     await tick();
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), setup, ...maskedSection(curated) };
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...maskedSection(curated) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
@@ -507,6 +526,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
   index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence", drops: "recent capture drops",
+  spool: "pending hook spool",
   setup: "native setup registrations",
   masked: "forgotten or pruned entries (informational)",
 };
@@ -527,6 +547,16 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
     if (detail.counts === undefined) return [];   // unavailable: only its reason is shown
     const counts = Object.entries((detail.counts ?? {}) as Record<string, number>);
     return [counts.length ? `${counts.map(([reason, n]) => `${reason.replaceAll("_", " ")} ${n}`).join(", ")} (recent metrics tail)` : "none in the recent metrics tail"].map(line => detail.malformedLines ? `${line}; ${detail.malformedLines} malformed lines skipped` : line);
+  }
+  if (name === "spool") {
+    if (!detail.active || !detail.reserve) return [];
+    const tiers = ["active", "reserve"].map(name => {
+      const tier = detail[name] as { files: number; bytes: number; maxFiles: number; maxBytes: number };
+      return `${name} ${tier.files}/${tier.maxFiles} files, ${tier.bytes}/${tier.maxBytes} bytes`;
+    });
+    const kinds = detail.kinds as { native: number; summaries: number; unclassified: number; complete: boolean };
+    return [`${detail.fill}; ${tiers.join("; ")}; claimed ${detail.claimed}; oldest ${detail.oldestAt ?? "none observed"}; coverage ${detail.coverage}${detail.complete ? "" : " (counts are lower bounds)"}`,
+      `native ${kinds.native}, summaries ${kinds.summaries}, unclassified ${kinds.unclassified}; classification ${detail.classificationCoverage}${kinds.complete ? "" : " (native and summary counts are lower bounds)"}`];
   }
   if (name === "setup" && Array.isArray(detail.entries)) {
     return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown }[]).map(item =>

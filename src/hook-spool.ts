@@ -28,6 +28,7 @@ const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+const summaryEvent = (event: string) => ["Title", "Recap", "Compact"].includes(event);
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
@@ -43,7 +44,9 @@ function belowFloor(base: string): boolean {
 function physicalRoot(cwd: string): string {
   const stat = lstatSync(cwd);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook root unavailable");
-  return hash(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
+  // macOS can assign a different st_dev after reboot. Keep the directory's inode
+  // and birth time; open-file ownership still compares dev as well as inode.
+  return hash(`${stat.ino}:${stat.birthtimeMs}`);
 }
 
 function privateDirectory(dir: string): void {
@@ -52,14 +55,15 @@ function privateDirectory(dir: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   chmodSync(dir, 0o700);
 }
-function entries(base: string, capacity = false): { name: string; size: number; modified: number }[] {
+function entries(base: string, capacity = false, coverage?: { complete: boolean }): { name: string; size: number; modified: number }[] {
+  if (coverage) coverage.complete = false;
   const dir = capacity ? join(directory(base), ".capacity") : directory(base), maximum = capacity ? CAPACITY_FILES : MAX_FILES, stat = lstatSync(dir, { throwIfNoEntry: false });
-  if (!stat) return [];
+  if (!stat) { if (coverage) coverage.complete = true; return []; }
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   const reader = opendirSync(dir), rows: { name: string; size: number; modified: number }[] = [];
   try {
     for (let scanned = 0; scanned <= maximum + 4; scanned++) {
-      const entry = reader.readSync(); if (!entry) return rows;
+      const entry = reader.readSync(); if (!entry) { if (coverage) coverage.complete = true; return rows; }
       if ([".writing", ".quarantine", ".capacity", ".maintenance"].includes(entry.name) && entry.isDirectory()) continue;
       if (rows.length === maximum) return rows;
       const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
@@ -67,6 +71,57 @@ function entries(base: string, capacity = false): { name: string; size: number; 
     }
     return rows;
   } finally { reader.closeSync(); }
+}
+
+/** Read-only bounded metadata inventory. Counts are lower bounds when complete is false. */
+export function readHookSpoolStatus(base: string) {
+  assertFormatFloor(base, "hook-spool");
+  let claimed = 0, oldest = Infinity, complete = true;
+  const publications: { folder: string; name: string; size: number; modified: number }[] = [];
+  const tier = (capacity: boolean) => {
+    const dir = capacity ? join(directory(base), ".capacity") : directory(base);
+    const maxFiles = capacity ? CAPACITY_FILES : MAX_FILES, maxBytes = capacity ? CAPACITY_BYTES : MAX_BYTES;
+    const named = lstatSync(dir, { throwIfNoEntry: false });
+    let files = 0, bytes = 0;
+    if (!named) return { files, bytes, maxFiles, maxBytes };
+    if (!named.isDirectory() || named.isSymbolicLink()) throw new Error("hook storage unavailable");
+    const reader = opendirSync(dir);
+    try {
+      for (let scanned = 0; scanned <= maxFiles + 4; scanned++) {
+        const entry = reader.readSync();
+        if (!entry) return { files, bytes, maxFiles, maxBytes };
+        if (!capacity && [".writing", ".quarantine", ".capacity", ".maintenance"].includes(entry.name) && entry.isDirectory()) continue;
+        if (files === maxFiles) break;
+        const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
+        if (!item) { complete = false; continue; }
+        files++; bytes += item.size; oldest = Math.min(oldest, item.mtimeMs);
+        publications.push({ folder: dir, name: entry.name, size: item.size, modified: item.mtimeMs });
+        if (namePattern.test(entry.name) && entry.name.includes(".draining-")) claimed++;
+      }
+      complete = false;
+      return { files, bytes, maxFiles, maxBytes };
+    } finally { reader.closeSync(); }
+  };
+  const active = tier(false), reserve = tier(true), budget = maintenanceBudget();
+  let native = 0, summaries = 0;
+  for (const row of publications) {
+    const match = namePattern.exec(row.name);
+    if (!match || row.size > RECORD_BYTES) continue;
+    if (!budget.files || row.size > budget.bytes) break;
+    budget.files--; budget.bytes -= row.size;
+    let file: OwnedFile | undefined;
+    try {
+      file = openOwned(join(row.folder, row.name));
+      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
+      const record = decoded(file);
+      if (!record || record.unknown || hash(record.value.cwd) !== match[2] || (record.value.scope ?? "0".repeat(64)) !== match[3] || record.value.nonce !== match[4]) continue;
+      if (summaryEvent(record.value.capture.event)) summaries++; else native++;
+    } catch { /* Body classification stays unknown; metadata does not become a false zero. */ }
+    finally { if (file) closeSync(file.fd); }
+  }
+  const unclassified = active.files + reserve.files - native - summaries;
+  const kinds = { native, summaries, unclassified, complete: complete && unclassified === 0 };
+  return { active, reserve, claimed, oldestAt: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null, complete, kinds };
 }
 
 /** Validate ordinary Git value syntax even for ignored keys: invalid unused configuration can make
@@ -139,11 +194,16 @@ function identityConfig(text: string, include?: (path: string, condition?: strin
  * ponytail: strict unsupported Git configuration remains unknown, not guessed. A native historical-origin
  * receipt would broaden that supported subset without relaxing the physical replacement boundary. */
 export function hookCaptureScope(cwd: string, base: string, cacheValidity = false, extraGitConfig?: string): string | undefined {
+  return captureScope(cwd, base, cacheValidity, extraGitConfig, false);
+}
+/** 0.19.0 and older write a device-bound scope. Only its current-boot value is knowable;
+ * never guess an old device or silently rebind a record whose HOME/Git identity changed. */
+function captureScope(cwd: string, base: string, cacheValidity: boolean, extraGitConfig: string | undefined, legacyDevice: boolean): string | undefined {
   try {
     const parts: string[] = [], identity = (file: string) => {
       const stat = lstatSync(file);
       if (!stat.isDirectory()) throw new Error("physical scope unavailable");
-      return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+      return `${legacyDevice || cacheValidity ? `${stat.dev}:` : ""}${stat.ino}:${stat.birthtimeMs}`;
     };
     const content = (file: string, maximum = 64 * 1024): string => {
       const named = lstatSync(file, { throwIfNoEntry: false });
@@ -365,11 +425,13 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
   return true;
 }
 
-const RETIRE_AFTER_MS = 7 * 24 * 3600_000;
+const RETIRE_AFTER_MS = 7 * 24 * 3600_000, MISSING_CWD_AFTER_MS = 3600_000;
+interface MaintenanceBudget { files: number; bytes: number }
+const maintenanceBudget = (): MaintenanceBudget => ({ files: DRAIN_FILES, bytes: DRAIN_BYTES });
 /** Private numeric maintenance cursor: each invocation inspects a different bounded slice. */
-function retirementCursor(base: string, capacity: boolean, length: number): { start: number; save(n: number): void } {
+function retirementCursor(base: string, capacity: boolean, length: number, pressure = false): { start: number; save(n: number): void } {
   const dir = join(directory(base), ".maintenance"); privateDirectory(dir);
-  const name = join(dir, capacity ? "reserve" : "active");
+  const name = join(dir, `${capacity ? "reserve" : "active"}${pressure ? "-pressure" : ""}`);
   let start = 0, file: OwnedFile | undefined;
   try {
     file = openOwned(name);
@@ -385,62 +447,125 @@ function retirementCursor(base: string, capacity: boolean, length: number): { st
     finally { rmSync(temporary, { force: true }); }
   } };
 }
-/** ponytail: remove undrainable data only after seven days, at
- * most32 files/256KiB per admission. Count loss before deleting bodies. Upgrade:
- * a person-visible durable dead-letter export and coordinated maintenance accounting. */
-function retireUnresolved(base: string, _admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, _sharedBatch?: QuarantineBatch): Set<string> {
-  const retired = new Set<string>();
+/** Bounded, counted retirement: missing cwds after one hour, other unresolvable known
+ * scopes after seven days, and fair-share pressure. Newer schemas retain their seven-day
+ * protection. A semantic/physical scope mismatch alone never proves a cwd was replaced.
+ * ponytail: fair shares are cooperative admission, not an atomic multi-process quota.
+ * Upgrade: coordinated byte/file reservations with crash recovery. */
+function retireUnresolved(base: string, admittingCwd: string | undefined, inventory: ReturnType<typeof entries>, incomingBytes: number, minimal: boolean, capacity = false, budget = maintenanceBudget(), scanLimit = DRAIN_FILES): Set<string> {
+  const retired = new Set<string>(), cwdHash = admittingCwd === undefined ? undefined : hash(admittingCwd);
   let count = inventory.length, bytes = inventory.reduce((sum, row) => sum + row.size, 0);
-  const fits = () => count < (capacity ? CAPACITY_FILES : MAX_FILES) && bytes + incomingBytes <= (capacity ? CAPACITY_BYTES : MAX_BYTES);
-  const due = inventory.some(row => Date.now() - row.modified >= RETIRE_AFTER_MS);
-  if (!inventory.length || minimal && fits() && !due) return retired;
+  const maximum = capacity ? CAPACITY_FILES : MAX_FILES, byteMaximum = capacity ? CAPACITY_BYTES : MAX_BYTES, share = maximum / 4;
+  const groups = new Map<string, number>();
+  for (const row of inventory) {
+    const match = namePattern.exec(row.name); if (match) groups.set(match[2]!, (groups.get(match[2]!) ?? 0) + 1);
+  }
+  const quota = () => cwdHash !== undefined && (groups.get(cwdHash) ?? 0) >= share;
+  const pressure = () => cwdHash !== undefined && (quota() || count >= maximum || bytes + incomingBytes > byteMaximum);
+  const due = inventory.some(row => Date.now() - row.modified >= MISSING_CWD_AFTER_MS);
+  const pressured = pressure();
+  if (!inventory.length || minimal && !pressured) return retired;
   const active = [...inventory].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let cursor: ReturnType<typeof retirementCursor>;
-  try { cursor = retirementCursor(base, capacity, active.length); } catch { return retired; }
-  let remaining = DRAIN_BYTES, scanned = 0;
+  try { cursor = retirementCursor(base, capacity, active.length, pressured); } catch { return retired; }
+  let scanned = 0;
   const scopes = new Map<string, string | undefined>();
+  // Pressure first visits the largest share; HOME variants of one cwd share one allowance.
+  const ordered = pressure() ? [...active].sort((a, b) => {
+    const group = (row: typeof a) => namePattern.exec(row.name)?.[2];
+    const score = (row: typeof a) => { const key = group(row); return quota() ? Number(key === cwdHash) * (maximum + 1) : groups.get(key ?? "") ?? 0; };
+    return score(b) - score(a) || a.modified - b.modified || a.name.localeCompare(b.name);
+  }) : active;
+  const candidates = ordered.slice(cursor.start).concat(ordered.slice(0, cursor.start));
+  const held: { file: OwnedFile; row: typeof inventory[number]; group: string }[] = [];
+  let classified = 0, nativeSeen = false;
   try {
-    for (; scanned < Math.min(DRAIN_FILES, active.length); scanned++) {
-      if (minimal && fits() && !due) break;
-      const row = active[(cursor.start + scanned) % active.length]!;
-      const match = namePattern.exec(row.name); if (!match) continue;
-      if (row.size <= RECORD_BYTES && row.size > remaining) break;
+    for (const row of candidates) {
+      if (!budget.files || scanned >= scanLimit || !pressure() && (minimal || pressured && !due)) break;
+      const match = namePattern.exec(row.name); if (!match) { scanned++; continue; }
+      if (row.size <= RECORD_BYTES && row.size > budget.bytes) break;
+      budget.files--; scanned++;
       let file: OwnedFile | undefined;
       try {
         file = openOwned(join(capacity ? join(directory(base), ".capacity") : directory(base), row.name));
         if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) continue;
-        if (row.size <= RECORD_BYTES) remaining -= row.size;
+        if (row.size <= RECORD_BYTES) budget.bytes -= row.size;
         const record = decoded(file);
         const valid = record && hash(record.value.cwd) === match[2] && record.value.nonce === match[4] && (record.value.scope ?? "0".repeat(64)) === match[3];
         let reason: CaptureDropReason | undefined;
         if (valid && record.unknown) {
-          // #199: a newer writer's record waits for a reader that knows it, then leaves with a counted reason, never at once.
           if (Date.now() - row.modified < RETIRE_AFTER_MS) continue;
           reason = "unknown_schema_expired";
         } else if (valid) {
-          if (Date.now() - Date.parse(record.value.capture.at) < RETIRE_AFTER_MS) continue;
-          try { const cwd = lstatSync(record.value.cwd); if (!cwd.isDirectory() || cwd.isSymbolicLink()) reason = "cwd_removed"; }
-          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
-          if (!reason) {
+          classified++;
+          const summary = summaryEvent(record.value.capture.event);
+          if (!summary) nativeSeen = true;
+          const age = Date.now() - Date.parse(record.value.capture.at);
+          if (age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS) {
+            try { lstatSync(record.value.cwd); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
+          }
+          if (!reason && age >= RETIRE_AFTER_MS) {
             if (record.value.scope === null) reason = "scope_unknown";
             else {
               if (!scopes.has(record.value.cwd)) scopes.set(record.value.cwd, hookCaptureScope(record.value.cwd, base));
               const currentScope = scopes.get(record.value.cwd);
               if (currentScope === undefined) reason = "scope_unknown";
-              else if (currentScope !== record.value.scope) reason = "undrainable_expired";
+              else if (currentScope !== record.value.scope && captureScope(record.value.cwd, base, false, undefined, true) !== record.value.scope) reason = "undrainable_expired";
             }
+          }
+          if (!reason && pressure()) {
+            if (summary) {
+              // An advanced transcript cursor relies on accepted summaries. Hold their
+              // descriptors only to prove a complete all-summary foreign inventory.
+              if (!quota()) { held.push({ file, row, group: match[2]! }); file = undefined; }
+              continue;
+            }
+            if (!quota() || match[2] === cwdHash) reason = "scope_capacity";
           }
           if (!reason) continue;
         }
         const claim = claimOwned(base, row.name, file);
         if (!claim || !owns(claim)) continue;
-        // Failure to persist this numeric receipt keeps the body pending, never silently lost.
+        if (reason === "cwd_removed") {
+          try { lstatSync(record!.value.cwd); continue; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue; }
+        }
+        // Persist the numeric loss receipt BEFORE removing a replayable body.
         if (reason) appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: reason }]);
-        if (retireClaim(base, claim, false)) { retired.add(row.name); count--; bytes -= row.size; }
+        if (retireClaim(base, claim, false)) {
+          retired.add(row.name); count--; bytes -= row.size;
+          groups.set(match[2]!, Math.max(0, (groups.get(match[2]!) ?? 0) - 1));
+        }
       } catch { /* Transient I/O and changed evidence stay pending. */ }
       finally { if (file) closeSync(file.fd); }
     }
-  } finally { try { cursor.save(cursor.start + Math.max(1, scanned)); } catch { /* Derived cursor failure never deletes data. */ } }
+    // ponytail: a cap of summaries from four or more orphaned cwds can still
+    // refuse intake until TTL/replay: 32 files/256 KiB cannot prove native absence
+    // across the whole cap. Upgrade: a bounded derived classification cache.
+    if (pressure() && !quota() && !nativeSeen && classified === inventory.length && held.length === inventory.length
+      && held.every(item => owns(item.file))) {
+      const coverage = { complete: false }, current = entries(base, capacity, coverage);
+      if (coverage.complete && current.length === inventory.length && current.every(row => inventory.some(prior => prior.name === row.name && prior.size === row.size && prior.modified === row.modified))) {
+        const victims = held.filter(item => item.group !== cwdHash).sort((a, b) => (groups.get(b.group) ?? 0) - (groups.get(a.group) ?? 0) || a.row.modified - b.row.modified || a.row.name.localeCompare(b.row.name));
+        for (const victim of victims) {
+          if (!pressure()) break;
+          try {
+            const claim = claimOwned(base, victim.row.name, victim.file);
+            if (!claim || !owns(claim)) continue;
+            appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "summary_capacity" }]);
+            if (retireClaim(base, claim, false)) {
+              retired.add(victim.row.name); count--; bytes -= victim.row.size;
+              groups.set(victim.group, Math.max(0, (groups.get(victim.group) ?? 0) - 1));
+            }
+          } catch { /* Failed counting or changed ownership preserves the body. */ }
+        }
+      }
+    }
+  } finally {
+    for (const item of held) closeSync(item.file.fd);
+    try { cursor.save(retired.size ? 0 : cursor.start + Math.max(1, scanned)); } catch { /* A derived cursor never acknowledges capture. */ }
+  }
   return retired;
 }
 
@@ -532,32 +657,67 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   let destination = dir, deferred = false, backlog = false;
+  const budget = maintenanceBudget(), incomingBytes = Buffer.byteLength(bytes), cwdHash = hash(cwd);
+  const withinShare = (rows: ReturnType<typeof entries>, maximum: number) => rows.filter(row => namePattern.exec(row.name)?.[2] === cwdHash).length < maximum / 4;
+  const name = `${v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
+  let activeInventory: ReturnType<typeof entries> | undefined, reserveInventory: ReturnType<typeof entries> | undefined;
+  if (["Title", "Recap", "Compact"].includes(event)) {
+    // Transcript cursor recovery can repeat a deterministic publication. An already
+    // durable identical body needs no new slot, including when a drainer owns it.
+    for (const capacity of [false, true]) {
+      const inventory = entries(base, capacity);
+      if (capacity) reserveInventory = inventory; else activeInventory = inventory;
+      for (const row of inventory) {
+        if (!namePattern.test(row.name) || row.name !== name && !row.name.startsWith(name + ".draining-")) continue;
+        if (!budget.files || row.size > budget.bytes) break;
+        budget.files--; budget.bytes -= row.size;
+        let existing: OwnedFile | undefined;
+        try {
+          existing = openOwned(join(capacity ? join(dir, ".capacity") : dir, row.name));
+          if (existing.initial.size !== incomingBytes) continue;
+          const held = Buffer.alloc(incomingBytes);
+          if (readSync(existing.fd, held, 0, held.length, 0) === held.length && owns(existing) && held.equals(Buffer.from(bytes))) {
+            return { name, cwd, receipt: hash(bytes), backlog: true, ...(capacity ? { deferred: true as const } : {}) };
+          }
+        } catch { /* Changed or unavailable evidence is not acknowledgement. */ }
+        finally { if (existing) closeSync(existing.fd); }
+      }
+    }
+  }
   if (event === "SessionStart") {
     // ponytail: reserve-only admission scans at most 32 metadata entries, not O(1).
     // Never inspect/retire the active tier on the brief deadline. Fixed-slot byte
     // reservations with crash recovery are the upgrade if this bound is too costly.
     destination = join(dir, ".capacity"); privateDirectory(destination);
-    const reserved = entries(base, true);
-    if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
+    const inventory = entries(base, true);
+    const retired = retireUnresolved(base, cwd, inventory, incomingBytes, true, true, budget);
+    const reserved = inventory.filter(row => !retired.has(row.name));
+    if (!withinShare(reserved, CAPACITY_FILES) || reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
     deferred = true; backlog = reserved.length > 0;
   } else {
-    const inventory = entries(base), quarantineBatch: QuarantineBatch = {};
-    const retired = retireUnresolved(base, cwd, inventory, Buffer.byteLength(bytes), false, false, quarantineBatch);
+    const inventory = activeInventory ?? entries(base);
+    if (summaryEvent(event) && (!withinShare(inventory, MAX_FILES) || inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + incomingBytes > MAX_BYTES)) throw new HookSpoolFull();
+    let reserved = reserveInventory ?? entries(base, true);
+    // Split a nonempty two-tier backlog's inspection budget so neither tier starves.
+    const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget, reserved.length ? DRAIN_FILES / 2 : DRAIN_FILES);
     const queued = inventory.filter(row => !retired.has(row.name));
-    let reserved = entries(base, true);
-    // Reserve maintenance must progress even while ordinary admission has space:
-    // SessionStart never retires, so otherwise expired undrainable reserve data pins it.
-    const retiredCapacity = retireUnresolved(base, cwd, reserved, Buffer.byteLength(bytes), true, true, quarantineBatch);
-    reserved = reserved.filter(row => !retiredCapacity.has(row.name));
+    const activeFits = withinShare(queued, MAX_FILES) && queued.length < MAX_FILES && queued.reduce((sum, row) => sum + row.size, 0) + incomingBytes <= MAX_BYTES;
+    // If active admission failed, reserve pressure gets the remaining budget first.
+    if (activeFits) {
+      const retiredCapacity = retireUnresolved(base, undefined, reserved, 0, false, true, budget);
+      reserved = reserved.filter(row => !retiredCapacity.has(row.name));
+    }
     backlog = queued.length > 0 || reserved.length > 0;
-    if (queued.length >= MAX_FILES || queued.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > MAX_BYTES) {
+    if (!activeFits) {
       if (options.deferAtCapacity !== true) throw new HookSpoolFull();
       destination = join(dir, ".capacity"); privateDirectory(destination);
-      if (reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
+      const retiredReserve = retireUnresolved(base, cwd, reserved, incomingBytes, true, true, budget);
+      reserved = reserved.filter(row => !retiredReserve.has(row.name));
+      if (!withinShare(reserved, CAPACITY_FILES) || reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
       deferred = true;
     }
   }
-  const name = `${v3 ? PREFIX_V3 : PREFIX}${hash(cwd)}-${scope ?? "0".repeat(64)}-${nonce}.json`, temporary = join(writing, name);
+  const temporary = join(writing, name);
   try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
   finally { rmSync(temporary, { force: true }); }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
@@ -580,8 +740,10 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   // F4: the configured policy applies at drain too. `options.policy` carries it, so the anchored line below (a test diagnostic matches its exact text) stays as it was.
   options = { ...options, policy: configuredPolicyOptions(base, cwd, options.policy) };
   const policy = createStandalonePolicy(options.policy), dir = directory(base);
+  const legacyStamp = captureScope(cwd, base, false, undefined, true);
+  const accepts = (scope: string | null) => scope === stamp || legacyStamp !== undefined && scope === legacyStamp;
   const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
-    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && m[3] === stamp;
+    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
   const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
@@ -597,7 +759,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
       if (!claim) { blocked++; continue; }
       if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
       const record = decoded(claim);
-      if (!record || record.value.cwd !== cwd || record.value.scope !== null && record.value.scope !== stamp || record.value.nonce !== match[4]) {
+      if (!record || record.value.cwd !== cwd || record.value.scope !== match[3] || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;
       }
       // #199: an unknown or newer schema stays claimed and pending (later passes reclaim it) until the TTL, then retires with a counted reason.
@@ -623,7 +785,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt,
         ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }
-      if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp) { blocked++; continue; }
+      if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp || value.scope === legacyStamp && captureScope(cwd, base, false, undefined, true) !== legacyStamp) { blocked++; continue; }
       append(input, hash(record.bytes));
       if (owns(claim)) { rmSync(claim.file); captured.push(name); }
       else blocked++;

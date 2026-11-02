@@ -1,8 +1,9 @@
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 /** Diagnostic only: numeric cold-path milestones for actual runner failures. No budget overrides. */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { normalizeCaptureFields } from "../src/memory/capture-input.ts";
 import { hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { singleAttemptTiming } from "./hook-timing-check.ts";
 
@@ -87,7 +88,18 @@ process.kill=(pid,signal)=>{note('stop');return kill(pid,signal);};`, { mode: 0o
     }
     process.env.HOME = full.env.HOME;
     const { stageHookCapture } = await import("../src/hook-spool.ts");
-    for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `stage diagnostic ${i}` }, { cwd: foreign.cwd, base: full.base });
+    const templateEntry = await stageHookCapture("PostToolUse", { prompt: "stage diagnostic template" }, { cwd: foreign.cwd, base: full.base });
+    if (!templateEntry) throw new Error("full foreign diagnostic template unavailable");
+    const spool = join(full.base, "hook-spool"), template = JSON.parse(readFileSync(join(spool, templateEntry.name), "utf8"));
+    rmSync(join(spool, templateEntry.name));
+    // Reproduce an N-1/pre-upgrade backlog directly. New admission intentionally
+    // keeps one cwd below 256, which must not silently shrink this diagnostic.
+    for (let i = 0; i < 256; i++) {
+      const nonce = i.toString(16).padStart(32, "0"), capture = normalizeCaptureFields({ ...template.capture, excerpt: `stage diagnostic ${i}` });
+      const name = templateEntry.name.replace(/[a-f0-9]{32}\.json$/, `${nonce}.json`);
+      writeFileSync(join(spool, name), JSON.stringify({ ...template, nonce, capture }), { mode: 0o600, flag: "wx" });
+    }
+    if (readdirSync(spool).filter(name => name.startsWith("hook-")).length !== 256) throw new Error("full foreign diagnostic requires exactly 256 records");
     writeFileSync(trace, "", { mode: 0o600 });
     const started = performance.timeOrigin + performance.now();
     const result = full.run("SessionStart", {}, { BUN_OPTIONS: `--preload=${preload}` });
