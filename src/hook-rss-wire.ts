@@ -47,6 +47,8 @@ export class HookWorkerRss {
     }
     this.invalid = true;
   }
+  /** #226 Q2: a killed child that is not reaped is accounted from its last live sample only when one exists (Linux /proc). */
+  hasLiveSample(): boolean { return !!(this.image.hwmKB || this.image.virtualKB); }
   captureLive(read: typeof processImageMemory = processImageMemory): void {
     const retain = (before: Image | undefined, after: Image): Image => ({
       hwmKB: Math.max(before?.hwmKB ?? 0, after.hwmKB ?? 0) || undefined,

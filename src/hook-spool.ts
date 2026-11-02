@@ -73,6 +73,24 @@ function entries(base: string, capacity = false, coverage?: { complete: boolean 
   } finally { reader.closeSync(); }
 }
 
+/** #226 (task 107): a bounded count of this cwd's pending publications in the active tier, read from names only (one readdir,
+ * at most MAX_FILES entries, no stat). The worker uses it to decide drain-first under spool pressure. Any error returns 0,
+ * which keeps the default scan-then-drain order (fail closed). */
+export function hookPendingCount(cwd: string, base: string): number {
+  try {
+    const dir = directory(canonicalPath(base)), wanted = hash(realPath(cwd)), reader = opendirSync(dir);
+    let count = 0;
+    try {
+      for (let scanned = 0; scanned < MAX_FILES; scanned++) {
+        const entry = reader.readSync(); if (!entry) break;
+        const match = namePattern.exec(entry.name);
+        if (match && match[2] === wanted) count++;
+      }
+    } finally { reader.closeSync(); }
+    return count;
+  } catch { return 0; }
+}
+
 /** Read-only bounded metadata inventory. Counts are lower bounds when complete is false. */
 export function readHookSpoolStatus(base: string) {
   assertFormatFloor(base, "hook-spool");

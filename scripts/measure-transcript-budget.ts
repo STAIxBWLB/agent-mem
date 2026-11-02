@@ -9,11 +9,36 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
-import { budgetGroup, r2RssLimitMB, rssVerdict, runnerFingerprint } from "./budget-attempt.ts";
 import { stallAdvisory } from "./hook-timing-check.ts";
-let stallWarned = false;
+import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
 
+let stallWarned = false;
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
+/** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
+ * leaving uninterruptible I/O may exist; after it any survivor fails R1. Per invocation the harness records the count of
+ * children alive at hook exit (the hook's own `abandonedChildren`) and how long the last one survived. Owned children are
+ * found by this checkout's absolute helper paths, so nothing outside this run is judged; the hook itself is never polled. */
+const R1_POST_EXIT_WINDOW_MS = 2000;
+const OWNED_HELPERS = ["session-brief-worker.ts"].map(name => join(import.meta.dir, "..", "src", name));
+function ownedHelpers(): number[] {
+  const result = Bun.spawnSync(["ps", "-axo", "pid=,pgid=,command="], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  if (result.exitCode !== 0) throw new Error("R1 process table unavailable");
+  return result.stdout.toString().split("\n").flatMap(line => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return match && OWNED_HELPERS.some(path => match[3]!.includes(path)) ? [Number(match[1])] : [];
+  });
+}
+const r1 = { invocations: 0, aliveAtExit: 0, maxSurvivalMs: 0 };
+async function judgeR1(aliveAtExit: number, diagnostic: Record<string, unknown>) {
+  r1.invocations++; r1.aliveAtExit += aliveAtExit;
+  const exitAt = performance.now();
+  let alive = ownedHelpers();
+  while (alive.length && performance.now() - exitAt < R1_POST_EXIT_WINDOW_MS) { await Bun.sleep(10); alive = ownedHelpers(); }
+  const survivalMs = performance.now() - exitAt;
+  if (aliveAtExit) r1.maxSurvivalMs = Math.max(r1.maxSurvivalMs, survivalMs);
+  if (aliveAtExit || alive.length) console.log(JSON.stringify({ diagnostic: "transcript-R1", ...diagnostic, aliveAtExit, postExitSurvivalMs: Math.round(survivalMs), survivors: alive.length }));
+  if (alive.length) throw new Error(`R1 owned hook children retained ${alive.length} processes after the ${R1_POST_EXIT_WINDOW_MS} ms post-exit window`);
+}
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const key = (row: { event: string; excerpt: string }) => JSON.stringify([row.event, row.excerpt]);
 const summary = (row: { event: string }) => ["Title", "Recap", "Compact"].includes(row.event);
@@ -55,6 +80,7 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 async function measure() {
   let f = hookFixture();
   runnerFingerprint();
+  const handlerWalls: { event: string; metricWallMs: number }[] = [];
   const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
@@ -87,6 +113,7 @@ async function measure() {
         Bun.gc(true);
         const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
         const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+        await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
           exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
         if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("transcript budget hook unavailable");
@@ -119,6 +146,9 @@ async function measure() {
         reasonOnlyStreak = newSummaries > 0 ? 0 : reasonOnlyStreak + 1;
         const sample = { event, run: samples.filter(row => row.event === event).length + 1, logicalRun, followUp, wallMs, ...rss, offset, offsetSource, newSummaries, durableSummaries, reasonOnlyStreak, firstUncommittedSummaryEnd, ...(stopReason ? { stopReason } : {}) };
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
+        const metricWallMs = typeof metric.wallMs === "number" && Number.isFinite(metric.wallMs) ? metric.wallMs : Number.NaN;
+        handlerWalls.push({ event, metricWallMs });
+        if (!(metricWallMs <= R2_WALL_MAX_MS)) console.log(JSON.stringify({ diagnostic: "transcript-wall-max", enforced: TRANSCRIPT_WALL_MAX_ENFORCED, event, logicalRun, followUp, metricWallMs, outerWallMs: wallMs }));
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
           || metric.transcriptOffset !== undefined && metric.transcriptOffset !== offset
           || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
@@ -129,9 +159,10 @@ async function measure() {
         if (reasonOnlyStreak >= 3) {
           const message = "transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample);
           // ponytail: on hosted macOS only, this one clause (#221 finding B, worker start cost) is advisory (owner decision
-          // 2026-11-02, #226). Ceiling: that runner and this clause; every other progress, no-loss, RSS and wall clause, and
-          // this clause on dgx02, local runs and hosted ubuntu, stay hard failures. Upgrade path: the #226 killable-child
-          // scan redesign, then delete this branch.
+          // 2026-11-02, #226; restored after the #226 redesign still stalled on the 3-vCPU hosted macOS runner, run 41489559964).
+          // Ceiling: that runner and this clause; every other progress, no-loss, RSS and wall clause, and this clause on dgx02,
+          // local runs and hosted ubuntu, stay hard failures. Upgrade path: the post-0.20.0 early-receipt follow-up (send the
+          // drain receipt early when a cached identity exists, Refs #226), then delete this branch.
           if (!stallAdvisory(process.env)) throw Error(message);
           if (!stallWarned) { console.warn(`::warning title=Transcript stall (advisory on hosted macOS, #226)::${message}`); stallWarned = true; }
           console.log(JSON.stringify({ diagnostic: "transcript-budget-stall-advisory", ...sample }));
@@ -148,7 +179,10 @@ async function measure() {
       const rss = rows.map(row => row.rssMB).sort((a, b) => a - b), medianRssMB = (rss[Math.floor((rss.length - 1) / 2)]! + rss[Math.floor(rss.length / 2)]!) / 2;
       // #228: one value per logical run (its peak over every follow-up), so the fixed count is RUNS and resumed bursts cannot dilute it.
       const runPeaksMB = Array.from({ length: RUNS }, (_, index) => Math.max(...rows.filter(row => row.logicalRun === index + 1).map(row => row.rssMB)));
-      const rssGate = rssVerdict(runPeaksMB, r2RssLimitMB("transcript:" + event));
+      // #228 reset: 150 MB ceiling and baseline regression on the 40 run peaks; the 300 ms handler maximum is enforced (#226, task 107).
+      const rssGate = r2Verdict("transcript:" + event, { rssMB: runPeaksMB, wallMs: handlerWalls.filter(row => row.event === event).map(row => row.metricWallMs) }, { wallEnforced: TRANSCRIPT_WALL_MAX_ENFORCED });
+      if (rssGate.regression.message && !rssGate.regression.enforced) console.warn(`::warning title=R2 regression (reported, not enforced on ${rssGate.runner})::${rssGate.regression.message}`);
+      if (rssGate.wallMax.overMax) console.warn(`::warning title=R2 300 ms maximum (enforced)::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
       return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
         maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.pass };
@@ -166,5 +200,8 @@ async function measure() {
     f.close();
   }
 }
-const result = await budgetGroup("transcript-hooks", measure, report => ({ wallPass: report.groups.every(row => row.wallPass), rssPass: report.groups.every(row => row.rssPass) }));
+// #228/#226: a wall-max miss is its own non-retryable outcome; the ceiling and regression stay the RSS verdict.
+const result = await budgetGroup("transcript-hooks", measure, report => ({ wallPass: report.groups.every(row => row.wallPass),
+  rssPass: report.groups.every(row => row.rssGate.ceiling.pass && row.rssGate.regression.pass), wallMaxPass: report.groups.every(row => row.rssGate.wallMax.pass) }));
+console.log(JSON.stringify({ diagnostic: "transcript-R1-summary", windowMs: R1_POST_EXIT_WINDOW_MS, ...r1 }));
 console.log(JSON.stringify(result, null, 2));

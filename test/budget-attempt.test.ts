@@ -23,11 +23,12 @@ for (const check of ["hook-SessionStart", "mcp-session"] as const) {
 
 test("retry policy leaves workload p95 and RSS verdicts strict under the unchanged limits", async () => {
   const { workloadBudget } = await import("../scripts/hook-timing-check.ts");
-  const group = (mb: number) => Array.from({ length: 40 }, () => mb);
-  const values = { wallP95Ms: 150, rssSamplesMB: group(80), wallLimitMs: 150, rssLimitMB: 100 };
-  expect(workloadBudget("injected p95 miss", values, {}).pass).toBe(false);
-  expect(workloadBudget("injected RSS miss", { ...values, wallP95Ms: 100, rssSamplesMB: group(100) }, {}).pass).toBe(false);
-  expect(workloadBudget("under both limits", { ...values, wallP95Ms: 149, rssSamplesMB: group(99) }, {}).pass).toBe(true);
+  const group = (mb: number) => Array.from({ length: 40 }, () => mb), env = { AMEM_RUNNER: "dgx02" };
+  const baseline = { schema: "agent-mem.r2-baseline/v1" as const, runners: { dgx02: { "hooks:plain": 80 } } };
+  const values = { group: "hooks:plain", wallP95Ms: 150, rssSamplesMB: group(80), wallSamplesMs: group(120), wallLimitMs: 150, baseline };
+  expect(workloadBudget("injected p95 miss", values, env).pass).toBe(false);
+  expect(workloadBudget("injected RSS regression", { ...values, wallP95Ms: 100, rssSamplesMB: group(90) }, env).pass).toBe(false);   // 90 > 80 x 1.10
+  expect(workloadBudget("under every limit", { ...values, wallP95Ms: 149, rssSamplesMB: group(88) }, env).pass).toBe(true);
 });
 
 test("#228 review P2: a stalled high-RSS attempt is never hidden by its low-RSS retry", async () => {
@@ -54,28 +55,61 @@ test("#228 review P2: a stalled high-RSS attempt is never hidden by its low-RSS 
   expect(keepAttemptRss({ rssMB: 60 }, [{ diagnostic: "budget-attempt", check: "x", attempt: 1, outcome: "pass", result: { rssMB: 60 } }]).rssMB).toBe(60);
 });
 
-test("#228: RSS gates on the nearest-rank p95 of a fixed count, never on one outlier and never diluted", async () => {
-  const { rssVerdict, r2RssLimitMB, R2_RSS_LIMIT_MB } = await import("../scripts/budget-attempt.ts");
+test("#228: the p95 statistic counts a fixed set, never one outlier and never diluted", async () => {
+  const { rssVerdict } = await import("../scripts/budget-attempt.ts");
   const forty = (base: number, high: number[]) => [...Array.from({ length: 40 - high.length }, () => base), ...high];
-  // One outlier out of 40 (as ubuntu Stop at 9986fe6 and c54f083): p95 is the 38th value, so it passes and is still counted.
   expect(rssVerdict(forty(94.5, [102.6]), 100)).toMatchObject({ pass: true, valueMB: 94.5, peakMB: 102.6, count: 40, overLimit: 1 });
-  // Three over the limit out of 40 reach the p95 rank (the 38th value): fail. Two would not.
   expect(rssVerdict(forty(94.5, [101, 102, 103]), 100).pass).toBe(false);
   expect(rssVerdict(forty(94.5, [102, 103]), 100).pass).toBe(true);
-  // A shifted distribution fails (ubuntu StopBurst run peaks at c54f083, p95 105.3) under 100.
-  expect(rssVerdict(forty(104.5, [105.3, 105.5]), 100)).toMatchObject({ pass: false, overLimit: 40 });
-  // Unknown telemetry fails the whole group closed, whatever the other samples are.
   for (const unknown of [Number.NaN, 0, -1, Number.POSITIVE_INFINITY]) expect(rssVerdict(forty(50, [unknown]), 100).pass).toBe(false);
   expect(rssVerdict([], 100).pass).toBe(false);
-  expect(rssVerdict(forty(50, []), Number.NaN).pass).toBe(false);
-  // The limit is strict: p95 equal to the limit fails.
-  expect(rssVerdict(forty(100, []), 100).pass).toBe(false);
-  // Named per-runner and group limits: only hosted GitHub Linux transcript StopBurst is raised, to 110; everything else is 100.
-  const hostedLinux = { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, hostedMac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
-  expect(R2_RSS_LIMIT_MB).toBe(100);
-  expect(r2RssLimitMB("transcript:StopBurst", hostedLinux)).toBe(110);
-  for (const [group, env] of [["transcript:StopBurst", hostedMac], ["transcript:StopBurst", {}], ["transcript:StopBurst", { RUNNER_OS: "Linux" }], ["transcript:Stop", hostedLinux], ["transcript:SessionEnd", hostedLinux], ["hooks", hostedLinux], ["hooks", hostedMac]] as const)
-    expect(r2RssLimitMB(group, env), `${JSON.stringify(env)}:${group}`).toBe(100);
+});
+
+test("#228 reset: 150 MB ceiling per invocation, +10% regression over the runner baseline, 300 ms per-invocation maximum", async () => {
+  const { r2Verdict, runnerKind, R2_RSS_CEILING_MB, R2_WALL_MAX_MS, TRANSCRIPT_WALL_MAX_ENFORCED, loadR2Baseline } = await import("../scripts/budget-attempt.ts");
+  const forty = (base: number, high: number[] = []) => [...Array.from({ length: 40 - high.length }, () => base), ...high];
+  const baseline = { schema: "agent-mem.r2-baseline/v1" as const, runners: { "hosted-linux": { g: 90 }, "hosted-macos": { g: 60 }, dgx02: { g: 70 } } };
+  const linux = { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, mac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" }, dgx = { AMEM_RUNNER: "dgx02" };
+  const wall = forty(100);
+  expect(R2_RSS_CEILING_MB).toBe(150); expect(R2_WALL_MAX_MS).toBe(300);
+  expect([runnerKind(linux), runnerKind(mac), runnerKind(dgx), runnerKind({}), runnerKind({ RUNNER_OS: "Linux" })]).toEqual(["hosted-linux", "hosted-macos", "dgx02", "local", "local"]);
+  // Regression: p95 99 = 90 x 1.10 passes on hosted-linux; 99.1 fails.
+  expect(r2Verdict("g", { rssMB: forty(99), wallMs: wall }, { env: linux, baseline }).pass).toBe(true);
+  expect(r2Verdict("g", { rssMB: forty(99.1), wallMs: wall }, { env: linux, baseline })).toMatchObject({ pass: false, regression: { pass: false, enforced: true } });
+  // Ceiling: one invocation at 150 MB fails even when the p95 is fine and the regression passes.
+  expect(r2Verdict("g", { rssMB: forty(70, [150]), wallMs: wall }, { env: linux, baseline })).toMatchObject({ pass: false, ceiling: { pass: false, overCeiling: 1 }, regression: { pass: true } });
+  // A missing baseline on a gated runner fails and says how to record one; on local it is reported only.
+  const missing = r2Verdict("absent", { rssMB: forty(50), wallMs: wall }, { env: dgx, baseline });
+  expect(missing).toMatchObject({ pass: false, regression: { pass: false, enforced: true } });
+  expect(missing.regression.message).toContain("docs/bench/r2-baseline.json");
+  expect(r2Verdict("absent", { rssMB: forty(50), wallMs: wall }, { env: {}, baseline })).toMatchObject({ pass: true, regression: { enforced: false } });
+  // Local: a regression is reported, not enforced; the ceiling and the 300 ms maximum still gate.
+  const local = { runners: { ...baseline.runners, local: { g: 40 } }, schema: baseline.schema };
+  expect(r2Verdict("g", { rssMB: forty(60), wallMs: wall }, { env: {}, baseline: local })).toMatchObject({ pass: true, regression: { pass: true, enforced: false } });
+  expect(r2Verdict("g", { rssMB: forty(60, [151]), wallMs: wall }, { env: {}, baseline: local }).pass).toBe(false);
+  // 300 ms: any single invocation over it fails; equal passes; unknown wall fails closed; not enforced reports only.
+  expect(r2Verdict("g", { rssMB: forty(60), wallMs: forty(100, [300]) }, { env: mac, baseline }).pass).toBe(true);
+  expect(r2Verdict("g", { rssMB: forty(60), wallMs: forty(100, [300.5]) }, { env: mac, baseline })).toMatchObject({ pass: false, wallMax: { pass: false, overMax: 1 } });
+  expect(r2Verdict("g", { rssMB: forty(60), wallMs: forty(100, [Number.NaN]) }, { env: mac, baseline }).pass).toBe(false);
+  expect(r2Verdict("g", { rssMB: forty(60), wallMs: forty(100, [330]) }, { env: mac, baseline, wallEnforced: false })).toMatchObject({ pass: true, wallMax: { enforced: false, overMax: 1 } });
+  // Unknown RSS telemetry fails the ceiling closed.
+  expect(r2Verdict("g", { rssMB: forty(60, [Number.NaN]), wallMs: wall }, { env: {}, baseline: local }).ceiling.pass).toBe(false);
+  // #226 (task 107): the transcript harness now enforces its maximum; the committed baseline file parses and has no 110 override.
+  expect(TRANSCRIPT_WALL_MAX_ENFORCED).toBe(true);
+  const committed = loadR2Baseline();
+  for (const runner of ["hosted-linux", "hosted-macos", "dgx02"] as const) for (const g of ["hooks:plain", "hooks:jcode", "transcript:Stop", "transcript:StopBurst"]) expect(committed.runners[runner]?.[g], `${runner} ${g}`).toBeGreaterThan(0);
+});
+
+test("#228 reset: the 300 ms maximum is judged on the handler metric wall, stalled attempts included; the outer wall is not", async () => {
+  const { keepAttemptWall } = await import("../scripts/budget-attempt.ts");
+  const stalled = [{ diagnostic: "budget-attempt" as const, check: "s-1", attempt: 1 as const, outcome: "stall" as const, values: { wallMs: 900, metricWallMs: 312, rssMB: 60 } }];
+  // A stalled attempt's handler wall counts; its 900 ms outer wall (process-start jitter) does not.
+  expect(keepAttemptWall({ wallMs: 485, metricWallMs: 90 }, stalled)).toEqual({ wallMs: 485, metricWallMs: 90, attemptWallMaxMs: 312 });
+  // The completed attempt's outer 485 ms alone never decides the maximum.
+  expect(keepAttemptWall({ wallMs: 485, metricWallMs: 90 }, []).attemptWallMaxMs).toBe(90);
+  // Missing or non-finite metric walls fail closed, on the stalled or the completed attempt.
+  expect(Number.isNaN(keepAttemptWall({ wallMs: 90, metricWallMs: 90 }, [{ ...stalled[0]!, values: { wallMs: 120 } }]).attemptWallMaxMs)).toBe(true);
+  expect(Number.isNaN(keepAttemptWall({ wallMs: 90, metricWallMs: Number.NaN }, []).attemptWallMaxMs)).toBe(true);
 });
 
 test("group summaries count stalled physical attempts independently and retain every receipt", async () => {
@@ -335,4 +369,44 @@ test("40217188778 hook probes overlap healthy Linux I/O and cannot grant remeasu
   const before: Probe = { cpuMs: 9.370922, spawnMs: 13.953046, ioMs: 3.1122390000000024, ioSamplesMs: [5.4217550000000045, 2.5107240000000033, 3.1122390000000024], checksum };
   const after: Probe = { cpuMs: 9.382031999999526, spawnMs: 12.274673000001712, ioMs: 2.370837999998912, ioSamplesMs: [2.79417999999896, 2.370837999998912, 2.2238200000010693], checksum };
   expect(runnerIsSlow(before, after, RUNNER_BASELINES.linux!)).toBe(false);
+});
+
+test("#228 reset: a hard 300 ms per-invocation miss is never re-measured away by the slow-runner group retry", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  const receipts: { outcome: string }[] = [];
+  let runs = 0;
+  // The runner probes slow, which would normally permit one re-measure of a p95 wall miss; a wall-max miss must not get it.
+  await expect(budgetGroup("injected", () => { runs++; return { wallMs: 81, rssMB: 50 }; }, () => ({ wallPass: false, rssPass: true, wallMaxPass: false }),
+    { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
+  expect(runs).toBe(1);
+  expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
+});
+
+test("#228 ruling: after a slow-runner re-measure of a p95 wall miss, any second-attempt invocation over 300 ms fails the group", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  const receipts: { attempt: number; outcome: string }[] = [];
+  let runs = 0;
+  // Attempt 1: p95 wall miss only, on a slow runner, so it is re-measured. Attempt 2: p95 passes but one handler wall is 301 ms.
+  await expect(budgetGroup("injected", () => ({ run: ++runs }), result => result.run === 1
+    ? { wallPass: false, rssPass: true, wallMaxPass: true }
+    : { wallPass: true, rssPass: true, wallMaxPass: false },
+    { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
+  expect(runs).toBe(2);
+  expect(receipts.map(row => [row.attempt, row.outcome])).toEqual([[1, "wall-miss"], [2, "wall-max-miss"]]);
+});
+
+test("codex P2 (#231): a stall whose handler wall exceeded 300 ms is a wall-max miss that a passing group retry cannot erase", async () => {
+  const { budgetGroup, BudgetStall } = await import("../scripts/budget-attempt.ts");
+  for (const values of [{ wallMs: 450, metricWallMs: 412 }, { wallMs: 450 }, { wallMs: 450, metricWallMs: Number.NaN }] as Record<string, number>[]) {
+    const receipts: { outcome: string }[] = []; let runs = 0;
+    await expect(budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", values); return { ok: true }; },
+      () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("injected stall");
+    expect(runs, JSON.stringify(values)).toBe(1);
+    expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
+  }
+  // Control: a stall within the maximum keeps the existing single slow-runner re-measure.
+  let runs = 0;
+  const passed = await budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", { wallMs: 180, metricWallMs: 120 }); return { ok: true }; },
+    () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: () => {} });
+  expect(passed.attempts.map(row => row.outcome)).toEqual(["wall-miss", "pass"]);
 });

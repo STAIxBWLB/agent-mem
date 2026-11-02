@@ -68,14 +68,17 @@ async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefi
 }
 const publicBefore = async (policy: MemoryPolicy, value: unknown, deadline: number) => await before(policy.screen(value), deadline) === true;
 
-async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void): Promise<string | undefined> {
+async function boundedOutput(stream: ReadableStream<Uint8Array>, onRss?: (value: unknown) => void, onTranscript?: (value: unknown) => void, register?: (cancel: () => void) => void, onDrain?: (value: unknown) => void): Promise<string | undefined> {
   const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
+  // #226: after a bounded reap the parent abandons this pipe; cancelling it leaves no pending read holding the event loop.
+  register?.(() => { reader.cancel().catch(() => {}); });
   let length = 0, pending = "", body = "";
   const line = (text: string) => {
     if (!text) return;
-    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown };
+    const value = JSON.parse(text) as { rss?: unknown; transcript?: unknown; drain?: unknown };
     if (onRss && Object.hasOwn(value, "rss")) onRss(value.rss);
     else if (onTranscript && Object.hasOwn(value, "transcript")) onTranscript(value.transcript);
+    else if (onDrain && Object.hasOwn(value, "drain")) onDrain(value.drain);
     else { if (body) throw new Error("worker output bound"); body = text; }
   };
   try {
@@ -106,74 +109,120 @@ async function parentProject(options: HookOptions, base: string, deadline: numbe
   return { cwd, scope, project, receipt, usage };
 }
 
+/** #226: after SIGKILL the parent waits at most this long for the owned worker's exit and output. A worker stuck in
+ * uninterruptible I/O (fsync) can outlive the hook; the kill is already sent, its pipe is cancelled and its handle unref'd,
+ * so nothing keeps this process alive and nothing stays resident. R1 judges it after a fixed 2 s post-exit window. */
+const REAP_BOUND_MS = 10;
+async function boundedWait<T>(work: Promise<T>): Promise<{ value?: T; late: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | undefined, late = false;
+  const value = await Promise.race([work, new Promise<undefined>(resolve => { timer = setTimeout(() => { late = true; resolve(undefined); }, REAP_BOUND_MS); })]);
+  if (timer) clearTimeout(timer);
+  return late ? { late } : { value: value as T, late };
+}
+/** Owned children killed but still alive when the hook returned; recorded in the hook metric. */
+let abandonedChildren = 0;
+/** Transcript hooks whose worker was killed before its drain finished; their staged records stay durable and pending. */
+let drainSkipped = 0;
+/** #226 instrumentation: the last worker drain's start (ms after hook start) and committed record count. */
+let lastDrain: { startMs: number; drained: number } | undefined;
+/** Hook start on the performance clock, set by the entry points, so a worker can report times relative to it. */
+let hookStartedAt = performance.now();
+
 /** Only capture work uses a short-lived owned child; native handles remain in this CLI.
+ * #226 (ruling b): a transcript hook boots that one worker at hook start, in parallel with native metadata. The worker
+ * scans as soon as its first stdin line (scan options) arrives and drains after the second (the native receipt). At the
+ * deadline the parent kills it and waits at most REAP_BOUND_MS; a kill skips that call's drain (counted, never a drop).
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
 async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
-  const metadata = await parentProject(options, base, workDeadline);
-  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false, ...(transcript !== undefined ? { transcript: { stopReason: "deadline" as const } } : {}) };
-  const result = { context: unavailable, ...metadata.usage, captured: false, valid: false,
-    rssSources: combineRssSources(metadata.usage.rssSources), transcript: undefined as HookTranscriptProgress | undefined };
-  let owned: ReturnType<typeof Bun.spawn> | undefined, exited = false;
-  try {
-    const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
-    const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
-    // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
-    const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, transcript, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
-      policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
+  const early = transcript !== undefined;
+  const policy = { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns };
+  let owned: Bun.Subprocess<"pipe", "pipe", "ignore"> | undefined, exited = false, killed = false, cancelOutput: (() => void) | undefined;
+  let tracker: HookWorkerRss | undefined, output: Promise<string | undefined> | undefined, exit: Promise<number> | undefined;
+  const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
+  const drainProgress: { startMs?: number; drained?: number } = {};
+  const spawn = () => {
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
-      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
+      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
     owned = child;
-    result.rssSources.unavailable++;
-    const exit = child.exited.then(code => { exited = true; return code; });
-    const tracker = new HookWorkerRss(child.pid);
-    const output = boundedOutput(child.stdout, value => tracker.frame(value), value => {
+    exit = child.exited.then(code => { exited = true; return code; });
+    tracker = new HookWorkerRss(child.pid);
+    output = boundedOutput(child.stdout, value => tracker!.frame(value), value => {
       if (!isHookTranscriptProgress(value)) throw new Error("worker transcript progress bound");
       if (value.offset !== undefined && result.transcript?.offset !== undefined && value.offset < result.transcript.offset) throw new Error("worker transcript progress regressed");
       // A reported scan fault stays reported: a later worker deadline frame cannot turn it into accepted progress (#221).
       result.transcript = { ...result.transcript, ...value, ...(result.transcript?.stopReason === "unavailable" ? { stopReason: "unavailable" as const } : {}) };
+    }, cancel => { cancelOutput = cancel; }, value => {
+      // #226 instrumentation: bounded numeric drain progress; anything else is ignored, never trusted.
+      const row = value as { startMs?: unknown; drained?: unknown } | null;
+      if (row && typeof row.startMs === "number" && Number.isFinite(row.startMs) && row.startMs >= 0 && row.startMs < 10_000) drainProgress.startMs = row.startMs;
+      if (row && Number.isSafeInteger(row.drained) && (row.drained as number) >= 0 && (row.drained as number) <= 1024) drainProgress.drained = row.drained as number;
     });
-    const stop = () => {
-      if (exited) return;
-      tracker.captureLive();
-      // The still-live leader is the detached process we just spawned, so its group is ours.
-      // The capture-only worker owns no native helper; those handles were reaped in this parent.
-      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* Already exited. */ } }
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const answer = await Promise.race([
-        Promise.all([exit, output]),
-        new Promise<undefined>(resolve => { timer = setTimeout(() => { if (transcript !== undefined) result.transcript ??= { stopReason: "deadline" }; stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
-      ]);
-      if (!answer || !answer[1]) return result;
-      const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
-      if (parsed.complete !== true) return result;
-      if (parsed.rssTelemetryValid !== true) tracker.invalidate();
-      if (typeof parsed.rssKB === "number" && Number.isSafeInteger(parsed.rssKB) && parsed.rssKB > 0) result.rssKB = parsed.rssKB;
-      if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
-      result.captured = parsed.captured === true; result.valid = parsed.valid === true;
-      return result;
-    } catch { return result; }
-    finally {
-      if (timer) clearTimeout(timer);
-      stop();
-      await exit;
-      // Bun subprocess usage is bytes; process.resourceUsage below is KiB.
-      const workerRawKB = (child.resourceUsage()?.maxRSS ?? 0) / 1024;
-      result.rawRssKB = metadata.usage.rawRssKB + workerRawKB;
-      if (await output === undefined) tracker.invalidate();
-      const accounting = tracker.finish(workerRawKB);
-      result.rssKB = metadata.usage.rssKB + accounting.rssKB; result.rssSources = combineRssSources(metadata.usage.rssSources, accounting.rssSources);
+    return child;
+  };
+  const send = (line: object) => { try { owned!.stdin.write(JSON.stringify(line) + "\n"); owned!.stdin.flush(); } catch { /* A dead worker reports nothing. */ } };
+  const close = () => { try { owned?.stdin.end(); } catch { /* Already closed. */ } };
+  const stop = () => {
+    if (!owned || exited) return;
+    tracker!.captureLive();
+    killed = true;
+    // The still-live leader is the detached process we just spawned, so its group is ours.
+    // The capture-only worker owns no native helper; those handles were reaped in this parent.
+    try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already exited. */ } }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined, metadata: Awaited<ReturnType<typeof parentProject>> | undefined;
+  try {
+    if (early) {
+      spawn();
+      send({ scan: { cwd: options.cwd, base, transcript, policy, deadlineAt: performance.timeOrigin + workDeadline } });
     }
+    const configuredBrief = loadAmemConfig(base, repoConfigRoot(options.cwd)).config.briefBytes;
+    const maxTokens = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, options.maxTokens ?? HOOK_CONTEXT_BYTES));
+    metadata = await parentProject(options, base, workDeadline);
+    result.rssKB = metadata.usage.rssKB; result.rawRssKB = metadata.usage.rawRssKB; result.rssSources = combineRssSources(metadata.usage.rssSources);
+    if (!early && (!metadata.receipt || workDeadline - performance.now() < 5)) return result;
+    if (!owned) spawn();
+    result.rssSources.unavailable++;
+    // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
+    // Without a receipt the worker still finishes the scan and reports it, but drains nothing.
+    send({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline, hookStartAt: performance.timeOrigin + hookStartedAt, policy });
+    close();
+    const answer = await Promise.race([
+      Promise.all([exit!, output!]),
+      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+    ]);
+    if (!answer || !answer[1]) return result;
+    const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };
+    if (parsed.complete !== true) return result;
+    if (parsed.rssTelemetryValid !== true) tracker!.invalidate();
+    if (typeof parsed.context === "string" && Buffer.byteLength(parsed.context) <= maxTokens) result.context = parsed.context;
+    result.captured = parsed.captured === true; result.valid = parsed.valid === true;
+    return result;
   } catch { result.valid = false; return result; }
   finally {
-    // Even setup or accounting failure after spawn cannot leave an owned image live.
+    if (timer) clearTimeout(timer);
+    close();
     if (owned) {
-      if (!exited) try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already gone. */ } }
-      await owned.exited;
-    }
+      stop();
+      // #226: bounded reap; a worker stuck in uninterruptible I/O is abandoned after REAP_BOUND_MS, never awaited.
+      const reaped = exited || !(await boundedWait(exit!)).late;
+      const body = reaped ? await boundedWait(output!) : { late: true };
+      if (!reaped || body.late) { cancelOutput?.(); owned.unref(); }
+      if (!reaped) abandonedChildren++;
+      // Bun subprocess usage is bytes; process.resourceUsage is KiB. Not reaped: the last live sample is the RSS (ruling Q2).
+      const workerRawKB = reaped ? (owned.resourceUsage()?.maxRSS ?? 0) / 1024 : 0;
+      if (reaped ? body.late || body.value === undefined : !tracker!.hasLiveSample()) tracker!.invalidate();
+      const accounting = tracker!.finish(workerRawKB);
+      const usage = metadata?.usage ?? { rssKB: 0, rawRssKB: 0, rssSources: emptyRssSources() };
+      result.rssKB = usage.rssKB + accounting.rssKB; result.rawRssKB = usage.rawRssKB + workerRawKB; result.rssSources = combineRssSources(usage.rssSources, accounting.rssSources);
+      if (drainProgress.startMs !== undefined) lastDrain = { startMs: drainProgress.startMs, drained: drainProgress.drained ?? 0 };
+      if (early && killed) {
+        // #221: a kill without accepted progress is a deadline stop; a kill also skips this call's drain (ruling b).
+        if (result.transcript?.offset === undefined && result.transcript?.stopReason !== "unavailable") result.transcript = { stopReason: "deadline" };
+        if (!result.valid) drainSkipped++;
+      }
+    } else if (early) result.transcript ??= { stopReason: "deadline" };
   }
 }
 
@@ -280,6 +329,7 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
 export async function runHook(event: string, input: unknown, options: HookOptions, host?: HookHostPorts): Promise<HookReceipt> {
   const now = performance.now(), started = options.startedAt !== undefined && Number.isFinite(options.startedAt) && options.startedAt <= now ? options.startedAt : now;
   const deadline = started + handlerMs(host);
+  hookStartedAt = started;
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false, dropped = false;
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
@@ -301,13 +351,14 @@ export async function runHook(event: string, input: unknown, options: HookOption
   finally {
     if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
       rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
-      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
+      ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
 }
 
 /** Bounded stdin and a fixed overall handler budget; failures produce no native decision and exit successfully. */
 export async function hookMain(args: readonly string[], startedAt = performance.now(), host?: HookHostPorts): Promise<string> {
   const deadlineMs = handlerMs(host);
+  hookStartedAt = startedAt;
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
@@ -351,7 +402,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       const self = hookRssReading();
       appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
-        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
+        ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
   }
 }

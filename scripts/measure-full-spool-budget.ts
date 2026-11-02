@@ -7,11 +7,11 @@ import { readCaptureDrops, readMetrics, type MetricSample } from "../src/memory/
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
 import { measuredHookRss } from "./hook-rss-check.ts";
 import { workloadBudget } from "./hook-timing-check.ts";
-import { r2RssLimitMB } from "./budget-attempt.ts";
+import { R2_RSS_CEILING_MB } from "./budget-attempt.ts";
 
 // Every sample starts with the pre-upgrade backlog, not the easier already-drained state.
 // There are no retries: even malformed, failed and over-budget samples enter the report.
-const RUNS = 40, WALL_MS = 150, RSS_MB = r2RssLimitMB("full-spool");
+const RUNS = 40, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -85,7 +85,8 @@ try {
     // is unknown telemetry (NaN) and fails the group closed; the max stays as a diagnostic.
     const rssSamplesMB = samples.map(sample => sample.rss?.rssMB ?? Number.NaN);
     const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(0, ...samples.map(sample => sample.rss?.rssMB ?? 0));
-    const verdict = workloadBudget(`full-spool-${name}`, { wallP95Ms, rssSamplesMB, wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
+    const verdict = workloadBudget(`full-spool-${name}`, { group: `full-spool:${name}`, wallP95Ms, rssSamplesMB, wallSamplesMs: samples.map(sample => sample.metricWallMs ?? Number.NaN), wallLimitMs: WALL_MS });
+    console.log(JSON.stringify({ diagnostic: "full-spool-outer-wall", group: `full-spool:${name}`, outerWallMaxMs: Math.max(...samples.map(sample => sample.wallMs)), reportedOnly: true }));
     groups[name] = { samples, wallP95Ms: round(wallP95Ms), peakRssMB: round(peakRssMB), pass: verdict.pass && samples.every(sample => sample.error === undefined) };
   }
 } catch (error) { fatal = (error as Error).message; }

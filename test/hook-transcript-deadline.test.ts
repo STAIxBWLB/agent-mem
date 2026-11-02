@@ -84,15 +84,15 @@ test("the late-check evidence and the branch it records read one clock sample, a
   const source = readFileSync(observer.preload, "utf8");
   const hooks = readFileSync(resolve(import.meta.dir, "../src/hooks.ts"), "utf8");
   // Rebuild the instrumented guard exactly as the preload does, then run it with a clock that advances on every read.
-  const late = "  if (!metadata.receipt && transcript === undefined || workDeadline - performance.now() < 5) return";
+  const late = "    if (!early && (!metadata.receipt || workDeadline - performance.now() < 5)) return";
   expect(hooks.split(late)).toHaveLength(2);
   const lateObserved = /const lateObserved='([^']+)'/.exec(source)![1]!;
   expect(lateObserved.match(/performance\.now\(\)/g)).toHaveLength(1);                     // a single sample
   for (const [first, expected] of [[4.9995, "skip"], [5.0005, "continue"]] as const) {
     let reads = 0; const notes: { remainingUs: number }[] = [];
     const clock = { now: () => 100 - first + reads++ * 0.002 };   // each further read would move 2 µs across the threshold
-    const run = new Function("performance", "globalThis", "metadata", "transcript", "workDeadline", `${lateObserved} "skip"; return "continue";`);
-    const outcome = run(clock, { __hookProcessNote: (_: string, value: { remainingUs: number }) => notes.push(value) }, { receipt: {} }, {}, 100);
+    const run = new Function("performance", "globalThis", "metadata", "early", "workDeadline", `${lateObserved} "skip"; return "continue";`);
+    const outcome = run(clock, { __hookProcessNote: (_: string, value: { remainingUs: number }) => notes.push(value) }, { receipt: {} }, false, 100);
     expect(outcome).toBe(expected);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.remainingUs < 5000).toBe(expected === "skip");                      // recorded value agrees with the branch

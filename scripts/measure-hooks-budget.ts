@@ -7,7 +7,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, r2RssLimitMB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
+import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -19,11 +19,13 @@ import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 
-const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = r2RssLimitMB("hooks");
+const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample extends ReturnType<typeof measuredHookRss> {
   wallMs: number;
+  /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
+  metricWallMs: number;
   countedRetirements: number;
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
@@ -32,6 +34,8 @@ const f = hookFixture(), observer = hookProcessObserver(f.root);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
+const R1_POST_EXIT_WINDOW_MS = 2000;
+let r1Lingering = 0, r1MaxSurvivalMs = 0;
 let invocations = 0, countedRetirements = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 let normalAccounting: { invocations: number; recorded: number; pending: number; pendingOnly: number; countedRetirements: number; retiredInvocations: number[] } | undefined;
 function members(pgid: number): number[] {
@@ -96,6 +100,13 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
     throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, rssSources: metric?.rssSources ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
   }
+  // #226 ruling (Q1): R1 judges owned groups after a fixed 2 s post-exit window; a SIGKILLed child may still be leaving
+  // uninterruptible I/O inside it. Survival time is recorded; after the window any survivor fails.
+  const exitAt = performance.now(), groupsOf = () => [result.pid, ...workers.filter(worker => worker.detached).map(worker => worker.pid)];
+  const anyAlive = () => groupsOf().some(group => members(group).length > 0) || workers.some(worker => { try { process.kill(worker.pid, 0); return true; } catch { return false; } });
+  const aliveAtExit = anyAlive();
+  while (anyAlive() && performance.now() - exitAt < R1_POST_EXIT_WINDOW_MS) Bun.sleepSync(10);
+  if (aliveAtExit) { r1Lingering++; r1MaxSurvivalMs = Math.max(r1MaxSurvivalMs, performance.now() - exitAt); }
   const alive = members(result.pid); leftoverProcesses += alive.length;
   if (alive.length) throw new Error(`R1 owned hook group retained ${alive.length} processes`);
   ownedGroups.delete(result.pid);
@@ -154,21 +165,22 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
-  return { wallMs, ...rss, countedRetirements: retired, retirementReceipts };
+  return { wallMs, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
   for (let index = 0; index < count; index++) {
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>(name, stalledAttempts);
     const completed = await budgetSample(`${name}-${index + 1}`, run, attempt => { attempts.push(attempt); record(attempt); });
-    rows.push(keepAttemptRss(completed, attempts));
+    rows.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
   }
   return rows;
 }
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
-  const verdict = workloadBudget(name, { wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB), wallLimitMs: WALL_MS, rssLimitMB: RSS_MB });
-  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
+  const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
+    wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN), wallLimitMs: WALL_MS });
+  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
 }
 try {
   runnerFingerprint();
@@ -198,7 +210,9 @@ try {
   // Capture is durable before optional work; a bounded series of real invocations observes replay.
   // Every barrier is included in R1 and R2, and every accepted event must appear exactly once.
   for (let pass = 0; pass < 4; pass++) {
-    drains.push(await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), budgetGroupRecorder<Sample>("drain", stalledAttempts)));
+    const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>("drain", stalledAttempts);
+    const completed = await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), attempt => { attempts.push(attempt); record(attempt); });
+    drains.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
     const check = new CaptureStore({ memoryDir: f.base, project: f.project });
     let rows: number[];
     try { rows = check.rows().flatMap(row => {
@@ -291,7 +305,7 @@ try {
     const { pending: _pending, ...numeric } = sample;
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
-  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, postExitWindowMs: R1_POST_EXIT_WINDOW_MS, lingeringAtExit: r1Lingering, maxPostExitSurvivalMs: round(r1MaxSurvivalMs), checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
   return report;
 } finally {
@@ -314,6 +328,7 @@ try {
 const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
   wallPass: Object.values(report.budgets.R2.groups).every(group => group.pass),
   rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
+  wallMaxPass: Object.values(report.budgets.R2.groups).every(group => group.r2.wallMax.pass),
 }));
 
 // Small atomic pipe writes avoid Bun 1.4.2's duplicated/truncated large-report prefix.
