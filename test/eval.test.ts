@@ -253,7 +253,11 @@ test("a real-store name resolves through store.get: a promoted short-term id, a 
 test("a real-store name older than store.list's default page still resolves, and the resolver asks list for everything, not a cap (review finding 3, bot thread)", () => {
   const dir = temp(), project = "example.test/eval/many";
   let tick = 0;
+  // #210: ids hash the machine id, random per home. A fixed machine id and clock make the 231 ids, and so the unique prefix below, the same on every run.
+  mkdirSync(join(dir, "memory"), { recursive: true });
+  writeFileSync(join(dir, "memory", "machine.json"), JSON.stringify({ id: "0123456789abcdef", label: "eval-test" }) + "\n");
   const store = new MemoryStore({ memoryDir: join(dir, "memory"), now: () => Date.parse("2026-01-01T00:00:00.000Z") + tick++ * 1000, screen: () => "keep" });
+  expect(store.machine.id).toBe("0123456789abcdef");
   try {
     const first = store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "p", source: "person", text: "the oldest unique zeppelin hangar note", about: [] });
     for (let i = 0; i < 230; i++) store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "p", source: "person", text: `filler ${i}`, about: [] });
