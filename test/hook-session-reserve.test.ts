@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { stageHookCapture, drainHookCaptures } from "../src/hook-spool.ts";
@@ -33,6 +33,26 @@ test("SessionStart skips active inventory and active retirement, retains known w
   expect(publications(join(f.base, "hook-spool"))).toEqual([]);
   const value = JSON.parse(readFileSync(join(reserved(f.base), names[0]!), "utf8"));
   expect(value.capture.event).toBe("SessionStart");
+});
+
+for (const existingCursor of [false, true]) test("an aged reserve without pressure leaves maintenance cursors untouched: existing=" + existingCursor, async () => {
+  const f = fixture(), options = { cwd: f.cwd, base: f.base };
+  const first = (await stageHookCapture("SessionStart", { prompt: "aged reserve row" }, options))!;
+  const file = join(reserved(f.base), first.name); age(file);
+  const body = readFileSync(file, "utf8"), maintenance = join(f.base, "hook-spool", ".maintenance"), cursor = join(maintenance, "reserve");
+  if (existingCursor) {
+    mkdirSync(maintenance, { mode: 0o700 }); writeFileSync(cursor, "7", { mode: 0o600 });
+    utimesSync(cursor, new Date(0), new Date(0));
+  }
+  const before = existingCursor ? { body: readFileSync(cursor, "utf8"), modified: statSync(cursor).mtimeMs } : undefined;
+  const next = await stageHookCapture("SessionStart", { prompt: "room remains in reserve" }, options);
+  expect(next?.deferred).toBe(true); expect(publications(reserved(f.base))).toHaveLength(2);
+  expect(readFileSync(file, "utf8")).toBe(body); expect(captureDropSummary(f.base)).toEqual({});
+  expect(existsSync(maintenance)).toBe(existingCursor);
+  if (before) {
+    expect(readdirSync(maintenance)).toEqual(["reserve"]);
+    expect(readFileSync(cursor, "utf8")).toBe(before.body); expect(statSync(cursor).mtimeMs).toBe(before.modified);
+  }
 });
 
 test("reserve-only SessionStart preserves exact-once replay and refuses at its protected future-schema global file cap", async () => {
