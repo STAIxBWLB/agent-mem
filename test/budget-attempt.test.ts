@@ -394,3 +394,19 @@ test("#228 ruling: after a slow-runner re-measure of a p95 wall miss, any second
   expect(runs).toBe(2);
   expect(receipts.map(row => [row.attempt, row.outcome])).toEqual([[1, "wall-miss"], [2, "wall-max-miss"]]);
 });
+
+test("codex P2 (#231): a stall whose handler wall exceeded 300 ms is a wall-max miss that a passing group retry cannot erase", async () => {
+  const { budgetGroup, BudgetStall } = await import("../scripts/budget-attempt.ts");
+  for (const values of [{ wallMs: 450, metricWallMs: 412 }, { wallMs: 450 }, { wallMs: 450, metricWallMs: Number.NaN }] as Record<string, number>[]) {
+    const receipts: { outcome: string }[] = []; let runs = 0;
+    await expect(budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", values); return { ok: true }; },
+      () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("injected stall");
+    expect(runs, JSON.stringify(values)).toBe(1);
+    expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
+  }
+  // Control: a stall within the maximum keeps the existing single slow-runner re-measure.
+  let runs = 0;
+  const passed = await budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", { wallMs: 180, metricWallMs: 120 }); return { ok: true }; },
+    () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: () => {} });
+  expect(passed.attempts.map(row => row.outcome)).toEqual(["wall-miss", "pass"]);
+});

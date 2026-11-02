@@ -133,7 +133,11 @@ export async function budgetGroup<T>(check: string, run: () => T | Promise<T>, j
     catch (error) { failure = error; failed = true; }
     const after = await probe(), slow = runnerIsSlow(before, after, baseline);
     // #228 reset: a hard per-invocation 300 ms miss is its own outcome and is never re-measured away by the slow-runner retry.
-    const outcome = failed ? failure instanceof BudgetStall ? "wall-miss" : "fail" : verdict?.rssPass !== true ? "rss-miss" : verdict.wallMaxPass === false ? "wall-max-miss" : verdict.wallPass === true ? "pass" : "wall-miss";
+    // codex P2 on #231: under the R2 maximum (the default slow-wall policy of the hook budgets) a stall is retryable only when its
+    // own handler wall is known and within 300 ms; a missing or larger one is a wall-max miss. The MCP stall policy has no hook wall.
+    const metricWall = failure instanceof BudgetStall ? failure.values?.metricWallMs : undefined;
+    const stallWithinMax = retryPolicy === "stall" || typeof metricWall === "number" && Number.isFinite(metricWall) && metricWall >= 0 && metricWall <= R2_WALL_MAX_MS;
+    const outcome = failed ? failure instanceof BudgetStall ? stallWithinMax ? "wall-miss" : "wall-max-miss" : "fail" : verdict?.rssPass !== true ? "rss-miss" : verdict.wallMaxPass === false ? "wall-max-miss" : verdict.wallPass === true ? "pass" : "wall-miss";
     const receipt: BudgetGroupAttempt<T> = { diagnostic: "budget-group", check, attempt, outcome, before, after, baseline, slow, retryPolicy,
       ...(!failed ? { result } : { error: failure instanceof Error ? failure.message : String(failure), ...(failure instanceof BudgetStall ? { values: failure.values } : {}) }) };
     attempts.push(receipt); record(receipt);

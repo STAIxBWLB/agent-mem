@@ -25,6 +25,16 @@ builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
  if(source.split(anchor).length!==2)throw Error('native receipt order anchor changed');
  return {loader:'ts',contents:source.replace(anchor,"    (globalThis as any).__phase201('native',selected.known);"+anchor)};
 });
+builder.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),anchor='    try { project = resolveAlias(options.base!, acceptHookProjectReceipt(';
+ if(source.split(anchor).length!==2)throw Error('worker receipt anchor changed');
+ return {loader:'ts',contents:source.replace(anchor,"    (globalThis as any).__phase201('worker_receipt');"+anchor)};
+});
+builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
+ const source=readFileSync(path,'utf8'),anchor='  const child = Bun.spawn(["/bin/sh", "-c", SUPERVISOR, "amem-hook-native"';
+ if(source.split(anchor).length!==2)throw Error('native spawn anchor changed');
+ return {loader:'ts',contents:source.replace(anchor,"  (globalThis as any).__phase201('native_spawn');"+anchor)};
+});
 builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='  const value = object(input);';
  if(source.split(anchor).length!==2)throw Error('transcript order anchor changed');
@@ -39,8 +49,22 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
     const events = readFileSync(phases, "utf8").trim().split("\n").map(line => JSON.parse(line) as { phase: string; pid: number; known?: boolean });
     const scan = events.findIndex(event => event.phase === "scan"), native = events.filter(event => event.phase === "native");
     expect(scan).toBeGreaterThan(0); expect(native.length).toBeGreaterThan(0);
-    expect(events.slice(scan).some(event => event.phase === "native")).toBe(false);
+    // #226 ruling (option a): the scan child now starts at hook start, in parallel with native metadata, so "no native receipt
+    // after the scan starts" no longer holds. #211's invariants are what the order protected:
+    // 1. every native receipt is issued in the parent and is known;
     expect(native.every(event => event.known && event.pid === result.pid)).toBe(true);
+    // 2. the scan runs in a pid other than the parent, and that pid never spawns a native helper;
+    const scanPids = new Set(events.filter(event => event.phase === "scan").map(event => event.pid));
+    expect(scanPids.has(result.pid)).toBe(false);
+    expect(events.some(event => event.phase === "native_spawn" && scanPids.has(event.pid))).toBe(false);
+    expect(events.filter(event => event.phase === "native_spawn").every(event => event.pid === result.pid)).toBe(true);
+    // 3. the capture worker revalidates the single-use receipt, and only after every native receipt was issued.
+    const receipt = events.findIndex(event => event.phase === "worker_receipt");
+    if (mode === "normal") {
+      expect(receipt).toBeGreaterThan(0);
+      expect(events.slice(receipt).some(event => event.phase === "native")).toBe(false);
+      expect(scanPids.has(events[receipt]!.pid) || events[receipt]!.pid === result.pid).toBe(false);
+    }
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
     {

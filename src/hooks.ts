@@ -141,9 +141,6 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const metadata = await parentProject(options, base, workDeadline);
-  // #226/#215: the scan child publishes summaries the worker then drains, so the worker starts after the scan settled
-  // (finished or killed at its own deadline); native metadata above already ran in parallel with it.
-  if (scanSettled) await scanSettled;
   if (!metadata.receipt || workDeadline - performance.now() < 5) return { context: unavailable, ...metadata.usage, captured: false, valid: false };
   const result = { context: unavailable, ...metadata.usage, captured: false, valid: false,
     rssSources: combineRssSources(metadata.usage.rssSources), transcript: undefined as HookTranscriptProgress | undefined };
@@ -154,9 +151,16 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
     const payload = JSON.stringify({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline,
       policy: { denyPaths: options.policy?.denyPaths, piiPatterns: options.policy?.piiPatterns } });
+    // #226/#215: the scan child publishes summaries the worker then drains. The worker boots now, in parallel with the scan,
+    // and receives its options (and so starts draining) only after the scan settled: finished, or killed at its own deadline.
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
-      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
+      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: scanSettled ? "pipe" : Buffer.from(payload), stdout: "pipe", stderr: "ignore" });
     owned = child;
+    if (scanSettled) {
+      const stdin = child.stdin as import("bun").FileSink;
+      void scanSettled.then(() => { try { stdin.write(payload); stdin.end(); } catch { /* A killed worker simply reports nothing. */ } },
+        () => { try { stdin.end(); } catch { /* Already closed. */ } });
+    }
     result.rssSources.unavailable++;
     const exit = child.exited.then(code => { exited = true; return code; });
     const tracker = new HookWorkerRss(child.pid);
