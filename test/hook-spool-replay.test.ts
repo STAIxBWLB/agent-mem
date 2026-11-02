@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { stageHookCapture } from "../src/hook-spool.ts";
@@ -73,7 +73,7 @@ test("a claim held by another plan is reported and left alone", async () => {
   const staged = await f.stage("held by another plan");
   renameSync(join(f.spool, staged.name), join(f.spool, `${staged.name}.draining-${"a".repeat(24)}`));
   const plan = await planHookSpoolReplay({ base: f.base });
-  expect(plan.counts.claimed_by_other_plan).toBe(1);
+  expect(plan.counts.claimed_elsewhere).toBe(1);
   const receipt = await applyHookSpoolReplay({ base: f.base, plan });
   expect(receipt.applied).toBe(0);
   expect(readdirSync(f.spool).some(name => name.endsWith(".draining-" + "a".repeat(24)))).toBe(true);
@@ -86,25 +86,78 @@ test("an abandoned cwd is cwd_missing plus attribution_unproven and is never reb
   rmSync(other, { recursive: true });
   const plan = await planHookSpoolReplay({ base: f.base });
   const record = plan.records.find(r => r.cwd.endsWith("gone-project"))!;
-  expect(record).toMatchObject({ class: "cwd_missing", project: null });
-  expect(record.reasons).toContain("attribution_unproven");
-  const receipt = await applyHookSpoolReplay({ base: f.base, plan });
-  expect(receipt.applied).toBe(0);
+  expect(record).toMatchObject({ class: "cwd_missing", project: null, reasons: ["cwd_missing"] });
+  expect(record.confirmable).toBeUndefined();
+  expect((await applyHookSpoolReplay({ base: f.base, plan })).applied).toBe(0);
+  expect((await applyHookSpoolReplay({ base: f.base, plan, confirmUnverifiable: true })).applied).toBe(0);   // never, even with the flag
   expect(f.pending()).toHaveLength(1);
 });
 
-test("decision A: a scope this boot cannot reproduce is physical_identity_unverifiable and attribution_unproven", async () => {
-  const f = fixture(); await f.seed();
-  const staged = await f.stage("opaque legacy root");
+/** A reboot-like previous-boot record: its device-bound scope matches neither this boot's scope nor its current legacy scope. */
+async function previousBoot(f: ReturnType<typeof fixture>, text: string, cwd = f.cwd) {
+  const staged = (await stageHookCapture("PostToolUse", { session_id: "s", tool_name: "Read", tool_response: text }, { cwd, base: f.base }))!;
   const file = join(f.spool, staged.name), value = JSON.parse(readFileSync(file, "utf8"));
   value.scope = "e".repeat(64); writeFileSync(file, JSON.stringify(value));
   const renamed = staged.name.replace(/-[a-f0-9]{64}-([a-f0-9]{32})\.json$/, `-${"e".repeat(64)}-$1.json`);
   renameSync(file, join(f.spool, renamed));
+  return renamed;
+}
+
+test("decision A: a previous-boot record is physical_identity_unverifiable only, skipped without the flag, replayed with it", async () => {
+  const f = fixture(); await f.seed();
+  const renamed = await previousBoot(f, "previous boot record");
   const plan = await planHookSpoolReplay({ base: f.base });
-  expect(plan.records[0]).toMatchObject({ class: "physical_identity_unverifiable", cwd: f.cwd, project: f.project });
-  expect(plan.records[0]!.reasons).toEqual(["physical_identity_unverifiable", "attribution_unproven"]);
-  expect((await applyHookSpoolReplay({ base: f.base, plan })).applied).toBe(0);
+  expect(plan.records[0]).toMatchObject({ class: "physical_identity_unverifiable", reasons: ["physical_identity_unverifiable"], confirmable: true, cwd: f.cwd, project: f.project });
+  expect(plan.needsConfirmation).toEqual([{ cwd: f.cwd, project: f.project, count: 1 }]);
+  const without = await applyHookSpoolReplay({ base: f.base, plan });
+  expect(without.applied).toBe(0);
+  expect(without.outcomes[0]!.reason).toContain("--confirm-unverifiable");
   expect(f.pending()).toEqual([renamed]);
+  const confirmed = await applyHookSpoolReplay({ base: f.base, plan, confirmUnverifiable: true });
+  expect(confirmed).toMatchObject({ applied: 1, retired: 1 });
+  expect(f.rows().filter(row => row.excerpt.includes("previous boot record"))).toHaveLength(1);
+  expect(f.pending()).toEqual([]);
+});
+
+test("decision A: a changed project, policy or alias between preview and confirmed apply refuses with no effect", async () => {
+  for (const change of ["policy", "alias", "project"] as const) {
+    const f = fixture(); await f.seed();
+    await previousBoot(f, `confirm ${change}`);
+    const plan = await planHookSpoolReplay({ base: f.base });
+    expect(plan.needsConfirmation, change).toHaveLength(1);
+    if (change === "policy") writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ denyPaths: ["unrelated/**"] }));
+    if (change === "alias") appendFileSync(join(f.base, "aliases.jsonl"), JSON.stringify({ schema: "agent-mem.alias/v1", op: "alias", alias: f.project, key: "example.test/elsewhere", actor: "person", machine: "fixture", at: new Date().toISOString() }) + "\n");
+    if (change === "project") Bun.spawnSync(["git", "-C", f.cwd, "remote", "add", "origin", "https://example.test/changed/repo.git"], { env: f.env });
+    await expect(applyHookSpoolReplay({ base: f.base, plan, confirmUnverifiable: true }), change).rejects.toThrow(/preview/);
+    expect(f.rows().filter(row => row.excerpt.includes(`confirm ${change}`)), change).toHaveLength(0);
+  }
+});
+
+test("decision A: an inactive project or a policy-refused unverifiable record is never applied, even with the flag", async () => {
+  for (const kind of ["inactive", "policy"] as const) {
+    const f = fixture(); await f.seed();
+    await previousBoot(f, kind === "policy" ? "holds marker-217-pii" : "inactive record");
+    if (kind === "policy") writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["marker-217-pii"] }));
+    if (kind === "inactive") appendLifecycle(f.base, { op: "archive", key: f.project, actor: "person", machine: "fixture" });
+    const plan = await planHookSpoolReplay({ base: f.base });
+    expect(plan.records[0]!.reasons, kind).toEqual(["physical_identity_unverifiable", kind === "policy" ? "policy_refused" : "project_inactive"]);
+    expect(plan.records[0]!.confirmable, kind).toBeUndefined();
+    expect(plan.needsConfirmation, kind).toEqual([]);
+    expect((await applyHookSpoolReplay({ base: f.base, plan, confirmUnverifiable: true })).applied, kind).toBe(0);
+  }
+});
+
+test("decision A: attribution_unproven (no strict project) is never applied, even with the flag", async () => {
+  const f = fixture(); await f.seed();
+  const plain = join(f.root, "no-git-here"); mkdirSync(plain);
+  await previousBoot(f, "unattributable record", plain);
+  // A strict-identity failure: an unreadable .git marker that physicalGit sees but Git cannot use.
+  writeFileSync(join(plain, ".git"), "gitdir: /nonexistent/elsewhere");
+  const plan = await planHookSpoolReplay({ base: f.base });
+  const record = plan.records.find(r => r.cwd === plain)!;
+  expect(record.reasons).toEqual(["physical_identity_unverifiable", "attribution_unproven"]);
+  expect(record.confirmable).toBeUndefined();
+  expect((await applyHookSpoolReplay({ base: f.base, plan, confirmUnverifiable: true })).applied).toBe(0);
 });
 
 test("an unknown or newer schema stays pending and untouched (#199)", async () => {
@@ -195,6 +248,7 @@ test("CLI refuses bad invocations before any home or store access, for person an
       [["spool", "replay", "--plan", "x.json"], /only used with --apply/],
       [["spool", "replay", "--apply", "--plan", "x.json", "--source", "/tmp/x"], /fixed by the saved plan/],
       [["spool", "replay", "--source", "/tmp/a\0b"], /NUL/],
+      [["spool", "replay", "--confirm-unverifiable"], /only applies with --apply/],
       [["spool", "other"], /unknown command spool other/],   // the pure parser refuses it first
     ];
     for (const [argv, message] of cases) await expect(runCli(argv, { env: { ...process.env, ...env }, cwd: f.cwd }), argv.join(" ")).rejects.toThrow(message);

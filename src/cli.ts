@@ -143,6 +143,7 @@ function assertSpoolReplayArguments(path: readonly string[], options: Record<str
   if (apply && typeof planFile !== "string") throw new AgentUsageError("spool replay --apply needs --plan <saved preview>; run `amem spool replay --json > plan.json` first");
   if (!apply && planFile !== undefined) throw new AgentUsageError("--plan is only used with --apply; drop it to preview, or add --apply to apply it");
   if (apply && source !== undefined) throw new AgentUsageError("--source is fixed by the saved plan; drop --source when applying");
+  if (options["--confirm-unverifiable"] === true && !apply) throw new AgentUsageError("--confirm-unverifiable only applies with --apply --plan; preview first, review the mappings, then apply");
   if (typeof planFile === "string" && (!planFile || planFile.includes("\0"))) throw new AgentUsageError("--plan is empty or contains a NUL byte; pass the saved preview's path");
   if (source !== undefined) {
     if (typeof source !== "string" || !source || source.includes("\0")) throw new AgentUsageError("--source is empty or contains a NUL byte; pass an absolute path to a private directory");
@@ -150,7 +151,7 @@ function assertSpoolReplayArguments(path: readonly string[], options: Record<str
   }
 }
 /** Body-free preview text: counts by class, then each record's cwd, current project and class for explicit confirmation. */
-function replayPreviewText(plan: { records: { name: string; cwd: string; project: string | null; class: string; event: string | null }[]; counts: Record<string, number>; digest: string }): string {
+function replayPreviewText(plan: { records: { name: string; cwd: string; project: string | null; class: string; event: string | null }[]; counts: Record<string, number>; digest: string; needsConfirmation: { cwd: string; project: string; count: number }[] }): string {
   const lines = [`spool replay preview (no record bodies shown; plan ${plan.digest.slice(0, 12)})`,
     ...Object.entries(plan.counts).filter(([, n]) => n > 0).map(([cls, n]) => `  ${cls}: ${n}`)];
   const byCwd = new Map<string, { project: string | null; classes: Map<string, number> }>();
@@ -159,7 +160,12 @@ function replayPreviewText(plan: { records: { name: string; cwd: string; project
     row.classes.set(record.class, (row.classes.get(record.class) ?? 0) + 1); byCwd.set(record.cwd, row);
   }
   for (const [cwd, row] of byCwd) lines.push(`  ${cwd || "(unreadable record)"} -> ${row.project ?? "(project unresolved)"}: ${[...row.classes].map(([c, n]) => `${c} ${n}`).join(", ")}`);
-  lines.push("Only replayable records are applied. To apply: amem spool replay --json > plan.json && amem spool replay --apply --plan plan.json");
+  if (plan.needsConfirmation.length) {
+    lines.push("Needs confirmation (decision A: this boot cannot prove the original identity; each maps by its own cwd):");
+    for (const group of plan.needsConfirmation) lines.push(`  ${group.cwd} -> ${group.project}: ${group.count}`);
+    lines.push("To apply these mappings too, after checking each one: amem spool replay --json > plan.json && amem spool replay --apply --plan plan.json --confirm-unverifiable");
+  }
+  lines.push("Without --confirm-unverifiable only replayable records are applied: amem spool replay --json > plan.json && amem spool replay --apply --plan plan.json");
   return lines.join("\n");
 }
 
@@ -712,7 +718,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     try { saved = JSON.parse(readFileSync(planFile as string, "utf8")); }
     catch { throw new Error(`cannot read the replay plan ${planFile as string}; run \`amem spool replay --json > plan.json\` and pass that file`); }
     const plan = administrative(replay.parseReplayPlan(saved));
-    const receipt = administrative(await replay.applyHookSpoolReplay({ base: memoryHome(), plan }));
+    const receipt = administrative(await replay.applyHookSpoolReplay({ base: memoryHome(), plan, confirmUnverifiable: options["--confirm-unverifiable"] === true }));
     return options["--json"] === true ? JSON.stringify(receipt, null, 2)
       : `replayed ${receipt.applied} (${receipt.spooled} via the capture spool), retired ${receipt.retired}, retained ${receipt.retained}; ${receipt.outcomes.filter(o => o.outcome === "skipped").length} skipped by the plan`;
   }

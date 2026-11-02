@@ -46,7 +46,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   spool: { description: "Off-hook hook-spool maintenance (#217)", options: json, commands: {
     replay: { description: "Preview (read-only, no record bodies) or apply a replay of orphaned or parked hook records; --apply takes the saved preview", mutates: "apply", options: { ...json,
       "--source": { description: "Absolute path of a private parked directory to read instead of this home's hook spool", value: "path" },
-      "--apply": flag("Apply the saved preview given with --plan"), "--plan": { description: "Saved preview from `amem spool replay --json`", value: "path" } } },
+      "--apply": flag("Apply the saved preview given with --plan"), "--confirm-unverifiable": flag("With --apply: also replay the saved plan's 'needs confirmation' cwd -> project mappings (records this boot cannot prove)"), "--plan": { description: "Saved preview from `amem spool replay --json`", value: "path" } } },
   } },
   gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
     ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },

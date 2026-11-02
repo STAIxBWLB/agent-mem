@@ -818,3 +818,5 @@ export const hookSpoolReplayInternals = {
   retireOwned(file: OwnedFile): boolean { if (!owns(file)) return false; rmSync(file.file); return true; },
 };
 export type HookSpoolOwnedFile = OwnedFile;
+/** The 0.19.0-and-older device-bound scope for this cwd, computable only for the current boot (drain accepts it too). */
+export function hookLegacyCaptureScope(cwd: string, base: string): string | undefined { return captureScope(cwd, base, false, undefined, true); }
