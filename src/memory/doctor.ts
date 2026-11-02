@@ -65,7 +65,7 @@ export interface DoctorReport {
     /** Added after v1 shipped (#132); additive, so the schema stays amem.doctor/v1. */
     drops: Section;
     /** #217, additive: bounded read-only home-wide hook backlog inventory. */
-    spool: Section;
+    spool?: Section;
     /** #188, additive: present only when the project's curated logs hold forget or prune operations. Informational; status is always ok. */
     masked?: Section;
     /** #202, additive: applied native setup registrations checked against the shared path resolver. */
