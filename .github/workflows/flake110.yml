@@ -1,5 +1,5 @@
 name: flake110
-# Task 110 measurement only: never merged. Runs test/hook-transcript-worker.test.ts 20x at two commits on both OSes.
+# Measurement branch only, never merge. Test the exact product commit without patching it.
 on:
   pull_request:
     paths: [".github/workflows/flake110.yml"]
@@ -12,8 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
-        ref: [74108420ef6d06727c2802cd502cedad3ac0c048]
-        shard: [1]
+        ref: [623a9cff904b5666ece4cd8eaaf4dd8968a84c80]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -24,25 +23,57 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
-      - name: Instrument the freshness test (metric row on a miss)
+      - name: Run every iteration and retain exit codes and full logs
+        shell: bash
         run: |
-          python3 - <<'PY'
-          p = "test/hook-transcript-worker.test.ts"; s = open(p).read()
-          a = "      const rows = f.rows();\n"
-          assert s.count(a) == 1
-          s = s.replace(a, a + "      if (!rows.some(row => row.event === \"Compact\" && row.excerpt.includes(marker + \" compact\")) || !rows.some(row => row.event === \"Recap\" && row.excerpt.includes(marker + \" recap\"))) console.log(\"FLAKE110 \" + JSON.stringify({ event, session, metric: readMetrics(f.base).filter(row => row.kind === \"hook\").at(-1) }));\n")
-          b = "    expect(f.rows().filter(row => row.excerpt === \"summary before slow store\")).toHaveLength(1);\n"
-          assert s.count(b) == 1
-          s = s.replace(b, "    if (f.rows().filter(row => row.excerpt === \"summary before slow store\").length !== 1) console.log(\"FLAKE110S \" + JSON.stringify({ platform, event, metrics: readMetrics(f.base).filter(row => row.kind === \"hook\").slice(-2) }));\n" + b)
-          open(p, "w").write(s)
-          PY
-      - name: Loop the file 20 times
-        run: |
+          mkdir -p flake110-results
+          git rev-parse HEAD > flake110-results/head.txt
+          failed=0
           for i in $(seq 1 20); do
-            bun test test/hook-transcript-worker.test.ts > run.log 2>&1 || true
-            echo "RUN $i $(grep -cE '^\(fail\)' run.log) failures"
-            grep -E '^\(fail\)' run.log | sed "s/^/RUN $i /" || true
-            grep 'task110-margin' run.log | sed "s/^/RUN $i /" || true
-            grep '^FLAKE110' run.log | sed "s/^/RUN $i /" || true
-            awk '/^error:|Expected|Received|ENOENT/ {print "DETAIL " $0} /^\(fail\)/ {print "DETAIL " $0}' run.log | sed "s/^/RUN $i /" | head -40 || true
+            status=0
+            bun test --max-concurrency=2 --timeout 20000 test/hook-transcript-worker.test.ts > "flake110-results/run-$i.log" 2>&1 || status=$?
+            echo "$status" > "flake110-results/run-$i.exit"
+            echo "RUN $i exit=$status"
+            cat "flake110-results/run-$i.log"
+            if [ "$status" -ne 0 ]; then failed=$((failed+1)); fi
           done
+          echo "Failed iterations: $failed / 20" | tee flake110-results/verdict.txt
+          test "$failed" -eq 0
+      - name: Summarize all iterations, tests and metric cases
+        if: always()
+        shell: python
+        run: |
+          import collections, glob, json, pathlib, re
+          root = pathlib.Path("flake110-results")
+          tests = collections.Counter()
+          passed_tests = collections.Counter()
+          cases = {}
+          exits = {}
+          advisory_count = 0
+          for log in sorted(root.glob("run-*.log")):
+              exits[log.stem] = (root / (log.stem + ".exit")).read_text().strip()
+              for line in log.read_text().splitlines():
+                  if line.startswith("(pass) "):
+                      passed_tests[re.sub(r" \[.*$", "", line[7:])] += 1
+                  if line.startswith("(fail) "):
+                      tests[re.sub(r" \[.*$", "", line[7:])] += 1
+                  try:
+                      row = json.loads(line)
+                  except ValueError:
+                      continue
+                  if row.get("diagnostic") == "transcript-budget-stall-advisory":
+                      advisory_count += 1
+                  if row.get("diagnostic") != "task110-metrics":
+                      continue
+                  item = cases.setdefault(row["case"], collections.Counter())
+                  for key in ["calls", "missing", "abandonedChildren", "unknownProvenanceRows", "drainSkipped"]:
+                      item[key] += int(row[key])
+          summary = {"exits": exits, "failuresPerTest": tests, "passesPerTest": passed_tests, "metricsPerCase": cases, "stallAdvisoryEvents": advisory_count, "stallClauseExercised": False}
+          output = json.dumps(summary, indent=2, sort_keys=True)
+          (root / "summary.json").write_text(output)
+          print(output)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flake110-${{ matrix.os }}-${{ matrix.ref }}
+          path: flake110-results/
