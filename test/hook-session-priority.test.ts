@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
+import { seedHookBacklog } from "./fakes/hooks-backlog.ts";
+import { readMetrics } from "../src/memory/metrics.ts";
 
 test("functional SessionStart preserves known work when the optional capture module cannot load", async () => {
   const f = hookFixture(), preload = join(f.root, "optional-capture-fault.ts"), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts"), marker = join(f.root, "optional-attempted");
@@ -68,8 +70,7 @@ test("SessionStart defers full-tier replay until a following hook despite availa
   const f = hookFixture(), preload = join(f.root, "late-brief.ts"), marker = join(f.root, "late-brief-observed"), home = process.env.HOME;
   try {
     await f.seed(); process.env.HOME = f.env.HOME;
-    const { stageHookCapture } = await import("../src/hook-spool.ts");
-    for (let i = 0; i < 256; i++) await stageHookCapture("PostToolUse", { prompt: `late brief backlog ${i}` }, { cwd: f.cwd, base: f.base });
+    await seedHookBacklog({ cwd: f.cwd, base: f.base }, { active: 256, label: "late brief backlog" });
     writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';let offset=0;
 Object.defineProperty(performance,'now',{value:()=>offset,configurable:true});
 globalThis.__lateBrief=(remaining)=>{offset+=Math.max(0,remaining-12);writeFileSync(${JSON.stringify(marker)},'observed');};
@@ -82,8 +83,12 @@ Bun.plugin({name:'late-brief-budget',setup(b){b.onLoad({filter:/[/]hook-project\
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(existsSync(marker)).toBe(true);
     expect(JSON.parse(result.stdout.toString()).output.hookSpecificOutput.additionalContext).toContain(workMarker);
     expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog "))).toHaveLength(0);
+    const pending = () => [join(f.base, "hook-spool"), join(f.base, "hook-spool", ".capacity")].reduce((count, dir) => count + (existsSync(dir) ? readdirSync(dir).filter(name => name.startsWith("hook-")).length : 0), baselineRows = f.rows().length;
+    expect(pending()).toBe(257); // The deferred brief leaves all 256 pre-quota records and its reserve row intact.
     const replay = f.runFunctional("PostToolUse", { prompt: "following hook owns deferred replay" });
     expect(replay.exitCode, replay.stderr.toString()).toBe(0);
     expect(f.rows().filter(row => row.excerpt.startsWith("late brief backlog ")).length).toBeGreaterThan(0);
+    const lost = readMetrics(f.base).filter(row => row.captureDropReason === "scope_capacity").reduce((sum, row) => sum + (row.captureDrops ?? 0), 0);
+    expect(f.rows().length - baselineRows + pending() + lost).toBe(258);
   } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; f.close(); }
 });
