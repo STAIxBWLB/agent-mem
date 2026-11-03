@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.20.2
+
+- **Orca Claude setup writes the MCP entry to the personal `~/.claude.json`** (#243, Refs #242). Orca syncs the personal file over each profile's `mcpServers`, so an entry written only to the profile copy reverted to the old install root. Setup now redirects the MCP file alongside the existing personal hooks redirect; preview and doctor use the same paths and the profile copies stay untouched. Receipts from the earlier mixed layout migrate through the existing ownership checks and keep byte-exact personal undo; an edited historical managed MCP entry is refused. Outside Orca, a receipt written from an Orca profile refuses apply with cause `setup_receipt_orca_profile` and the next step to rerun from that profile. A fixture covers the live 2026-11-03 layout (#244).
+- **Compatibility with N-1 (0.20.1), #243:** the receipt format is unchanged. A 0.20.2 Claude receipt written in Orca records `~/.claude.json`, which 0.20.1 refuses with `setup receipt target mismatch` before writing; run undo with the release that wrote it. No memory format or floor changes.
+
 ## 0.20.1
 
 - **Setup replaces hooks when its install root changes** (#237). Claude, Codex, Kimi, Qwen, Pi and Jcode retire exact prior MCP-bound commands instead of appending a second root, including adopted and receipt-less wiring. Undo restores original commands and their order while preserving unrelated later settings. Customized controls on adopted prior hooks refuse rather than being discarded. Marked setup apply failures report a data-free cause and next step; unmarked native errors remain unchanged.
