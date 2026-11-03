@@ -21,16 +21,16 @@ Bun.plugin({name:'numeric-recovery-diagnostic',setup(b){b.onLoad({filter:/(hooks
  add('  const workDeadline = deadline - WORKER_CLEANUP_MS;','globalThis.__recoveryNote(7,deadline-performance.now());');
  add('    if (!answer || !answer[1]) return result;','globalThis.__recoveryNote(8,workDeadline-performance.now(),Number(!!answer),answer?.[1]?.length??0);');
  }else if(path.endsWith('/session-brief-worker.ts')){
- add('    if (remaining() <= 0) deadlineStop();','globalThis.__recoveryNote(10,remaining());');
- add('    let captured = false;','globalThis.__recoveryNote(11,remaining());');
- add('        captured = drained.captured.includes(options.current);','globalThis.__recoveryNote(12,remaining(),drained.captured.length,drained.blocked);');
+ add('    if (now() >= end)','globalThis.__recoveryNote(10,end-now());');
+ add('    let drainedCount = 0, captured = false, drainStarted = false;','globalThis.__recoveryNote(11,end-now());');
+ add('      captured ||= drained.captured.includes(options.current);','globalThis.__recoveryNote(12,remaining(),drained.captured.length,drained.blocked);');
  }else{
  add('  if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp)','globalThis.__recoveryNote(20,options.timeRemaining?.()??-1,Number(!!stamp),Number(options.expectedScope===undefined||options.expectedScope===stamp));');
  add('  const policy = createStandalonePolicy(options.policy), dir = directory(base);','let __seen=0,__cwd=0,__stamp=0;');
  const filter='    const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);';
  if(contents.split(filter).length!==2)throw new Error('recovery stamp anchor changed');
  contents=contents.replace(filter,'    const m=namePattern.exec(row.name);__seen++;if(m&&m[2]===hash(cwd)){__cwd++;if(accepts(m[3]))__stamp++;}return m&&m[2]===hash(cwd)&&accepts(m[3]);');
- add('  let remaining = DRAIN_BYTES, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
+ add('  let remaining = budget.bytes, blocked = 0;','globalThis.__recoveryNote(26,__seen,__cwd,__stamp);');
  add('    if (options.timeRemaining && options.timeRemaining() < 8','globalThis.__recoveryNote(21,options.timeRemaining?.()??-1,captured.length,blocked);');
  add('      append(input, hash(record.bytes));','globalThis.__recoveryNote(22,options.timeRemaining?.()??-1);');
  add('      if (owns(claim)) { rmSync(claim.file); captured.push(name); }','globalThis.__recoveryNote(23,options.timeRemaining?.()??-1);');

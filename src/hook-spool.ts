@@ -22,7 +22,12 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 // `hook-` nor `hook-v2-` for it, so they leave it alone. Claude native rows stay format 2, byte for byte, so 0.18.0 keeps draining them.
 const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-", FORMAT_V3 = 3, PREFIX_V3 = "hook-v3-";
 const RECORD_BYTES = HOOK_INPUT_BYTES + 8192, MAX_FILES = 256, MAX_BYTES = 2 * 1024 * 1024;
-const DRAIN_FILES = 32, DRAIN_BYTES = 256 * 1024;
+// One hook previously performed one replay of at most 32 files / 256 KiB.
+// Interleaved subpasses share these same ceilings; they do not each get a fresh allowance.
+export const HOOK_REPLAY_MAX_FILES = 32, HOOK_REPLAY_MAX_BYTES = 256 * 1024;
+const DRAIN_FILES = HOOK_REPLAY_MAX_FILES, DRAIN_BYTES = HOOK_REPLAY_MAX_BYTES;
+export interface HookReplayBudget { files: number; bytes: number; seen: Set<string> }
+export const hookReplayBudget = (): HookReplayBudget => ({ files: HOOK_REPLAY_MAX_FILES, bytes: HOOK_REPLAY_MAX_BYTES, seen: new Set() });
 // ponytail: a finite native admission reserve covers deferred replay, not unlimited locked intake.
 // Upgrade: coordinated append-only capacity accounting and observable backpressure at exhaustion.
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
@@ -55,27 +60,26 @@ function privateDirectory(dir: string): void {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
   chmodSync(dir, 0o700);
 }
-function entries(base: string, capacity = false, coverage?: { complete: boolean }): { name: string; size: number; modified: number }[] {
+function entries(base: string, capacity = false, coverage?: { complete: boolean }): { name: string; size: number; modified: number; dev: number; ino: number }[] {
   if (coverage) coverage.complete = false;
   const dir = capacity ? join(directory(base), ".capacity") : directory(base), maximum = capacity ? CAPACITY_FILES : MAX_FILES, stat = lstatSync(dir, { throwIfNoEntry: false });
   if (!stat) { if (coverage) coverage.complete = true; return []; }
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hook storage unavailable");
-  const reader = opendirSync(dir), rows: { name: string; size: number; modified: number }[] = [];
+  const reader = opendirSync(dir), rows: { name: string; size: number; modified: number; dev: number; ino: number }[] = [];
   try {
     for (let scanned = 0; scanned <= maximum + 4; scanned++) {
       const entry = reader.readSync(); if (!entry) { if (coverage) coverage.complete = true; return rows; }
       if ([".writing", ".quarantine", ".capacity", ".maintenance"].includes(entry.name) && entry.isDirectory()) continue;
       if (rows.length === maximum) return rows;
       const item = lstatSync(join(dir, entry.name), { throwIfNoEntry: false });
-      if (item) rows.push({ name: entry.name, size: item.size, modified: item.mtimeMs });
+      if (item) rows.push({ name: entry.name, size: item.size, modified: item.mtimeMs, dev: item.dev, ino: item.ino });
     }
     return rows;
   } finally { reader.closeSync(); }
 }
 
-/** #226 (task 107): a bounded count of this cwd's pending publications in the active tier, read from names only (one readdir,
- * at most MAX_FILES entries, no stat). The worker uses it to decide drain-first under spool pressure. Any error returns 0,
- * which keeps the default scan-then-drain order (fail closed). */
+/** A bounded diagnostic count of this cwd's active publications (names only, no stat).
+ * Task 110 schedules replay by publication/backpressure progress, not this legacy count. */
 export function hookPendingCount(cwd: string, base: string): number {
   try {
     const dir = directory(canonicalPath(base)), wanted = hash(realPath(cwd)), reader = opendirSync(dir);
@@ -750,8 +754,12 @@ export function hookCapturePending(base: string, name: string): boolean {
   } catch { return true; } // Unreadable evidence is pending, never an acknowledgement.
 }
 
-export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number },
+export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number; replayBudget?: HookReplayBudget },
   append: (input: CaptureInput, receipt: string) => CaptureAppend): Promise<{ captured: string[]; blocked: number }> {
+  const budget = options.replayBudget ?? hookReplayBudget();
+  if (!Number.isSafeInteger(budget.files) || budget.files < 0 || budget.files > HOOK_REPLAY_MAX_FILES
+    || !Number.isSafeInteger(budget.bytes) || budget.bytes < 0 || budget.bytes > HOOK_REPLAY_MAX_BYTES
+    || !(budget.seen instanceof Set) || budget.seen.size > HOOK_REPLAY_MAX_FILES) throw new Error("hook replay budget is invalid; create a fresh hookReplayBudget for this hook");
   const cwd = realPath(options.cwd), base = canonicalPath(options.base), stamp = hookCaptureScope(cwd, base), captured: string[] = [];
   if (belowFloor(base)) return { captured, blocked: 1 };
   if (!stamp || options.expectedScope !== undefined && options.expectedScope !== stamp) return { captured, blocked: 1 };
@@ -765,17 +773,19 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
   const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
-  let remaining = DRAIN_BYTES, blocked = 0;
-  for (const row of rows.slice(0, DRAIN_FILES)) {
+  const identity = (row: typeof rows[number]) => `${namePattern.exec(row.name)![1]}:${row.dev}:${row.ino}`;
+  let remaining = budget.bytes, blocked = 0;
+  for (const row of rows.filter(row => !budget.seen.has(identity(row))).slice(0, budget.files)) {
     if (options.timeRemaining && options.timeRemaining() < 8 || row.size <= RECORD_BYTES && row.size > remaining) break;
     const match = namePattern.exec(row.name)!, name = match[1]!;
+    budget.files--; budget.seen.add(identity(row));
     let file: OwnedFile | undefined;
     try {
       file = openOwned(join(row.capacity ? join(dir, ".capacity") : dir, row.name));
       if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) { blocked++; continue; }
       const claim = claimOwned(base, row.name, file);
       if (!claim) { blocked++; continue; }
-      if (claim.initial.size <= RECORD_BYTES) remaining -= claim.initial.size;
+      if (claim.initial.size <= RECORD_BYTES) { remaining -= claim.initial.size; budget.bytes -= claim.initial.size; }
       const record = decoded(claim);
       if (!record || record.value.cwd !== cwd || record.value.scope !== match[3] || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;

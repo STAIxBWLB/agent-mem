@@ -8,6 +8,8 @@ import * as spool from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readCaptureDrops } from "../src/memory/metrics.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
+import * as policyModule from "../src/memory/policy.ts";
+const realCreatePolicy = policyModule.createStandalonePolicy;
 
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -215,4 +217,38 @@ test("a 100-title burst backpressures at the cwd share and resumes losslessly be
   const loss = readCaptureDrops(f.base);
   expect(loss.readable && (loss.counts.scope_capacity ?? 0)).toBe(0);
   expect(loss.readable && (loss.counts.summary_capacity ?? 0)).toBe(0);
+});
+
+test("task 110: slow setup does not eat the scan's work budget; the budget counts from the first line", async () => {
+  // On a slow runner the final hook scanned a fixed 60 ms window that setup (policy, cursor database, read) had already spent,
+  // so it staged nothing or only the first summary. With workBudgetMs the line loop gets its budget after setup, and the
+  // hard deadline still ends it.
+  const f = fixture();
+  f.add({ type: "system", subtype: "away_summary", content: "budget recap", timestamp: at },
+    { type: "user", isCompactSummary: true, message: { content: "budget compact" }, timestamp: at });
+  // Only the scan's own setup call is slow (the first one); per-line staging builds its policy normally.
+  let setupCalls = 0;
+  const slow = spyOn(policyModule, "createStandalonePolicy").mockImplementation((...args: Parameters<typeof policyModule.createStandalonePolicy>) => {
+    if (setupCalls++ === 0) { const until = performance.now() + 80; while (performance.now() < until) { /* setup slower than the 60 ms budget */ } }
+    return realCreatePolicy(...args);
+  });
+  try {
+    const started = performance.now();
+    const progress = await scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: started + 2000, workBudgetMs: 60 });
+    expect(progress?.stopReason).toBeUndefined();
+  } finally { slow.mockRestore(); }
+  expect((await f.drain()).map(row => row.event).sort()).toEqual(["Compact", "Recap"]);
+  // Control: the old fixed window (deadline = start + 60) is spent by the same setup and stages nothing.
+  const g = fixture();
+  g.add({ type: "system", subtype: "away_summary", content: "fixed recap", timestamp: at });
+  let setupCalls2 = 0;
+  const slow2 = spyOn(policyModule, "createStandalonePolicy").mockImplementation((...args: Parameters<typeof policyModule.createStandalonePolicy>) => {
+    if (setupCalls2++ === 0) { const until = performance.now() + 80; while (performance.now() < until) { /* same slow setup */ } }
+    return realCreatePolicy(...args);
+  });
+  try { expect((await scanHookTranscriptTail(g.input, { cwd: g.cwd, base: g.base, deadline: performance.now() + 60 }))?.stopReason).toBe("deadline"); }
+  finally { slow2.mockRestore(); }
+  // A hard deadline still wins over the budget.
+  const h = fixture(); h.add({ type: "system", subtype: "away_summary", content: "hard recap", timestamp: at });
+  expect((await scanHookTranscriptTail(h.input, { cwd: h.cwd, base: h.base, deadline: performance.now() - 1, workBudgetMs: 60 }))?.stopReason).toBe("deadline");
 });
