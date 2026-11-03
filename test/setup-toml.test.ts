@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "../src/setup-toml.ts";
+import { SETUP_CONFIG_BYTES, insertTomlArrayItems, restoreRemovedItems, setTomlPath, updateTomlArray } from "../src/setup-toml.ts";
 const hook = { event: "SessionEnd", command: "bun --smol '/package with spaces/bin/amem.js' ingest kimi", timeout: 3 };
 const parse = (text: string) => Bun.TOML.parse(text) as Record<string, any>;
 
@@ -174,4 +174,21 @@ test("apply then undo of a one-element inline array is byte-exact", () => {
   const source = "items = [1]\n", appended = updateTomlArray(source, ["items"], [1, 2]);
   expect(parse(appended).items).toEqual([1, 2]);
   expect(updateTomlArray(appended, ["items"], [1])).toBe(source);
+});
+
+test("removed rows return before their original surviving anchors without reordering current rows", () => {
+  expect(restoreRemovedItems(["old", "user"], ["user", "new"], ["extra", "user"], value => value)).toEqual(["extra", "old", "user"]);
+  expect(restoreRemovedItems(["same", "old", "same"], ["same", "same", "new"], ["same", "same"], value => value)).toEqual(["same", "old", "same"]);
+});
+
+for (const source of [
+  `hooks = [{ event = 'Other', command = 'user', timeout = 0x3 }] # keep array comment\nmodel = 'keep'\n`,
+  `model = 'keep'\n# keep table comment\n[[hooks]]\nevent = 'Other'\ncommand = 'user'\ntimeout = 0x3 # keep number\n`,
+]) test("ordered insertion keeps surviving TOML bytes: " + (source.startsWith("hooks") ? "array" : "tables"), () => {
+  const before = parse(source).hooks;
+  const result = insertTomlArrayItems(source, ["hooks"], [hook, ...before, { ...hook, command: "last" }]);
+  expect(parse(result).hooks).toEqual([hook, ...before, { ...hook, command: "last" }]);
+  expect(result).toContain("timeout = 0x3"); expect(result).toContain("model = 'keep'");
+  expect(result).toContain(source.startsWith("hooks") ? "# keep array comment" : "# keep table comment");
+  expect(() => insertTomlArrayItems(source, ["hooks"], [hook])).toThrow(); // insertion cannot replace/delete a user row
 });

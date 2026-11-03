@@ -1,6 +1,6 @@
 import type { ConfigImage } from "./setup-owned.ts";
 import { createJsonMcpCodec } from "./setup-json.ts";
-import { setTomlPath } from "./setup-toml.ts";
+import { restoreRemovedItems, setTomlPath } from "./setup-toml.ts";
 
 const codec = createJsonMcpCodec({ canonicalKey: "servers", aliases: ["mcpServers"], label: "Jcode" });
 export function readJcodeMcp(image: ConfigImage): unknown { return codec.read(image); }
@@ -45,7 +45,9 @@ function ownedCommands(before: ConfigImage, after: ConfigImage): Map<string, str
   return owned;
 }
 export function jcodeHooksManaged(before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
-  try { const hooks = hooksTable(tomlText(current)) ?? {}; return [...ownedCommands(before, after)].every(([event, owned]) => owned.every(item => commands(hooks[event]).includes(item))); }
+  try { const hooks = hooksTable(tomlText(current)) ?? {}; const original = hooksTable(tomlText(before)) ?? {}, installed = hooksTable(tomlText(after)) ?? {};
+    return [...ownedCommands(before, after)].every(([event, owned]) => owned.every(item => commands(hooks[event]).includes(item))
+      && commands(original[event]).filter(item => !commands(installed[event]).includes(item)).every(item => !commands(hooks[event]).includes(item))); }
   catch { return false; }
 }
 /** Exact restore when untouched; otherwise removes only amem's command elements, keeping user commands and later edits. */
@@ -60,8 +62,7 @@ export function restoreJcodeHooks(before: ConfigImage, after: ConfigImage, curre
     const prior = original[event], priorCommands = commands(prior), installed = commands((hooksTable(tomlText(after)) ?? {})[event]);
     const removed = priorCommands.filter(item => !installed.includes(item));
     if (!live.some(item => mine.includes(item)) && !removed.length) continue;
-    const kept = live.filter(item => !mine.includes(item));
-    for (const item of removed) if (kept.filter(value => value === item).length < priorCommands.filter(value => value === item).length) kept.push(item);
+    const kept = restoreRemovedItems(priorCommands, installed, live.filter(item => !mine.includes(item)), value => value);
     // Return the user's original spelling when only amem's element was added; otherwise keep the remaining array.
     const value = !kept.length ? (prior !== undefined && !commands(prior).length ? prior : undefined)
       : kept.length === 1 && typeof prior === "string" && prior === kept[0] ? prior : kept;

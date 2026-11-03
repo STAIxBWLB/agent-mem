@@ -217,6 +217,26 @@ function arrayElements(text: string, open: number): { close: number; elements: A
   }
   return error();
 }
+/** Reinsert only rows removed by this installer, anchored to surviving original rows.
+ * Current rows stay in their own order; unrelated additions/deletions are never reversed. */
+export function restoreRemovedItems<T>(before: readonly T[], after: readonly T[], current: readonly T[], key: (value: T) => string): T[] {
+  const counts = (rows: readonly T[]) => { const found = new Map<string, number>(); for (const row of rows) found.set(key(row), (found.get(key(row)) ?? 0) + 1); return found; };
+  const original = counts(before), installed = counts(after), live = counts(current), seen = new Map<string, number>();
+  const ordinals = before.map(row => { const id = key(row), ordinal = seen.get(id) ?? 0; seen.set(id, ordinal + 1); return ordinal; });
+  const result = [...current];
+  const anchor = (index: number) => { const id = key(before[index]!); let ordinal = ordinals[index]!;
+    return result.findIndex(row => key(row) === id && ordinal-- === 0); };
+  for (let index = 0; index < before.length; index++) {
+    const row = before[index]!, id = key(row), retained = installed.get(id) ?? 0;
+    if (retained) { installed.set(id, retained - 1); continue; }
+    if ((live.get(id) ?? 0) >= original.get(id)!) continue;
+    let at = result.length, found = false;
+    for (let next = index + 1; next < before.length; next++) { const position = anchor(next); if (position >= 0) { at = position; found = true; break; } }
+    if (!found) for (let prior = index - 1; prior >= 0; prior--) { const position = anchor(prior); if (position >= 0) { at = position + 1; break; } }
+    result.splice(at, 0, row); live.set(id, (live.get(id) ?? 0) + 1);
+  }
+  return result;
+}
 /** Keep an ordered subsequence of existing elements, optionally adding new elements only at the tail. */
 function arrayEdit(before: readonly unknown[], after: readonly unknown[]): { keep: Set<number>; append: readonly unknown[] } {
   const old = before.map(value => JSON.stringify(shape(value))), next = after.map(value => JSON.stringify(shape(value)));
@@ -291,6 +311,44 @@ export function updateTomlArray(text: string, path: readonly string[], expectedA
     if (append.length) output += `${output && !output.endsWith("\n") ? eol : ""}${appendedTables(path, append, eol)}`;
     if (!keep.size && !append.length) output = editTomlPath(output, path, [], eol);
   }
+  if (!isDeepStrictEqual(shape(parse(output)), shape(expected))) return error();
+  return output;
+}
+
+/** Insert restored rows without deleting/reordering or reserializing surviving TOML elements. */
+export function insertTomlArrayItems(text: string, path: readonly string[], expectedArray: readonly unknown[]): string {
+  if (!path.length || path.length > 8 || path.some(key => typeof key !== "string" || Buffer.byteLength(key) > 256 || /[\p{Cc}\p{Cf}]/u.test(key)) || !Array.isArray(expectedArray)) return error();
+  const original = parse(text), current = at(original, path); shape(original); shape(expectedArray);
+  if (current === undefined || Array.isArray(current) && current.length === 0) return updateTomlArray(text, path, expectedArray);
+  if (!Array.isArray(current)) return error();
+  const key = (value: unknown) => JSON.stringify(shape(value)), pending = new Map<number, unknown[]>(); let cursor = 0;
+  for (const value of expectedArray) {
+    if (cursor < current.length && key(value) === key(current[cursor])) cursor++;
+    else pending.set(cursor, [...(pending.get(cursor) ?? []), value]);
+  }
+  if (cursor !== current.length) return error(); // Every original element must survive in order.
+  if (!pending.size) return text;
+  const units = statements(text), assignment = units.find(unit => !unit.header && unit.path.length === path.length && prefix(path, unit.path));
+  const eol = text.includes("\r\n") ? "\r\n" : "\n", changes: Replacement[] = [];
+  if (assignment) {
+    let open = assignment.equal! + 1; while (/\s/.test(text[open] ?? "")) open++;
+    const array = arrayElements(text, open); if (array.elements.length !== current.length) return error();
+    for (const [index, values] of pending) if (index < current.length) {
+      const start = index ? array.elements[index - 1]!.comma! + 1 : open + 1;
+      changes.push({ start, end: start, text: ` ${values.map(inline).join(", ")}, ` });
+    }
+  } else {
+    const headers = units.filter(unit => unit.header && unit.array && unit.path.length === path.length && prefix(path, unit.path));
+    if (headers.length !== current.length) return error();
+    for (const [index, values] of pending) if (index < current.length) {
+      const header = headers[index]!, prior = units[units.indexOf(header) - 1], start = prior?.end ?? 0;
+      changes.push({ start, end: start, text: `${start && text[start - 1] !== "\n" ? eol : ""}${appendedTables(path, values, eol)}` });
+    }
+  }
+  let output = replace(text, changes);
+  const tail = pending.get(current.length);
+  if (tail?.length) output = updateTomlArray(output, path, [...(at(parse(output), path) as unknown[]), ...tail]);
+  const expected = parse(text); edit(expected, path, [...expectedArray]);
   if (!isDeepStrictEqual(shape(parse(output)), shape(expected))) return error();
   return output;
 }

@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { applySetup, planSetup, undoSetup, type SetupContext } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
 
@@ -72,7 +73,7 @@ function fixture(target: Target) {
       + JSON.stringify(custom.session_shutdown![0]) + ")); }\n");
   }
   const originals = new Map([...files, ...(extra ? [extra] : [])].map(file => [file, image(file)]));
-  return { home, target, calls, oldRoot, newRoot, oldEntry: join(oldRoot, "bin", "amem.js"), newEntry: join(newRoot, "bin", "amem.js"), files, custom, extra, originals, receipt: action.receipt,
+  return { home, target, calls, oldRoot, newRoot, oldEntry: join(oldRoot, "bin", "amem.js"), newEntry: join(newRoot, "bin", "amem.js"), files, custom, extra, originals, receipt: action.receipt, options,
     oldHooks: action.hooks, newHooks: newPlan.actions[0]!.hooks,
     apply(root: string) { const opts = options(root); return applySetup(planSetup(target, "apply", opts), opts); },
     undo(root: string) { const opts = options(root); return undoSetup(planSetup(target, "undo", opts), opts); },
@@ -204,5 +205,87 @@ for (const target of TARGETS) test(target + ": same-root apply repairs a frozen 
   put(f.receipt, JSON.stringify(receipt) + "\n");
   expect(f.apply(f.newRoot).applied, "legacy matching intent must trigger repair, not unchanged").toEqual([target]);
   registeredOnly(f, "new");
+  f.undo(f.newRoot); restored(originalOldWiring); expect(existsSync(f.receipt)).toBe(false);
+});
+
+const previousRoot = process.env.AMEM_PREV_ROOT, previousRequired = process.env.AMEM_PREV_REQUIRED === "1";
+if (previousRoot && !isAbsolute(previousRoot)) throw Error("AMEM_PREV_ROOT must be an absolute published package root");
+const previousManifest = previousRoot ? JSON.parse(text(join(previousRoot, "package.json"))) as { name: string; version: string } : undefined;
+if (previousManifest && previousManifest.name !== "@staix/agent-mem") throw Error("AMEM_PREV_ROOT is not an @staix/agent-mem package");
+const previousReleaseTest = previousRoot ? previousManifest!.version === "0.20.0" ? test : test.skip : previousRequired ? test : test.skip;
+for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 setup refuses replacement receipts before config publication", async () => {
+  expect(previousRoot, "AMEM_PREV_ROOT is required by the previous-release gate").toBeTruthy();
+  if (!previousRoot) throw Error("AMEM_PREV_ROOT is required");
+  expect(isAbsolute(previousRoot)).toBe(true);
+  const pkg = previousManifest!;
+  expect(pkg.name).toBe("@staix/agent-mem"); expect(pkg.version).toBe("0.20.0");
+  const previous = await import(pathToFileURL(join(previousRoot, "src", "setup.ts")).href) as {
+    applySetup: typeof applySetup; undoSetup: typeof undoSetup;
+  };
+  const f = fixture(target); f.apply(f.oldRoot); f.apply(f.newRoot);
+  expect(JSON.parse(text(f.receipt)).version).toBe(2);
+  const publications: string[] = [], opts = { ...f.options(f.newRoot), beforePublish: (file: string) => publications.push(file) };
+  const apply = planSetup(target, "apply", opts), undo = planSetup(target, "undo", opts), nativeCalls = f.calls.length;
+  const before = new Map([...f.originals.keys(), f.receipt].map(file => [file, image(file)]));
+  expect(() => previous.applySetup(apply, opts), "published " + pkg.version + " apply must refuse receipt v2").toThrow(/setup receipt.*(?:match|version)/);
+  expect(publications).toEqual([]); expect(f.calls).toHaveLength(nativeCalls); restored(before);
+  expect(() => previous.undoSetup(undo, opts), "published " + pkg.version + " undo must refuse receipt v2").toThrow(/setup receipt.*(?:match|version)/);
+  expect(publications).toEqual([]); expect(f.calls).toHaveLength(nativeCalls); restored(before);
+  console.log(JSON.stringify({ diagnostic: "setup-receipt-v2-published-reader", version: pkg.version, target, refusedApply: true, refusedUndo: true, configPublications: publications.length }));
+});
+
+for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test(target + ": semantic undo restores adopted OLD hooks before observers in their original ordered position", () => {
+  const f = fixture(target); f.apply(f.oldRoot); registeredOnly(f, "old");
+  const file = target === "qwen" ? f.files[0]! : f.files[1]!, isToml = target === "kimi" || target === "jcode";
+  const document: Document = isToml ? Bun.TOML.parse(text(file)) : JSON.parse(text(file));
+  for (const old of f.oldHooks) {
+    const observer = "echo ordered observer " + old.event;
+    if (target === "jcode") {
+      const commands = document.hooks[old.event] as string[];
+      document.hooks[old.event] = [old.command, observer, ...commands.filter(command => command !== old.command)];
+    } else if (target === "kimi") {
+      const hooks = document.hooks as Document[], owned = hooks.find(hook => hook.event === old.event && hook.command === old.command)!;
+      document.hooks = [owned, { event: old.event, command: observer, timeout: 11 }, ...hooks.filter(hook => hook !== owned)];
+    } else {
+      const hooks = (document.hooks[old.event] as Document[]).flatMap(group => group.hooks as Document[]), owned = hooks.find(hook => hook.command === old.command)!;
+      // OLD and observers deliberately occupy one group, so restoring a removed
+      // OLD row at the end instead of its original index is observable.
+      document.hooks[old.event] = [{ matcher: "*", hooks: [owned, { type: "command", command: observer, timeout: 11 }, ...hooks.filter(hook => hook !== owned)] }];
+    }
+  }
+  put(file, isToml ? Bun.TOML.stringify(document) : JSON.stringify(document, null, 2) + "\n");
+  const orderedHooks = structuredClone(document.hooks), beforeAdoption = new Map([...f.originals.keys()].map(file => [file, image(file)]));
+  rmSync(f.receipt); f.apply(f.oldRoot); restored(beforeAdoption);
+  const adopted = JSON.parse(text(f.receipt)) as { changes: { before: { bytes: string | null }; after: { bytes: string | null } }[] };
+  expect(adopted.changes.every(change => change.before.bytes === change.after.bytes), "ordered adoption owns no delta").toBe(true);
+  f.apply(f.newRoot); registeredOnly(f, "new");
+  if (isToml) put(file, 'later_fixture = "preserved"\n' + text(file));
+  else { const later: Document = JSON.parse(text(file)); later.later_fixture = "preserved"; put(file, JSON.stringify(later, null, 2) + "\n"); }
+  f.undo(f.newRoot); registeredOnly(f, "old");
+  const result: Document = isToml ? Bun.TOML.parse(text(file)) : JSON.parse(text(file));
+  expect(result.hooks).toEqual(orderedHooks); expect(result.later_fixture).toBe("preserved"); expect(existsSync(f.receipt)).toBe(false);
+});
+
+for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test(target + ": same current-intent apply repairs a reintroduced known OLD hook without rerunning native MCP registration", () => {
+  const f = fixture(target), originalOldWiring = adopt(f);
+  f.apply(f.newRoot); registeredOnly(f, "new");
+  const receiptBefore = text(f.receipt), intent = JSON.parse(receiptBefore).intent as string, nativeCalls = f.calls.length;
+  const file = target === "qwen" ? f.files[0]! : f.files[1]!, isToml = target === "kimi" || target === "jcode";
+  const document: Document = isToml ? Bun.TOML.parse(text(file)) : JSON.parse(text(file));
+  for (const old of f.oldHooks) {
+    if (target === "kimi") document.hooks.push({ event: old.event, command: old.command, timeout: old.timeout });
+    else if (target === "jcode") {
+      const value = document.hooks[old.event];
+      document.hooks[old.event] = [...(typeof value === "string" ? [value] : value), old.command];
+    } else document.hooks[old.event].push({ hooks: [{ type: "command", command: old.command, timeout: old.timeout }] });
+  }
+  put(file, isToml ? Bun.TOML.stringify(document) : JSON.stringify(document, null, 2) + "\n");
+  expect(text(f.receipt)).toBe(receiptBefore); // current intent and its recorded images were not changed
+  const primary: Document = target === "codex" ? Bun.TOML.parse(text(f.files[0]!)) : JSON.parse(text(f.files[0]!));
+  const servers = primary[target === "codex" ? "mcp_servers" : target === "jcode" ? "servers" : "mcpServers"];
+  expect(servers.amem.args).toEqual(["--smol", f.newEntry, "mcp"]);
+  for (const old of f.oldHooks) expect(hookCommands(f).get(old.event)!.filter(command => command === old.command)).toHaveLength(1);
+  expect(f.apply(f.newRoot).applied, "matching intent must not hide reintroduced known OLD hooks").toEqual([target]);
+  registeredOnly(f, "new"); expect(f.calls).toHaveLength(nativeCalls); expect(JSON.parse(text(f.receipt)).intent).toBe(intent);
   f.undo(f.newRoot); restored(originalOldWiring); expect(existsSync(f.receipt)).toBe(false);
 });

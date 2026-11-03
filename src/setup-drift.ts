@@ -26,7 +26,7 @@ export interface SetupDriftReport {
 }
 
 interface ReceiptChange { key: string; path: string; before: ConfigImage; after: ConfigImage }
-interface Receipt { version: 1; target: SetupTarget; phase: "prepared" | "applied"; changes: ReceiptChange[] }
+interface Receipt { version: 1 | 2; target: SetupTarget; phase: "prepared" | "applied"; changes: ReceiptChange[] }
 const JOURNAL_BYTES = 12 * SETUP_CONFIG_BYTES;
 // ponytail: at most 32 MiB of receipt/config input per doctor call; use metadata-only receipts before widening.
 const READ_BYTES = 32 * 1024 * 1024;
@@ -60,14 +60,14 @@ function parseImage(value: unknown): ConfigImage {
 }
 
 function parseReceipt(value: unknown, target: SetupTarget, expectedPaths: readonly string[]): Receipt {
-  if (!plain(value) || value.version !== 1 || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
+  if (!plain(value) || (value.version !== 1 && value.version !== 2) || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
   const changes: ReceiptChange[] = [];
   for (let index = 0; index < value.changes.length; index++) {
     const item: unknown = value.changes[index];
     if (!plain(item) || item.key !== `${target}:${index}` || typeof item.path !== "string" || !isAbsolute(item.path) || item.path.length > 4096 || item.path.includes("\0")) throw Error("invalid receipt");
     changes.push({ key: `${target}:${index}`, path: item.path, before: parseImage(item.before), after: parseImage(item.after) });
   }
-  return { version: 1, target, phase: value.phase as Receipt["phase"], changes };
+  return { version: value.version as 1 | 2, target, phase: value.phase as Receipt["phase"], changes };
 }
 
 function workspaceRoot(cwd: string): string | undefined {

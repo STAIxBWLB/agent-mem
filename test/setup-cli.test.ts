@@ -201,3 +201,12 @@ test("all setup skips and reports absent CLIs while configuring the available cl
   expect(existsSync(join(f.home, ".codex", "config.toml"))).toBe(false); expect(existsSync(join(f.home, ".kimi-code", "mcp.json"))).toBe(false); expect(existsSync(join(f.home, ".pi", "agent", "mcp.json"))).toBe(false);
   expect(f.calls()).toHaveLength(1);
 });
+
+test("marked setup receipt-version refusal names the writing release as the next step", async () => {
+  const f = fixture(); put(join(f.home, "memory", "setup", "claude.json"), JSON.stringify({ version: 3 }));
+  const marked = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  await expect(runCli(["setup", "claude", "--apply"], marked)).rejects.toThrow("cause: setup_receipt_version_unsupported");
+  await expect(runCli(["setup", "claude", "--apply"], marked)).rejects.toThrow("release that wrote the receipt");
+  await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt version is unsupported; run setup or undo with the release that wrote it");
+  expect(f.calls()).toEqual([]);
+});

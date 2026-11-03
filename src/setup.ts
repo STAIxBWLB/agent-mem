@@ -34,7 +34,7 @@ type Image = ConfigImage;
 interface PlannedHook { event: string; command: string; timeout: number }
 interface Change { key: string; path: string; before: Image; after: Image; start?: Image }
 interface DirectoryIdentity { dev: number; ino: number }
-interface Receipt { createdDirectory?: DirectoryIdentity; version: 1; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
+interface Receipt { createdDirectory?: DirectoryIdentity; version: 1 | 2; target: SetupTarget; intent: string; phase: "prepared" | "applied"; changes: Change[] }
 export interface SetupContext {
   env?: Env; bun?: string; entry?: string; stdinTTY?: boolean; cwd?: string;
   /** `--root`: an absolute amem install root to register instead of the running one (#199). Ignored when `entry` is given. */
@@ -210,7 +210,8 @@ function journal(c: ReturnType<typeof context>, target: SetupTarget): string { r
 function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
   const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
-  if (value.version !== 1 || value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
+  if (value.version !== 1 && value.version !== 2) throw Error("setup receipt version is unsupported; run setup or undo with the release that wrote it");
+  if (value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
     const change = record(value.changes[i]); const currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
     if (change.path !== currentPath && !legacyRedirect || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
@@ -511,7 +512,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.
     if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
-    return { value: { version: 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false };
+    return { value: { version: previous.length && ["claude", "codex", "kimi", "pi", "qwen", "jcode"].includes(target) ? 2 : 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
