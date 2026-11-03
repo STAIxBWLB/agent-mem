@@ -1,0 +1,268 @@
+name: stall113 fixed-main macOS measurement
+on:
+  pull_request:
+    paths: [.github/workflows/stall113.yml]
+permissions:
+  contents: read
+concurrency:
+  group: stall113-fixed-main
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 343a6928724932ba822dfab0a0f05e79f173a233
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Mandatory preflight, once
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, time
+          commit = "343a6928724932ba822dfab0a0f05e79f173a233"
+          out = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "stall113-output"
+          out.mkdir(exist_ok=True)
+          rows = []
+          host = {key: os.environ.get(key) for key in ("CI", "GITHUB_ACTIONS", "RUNNER_OS")}
+          host_ok = host == {"CI": "true", "GITHUB_ACTIONS": "true", "RUNNER_OS": "macOS"}
+          def fingerprint():
+              if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != commit:
+                  raise RuntimeError("checked-out head differs from fixed source")
+              subprocess.run(["git", "diff", "--exit-code", commit, "--", "src", "scripts", "test", "package.json", "bun.lock", ".bun-version"], check=True, stdout=subprocess.DEVNULL)
+              files = subprocess.check_output(["git", "ls-files", "-z", "src", "scripts", "test", "package.json", "bun.lock", ".bun-version"]).split(b"\0")
+              digest = hashlib.sha256()
+              for raw in sorted(value for value in files if value):
+                  digest.update(raw + b"\0" + pathlib.Path(os.fsdecode(raw)).read_bytes() + b"\0")
+              return digest.hexdigest()
+          try:
+              source = fingerprint()
+          except Exception as error:
+              source = None
+              rows.append({"command": "source assertion", "exitCode": 1, "error": str(error)})
+          if not host_ok:
+              rows.append({"command": "hosted macOS assertion", "exitCode": 1, "host": host})
+          env = dict(os.environ, AMEM_PREV_REQUIRED="1")
+          def run(name, argv):
+              start = time.time()
+              with (out / (name + ".stdout.log")).open("wb") as stdout, (out / (name + ".stderr.log")).open("wb") as stderr:
+                  try:
+                      code = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr).returncode
+                  except OSError as error:
+                      stderr.write(str(error).encode())
+                      code = 127
+              rows.append({"command": argv, "name": name, "exitCode": code, "seconds": round(time.time() - start, 3)})
+              print("preflight", name, "exit", code, flush=True)
+              return code
+          if source and host_ok:
+              run("install", ["bun", "install", "--frozen-lockfile"])
+              previous = pathlib.Path(os.environ["RUNNER_TEMP"]) / "stall113-previous-release"
+              if run("previous-release", ["bun", "scripts/previous-release.ts", str(previous)]) == 0:
+                  choices = [match for line in (out / "previous-release.stdout.log").read_text(errors="replace").splitlines()
+                             if (match := re.fullmatch(r"(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s+(/.+)", line))]
+                  if len(choices) == 1 and pathlib.Path(choices[0][2]).is_dir():
+                      env["AMEM_PREV_ROOT"] = choices[0][2]
+                      env["AMEM_PREV_VERSION"] = choices[0][1]
+                  else:
+                      rows.append({"command": "previous-release receipt", "exitCode": 1})
+              run("typecheck", ["bun", "x", "tsc", "--noEmit"])
+              run("boundary", ["bun", "scripts/check-boundary.ts"])
+              run("full-tests", ["bun", "test", "--max-concurrency", "2", "--timeout", "20000"])
+              run("pack", ["npm", "pack", "--dry-run"])
+          required = {"install", "previous-release", "typecheck", "boundary", "full-tests", "pack"}
+          ok = (host_ok and source is not None and env.get("AMEM_PREV_ROOT") is not None
+                and required <= {row.get("name") for row in rows} and all(row["exitCode"] == 0 for row in rows))
+          status = {"commit": commit, "sourceSha256": source, "host": host, "ok": ok,
+                    "previousReleaseRoot": env.get("AMEM_PREV_ROOT"), "previousReleaseVersion": env.get("AMEM_PREV_VERSION"), "commands": rows}
+          (out / "preflight.json").write_text(json.dumps(status, indent=2) + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as handle:
+              handle.write("AMEM_PREV_REQUIRED=1\n")
+              if env.get("AMEM_PREV_ROOT"):
+                  handle.write("AMEM_PREV_ROOT=" + env["AMEM_PREV_ROOT"] + "\n")
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Twenty sequential unmodified transcript budget scripts
+        if: always()
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, re, subprocess, time
+          commit = "343a6928724932ba822dfab0a0f05e79f173a233"
+          out = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "stall113-output"
+          out.mkdir(exist_ok=True)
+          preflight = json.loads((out / "preflight.json").read_text()) if (out / "preflight.json").exists() else {"ok": False}
+          host = {key: os.environ.get(key) for key in ("CI", "GITHUB_ACTIONS", "RUNNER_OS")}
+          host_ok = host == {"CI": "true", "GITHUB_ACTIONS": "true", "RUNNER_OS": "macOS"}
+          def fingerprint():
+              if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != commit:
+                  raise RuntimeError("checked-out head differs from fixed source")
+              subprocess.run(["git", "diff", "--exit-code", commit, "--", "src", "scripts", "test", "package.json", "bun.lock", ".bun-version"], check=True, stdout=subprocess.DEVNULL)
+              files = subprocess.check_output(["git", "ls-files", "-z", "src", "scripts", "test", "package.json", "bun.lock", ".bun-version"]).split(b"\0")
+              digest = hashlib.sha256()
+              for raw in sorted(value for value in files if value):
+                  digest.update(raw + b"\0" + pathlib.Path(os.fsdecode(raw)).read_bytes() + b"\0")
+              return digest.hexdigest()
+          def analyze(index, code):
+              diagnostics, malformed, aggregates, advisory_markers = [], [], [], 0
+              decoder = json.JSONDecoder()
+              marker = re.compile(r'\{\s*"diagnostic"\s*:')
+              critical = {"runner-fingerprint", "transcript-budget-invocation", "transcript-budget-sample", "transcript-budget-stall-advisory"}
+              for stream in ("stdout", "stderr"):
+                  file = out / ("iteration-%02d.%s.log" % (index, stream))
+                  for line_no, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
+                      positions = list(marker.finditer(line))
+                      for ordinal, match in enumerate(positions):
+                          stop = positions[ordinal + 1].start() if ordinal + 1 < len(positions) else len(line)
+                          prefix = line[match.start():stop]
+                          kind_match = re.match(r'\{\s*"diagnostic"\s*:\s*"([^"]+)"', prefix)
+                          kind = kind_match[1] if kind_match else None
+                          if kind == "transcript-budget-stall-advisory":
+                              advisory_markers += 1
+                          try:
+                              value, _ = decoder.raw_decode(line, match.start())
+                          except (ValueError, TypeError):
+                              # Recover concatenated compact diagnostics even after a giant
+                              # truncated group/final report. Aggregate JSON is not coverage.
+                              if kind == "budget-group":
+                                  check = re.search(r'"check"\s*:\s*"([^"]+)"', prefix)
+                                  outcome = re.search(r'"outcome"\s*:\s*"([^"]+)"', prefix)
+                                  attempt = re.search(r'"attempt"\s*:\s*(\d+)', prefix)
+                                  value = {"diagnostic": "budget-group", "check": check[1] if check else None,
+                                           "outcome": outcome[1] if outcome else None, "attempt": int(attempt[1]) if attempt else None, "aggregateTruncated": True}
+                                  aggregates.append({"stream": stream, "line": line_no, "column": match.start(), "kind": kind})
+                              else:
+                                  (malformed if kind in critical else aggregates).append({"stream": stream, "line": line_no, "column": match.start(), "kind": kind})
+                                  continue
+                          if isinstance(value, dict):
+                              if value.get("diagnostic") == "budget-group":
+                                  value = {key: inner for key, inner in value.items() if key != "result"}
+                              diagnostics.append({"stream": stream, "line": line_no, "column": match.start(), "value": value})
+              attempts, cases, strict = [], [], []
+              current = None
+              for item in diagnostics:
+                  row = item["value"]
+                  kind = row.get("diagnostic")
+                  if kind == "runner-fingerprint" and item["stream"] == "stdout":
+                      current = {"attempt": len(attempts) + 1, "fingerprint": row, "samples": [], "invocations": [], "receipts": []}
+                      attempts.append(current)
+                  if current is not None and item["stream"] == "stdout":
+                      if kind == "transcript-budget-sample":
+                          current["samples"].append(row)
+                      elif kind == "transcript-budget-invocation":
+                          current["invocations"].append(row)
+                      elif kind == "budget-group":
+                          current["receipts"].append(row)
+                  if kind == "budget-group" and row.get("outcome") in ("fail", "rss-miss", "wall-max-miss"):
+                      strict.append(item)
+                  if kind == "transcript-budget-failure" or kind == "transcript-wall-max" and row.get("enforced") is True:
+                      strict.append(item)
+                  if kind == "transcript-R1" and row.get("survivors", 0) > 0:
+                      strict.append(item)
+                  if kind == "transcript-budget-stall-advisory":
+                      attempt = current
+                      samples = [] if attempt is None else [sample for sample in attempt["samples"]
+                          if sample.get("event") == row.get("event") and sample.get("logicalRun") == row.get("logicalRun")
+                          and sample.get("followUp", -1) < row.get("followUp", -1)][-2:]
+                      related = [] if attempt is None else [invocation for invocation in attempt["invocations"]
+                          if invocation.get("event") == row.get("event") and invocation.get("logicalRun") == row.get("logicalRun")
+                          and invocation.get("followUp") in [sample.get("followUp") for sample in samples] + [row.get("followUp")]]
+                      cases.append({"iteration": index, "attempt": attempt and attempt["attempt"], "failure": row,
+                                    "previousTwoSamples": samples, "nativeInvocations": related, "location": {"stream": item["stream"], "line": item["line"]}})
+              coverage = []
+              for attempt in attempts:
+                  groups = {}
+                  for event, expected in (("Stop", 3), ("SessionEnd", 3), ("StopBurst", 103)):
+                      groups[event] = {}
+                      for logical in range(1, 41):
+                          samples = [row for row in attempt["samples"] if row.get("event") == event and row.get("logicalRun") == logical]
+                          invocations = [row for row in attempt["invocations"] if row.get("event") == event and row.get("logicalRun") == logical]
+                          complete = (bool(samples) and samples[-1].get("durableSummaries") == expected
+                              and [row.get("followUp") for row in samples] == list(range(len(samples)))
+                              and [row.get("followUp") for row in invocations] == list(range(len(samples)))
+                              and all(row.get("exitCode") == 0 and row.get("stdoutBytes") == 0 and isinstance(row.get("metric"), dict) for row in invocations))
+                          groups[event][str(logical)] = {"complete": complete, "sampleCount": len(samples)}
+                  coverage.append({"attempt": attempt["attempt"], "groups": groups,
+                      "complete": all(group["complete"] for event in groups.values() for group in event.values())})
+              r1_summary = any(item["value"].get("diagnostic") == "transcript-R1-summary" for item in diagnostics)
+              valid = (code == 0 and bool(coverage) and coverage[-1]["complete"]
+                       and not malformed and all(len(case["previousTwoSamples"]) == 2 and len(case["nativeInvocations"]) == 3 for case in cases))
+              summary = {"iteration": index, "exitCode": code, "strictWouldFail": advisory_markers > 0,
+                         "advisoryRows": len(cases), "advisoryMarkers": advisory_markers, "validCompleteScript": valid,
+                         "coverage": coverage, "partialAttemptCoverage": [attempt["attempt"] for attempt in coverage if not attempt["complete"]],
+                         "r1SummaryPresent": r1_summary, "scriptCensored": code != 0,
+                         "groupAttemptOutcomes": [item for item in diagnostics if item["value"].get("diagnostic") == "budget-group"],
+                         "malformedDiagnostics": malformed, "truncatedAggregatesParsedFromPrefix": aggregates, "otherStrictAttemptFailures": strict}
+              (out / ("iteration-%02d.summary.json" % index)).write_text(json.dumps(summary, indent=2) + "\n")
+              (out / ("iteration-%02d.cases.json" % index)).write_text(json.dumps(cases, indent=2) + "\n")
+              return summary
+          results, all_cases = [], []
+          (out / "cases.json").write_text("[]\n")
+          (out / "summary.json").write_text(json.dumps({"commit": commit, "preflightOK": preflight.get("ok") is True,
+              "recordedIterations": 0, "measurementComplete": False, "strictWouldFailRate": None,
+              "removalEligible": False, "note": "Measurement has not completed."}, indent=2) + "\n")
+          for index in range(1, 21):
+              start = time.time()
+              status = {"iteration": index, "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "host": host}
+              try:
+                  source = fingerprint()
+                  if not host_ok or source != preflight.get("sourceSha256"):
+                      raise RuntimeError("host or source-hash assertion failed")
+                  status["sourceSha256"] = source
+                  with (out / ("iteration-%02d.stdout.log" % index)).open("wb") as stdout, (out / ("iteration-%02d.stderr.log" % index)).open("wb") as stderr:
+                      status["exitCode"] = subprocess.run(["bun", "scripts/measure-transcript-budget.ts"], stdout=stdout, stderr=stderr).returncode
+                  result = analyze(index, status["exitCode"])
+              except Exception as error:
+                  status.update({"error": str(error), "censored": True})
+                  observed = any(re.search(r'\{\s*"diagnostic"\s*:\s*"transcript-budget-stall-advisory"', file.read_text(errors="replace"))
+                      for file in (out / ("iteration-%02d.stdout.log" % index), out / ("iteration-%02d.stderr.log" % index)) if file.exists())
+                  result = {"iteration": index, "exitCode": status.get("exitCode"), "strictWouldFail": True if observed else None,
+                            "validCompleteScript": False, "censored": True, "error": str(error)}
+              status["seconds"] = round(time.time() - start, 3)
+              (out / ("iteration-%02d.status.json" % index)).write_text(json.dumps(status, indent=2) + "\n")
+              results.append(result)
+              print("iteration %02d exit=%s strictWouldFail=%s complete=%s seconds=%.3f source=%s" %
+                    (index, status.get("exitCode"), result.get("strictWouldFail"), result["validCompleteScript"], status["seconds"], status.get("sourceSha256", "UNVERIFIED")), flush=True)
+              # Incremental results survive a hosted cancellation or whole-job timeout.
+              (out / "iterations.json").write_text(json.dumps(results, indent=2) + "\n")
+              case_file = out / ("iteration-%02d.cases.json" % index)
+              if case_file.exists():
+                  all_cases.extend(json.loads(case_file.read_text()))
+              (out / "cases.json").write_text(json.dumps(all_cases, indent=2) + "\n")
+              (out / "summary.json").write_text(json.dumps({"commit": commit, "preflightOK": preflight.get("ok") is True,
+                  "recordedIterations": len(results), "measurementComplete": False,
+                  "observedStrictWouldFailLowerBound": {"count": sum(row.get("strictWouldFail") is True for row in results), "denominator": 20},
+                  "strictWouldFailRate": None, "removalEligible": False,
+                  "note": "Interim/censored evidence until all twenty scripts finish."}, indent=2) + "\n")
+          valid = all(row["validCompleteScript"] for row in results)
+          hard_failures = sum(len(row.get("otherStrictAttemptFailures", [])) for row in results)
+          complete = host_ok and len(results) == 20 and valid
+          would_fail = sum(row.get("strictWouldFail") is True for row in results)
+          eligible = preflight.get("ok") is True and complete and would_fail == 0 and hard_failures == 0
+          summary = {"commit": commit, "host": host, "requestedIterations": 20, "recordedIterations": len(results),
+                     "preflight": preflight, "preflightOK": preflight.get("ok") is True, "measurementComplete": complete, "removalEligible": eligible,
+                     "observedStrictWouldFailLowerBound": {"count": would_fail, "denominator": 20},
+                     "strictWouldFailIterations": would_fail, "strictWouldFailRate": would_fail / 20 if complete else None,
+                     "otherStrictAttemptFailures": hard_failures, "iterations": results,
+                     "note": "All advisory rows from every script attempt count. Internal script retries are observed, never added by this workflow. A null rate is incomplete/censored evidence, not zero."}
+          (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          rate = ("%d/20 (%.1f%%)" % (would_fail, would_fail * 5)) if complete else "not established (incomplete/censored protocol)"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+              handle.write("\n## Task 113 fixed-main measurement\n\nPreflight: %s. Recorded iterations: %d/20. Measurement complete: %s. Removal eligible: %s.\n\nStrict would-fail rate: %s. Observed lower bound: %d/20. Other strict attempt failures: %d. Raw logs, every case with its preceding two samples, and native metrics are in the artifact.\n" %
+                           (preflight.get("ok") is True, len(results), complete, eligible, rate, would_fail, hard_failures))
+          print("strictWouldFailRate=" + rate, flush=True)
+          raise SystemExit(0 if complete else 1)
+          PY
+      - name: Preserve every raw log and measurement result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stall113-fixed-main-macos
+          path: stall113-output/
+          if-no-files-found: error
+          retention-days: 30
