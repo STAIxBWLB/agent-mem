@@ -30,7 +30,7 @@ function fixture(target: Target) {
   const native: NonNullable<SetupContext["native"]> = (argv, staged, cwd) => {
     calls.push([...argv]);
     const client = argv[0], remove = argv[2] === "remove", marker = argv.indexOf("--");
-    expect(["claude", "codex", "pi", "qwen"]).toContain(client);
+    expect(["claude", "codex", "pi", "qwen"]).toContain(client!);
     expect(argv.slice(1, 3)).toEqual(["mcp", remove ? "remove" : "add"]);
     expect(staged.HOME).toBe(cwd); expect(cwd).not.toBe(home);
     expect(cwd.startsWith(realPath(tmpdir()) + "/amem-setup-")).toBe(true);

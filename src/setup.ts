@@ -356,7 +356,8 @@ function hasHook(rows: readonly unknown[], command: string, timeout: number): bo
 function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1, previousFor?: (event: string) => readonly string[]): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
   for (const event of events) {
-    let rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
+    const rawRows = hooks[event] ?? []; if (!Array.isArray(rawRows)) throw Error("setup hook groups must be arrays");
+    let rows: unknown[] = rawRows;
     const previous = previousFor?.(event);
     if (previous?.length) rows = rows.flatMap(value => {
       const group = record(value); if (!Array.isArray(group.hooks)) throw Error("setup hook handlers must be arrays");
@@ -416,7 +417,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const previousMcp = prior?.changes[0];
-  const previous = previousRuntimes(target, [expected[0]!, ...(previousMcp?.path === c.paths[target][0] ? [previousMcp.before, previousMcp.after, ...(previousMcp.start ? [previousMcp.start] : [])] : [])], c.bun, c.entry);
+  const previous = previousRuntimes(target, [expected[0]!, ...(previousMcp && previousMcp.path === c.paths[target][0] ? [previousMcp.before, previousMcp.after, ...(previousMcp.start ? [previousMcp.start] : [])] : [])], c.bun, c.entry);
   const oldLaunches = previous.map(runtime => `${quote(runtime.bun)} --smol ${quote(runtime.entry)}`);
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
@@ -488,8 +489,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3, () => oldLaunches.map(launch => `${launch} ingest qwen --json`));
     if (target === "kimi") {
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
-      const parsed = toml(old); let hooks = parsed.hooks ?? [];
-      if (!Array.isArray(hooks)) throw Error("Kimi hooks must be an array");
+      const parsed = toml(old), rawHooks = parsed.hooks ?? [];
+      if (!Array.isArray(rawHooks)) throw Error("Kimi hooks must be an array");
+      let hooks: unknown[] = rawHooks;
       if (oldLaunches.length) hooks = hooks.filter(h => {
         const row = record(h);
         if (row.event !== "SessionEnd" || !oldLaunches.some(launch => row.command === `${launch} ingest kimi --json`)) return true;
