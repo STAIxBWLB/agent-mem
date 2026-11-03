@@ -140,6 +140,46 @@ for (const version of [1, 2]) for (const edited of [false, true]) test(`Orca Cla
   expect(r.text(profileMcp)).toBe(beforeCopy);
 });
 
+test("live 2026-11-03 Orca rollback to the receipted old root migrates and undoes the personal MCP file exactly", () => {
+  const r = rig(), data = join(r.home, "Library", "Application Support", "orca");
+  const profile = join(data, "claude-profiles", "live-layout", "home");
+  const profileMcp = join(profile, ".claude.json"), personalMcp = join(r.home, ".claude.json");
+  const personalHooks = join(r.home, ".claude", "settings.json");
+  const oldEntry = join(r.home, "old root", "bin", "amem.js");
+  const oldServer = { command: r.bun, args: ["--smol", oldEntry, "mcp"] };
+  const oldProfile = JSON.stringify({ mcpServers: { amem: oldServer } }) + "\n";
+  r.env.CLAUDE_CONFIG_DIR = profile;
+  r.env.ORCA_USER_DATA_PATH = join(r.home, "other-app-data");
+  r.put(profileMcp, oldProfile);
+  applySetup(planSetup("claude", "apply", r.options), r.options);
+  const receiptFile = join(r.home, "memory", "setup", "claude.json");
+  const receipt = JSON.parse(r.text(receiptFile));
+  expect(receipt.changes[0].path).toBe(profileMcp);
+  expect(JSON.parse(Buffer.from(receipt.changes[0].before.bytes, "base64").toString()).mcpServers.amem).toEqual(oldServer);
+  expect(JSON.parse(Buffer.from(receipt.changes[0].after.bytes, "base64").toString()).mcpServers.amem.args).toEqual(["--smol", r.entry, "mcp"]);
+  receipt.changes[1].path = personalHooks;
+  r.put(personalHooks, r.text(join(profile, "settings.json")));
+  r.put(receiptFile, JSON.stringify(receipt) + "\n");
+  const other = { command: "other" };
+  const originalPersonal = '{\n  "mcpServers": ' + JSON.stringify({ amem: oldServer, other }) + '\n}\n';
+  r.put(personalMcp, originalPersonal);
+  r.put(profileMcp, oldProfile); // Orca restored the receipt's before image, rather than its after image.
+  expect(readFileSync(profileMcp).toString("base64")).toBe(receipt.changes[0].before.bytes);
+  const profileBytes = readFileSync(profileMcp), personalBytes = readFileSync(personalMcp);
+  r.env.ORCA_USER_DATA_PATH = data;
+  const preview = planSetup("claude", "preview", r.options);
+  expect(preview.actions[0]!.files).toEqual([personalMcp, personalHooks]);
+  expect(applySetup(preview, r.options).applied).toEqual(["claude"]);
+  const servers = JSON.parse(r.text(personalMcp)).mcpServers;
+  expect(servers.amem.args).toEqual(["--smol", r.entry, "mcp"]);
+  expect(servers.other).toEqual(other);
+  expect(readFileSync(profileMcp)).toEqual(profileBytes);
+  undoSetup(planSetup("claude", "undo", r.options), r.options);
+  expect(readFileSync(personalMcp)).toEqual(personalBytes);
+  expect(JSON.parse(r.text(personalMcp)).mcpServers.amem).toEqual(oldServer);
+  expect(readFileSync(profileMcp)).toEqual(profileBytes);
+});
+
 test("ordinary Claude/Codex setup plans and file bytes match the pre-redirect golden", () => {
   const golden = JSON.parse(readFileSync(new URL("./fixtures/setup-non-orca-202.json", import.meta.url), "utf8"));
   for (const target of ["claude", "codex"] as const) for (const custom of [false, true]) {
