@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { SETUP_CONFIG_BYTES, insertTomlArrayItems, restoreRemovedItems, setTomlPath, updateTomlArray } from "./setup-toml.ts";
-import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, restoreJcodeHooks } from "./setup-jcode.ts";
+import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, jcodeRetiresOriginalHook, restoreJcodeHooks } from "./setup-jcode.ts";
 import { readAgyMcp, putAgyMcp, restoreAgyMcp } from "./setup-agy.ts";
 import { readOpencodeMcp, putOpencodeMcp, restoreOpencodeMcp } from "./setup-opencode.ts";
 export interface ConfigImage { bytes: string | null; mode: number }
@@ -167,6 +167,17 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
   if (current.bytes === after.bytes) return { ...before, mode: current.mode };
   if (current.bytes === before.bytes) return current;
   throw Error("setup-owned Pi extension changed; refusing to overwrite it");
+}
+/** Only removal of an original/adopted hook needs receipt v2; added-only receipts remain v1-readable. */
+export function retiresOriginalHook(target: string, index: number, before: ConfigImage, after: ConfigImage): boolean {
+  if (target === "qwen" && index === 0 || ["claude", "codex"].includes(target) && index === 1) {
+    const strict = target === "qwen";
+    return added(hooks(json(after), strict), hooks(json(before), strict), row => row.id).length > 0;
+  }
+  if (index !== 1) return false;
+  if (target === "kimi") return added(kimiHooks(after), kimiHooks(before), kimiKey).length > 0;
+  if (target === "jcode") return jcodeRetiresOriginalHook(before, after);
+  return target === "pi" && before.bytes !== null && before.bytes !== after.bytes;
 }
 export function managedAfter(target: string, index: number, before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
   if (target === "qwen" && index === 0) {

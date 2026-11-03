@@ -44,6 +44,10 @@ function ownedCommands(before: ConfigImage, after: ConfigImage): Map<string, str
   for (const event of JCODE_CAPTURE_EVENTS) { const prior = commands(b[event]); owned.set(event, commands(a[event]).filter(item => !prior.includes(item))); }
   return owned;
 }
+/** True only when the receipt removes an original command, requiring a restoring reader. */
+export function jcodeRetiresOriginalHook(before: ConfigImage, after: ConfigImage): boolean {
+  return [...ownedCommands(after, before).values()].some(commands => commands.length > 0);
+}
 export function jcodeHooksManaged(before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
   try { const hooks = hooksTable(tomlText(current)) ?? {}; const original = hooksTable(tomlText(before)) ?? {}, installed = hooksTable(tomlText(after)) ?? {};
     return [...ownedCommands(before, after)].every(([event, owned]) => owned.every(item => commands(hooks[event]).includes(item))

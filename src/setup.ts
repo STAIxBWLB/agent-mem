@@ -1,7 +1,7 @@
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
-import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, sameImage, type ConfigImage } from "./setup-owned.ts";
+import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
 import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
 import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
@@ -517,7 +517,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.
     if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
-    return { value: { version: previous.length && ["claude", "codex", "kimi", "pi", "qwen", "jcode"].includes(target) ? 2 : 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false };
+    return { value: { version: previous.length && changes.some((change, index) => retiresOriginalHook(target, index, change.before, change.after)) ? 2 : 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }

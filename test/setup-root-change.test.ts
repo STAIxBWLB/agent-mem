@@ -133,13 +133,16 @@ function adopt(f: Fixture): Map<string, Image> {
 for (const target of TARGETS) test(target + ": a new --root replaces managed hooks once and undo restores original bytes", () => {
   const f = fixture(target);
   expect(f.apply(f.oldRoot).applied).toEqual([target]); registeredOnly(f, "old");
+  expect(JSON.parse(text(f.receipt)).version, "initial setup stays receipt v1").toBe(1);
   expect(f.apply(f.newRoot).applied).toEqual([target]); registeredOnly(f, "new");
+  expect(JSON.parse(text(f.receipt)).version, "ordinary receipt-owned relocation stays receipt v1").toBe(1);
   f.undo(f.newRoot); restored(f.originals); expect(existsSync(f.receipt)).toBe(false);
 });
 
 for (const target of TARGETS) test(target + ": a new --root replaces adopted pre-existing hooks even when the receipt owns no delta", () => {
   const f = fixture(target), preAdoption = adopt(f);
   expect(f.apply(f.newRoot).applied).toEqual([target]); registeredOnly(f, "new");
+  expect(JSON.parse(text(f.receipt)).version, "removing an adopted original hook requires receipt v2").toBe(2);
   f.undo(f.newRoot); restored(preAdoption); expect(existsSync(f.receipt)).toBe(false);
 });
 
@@ -150,6 +153,7 @@ for (const target of TARGETS) test(target + ": a new --root directly replaces re
   // No same-root adoption occurs here. Pi's existing extension is accepted only
   // through its exact previous MCP binding, not a broad managed-looking comment.
   expect(f.apply(f.newRoot).applied).toEqual([target]); registeredOnly(f, "new");
+  expect(JSON.parse(text(f.receipt)).version, "removing receipt-less original wiring requires receipt v2").toBe(2);
   f.undo(f.newRoot); restored(originalWiring); expect(existsSync(f.receipt)).toBe(false);
 });
 
@@ -222,7 +226,7 @@ for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 s
   const previous = await import(pathToFileURL(join(previousRoot, "src", "setup.ts")).href) as {
     applySetup: typeof applySetup; undoSetup: typeof undoSetup;
   };
-  const f = fixture(target); f.apply(f.oldRoot); f.apply(f.newRoot);
+  const f = fixture(target); adopt(f); f.apply(f.newRoot);
   expect(JSON.parse(text(f.receipt)).version).toBe(2);
   const publications: string[] = [], opts = { ...f.options(f.newRoot), beforePublish: (file: string) => publications.push(file) };
   const apply = planSetup(target, "apply", opts), undo = planSetup(target, "undo", opts), nativeCalls = f.calls.length;
@@ -232,6 +236,20 @@ for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 s
   expect(() => previous.undoSetup(undo, opts), "published " + pkg.version + " undo must refuse receipt v2").toThrow(/setup receipt.*(?:match|version)/);
   expect(publications).toEqual([]); expect(f.calls).toHaveLength(nativeCalls); restored(before);
   console.log(JSON.stringify({ diagnostic: "setup-receipt-v2-published-reader", version: pkg.version, target, refusedApply: true, refusedUndo: true, configPublications: publications.length }));
+});
+
+for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 undo accepts an ordinary receipt-v1 root relocation", async () => {
+  expect(previousRoot, "AMEM_PREV_ROOT is required by the previous-release gate").toBeTruthy();
+  if (!previousRoot) throw Error("AMEM_PREV_ROOT is required");
+  const pkg = previousManifest!; expect(pkg.name).toBe("@staix/agent-mem"); expect(pkg.version).toBe("0.20.0");
+  const previous = await import(pathToFileURL(join(previousRoot, "src", "setup.ts")).href) as { undoSetup: typeof undoSetup };
+  const f = fixture(target); f.apply(f.oldRoot);
+  expect(JSON.parse(text(f.receipt)).version).toBe(1);
+  f.apply(f.newRoot); registeredOnly(f, "new"); expect(JSON.parse(text(f.receipt)).version).toBe(1);
+  const options = f.options(f.newRoot);
+  previous.undoSetup(planSetup(target, "undo", options), options);
+  restored(f.originals); expect(existsSync(f.receipt)).toBe(false);
+  console.log(JSON.stringify({ diagnostic: "setup-receipt-v1-published-undo", version: pkg.version, target, acceptedUndo: true, originalBytesRestored: true }));
 });
 
 for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test(target + ": semantic undo restores adopted OLD hooks before observers in their original ordered position", () => {
