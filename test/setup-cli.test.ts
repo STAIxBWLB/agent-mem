@@ -100,6 +100,100 @@ test("a native CLI without MCP administration is refused before free-form prompt
   await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("does not expose MCP registration");
   expect(existsSync(called)).toBe(false); expect(f.calls()).toEqual([]);
 });
+
+for (const target of ["claude", "pi", "qwen"] as const) test(`marked ${target} apply explains an unverified native capability without exposing private details`, async () => {
+  const f = fixture(), called = join(f.root, "must-not-register"), canary = "private-native-help-canary";
+  put(join(f.root, "bin", target), `#!/bin/sh\nif [ "$1" = "--version" ]; then printf '${target} 0.0.0-fixture'; exit 0; fi\nif [ "$1" = "--help" ]; then printf 'Usage: ${canary}'; exit 0; fi\nprintf called > '${called}'\n`, 0o700);
+  const marked = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  const before = snapshot(f.root);
+  const preview = JSON.parse(await runCli(["setup", target, "--json"], marked));
+  expect(preview.mode).toBe("preview"); expect(preview.actions[0].available).toBe(true);
+  expect(snapshot(f.root)).toEqual(before);
+  const failure = await runCli(["setup", target, "--apply"], marked).then(() => { throw Error("apply unexpectedly succeeded"); }, error => error as Error);
+  expect(failure.message).toContain("cause: native_capability_unverified");
+  expect(failure.message).toContain("Next step:"); expect(failure.message).toContain("can start and exposes MCP administration");
+  expect(failure.message).not.toContain("does not expose");
+  for (const withheld of [canary, f.root, f.home, "Usage:"]) expect(failure.message).not.toContain(withheld);
+  const unmarked = await runCli(["setup", target, "--apply"], f.context).then(() => { throw Error("apply unexpectedly succeeded"); }, error => error as Error);
+  expect(unmarked.message).toBe(`installed ${target} CLI does not expose MCP registration; no registration command was run`);
+  expect(existsSync(called)).toBe(false); expect(f.calls()).toEqual([]);
+  expect(snapshot(f.root).filter(row => !["home/memory", "home/memory/setup"].includes(row.file))).toEqual(before);
+});
+
+/** Exercise the real CLI catch after a synthetic internal fault, in a separate isolated process. */
+function setupFault(f: ReturnType<typeof fixture>, marked: boolean, partial: boolean): string {
+  const preload = join(f.root, "setup-fault.ts"), setup = fileURLToPath(new URL("../src/setup.ts", import.meta.url)), cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const config = join(f.home, ".claude.json"), privateMessage = `private-setup-error-canary ${config}`;
+  const anchor = partial ? "names(file); renameSync(temporary, file);" : "  return withSetupLock(options, () => applyUnlocked(plan, options));";
+  const replacement = partial ? `${anchor} if(file===${JSON.stringify(config)})throw Object.assign(new Error(${JSON.stringify(privateMessage)}),{code:'EIO'});`
+    : `throw new Error(${JSON.stringify(privateMessage)});`;
+  put(preload, `import{readFileSync}from'node:fs';Bun.plugin({name:'setup-fault',setup(b){b.onLoad({filter:/[/]setup[.]ts$/},({path})=>{if(path!==${JSON.stringify(setup)})return;const source=readFileSync(path,'utf8'),anchor=${JSON.stringify(anchor)};if(source.split(anchor).length!==2)throw Error('setup fault anchor changed');return{loader:'ts',contents:source.replace(anchor,${JSON.stringify(replacement)})};});}});`);
+  const script = `import{runCli}from${JSON.stringify(cli)};try{await runCli(['setup','claude','--apply'],{cwd:${JSON.stringify(f.cwd)},env:process.env,stdinTTY:false});process.exitCode=2;}catch(error){console.log(JSON.stringify({message:error.message}));}`;
+  const result = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], {
+    cwd: f.cwd, env: { ...f.env, ...(marked ? { CODEX_THREAD_ID: "setup-fixture" } : {}) }, stdout: "pipe", stderr: "pipe", timeout: 10_000,
+  });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  const message = (JSON.parse(result.stdout.toString()) as { message: string }).message;
+  if (partial) expect(existsSync(config)).toBe(true); // The fault is after publication, not a harmless preparation refusal.
+  return message;
+}
+
+test("marked setup publication errors identify storage failure and caution about partial apply without leaking its cause", () => {
+  const f = fixture(), message = setupFault(f, true, true);
+  expect(message).toContain("cause: setup_filesystem_unavailable"); expect(message).toContain("Next step:");
+  expect(message).toContain("Some setup changes may already be applied");
+  expect(message).not.toContain("private-setup-error-canary"); expect(message).not.toContain(f.root); expect(message).not.toContain("no configuration changed");
+});
+
+test("unknown marked setup failures have a fixed fallback while unmarked failures retain their exact error", () => {
+  const marked = fixture(), message = setupFault(marked, true, false);
+  expect(message).toContain("cause: setup_apply_failed"); expect(message).toContain("Next step:");
+  expect(message).toContain("Some setup changes may already be applied");
+  expect(message).not.toContain("private-setup-error-canary"); expect(message).not.toContain(marked.root);
+  const unmarked = fixture();
+  expect(setupFault(unmarked, false, false)).toBe(`private-setup-error-canary ${join(unmarked.home, ".claude.json")}`);
+});
+
+test("setup undo keeps the existing marked mask instead of using apply-specific error details", async () => {
+  const f = fixture(); put(join(f.home, "memory", "setup", "claude.json"), "private-setup-receipt-canary");
+  const context = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  await expect(runCli(["setup", "claude", "--undo"], context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+});
+
+for (const target of ["claude", "pi", "qwen"] as const) test(`${target} preview succeeds but apply preserves an externally edited owned MCP entry`, async () => {
+  const f = fixture(), fake = join(f.root, "state-drift-native.ts"), record = join(f.root, "native-calls");
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  // Only this fixture's selected executable changes. Every native command still runs
+  // in setup's private staged HOME and writes that target's actual JSON layout.
+  put(fake, `import{appendFileSync,existsSync,mkdirSync,readFileSync,writeFileSync}from'node:fs';import{dirname,join}from'node:path';
+const argv=process.argv.slice(2),target=argv[0],home=process.env.HOME;
+if(home===${JSON.stringify(f.home)}||process.cwd()!==home)throw Error('native fixture escaped staging');
+if(argv.includes('--version')){console.log(target+' 0.0.0-fixture');process.exit(0);}
+if(argv.includes('--help')){console.log('  mcp Manage MCP servers');process.exit(0);}
+appendFileSync(${JSON.stringify(record)},JSON.stringify({argv,home,cwd:process.cwd()})+'\\n');
+const file=target==='claude'?(process.env.CLAUDE_CONFIG_DIR?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):join(home,'.claude.json')):target==='pi'?join(process.env.PI_CODING_AGENT_DIR,'mcp.json'):join(process.env.QWEN_HOME,'settings.json');
+const document=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};document.mcpServers??={};
+if(argv[2]==='remove')delete document.mcpServers.amem;
+else{const marker=argv.indexOf('--');document.mcpServers.amem=target==='qwen'?{command:argv[marker-1],args:argv.slice(marker+1)}:{command:argv[marker+1],args:argv.slice(marker+2)};}
+mkdirSync(dirname(file),{recursive:true});writeFileSync(file,JSON.stringify(document,null,2)+'\\n');`);
+  put(join(f.root, "bin", target), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fake)} ${quote(target)} "$@"\n`, 0o700);
+  expect(JSON.parse(await runCli(["setup", target, "--apply", "--json"], f.context))).toEqual({ applied: [target], unchanged: [] });
+  expect(f.calls()).toHaveLength(1);
+  const config = target === "claude" ? join(f.home, ".claude.json") : target === "pi" ? join(f.env.PI_CODING_AGENT_DIR!, "mcp.json") : join(f.home, ".qwen", "settings.json");
+  const receipt = join(f.home, "memory", "setup", `${target}.json`), receiptBytes = readFileSync(receipt), calls = f.calls().length;
+  const document = JSON.parse(readFileSync(config, "utf8")), canary = join(f.home, "person-edited-MCP-command-canary");
+  document.mcpServers.amem.command = canary; put(config, JSON.stringify(document, null, 2) + "\n");
+  const edited = readFileSync(config), marked = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  expect(JSON.parse(await runCli(["setup", target, "--json"], marked)).mode).toBe("preview");
+  const failure = await runCli(["setup", target, "--apply"], marked).then(() => { throw Error("apply unexpectedly overwrote the edited entry"); }, error => error as Error);
+  expect(failure.message).toContain("cause: setup_ownership_conflict"); expect(failure.message).toContain("Next step:");
+  expect(failure.message).not.toContain(canary); expect(failure.message).not.toContain(f.root);
+  const unmarked = await runCli(["setup", target, "--apply"], f.context).then(() => { throw Error("apply unexpectedly overwrote the edited entry"); }, error => error as Error);
+  expect(unmarked.message).toBe("setup-owned MCP entry changed; refusing to overwrite it");
+  expect(readFileSync(config)).toEqual(edited); expect(readFileSync(receipt)).toEqual(receiptBytes);
+  expect(f.calls()).toHaveLength(calls);
+});
+
 test("all setup skips and reports absent CLIs while configuring the available client", async () => {
   const f = fixture(); rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
   const result = JSON.parse(await runCli(["setup", "all", "--apply", "--json"], f.context));

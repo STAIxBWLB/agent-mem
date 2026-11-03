@@ -205,7 +205,7 @@ function assertOpencodeLayout(c: ReturnType<typeof context>, mode: SetupPlan["mo
   for (const name of ["opencode.jsonc", "config.json"]) if (read(join(dir, name)).bytes !== null) throw Error(`OpenCode setup supports one strict-JSON global opencode.json; ${name} beside it is merged too and is not supported`);
   if ([c.bun, c.entry].some(value => /\{(?:env|file):/.test(value))) throw Error("OpenCode substitutes {env:} and {file:} in configuration; setup cannot register this runtime exactly");
 }
-function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "jcode" ? ["jcode-hooks-v1"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
+function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "jcode" ? ["jcode-hooks-v1"] : []), ...(["claude", "codex", "kimi", "pi", "qwen", "jcode"].includes(target) ? ["root-hooks-v2"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
 function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
   const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
@@ -353,10 +353,23 @@ function hasHook(rows: readonly unknown[], command: string, timeout: number): bo
       && group.hooks.some((h: unknown) => { const value = record(h); return value.type === "command" && value.command === command && value.timeout === timeout; });
   });
 }
-function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1): Image {
+function hookDocument(before: Image, events: readonly string[], commandFor: (event: string) => string, timeout = 1, previousFor?: (event: string) => readonly string[]): Image {
   const document = json(before), hooks = document.hooks === undefined ? {} : record(document.hooks);
   for (const event of events) {
-    const rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
+    let rows = hooks[event] ?? []; if (!Array.isArray(rows)) throw Error("setup hook groups must be arrays");
+    const previous = previousFor?.(event);
+    if (previous?.length) rows = rows.flatMap(value => {
+      const group = record(value); if (!Array.isArray(group.hooks)) throw Error("setup hook handlers must be arrays");
+      let removed = false;
+      const kept = group.hooks.filter(h => {
+        const handler = record(h);
+        if (handler.type !== "command" || !previous.includes(String(handler.command))) return true;
+        if (![undefined, "", "*"].includes(group.matcher as string | undefined) || handler.timeout !== timeout)
+          throw Error("previous-runtime hook settings changed; review hook configuration before retrying setup");
+        removed = true; return false;
+      });
+      return removed ? kept.length ? [{ ...group, hooks: kept }] : [] : [value];
+    });
     const command = commandFor(event);
     if (!hasHook(rows, command, timeout)) rows.push({ hooks: [{ type: "command", command, timeout }] });
     hooks[event] = rows;
@@ -365,6 +378,20 @@ function hookDocument(before: Image, events: readonly string[], commandFor: (eve
 }
 function piExtension(bun: string, entry: string): string {
   return `// amem setup managed session-end ingest; no resident worker or instruction injection.\nimport { spawnSync } from 'node:child_process';\nexport default function (pi) {\n  pi.on('session_shutdown', (_event, ctx) => {\n    try { spawnSync(${JSON.stringify(bun)}, ['--smol', ${JSON.stringify(entry)}, 'ingest', 'pi'], { cwd: ctx.cwd, stdio: 'ignore', timeout: 2500 }); } catch {}\n  });\n}\n`;
+}
+/** Bind old hooks to exact current/receipted MCP launchers, including an adopted baseline.
+ * The feature intent tag forces one repair of receipts from the old add-only installer. */
+function previousRuntimes(target: SetupTarget, images: readonly Image[], bun: string, entry: string): { bun: string; entry: string }[] {
+  const found = new Map<string, { bun: string; entry: string }>();
+  for (const image of images) {
+    const value = mcpRecord(target, image);
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const server = value as Record<string, unknown>, args = server.args;
+    if (typeof server.command === "string" && isAbsolute(server.command) && Array.isArray(args) && args.length === 3
+      && args[0] === "--smol" && typeof args[1] === "string" && isAbsolute(args[1]) && args[2] === "mcp"
+      && (server.command !== bun || args[1] !== entry)) found.set(JSON.stringify([server.command, args[1]]), { bun: server.command, entry: args[1] });
+  }
+  return [...found.values()];
 }
 interface Prepared { value: Receipt; expected: Image[]; unchanged: boolean }
 function restoreChange(value: Receipt, change: Change, index: number, live: Image): Image {
@@ -388,6 +415,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     return prior && change && change.path === path ? restoreChange(prior, change, index, expected[index]!) : expected[index]!; });
   if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
+  const previousMcp = prior?.changes[0];
+  const previous = previousRuntimes(target, [expected[0]!, ...(previousMcp?.path === c.paths[target][0] ? [previousMcp.before, previousMcp.after, ...(previousMcp.start ? [previousMcp.start] : [])] : [])], c.bun, c.entry);
+  const oldLaunches = previous.map(runtime => `${quote(runtime.bun)} --smol ${quote(runtime.entry)}`);
   const staging = mkdtempSync(join(realPath(tmpdir()), "amem-setup-"));
   try {
     const { env, staged } = stagingEnvironment(c, target, options, staging);
@@ -442,7 +472,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     } else if (target === "jcode") {
       // Shared native pools use the daemon cwd; amem must bind the calling session's project.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, { command: c.bun, args: ["--smol", c.entry, "mcp"], shared: false });
-      changes[1]!.after = putJcodeHooks(changes[1]!.before, jcodeHookCommand(c.bun, c.entry));
+      changes[1]!.after = putJcodeHooks(changes[1]!.before, jcodeHookCommand(c.bun, c.entry), previous.map(runtime => jcodeHookCommand(runtime.bun, runtime.entry)));
     } else if (target === "opencode") {
       // `opencode mcp add` is interactive for local servers and has no remove; edit the owned entry directly.
       changes[0]!.after = putMcpRecord(target, changes[0]!.before, opencodeServer(c.bun, c.entry));
@@ -452,20 +482,28 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       changes[0]!.after = objectImage(document, changes[0]!.before);
     }
     const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind} --json`;
-    if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`);
-    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3);
+    if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`, 1, event => oldLaunches.map(launch => `${launch} hook ${event}`));
+    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3, () => oldLaunches.map(launch => `${launch} ingest codex --json`));
     // Qwen's user MCP and hooks share settings.json: publish and journal one combined image.
-    if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3);
+    if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3, () => oldLaunches.map(launch => `${launch} ingest qwen --json`));
     if (target === "kimi") {
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
-      const parsed = toml(old), hooks = parsed.hooks ?? [];
+      const parsed = toml(old); let hooks = parsed.hooks ?? [];
       if (!Array.isArray(hooks)) throw Error("Kimi hooks must be an array");
+      if (oldLaunches.length) hooks = hooks.filter(h => {
+        const row = record(h);
+        if (row.event !== "SessionEnd" || !oldLaunches.some(launch => row.command === `${launch} ingest kimi --json`)) return true;
+        if (![undefined, "", "*"].includes(row.matcher as string | undefined) || row.timeout !== 3)
+          throw Error("previous-runtime hook settings changed; review hook configuration before retrying setup");
+        return false;
+      });
       if (!hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi"))) hooks.push({ event: "SessionEnd", command: capture("kimi"), timeout: 3 });
       changes[1]!.after = image(updateTomlArray(old, ["hooks"], hooks), changes[1]!.before.mode);
     }
     if (target === "pi") {
       const content = piExtension(c.bun, c.entry);
-      if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes) throw Error("Pi amem-session extension already exists and is not this setup's file");
+      if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes
+        && !previous.some(runtime => changes[1]!.before.bytes === image(piExtension(runtime.bun, runtime.entry)).bytes)) throw Error("Pi amem-session extension already exists and is not this setup's file");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.

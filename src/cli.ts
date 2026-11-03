@@ -223,6 +223,49 @@ export function manifest() {
     commands: Object.keys(COMMANDS) };
 }
 
+/** Setup apply errors can contain configuration paths or native output. Classify only
+ * this explicit operation into fixed text; never include the caught message or cause. */
+function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: unknown): Error | undefined {
+  const target = parsed.positionals[0];
+  if (parsed.path.length !== 1 || parsed.path[0] !== "setup" || parsed.options["--apply"] !== true || parsed.options["--undo"] === true
+    || parsed.positionals.length !== 1 || target === "console" || !COMMANDS.setup?.args?.[0]?.values?.includes(target!)) return undefined;
+  const detail = error && typeof error === "object" ? error as { message?: unknown; code?: unknown; exitCode?: unknown } : {};
+  const text = typeof detail.message === "string" ? detail.message : "";
+  const code = typeof detail.code === "string" ? detail.code : "";
+  let cause = "setup_apply_failed", next = "Review the setup preview and saved setup ownership state before retrying.", partial = true;
+  if (/^installed (?:claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy) CLI does not expose MCP registration; no registration command was run$/.test(text)) {
+    cause = "native_capability_unverified"; next = "Verify that the installed client can start and exposes MCP administration, then rerun setup preview."; partial = false;
+  } else if (/^(?:claude|codex|pi|qwen|gemini) MCP registration timed out in staging; no native output disclosed$/.test(text)) {
+    cause = "native_registration_timeout"; next = "Check that the installed client starts promptly, then rerun setup preview."; partial = false;
+  } else if (/^qwen MCP registration rejected command arguments in staging; no native output disclosed$/.test(text)) {
+    cause = "native_arguments_rejected"; next = "Check the installed client's supported MCP command syntax, then rerun setup preview."; partial = false;
+  } else if (/^(?:claude|codex|pi|qwen|gemini) MCP registration failed in staging; no native output disclosed$/.test(text)) {
+    cause = "native_registration_failed"; next = "Check the installed client's MCP administration locally, then rerun setup preview."; partial = false;
+  } else if (/^(?:claude|codex|pi|qwen|gemini) native registration (?:produced no configuration|produced invalid configuration; no configuration published|did not produce the planned amem server|changed unrelated MCP servers; no configuration published)$/.test(text)
+    || text === "codex native registration changed unrelated settings; no configuration published") {
+    cause = "native_result_mismatch"; next = "Review the installed client's configuration format and version, then rerun setup preview."; partial = false;
+  } else if (/^setup-owned .+ changed; refusing to overwrite it$/.test(text) || text === "Pi amem-session extension already exists and is not this setup's file"
+    || text === "previous-runtime hook settings changed; review hook configuration before retrying setup"
+    || /^setup receipt (?:does not match this installation|target mismatch|invalid|directory ownership invalid)$/.test(text)) {
+    cause = "setup_ownership_conflict"; next = "Review the managed entries and saved setup receipt before retrying; keep unrelated configuration intact."; partial = false;
+  } else if (/^setup is busy(?: or its lock is unreadable|; retry after the active setup exits)$/.test(text)) {
+    cause = "setup_busy"; next = "Wait for the active setup to finish, then rerun setup preview."; partial = false;
+  } else if (/^setup configuration changed (?:while reading|before removal|before publication|during preparation)$/.test(text)) {
+    cause = "setup_configuration_changed"; next = "Wait for other configuration writers to finish, then rerun setup preview.";
+  } else if (/^setup (?:configuration (?:must be an object|does not parse as a JSON object|does not parse as TOML|unavailable or oversized)|hook (?:groups|handlers) must be arrays|TOML unavailable or unsupported; no configuration changed)$/.test(text)) {
+    cause = "setup_configuration_unavailable"; next = "Review the configuration's supported format and size, then rerun setup preview."; partial = false;
+  } else if (["EACCES", "EPERM", "EROFS"].includes(code)) {
+    cause = "setup_filesystem_permissions"; next = "Review the setup file and directory permissions, then rerun setup preview.";
+  } else if (["ENOSPC", "EDQUOT"].includes(code)) {
+    cause = "setup_storage_capacity"; next = "Check available storage and quotas, then rerun setup preview.";
+  } else if (["EIO", "ENOENT", "ENOTDIR", "EISDIR", "EMFILE", "ENFILE"].includes(code)) {
+    cause = "setup_filesystem_unavailable"; next = "Check that the setup configuration and storage are available, then rerun setup preview.";
+  }
+  const safe = new Error(`Setup apply failed [cause: ${cause}]. Next step: ${next} Recheck with amem setup ${target} --json before another apply.${partial ? " Some setup changes may already be applied; review current state before retrying." : ""}`);
+  if (typeof detail.exitCode === "number" && Number.isSafeInteger(detail.exitCode)) Object.assign(safe, { exitCode: detail.exitCode });
+  return safe;
+}
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   // Native capture and the MCP server retain their existing surfaces and attribution.
   if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
@@ -262,9 +305,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && error instanceof AgentUsageError) throw error;
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
-      let usage: Error | undefined;
-      try { parseCommand(argv); } catch (parseError) { usage = parseError as Error; }
+      let usage: Error | undefined, parsed: ReturnType<typeof parseCommand> | undefined;
+      try { parsed = parseCommand(argv); } catch (parseError) { usage = parseError as Error; }
       if (usage) throw Object.assign(new Error(usage.message), (error as { exitCode?: number }).exitCode === undefined ? {} : { exitCode: (error as { exitCode?: number }).exitCode });
+      const setupError = parsed && markedSetupApplyError(parsed, error);
+      if (setupError) throw setupError;
     }
     // Marked administrative failures must not reveal a target's private state or native errors.
     if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");

@@ -82,6 +82,26 @@ function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: Conf
     }
     if (!next.length && object(b.hooks ?? {})[event] === undefined) delete groups[event]; else groups[event] = next;
   }
+  // Runtime replacement can remove a pre-existing, adopted command. Undo restores
+  // that original row as well as retiring the newly installed command.
+  const removed = added(installed, original, row => row.id), missing = new Map<string, number>();
+  c.hooks = groups;
+  const kept = hooks(c, strict);
+  for (const row of removed) {
+    if (kept.some(value => value.command === row.command && !original.some(old => old.id === value.id)))
+      throw Error("setup-owned hook changed; refusing to overwrite it");
+    missing.set(row.id, Math.max(0, original.filter(value => value.id === row.id).length - kept.filter(value => value.id === row.id).length));
+  }
+  for (const [event, raw] of Object.entries(object(b.hooks ?? {}))) {
+    if (strict && qwenHookControls.has(event)) continue;
+    for (const value of raw as unknown[]) {
+      const group = object(value), restored = (group.hooks as unknown[]).filter(h => {
+        const row = hook(event, group, h, strict), n = row && (missing.get(row.id) ?? 0);
+        if (!row || !n) return false; missing.set(row.id, n - 1); return true;
+      });
+      if (restored.length) groups[event] = [...(groups[event] as unknown[] | undefined ?? []), { ...group, hooks: restored }];
+    }
+  }
   if (!Object.keys(groups).length && b.hooks === undefined) delete c.hooks; else if (c.hooks !== undefined) c.hooks = groups;
   return finishJson(c, current, before);
 }
@@ -95,6 +115,11 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
     const at = c.findIndex(value => kimiKey(value) === kimiKey(row));
     if (at >= 0) c.splice(at, 1);
     else if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
+  }
+  for (const row of added(a, b, kimiKey)) {
+    if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value))))
+      throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
+    if (c.filter(value => kimiKey(value) === kimiKey(row)).length < b.filter(value => kimiKey(value) === kimiKey(row)).length) c.push(row);
   }
   if (isDeepStrictEqual(c, kimiHooks(current))) return current;
   const original = toml(before);
