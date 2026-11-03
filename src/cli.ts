@@ -250,6 +250,8 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
     cause = "setup_receipt_version_unsupported"; next = "Run setup or undo with the amem release that wrote the receipt."; partial = false;
   } else if (text === "setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile") {
     cause = "setup_receipt_orca_profile"; next = "The receipt was written from an Orca Claude profile; rerun setup from that Orca profile."; partial = false;
+  } else if (text === "setup receipt is stale: its managed entries were replaced at another amem install root; rerun with --adopt-current to adopt the current wiring") {
+    cause = "setup_receipt_stale"; next = "The receipt's managed entries were replaced at another amem install root outside setup; rerun with --apply --adopt-current to keep the receipt aside and adopt the current wiring, which --undo then restores."; partial = false;
   } else if (/^setup-owned .+ changed; refusing to overwrite it$/.test(text) || text === "Pi amem-session extension already exists and is not this setup's file"
     || text === "previous-runtime hook settings are customized; review hook configuration before retrying setup"
     || /^setup receipt (?:does not match this installation|target mismatch|invalid|directory ownership invalid)$/.test(text)) {
@@ -375,7 +377,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const { definition, options, rawArgs: args } = parsed;
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "setup") {
-    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply|--undo]");
+    if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
+      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
     if (parsed.positionals[0] === "console") {
       const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
       const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";
@@ -387,6 +390,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
       ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}),
+      ...(options["--adopt-current"] === true ? { adoptCurrent: true } : {}),
       ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context),
     });
   }

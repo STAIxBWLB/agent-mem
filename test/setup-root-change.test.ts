@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applySetup, planSetup, undoSetup, type SetupContext } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -337,4 +337,51 @@ for (const flow of ["adopted", "receipt-less"] as const) for (const surface of [
   expect(() => applySetup(planSetup("qwen", "apply", options), options))
     .toThrow("previous-runtime hook settings are customized; review hook configuration before retrying setup");
   restored(before); expect(publications).toEqual([]);
+});
+
+const encoded = (value: string) => JSON.stringify(value);
+for (const target of ["codex", "kimi", "qwen"] as const) test(target + ": a new --root also retires the old root's pre-#145 ingest form without --json (#241)", () => {
+  const f = fixture(target);
+  f.apply(f.oldRoot); registeredOnly(f, "old"); rmSync(f.receipt);
+  const file = target === "qwen" ? f.files[0]! : f.files[1]!, current = f.oldHooks[0]!.command, legacy = current.replace(/ --json$/, "");
+  expect(legacy).not.toBe(current);
+  const live = text(file); expect(live.split(encoded(current)).length, "one generated old-root command").toBe(2);
+  put(file, live.replace(encoded(current), encoded(legacy)));
+  const legacyWiring = new Map([...f.originals.keys()].map(file => [file, image(file)]));
+  expect(f.apply(f.newRoot).applied).toEqual([target]); registeredOnly(f, "new");
+  expect(hookCommands(f).get("SessionEnd")).not.toContain(legacy);
+  f.undo(f.newRoot); restored(legacyWiring);
+});
+
+function staleFixture(target: Target) {
+  const f = fixture(target), staleRoot = join(f.home, "stale-0.18.0");
+  put(join(staleRoot, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.18.0" }) + "\n");
+  put(join(staleRoot, "bin", "amem.js"), "// private setup fixture, never executed\n");
+  // The receipt was written for staleRoot; the live wiring later moved to oldRoot outside setup.
+  f.apply(staleRoot); const stale = readFileSync(f.receipt); f.undo(staleRoot); restored(f.originals);
+  f.apply(f.oldRoot); registeredOnly(f, "old"); writeFileSync(f.receipt, stale);
+  return { ...f, stale, staleEntry: join(staleRoot, "bin", "amem.js") };
+}
+for (const target of TARGETS) test(target + ": a stale receipt refuses by name; --adopt-current keeps it aside, adopts the live wiring and undo restores it (#241)", () => {
+  const f = staleFixture(target), live = new Map([...f.originals.keys()].map(file => [file, image(file)])), calls = f.calls.length;
+  const preview = planSetup(target, "apply", f.options(f.newRoot));
+  expect(preview.actions[0]!.state).toBe("stale receipt; apply needs --adopt-current");
+  expect(() => f.apply(f.newRoot)).toThrow("setup receipt is stale");
+  restored(live); expect(readFileSync(f.receipt)).toEqual(f.stale); expect(f.calls).toHaveLength(calls);
+  const options = { ...f.options(f.newRoot), adoptCurrent: true }, plan = planSetup(target, "apply", options);
+  expect(plan.actions[0]!.state).toBe("stale receipt; current wiring will be adopted");
+  expect(applySetup(plan, options).applied).toEqual([target]); registeredOnly(f, "new");
+  const aside = readdirSync(dirname(f.receipt)).filter(name => name.startsWith(basename(f.receipt) + ".stale-"));
+  expect(aside).toHaveLength(1); expect(readFileSync(join(dirname(f.receipt), aside[0]!))).toEqual(f.stale);
+  f.undo(f.newRoot); restored(live); expect(existsSync(f.receipt)).toBe(false);
+});
+test("claude: a receipt whose runtime still appears live is not stale, and --adopt-current keeps it (#241)", () => {
+  const f = staleFixture("claude"), settings = f.files[1]!, document = JSON.parse(text(settings));
+  document.hooks.Stop.push({ hooks: [{ type: "command", command: quote(process.execPath) + " --smol " + quote(f.staleEntry) + " hook Stop", timeout: 1 }] });
+  put(settings, JSON.stringify(document, null, 2) + "\n");
+  const options = { ...f.options(f.newRoot), adoptCurrent: true };
+  expect(planSetup("claude", "apply", options).actions[0]!.state).not.toContain("stale");
+  expect(() => applySetup(planSetup("claude", "apply", options), options)).toThrow("setup-owned");
+  expect(readFileSync(f.receipt)).toEqual(f.stale);
+  expect(readdirSync(dirname(f.receipt)).some(name => name.includes(".stale-"))).toBe(false);
 });
