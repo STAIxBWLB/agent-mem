@@ -67,7 +67,10 @@ export function resolveSetupPaths(env: SetupEnvironment = process.env, givenHome
     paths[target][index] = to;
     redirects.push({ target, from, to, reason: "Orca re-syncs this managed file from the personal source" });
   };
-  if (orcaHome(claude, "claude", env, home)) redirect("claude", 1, join(home, ".claude", "settings.json"));
+  if (orcaHome(claude, "claude", env, home)) {
+    redirect("claude", 0, join(home, ".claude.json"));
+    redirect("claude", 1, join(home, ".claude", "settings.json"));
+  }
   if (orcaHome(codex, "codex", env, home)) {
     redirect("codex", 0, join(home, ".codex", "config.toml"));
     redirect("codex", 1, join(home, ".codex", "hooks.json"));

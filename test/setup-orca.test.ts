@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applySetup, planSetup, setupPlanText, undoSetup } from "../src/setup.ts";
+import { readSetupDrift } from "../src/setup-drift.ts";
 import { resolveSetupPaths } from "../src/setup-paths.ts";
 import { setup202Rig } from "./fakes/setup-202.ts";
 
@@ -19,13 +20,30 @@ for (const target of ["claude", "codex"] as const) test(`Orca ${target} publishe
   r.put(source, original);
   const managedSettings = join(managed, target === "claude" ? "settings.json" : "config.toml");
   r.put(managedSettings, target === "claude" ? '{"managed":"copy"}\n' : 'model = "managed-copy"\n');
+  const managedMcp = join(managed, ".claude.json"), personalMcp = join(r.home, ".claude.json");
+  if (target === "claude") {
+    r.put(managedMcp, '{"profile":"keep"}\n');
+    r.put(personalMcp, '{ "personal": "keep", "mcpServers": {} }\n');
+  }
+  const beforeManagedMcp = target === "claude" ? r.text(managedMcp) : undefined;
+  const beforePersonalMcp = target === "claude" ? r.text(personalMcp) : undefined;
   const beforeManaged = r.text(managedSettings), plan = planSetup(target, "preview", r.options);
-  expect(plan.actions[0]!.files).toEqual(target === "claude" ? [join(managed, ".claude.json"), source] : [source, join(personal, "hooks.json")]);
+  expect(plan.actions[0]!.files).toEqual(target === "claude" ? [personalMcp, source] : [source, join(personal, "hooks.json")]);
   expect(setupPlanText(plan)).toContain("Orca re-syncs");
   expect(setupPlanText(plan)).toContain(source);
+  if (target === "claude") {
+    expect(plan.notes.filter(note => note.includes("Orca re-syncs"))).toHaveLength(2);
+    expect(plan.notes.some(note => note.includes(managedMcp) && note.includes(personalMcp))).toBe(true);
+    expect(r.text(personalMcp)).toBe(beforePersonalMcp!);
+  }
   expect(r.text(source)).toBe(original); expect(r.text(managedSettings)).toBe(beforeManaged); expect(r.calls).toHaveLength(0);
   applySetup(plan, r.options);
   expect(r.text(managedSettings)).toBe(beforeManaged);
+  if (target === "claude") {
+    expect(r.text(managedMcp)).toBe(beforeManagedMcp!);
+    expect(r.text(personalMcp)).toContain("amem");
+    expect(readSetupDrift({ home: join(r.home, "memory"), env: r.env })).toMatchObject({ status: "ok", entries: [] });
+  }
   const hookFile = target === "claude" ? source : join(personal, "hooks.json");
   expect(r.text(hookFile)).toContain(target === "claude" ? "SessionStart" : "SessionEnd");
   if (target === "codex") {
@@ -37,6 +55,10 @@ for (const target of ["claude", "codex"] as const) test(`Orca ${target} publishe
   undoSetup(planSetup(target, "undo", r.options), r.options);
   expect(r.text(source)).toBe(original); expect(r.text(managedSettings)).toBe(beforeManaged);
   if (target === "codex") expect(existsSync(join(personal, "hooks.json"))).toBe(false);
+  else {
+    expect(r.text(personalMcp)).toBe(beforePersonalMcp!);
+    expect(r.text(managedMcp)).toBe(beforeManagedMcp!);
+  }
 });
 
 test("Orca custom user-data roots and Codex runtime home redirect, lookalike paths do not", () => {
@@ -70,6 +92,52 @@ for (const target of ["claude", "codex"] as const) test(`old Orca ${target} rece
   expect(migrated.changes.map((row: { path: string }) => row.path)).toEqual(resolveSetupPaths(r.env).paths[target]);
   undoSetup(planSetup(target, "undo", r.options), r.options);
   expect(r.text(personalFile)).toBe(original);
+});
+
+// 0.20.1 redirected hooks, but still receipted the profile MCP file.
+for (const version of [1, 2]) for (const edited of [false, true]) test(`Orca Claude mixed v${version} receipt ${edited ? "refuses an edited MCP copy" : "migrates and preserves personal undo bytes"}`, () => {
+  const r = rig(), data = join(r.home, "Library", "Application Support", "orca");
+  const profile = join(data, "claude-profiles", "id", "home");
+  r.env.CLAUDE_CONFIG_DIR = profile;
+  r.env.ORCA_USER_DATA_PATH = join(r.home, "other-app-data");
+  applySetup(planSetup("claude", "apply", r.options), r.options);
+  const receiptFile = join(r.home, "memory", "setup", "claude.json");
+  const receipt = JSON.parse(r.text(receiptFile));
+  const personalMcp = join(r.home, ".claude.json"), personalHooks = join(r.home, ".claude", "settings.json");
+  const originalMcp = '{ "personal": "keep", "mcpServers": { "other": { "command": "other" } } }\n';
+  const originalHooks = '{ "personal": "keep" }\n';
+  r.put(personalMcp, originalMcp);
+  r.put(personalHooks, r.text(join(profile, "settings.json")));
+  receipt.version = version;
+  receipt.changes[1].path = personalHooks;
+  receipt.changes[1].before = { bytes: Buffer.from(originalHooks).toString("base64"), mode: 0o600 };
+  r.put(receiptFile, JSON.stringify(receipt) + "\n");
+  const profileMcp = join(profile, ".claude.json");
+  const copy = JSON.parse(r.text(profileMcp));
+  if (edited) copy.mcpServers.amem.args = ["custom"];
+  else copy.unrelated = "outside setup";
+  r.put(profileMcp, JSON.stringify(copy) + "\n");
+  const beforeCopy = r.text(profileMcp), beforeReceipt = r.text(receiptFile), beforeHooks = r.text(personalHooks);
+  r.env.ORCA_USER_DATA_PATH = data;
+  const options = { ...r.options, entry: join(r.home, "new package", "bin", "amem.js") };
+  const preview = planSetup("claude", "preview", options);
+  expect(preview.actions[0]!.files).toEqual([personalMcp, personalHooks]);
+  expect(readSetupDrift({ home: join(r.home, "memory"), env: r.env }).entries).toContainEqual(expect.objectContaining({ file: profileMcp, expectedFile: personalMcp, kind: "drift" }));
+  if (edited) {
+    expect(() => applySetup(preview, options)).toThrow("setup-owned MCP entry changed; refusing to overwrite it");
+    expect(r.text(receiptFile)).toBe(beforeReceipt);
+    expect(r.text(personalMcp)).toBe(originalMcp);
+    expect(r.text(personalHooks)).toBe(beforeHooks);
+  } else {
+    expect(applySetup(preview, options).applied).toEqual(["claude"]);
+    expect(JSON.parse(r.text(personalMcp)).mcpServers.amem.args).toContain(options.entry);
+    const migrated = JSON.parse(r.text(receiptFile));
+    expect(migrated.changes.map((row: { path: string }) => row.path)).toEqual([personalMcp, personalHooks]);
+    undoSetup(planSetup("claude", "undo", options), options);
+    expect(r.text(personalMcp)).toBe(originalMcp);
+    expect(r.text(personalHooks)).toBe(originalHooks);
+  }
+  expect(r.text(profileMcp)).toBe(beforeCopy);
 });
 
 test("ordinary Claude/Codex setup plans and file bytes match the pre-redirect golden", () => {

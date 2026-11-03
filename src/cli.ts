@@ -248,6 +248,8 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
     cause = "native_result_mismatch"; next = "Review the installed client's configuration format and version, then rerun setup preview."; partial = false;
   } else if (text === "setup receipt version is unsupported; run setup or undo with the release that wrote it") {
     cause = "setup_receipt_version_unsupported"; next = "Run setup or undo with the amem release that wrote the receipt."; partial = false;
+  } else if (text === "setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile") {
+    cause = "setup_receipt_orca_profile"; next = "The receipt was written from an Orca Claude profile; rerun setup from that Orca profile."; partial = false;
   } else if (/^setup-owned .+ changed; refusing to overwrite it$/.test(text) || text === "Pi amem-session extension already exists and is not this setup's file"
     || text === "previous-runtime hook settings are customized; review hook configuration before retrying setup"
     || /^setup receipt (?:does not match this installation|target mismatch|invalid|directory ownership invalid)$/.test(text)) {
