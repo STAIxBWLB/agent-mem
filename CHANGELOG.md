@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.20.3
+
+- **Setup retires the pre-#145 capture command on a root change** (#246, Refs #241). Replacing the install root also removes the prior root's `ingest codex|kimi|qwen` command written without `--json`, beside the current form, so an upgraded Qwen, Codex or Kimi no longer keeps a second SessionEnd ingest.
+- **A stale setup receipt refuses by name and is adopted explicitly** (#246, Refs #241). A receipt is stale when it cannot restore, no spelling of its runtime's entry remains in its files (raw text or any decoded JSON/TOML string) and the live MCP entry launches another install root: the wiring was moved outside setup. Apply then refuses with cause `setup_receipt_stale` and writes nothing. `amem setup <target> --apply --adopt-current` keeps the receipt as `<target>.json.stale-<UTC time>` in the setup directory and applies through the receipt-less path, so `--undo` restores the adopted wiring. A receipt that still has any trace of its runtime stays authoritative. This replaces the manual receipt rename used on 2026-11-03.
+- **Compatibility with N-1 (0.20.2), #246:** receipt format v1/v2 and undo semantics are unchanged, so 0.20.2 reads every receipt this release writes; it ignores `*.json.stale-*` files and has no `--adopt-current`. No memory format or floor changes.
+
 ## 0.20.2
 
 - **Orca Claude setup writes the MCP entry to the personal `~/.claude.json`** (#243, Refs #242). Orca syncs the personal file over each profile's `mcpServers`, so an entry written only to the profile copy reverted to the old install root. Setup now redirects the MCP file alongside the existing personal hooks redirect; preview and doctor use the same paths and the profile copies stay untouched. Receipts from the earlier mixed layout migrate through the existing ownership checks and keep byte-exact personal undo; an edited historical managed MCP entry is refused. Outside Orca, a receipt written from an Orca profile refuses apply with cause `setup_receipt_orca_profile` and the next step to rerun from that profile. A fixture covers the live 2026-11-03 layout (#244).
