@@ -210,3 +210,25 @@ test("marked setup receipt-version refusal names the writing release as the next
   await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt version is unsupported; run setup or undo with the release that wrote it");
   expect(f.calls()).toEqual([]);
 });
+
+for (const orcaRoot of [undefined, "custom-orca-data"]) test(`a profile receipt outside Orca names the recovery and writes nothing (${orcaRoot ?? "default"})`, async () => {
+  const f = fixture();
+  await runCli(["setup", "claude", "--apply"], f.context);
+  if (orcaRoot) f.env.ORCA_USER_DATA_PATH = join(f.home, orcaRoot);
+  const data = f.env.ORCA_USER_DATA_PATH ?? join(f.home, "Library", "Application Support", "orca");
+  const profileMcp = join(data, "claude-profiles", "private-profile-canary", "home", ".claude.json");
+  const receiptFile = join(f.home, "memory", "setup", "claude.json");
+  const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+  receipt.changes[0].path = profileMcp;
+  put(receiptFile, JSON.stringify(receipt) + "\n");
+  const before = snapshot(f.root), calls = f.calls().length;
+  const marked = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  const failure = await runCli(["setup", "claude", "--apply"], marked).then(() => { throw Error("unexpected apply"); }, error => error as Error);
+  expect(failure.message).toContain("cause: setup_receipt_orca_profile");
+  expect(failure.message).toContain("rerun setup from that Orca profile");
+  expect(failure.message).not.toContain("private-profile-canary");
+  expect(failure.message).not.toContain(f.root);
+  await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile");
+  expect(snapshot(f.root)).toEqual(before);
+  expect(f.calls()).toHaveLength(calls);
+});

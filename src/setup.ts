@@ -214,6 +214,9 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
   if (value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
     const change = record(value.changes[i]); const currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
+    if (target === "claude" && i === 0 && typeof change.path === "string" && change.path !== currentPath && !legacyRedirect
+      && resolveSetupPaths({ ...c.env, CLAUDE_CONFIG_DIR: dirname(change.path) }, c.home).redirects.some(row => row.from === change.path && row.to === currentPath))
+      throw Error("setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile");
     if (change.path !== currentPath && !legacyRedirect || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
     for (const key of ["before", "after", ...(change.start !== undefined ? ["start"] : [])]) {
       const v = record(change[key]);
