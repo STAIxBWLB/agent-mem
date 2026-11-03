@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { SETUP_CONFIG_BYTES, setTomlPath, updateTomlArray } from "./setup-toml.ts";
-import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, restoreJcodeHooks } from "./setup-jcode.ts";
+import { SETUP_CONFIG_BYTES, insertTomlArrayItems, restoreRemovedItems, setTomlPath, updateTomlArray } from "./setup-toml.ts";
+import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, jcodeRetiresOriginalHook, restoreJcodeHooks } from "./setup-jcode.ts";
 import { readAgyMcp, putAgyMcp, restoreAgyMcp } from "./setup-agy.ts";
 import { readOpencodeMcp, putOpencodeMcp, restoreOpencodeMcp } from "./setup-opencode.ts";
 export interface ConfigImage { bytes: string | null; mode: number }
@@ -82,6 +82,38 @@ function restoreJsonHooks(before: ConfigImage, after: ConfigImage, current: Conf
     }
     if (!next.length && object(b.hooks ?? {})[event] === undefined) delete groups[event]; else groups[event] = next;
   }
+  // Replacement removes adopted rows too; restore their original position/group,
+  // keeping current groups, native metadata and unrelated handlers intact.
+  const removed = added(installed, original, row => row.id);
+  c.hooks = groups;
+  if (removed.some(row => hooks(c, strict).some(value => value.command === row.command && !original.some(old => old.id === value.id))))
+    throw Error("setup-owned hook changed; refusing to overwrite it");
+  for (const [event, raw] of Object.entries(object(b.hooks ?? {}))) {
+    if (strict && qwenHookControls.has(event)) continue;
+    const entries = (rows: readonly unknown[]) => rows.flatMap(value => { const group = object(value);
+      return (group.hooks as unknown[]).flatMap(value => { const row = hook(event, group, value, strict); return row ? [{ group, sourceGroup: group, value, row }] : []; }); });
+    const beforeRows = entries(raw as unknown[]), afterRows = entries((object(a.hooks ?? {})[event] as unknown[] | undefined) ?? []);
+    const liveGroups = (groups[event] as Record<string, unknown>[] | undefined) ?? [], liveRows = entries(liveGroups), existing = new Set(liveRows);
+    const order = restoreRemovedItems(beforeRows, afterRows, liveRows, value => value.row.id), placed = new Map<Record<string, unknown>, Record<string, unknown>>();
+    const originalIds = new Map((raw as Record<string, unknown>[]).map(group => [group, new Set(beforeRows.filter(row => row.group === group && afterRows.some(installed => installed.row.id === row.row.id)).map(row => row.row.id))]));
+    for (let index = 0; index < order.length; index++) {
+      const row = order[index]!; if (existing.has(row)) continue;
+      const source = row.group, ids = originalIds.get(source)!;
+      const next = order.slice(index + 1).find(value => existing.has(value) && ids.has(value.row.id));
+      const prior = order.slice(0, index).reverse().find(value => existing.has(value) ? ids.has(value.row.id) : value.sourceGroup === source);
+      let group = placed.get(source) ?? next?.group ?? prior?.group;
+      if (!group) {
+        group = { ...source, hooks: [] };
+        const following = order.slice(index + 1).find(value => existing.has(value))?.group;
+        liveGroups.splice(following ? liveGroups.indexOf(following) : liveGroups.length, 0, group);
+      }
+      const handlers = group.hooks as unknown[], nextAt = next?.group === group ? handlers.indexOf(next.value) : -1;
+      const priorAt = prior?.group === group ? handlers.indexOf(prior.value) : -1;
+      handlers.splice(nextAt >= 0 ? nextAt : priorAt >= 0 ? priorAt + 1 : handlers.length, 0, row.value);
+      placed.set(source, group); row.group = group;
+    }
+    if (order.length) groups[event] = liveGroups;
+  }
   if (!Object.keys(groups).length && b.hooks === undefined) delete c.hooks; else if (c.hooks !== undefined) c.hooks = groups;
   return finishJson(c, current, before);
 }
@@ -96,10 +128,15 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
     if (at >= 0) c.splice(at, 1);
     else if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
   }
+  const withoutInstalled = [...c];
+  for (const row of added(a, b, kimiKey)) if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value))))
+    throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
+  c.splice(0, c.length, ...restoreRemovedItems(b, a, c, kimiKey));
   if (isDeepStrictEqual(c, kimiHooks(current))) return current;
   const original = toml(before);
   const value = !c.length && original.hooks === undefined ? undefined : c;
-  const result = value === undefined ? setTomlPath(text(current), ["hooks"], undefined) : updateTomlArray(text(current), ["hooks"], value);
+  const retired = updateTomlArray(text(current), ["hooks"], withoutInstalled);
+  const result = value === undefined ? setTomlPath(retired, ["hooks"], undefined) : insertTomlArrayItems(retired, ["hooks"], value);
   if (before.bytes === null && Object.keys(object(Bun.TOML.parse(result))).length === 0) return { ...before, mode: current.mode };
   return rendered(result, current);
 }
@@ -131,18 +168,37 @@ export function restoreOwned(target: string, index: number, before: ConfigImage,
   if (current.bytes === before.bytes) return current;
   throw Error("setup-owned Pi extension changed; refusing to overwrite it");
 }
+/** Only removal of an original/adopted hook needs receipt v2; added-only receipts remain v1-readable. */
+export function retiresOriginalHook(target: string, index: number, before: ConfigImage, after: ConfigImage): boolean {
+  if (target === "qwen" && index === 0 || ["claude", "codex"].includes(target) && index === 1) {
+    const strict = target === "qwen";
+    return added(hooks(json(after), strict), hooks(json(before), strict), row => row.id).length > 0;
+  }
+  if (index !== 1) return false;
+  if (target === "kimi") return added(kimiHooks(after), kimiHooks(before), kimiKey).length > 0;
+  if (target === "jcode") return jcodeRetiresOriginalHook(before, after);
+  return target === "pi" && before.bytes !== null && before.bytes !== after.bytes;
+}
 export function managedAfter(target: string, index: number, before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
   if (target === "qwen" && index === 0) {
     const needed = added(hooks(json(before), true), hooks(json(after), true), row => row.id), live = hooks(json(current), true);
-    return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current)) && needed.every(row => live.some(value => value.id === row.id));
+    const retired = added(hooks(json(after), true), hooks(json(before), true), row => row.id), installed = hooks(json(after), true);
+    return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current)) && needed.every(row => live.some(value => value.id === row.id))
+      && retired.every(row => live.filter(value => value.id === row.id).length <= installed.filter(value => value.id === row.id).length);
   }
   if (index === 0) return isDeepStrictEqual(mcpRecord(target, after), mcpRecord(target, current));
   if (target === "jcode") return jcodeHooksManaged(before, after, current);
   if (target === "claude" || target === "codex") {
     const needed = added(hooks(json(before)), hooks(json(after)), row => row.id), live = hooks(json(current));
-    return needed.every(row => live.some(value => value.id === row.id));
+    const retired = added(hooks(json(after)), hooks(json(before)), row => row.id), installed = hooks(json(after));
+    return needed.every(row => live.some(value => value.id === row.id))
+      && retired.every(row => live.filter(value => value.id === row.id).length <= installed.filter(value => value.id === row.id).length);
   }
-  if (target === "kimi") return added(kimiHooks(before), kimiHooks(after), kimiKey).every(row => kimiHooks(current).some(value => kimiKey(value) === kimiKey(row)));
+  if (target === "kimi") {
+    const original = kimiHooks(before), installed = kimiHooks(after), live = kimiHooks(current);
+    return added(original, installed, kimiKey).every(row => live.some(value => kimiKey(value) === kimiKey(row)))
+      && added(installed, original, kimiKey).every(row => live.filter(value => kimiKey(value) === kimiKey(row)).length <= installed.filter(value => kimiKey(value) === kimiKey(row)).length);
+  }
   return current.bytes === after.bytes;
 }
 

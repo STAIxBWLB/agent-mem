@@ -300,7 +300,8 @@ function setupWorld(name: string, withPrivatePattern: boolean) {
 test("marked setup screens its native config paths before MCP registration; version probes stay in staging", async () => {
   const privateTarget = setupWorld("amem-cli-setup-MARKER-", true);
   const refused = await errorMessage(["setup", "claude", "--apply", "--json"], privateTarget.context);
-  expect(refused).toBe(UNAVAILABLE);
+  expect(refused).toContain("cause: setup_policy_refused"); expect(refused).toContain("Next step:");
+  expect(refused).toContain("amem setup claude --json"); expect(refused).not.toContain(MARKER); expect(refused).not.toContain(privateTarget.home);
   expect(existsSync(privateTarget.log)).toBe(false);
   expect(existsSync(join(privateTarget.home, ".claude.json"))).toBe(false);
   expect(existsSync(join(privateTarget.memory, "setup", "claude.json"))).toBe(false);

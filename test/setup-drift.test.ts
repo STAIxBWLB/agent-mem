@@ -262,3 +262,13 @@ function tree(root: string): Record<string, string> {
   if (existsSync(root)) visit(root);
   return output;
 }
+
+for (const version of [1, 2]) test(`doctor reads setup receipt v${version} without rewriting it`, () => {
+  const f = fixture(); appliedClaude(f);
+  const file = join(f.memory, "setup", "claude.json"), value = JSON.parse(readFileSync(file, "utf8"));
+  value.version = version; put(file, json(value));
+  const before = readFileSync(file);
+  const result = readSetupDrift({ home: f.memory, env: f.env, cwd: f.userHome });
+  expect(result.entries.filter(entry => entry.entry === "receipt")).toHaveLength(0);
+  expect(result.checked).toBeGreaterThan(0); expect(readFileSync(file)).toEqual(before);
+});

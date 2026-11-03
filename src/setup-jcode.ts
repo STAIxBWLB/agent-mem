@@ -1,6 +1,6 @@
 import type { ConfigImage } from "./setup-owned.ts";
 import { createJsonMcpCodec } from "./setup-json.ts";
-import { setTomlPath } from "./setup-toml.ts";
+import { restoreRemovedItems, setTomlPath } from "./setup-toml.ts";
 
 const codec = createJsonMcpCodec({ canonicalKey: "servers", aliases: ["mcpServers"], label: "Jcode" });
 export function readJcodeMcp(image: ConfigImage): unknown { return codec.read(image); }
@@ -27,13 +27,14 @@ function commands(value: unknown): string[] {
   throw Error("Jcode hook commands must be a string or an array of strings");
 }
 /** Adds `command` to each capture event, keeping any existing user command ahead of it (array form). */
-export function putJcodeHooks(before: ConfigImage, command: string): ConfigImage {
+export function putJcodeHooks(before: ConfigImage, command: string, previous: readonly string[] = []): ConfigImage {
   let text = tomlText(before);
   const hooks = hooksTable(text) ?? {};
   for (const event of JCODE_CAPTURE_EVENTS) {
-    const existing = commands(hooks[event]);
-    if (existing.includes(command)) continue;
-    text = setTomlPath(text, ["hooks", event], existing.length ? [...existing, command] : command);
+    const current = commands(hooks[event]), existing = previous.length ? current.filter(value => !previous.includes(value)) : current;
+    if (existing.includes(command) && existing.length === current.length) continue;
+    const next = existing.includes(command) ? existing : [...existing, command];
+    text = setTomlPath(text, ["hooks", event], next.length === 1 && !existing.length ? command : next);
   }
   return tomlImage(text, before.mode);
 }
@@ -43,8 +44,14 @@ function ownedCommands(before: ConfigImage, after: ConfigImage): Map<string, str
   for (const event of JCODE_CAPTURE_EVENTS) { const prior = commands(b[event]); owned.set(event, commands(a[event]).filter(item => !prior.includes(item))); }
   return owned;
 }
+/** True only when the receipt removes an original command, requiring a restoring reader. */
+export function jcodeRetiresOriginalHook(before: ConfigImage, after: ConfigImage): boolean {
+  return [...ownedCommands(after, before).values()].some(commands => commands.length > 0);
+}
 export function jcodeHooksManaged(before: ConfigImage, after: ConfigImage, current: ConfigImage): boolean {
-  try { const hooks = hooksTable(tomlText(current)) ?? {}; return [...ownedCommands(before, after)].every(([event, owned]) => owned.every(item => commands(hooks[event]).includes(item))); }
+  try { const hooks = hooksTable(tomlText(current)) ?? {}; const original = hooksTable(tomlText(before)) ?? {}, installed = hooksTable(tomlText(after)) ?? {};
+    return [...ownedCommands(before, after)].every(([event, owned]) => owned.every(item => commands(hooks[event]).includes(item))
+      && commands(original[event]).filter(item => !commands(installed[event]).includes(item)).every(item => !commands(hooks[event]).includes(item))); }
   catch { return false; }
 }
 /** Exact restore when untouched; otherwise removes only amem's command elements, keeping user commands and later edits. */
@@ -56,8 +63,10 @@ export function restoreJcodeHooks(before: ConfigImage, after: ConfigImage, curre
   const hooks = hooksTable(text) ?? {};
   for (const event of JCODE_CAPTURE_EVENTS) {
     const live = commands(hooks[event]), mine = owned.get(event) ?? [];
-    if (!live.some(item => mine.includes(item))) continue;
-    const kept = live.filter(item => !mine.includes(item)), prior = original[event];
+    const prior = original[event], priorCommands = commands(prior), installed = commands((hooksTable(tomlText(after)) ?? {})[event]);
+    const removed = priorCommands.filter(item => !installed.includes(item));
+    if (!live.some(item => mine.includes(item)) && !removed.length) continue;
+    const kept = restoreRemovedItems(priorCommands, installed, live.filter(item => !mine.includes(item)), value => value);
     // Return the user's original spelling when only amem's element was added; otherwise keep the remaining array.
     const value = !kept.length ? (prior !== undefined && !commands(prior).length ? prior : undefined)
       : kept.length === 1 && typeof prior === "string" && prior === kept[0] ? prior : kept;
