@@ -116,6 +116,7 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
     if (at >= 0) c.splice(at, 1);
     else if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value)))) throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
   }
+  const withoutInstalled = [...c];
   for (const row of added(a, b, kimiKey)) {
     if (c.some(value => value.command === row.command && !b.some(old => kimiKey(old) === kimiKey(value))))
       throw Error("setup-owned Kimi hook changed; refusing to overwrite it");
@@ -124,7 +125,8 @@ function restoreKimi(before: ConfigImage, after: ConfigImage, current: ConfigIma
   if (isDeepStrictEqual(c, kimiHooks(current))) return current;
   const original = toml(before);
   const value = !c.length && original.hooks === undefined ? undefined : c;
-  const result = value === undefined ? setTomlPath(text(current), ["hooks"], undefined) : updateTomlArray(text(current), ["hooks"], value);
+  const retired = updateTomlArray(text(current), ["hooks"], withoutInstalled);
+  const result = value === undefined ? setTomlPath(retired, ["hooks"], undefined) : updateTomlArray(retired, ["hooks"], value);
   if (before.bytes === null && Object.keys(object(Bun.TOML.parse(result))).length === 0) return { ...before, mode: current.mode };
   return rendered(result, current);
 }

@@ -499,8 +499,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
           throw Error("previous-runtime hook settings changed; review hook configuration before retrying setup");
         return false;
       });
+      const retired = updateTomlArray(old, ["hooks"], hooks);
       if (!hooks.some(h => record(h).event === "SessionEnd" && record(h).command === capture("kimi"))) hooks.push({ event: "SessionEnd", command: capture("kimi"), timeout: 3 });
-      changes[1]!.after = image(updateTomlArray(old, ["hooks"], hooks), changes[1]!.before.mode);
+      changes[1]!.after = image(updateTomlArray(retired, ["hooks"], hooks), changes[1]!.before.mode);
     }
     if (target === "pi") {
       const content = piExtension(c.bun, c.entry);
