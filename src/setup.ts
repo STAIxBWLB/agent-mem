@@ -366,8 +366,12 @@ function hookDocument(before: Image, events: readonly string[], commandFor: (eve
       const kept = group.hooks.filter(h => {
         const handler = record(h);
         if (handler.type !== "command" || !previous.includes(String(handler.command))) return true;
-        if (![undefined, "", "*"].includes(group.matcher as string | undefined) || handler.timeout !== timeout)
-          throw Error("previous-runtime hook settings changed; review hook configuration before retrying setup");
+        // ponytail: upgrade generated shapes only; customized controls require review.
+        // Upgrade path: lexical command-only migration with native control validation.
+        if (![undefined, "", "*"].includes(group.matcher as string | undefined) || handler.timeout !== timeout
+          || Object.keys(group).some(key => !["matcher", "hooks", "trusted_hash", "trustedHash"].includes(key))
+          || Object.keys(handler).some(key => !["type", "command", "timeout", "trusted_hash", "trustedHash"].includes(key)))
+          throw Error("previous-runtime hook settings are customized; review hook configuration before retrying setup");
         removed = true; return false;
       });
       return removed ? kept.length ? [{ ...group, hooks: kept }] : [] : [value];
@@ -496,8 +500,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       if (oldLaunches.length) hooks = hooks.filter(h => {
         const row = record(h);
         if (row.event !== "SessionEnd" || !oldLaunches.some(launch => row.command === `${launch} ingest kimi --json`)) return true;
-        if (![undefined, "", "*"].includes(row.matcher as string | undefined) || row.timeout !== 3)
-          throw Error("previous-runtime hook settings changed; review hook configuration before retrying setup");
+        if (![undefined, "", "*"].includes(row.matcher as string | undefined) || row.timeout !== 3
+          || Object.keys(row).some(key => !["event", "command", "matcher", "timeout"].includes(key)))
+          throw Error("previous-runtime hook settings are customized; review hook configuration before retrying setup");
         return false;
       });
       const retired = updateTomlArray(old, ["hooks"], hooks);

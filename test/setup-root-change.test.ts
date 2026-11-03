@@ -298,3 +298,25 @@ for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test
   }
   expect(existsSync(f.receipt)).toBe(false);
 });
+
+for (const flow of ["adopted", "receipt-less"] as const) for (const surface of ["async", "sequential"] as const) test("qwen: NEW root refuses customized OLD " + surface + " settings in " + flow + " wiring", () => {
+  const f = fixture("qwen"); f.apply(f.oldRoot); registeredOnly(f, "old");
+  const file = f.files[0]!, document: Document = JSON.parse(text(file)), command = f.oldHooks.find(hook => hook.event === "SessionEnd")!.command;
+  const group = (document.hooks.SessionEnd as Document[]).find(row => row.hooks.some((hook: Document) => hook.command === command))!;
+  if (surface === "async") group.hooks.find((hook: Document) => hook.command === command)!.async = true;
+  else group.sequential = true;
+  put(file, JSON.stringify(document, null, 2) + "\n"); rmSync(f.receipt);
+  const customized = new Map([...f.originals.keys()].map(file => [file, image(file)]));
+  if (flow === "adopted") {
+    f.apply(f.oldRoot); restored(customized);
+    const receipt = JSON.parse(text(f.receipt)) as { changes: { before: { bytes: string | null }; after: { bytes: string | null } }[] };
+    expect(receipt.changes.every(change => change.before.bytes === change.after.bytes), "same-root adoption preserves customized controls without owning them").toBe(true);
+  }
+  const before = new Map([...f.originals.keys(), f.receipt].map(file => [file, image(file)])), publications: string[] = [];
+  const options = { ...f.options(f.newRoot), beforePublish: (path: string) => { publications.push(path); } };
+  // Native MCP work in private staging is permitted; publishing any live image
+  // or dropping the user's behavioral controls is not.
+  expect(() => applySetup(planSetup("qwen", "apply", options), options))
+    .toThrow("previous-runtime hook settings are customized; review hook configuration before retrying setup");
+  restored(before); expect(publications).toEqual([]);
+});
