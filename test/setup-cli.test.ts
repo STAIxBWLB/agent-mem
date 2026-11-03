@@ -31,7 +31,7 @@ function fixture() {
 test("setup command table, parser and actual help expose the same targets and apply/undo options", async () => {
   const f = fixture(), before = snapshot(f.root), help = await runCli(["--help"], f.context);
   expect(help).toContain("setup <target>"); expect(help).toContain("[--apply]"); expect(help).toContain("[--undo]");
-  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--apply", "--json", "--root", "--undo"]);
+  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--root", "--undo"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
 });
@@ -231,4 +231,28 @@ for (const orcaRoot of [undefined, "custom-orca-data"]) test(`a profile receipt 
   await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile");
   expect(snapshot(f.root)).toEqual(before);
   expect(f.calls()).toHaveLength(calls);
+});
+
+test("a stale receipt names its cause, and --adopt-current (only with --apply) keeps it aside and adopts the live wiring (#241)", async () => {
+  const f = fixture(); await runCli(["setup", "claude", "--apply"], f.context);
+  // Move the live wiring to another install root outside setup, as a manual or installer edit would.
+  const entry = fileURLToPath(new URL("../bin/amem.js", import.meta.url)), other = join(f.root, "other-root", "bin", "amem.js");
+  const files = [join(f.home, ".claude.json"), join(f.home, ".claude", "settings.json")], receiptFile = join(f.home, "memory", "setup", "claude.json");
+  for (const file of files) { const value = readFileSync(file, "utf8"); expect(value).toContain(entry); put(file, value.replaceAll(entry, other)); }
+  const receipt = readFileSync(receiptFile), before = snapshot(f.root), calls = f.calls().length;
+  const plan = JSON.parse(await runCli(["setup", "claude", "--json"], f.context));
+  expect(plan.actions[0].state).toBe("stale receipt; apply needs --adopt-current");
+  expect(plan.notes.some((note: string) => note.includes("--apply --adopt-current"))).toBe(true);
+  const marked = { ...f.context, env: { ...f.env, CODEX_THREAD_ID: "setup-fixture" } };
+  const failure = await runCli(["setup", "claude", "--apply"], marked).then(() => { throw Error("unexpected apply"); }, error => error as Error);
+  expect(failure.message).toContain("cause: setup_receipt_stale"); expect(failure.message).toContain("--adopt-current"); expect(failure.message).not.toContain(f.root);
+  await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt is stale");
+  for (const argv of [["setup", "claude", "--adopt-current"], ["setup", "claude", "--undo", "--adopt-current"], ["setup", "console", "--apply", "--adopt-current"]]) await expect(runCli(argv, f.context)).rejects.toThrow("usage: amem setup");
+  expect(snapshot(f.root)).toEqual(before); expect(f.calls()).toHaveLength(calls);
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--adopt-current", "--json"], f.context))).toEqual({ applied: ["claude"], unchanged: [] });
+  const aside = readdirSync(dirname(receiptFile)).filter(name => name.startsWith("claude.json.stale-"));
+  expect(aside).toHaveLength(1); expect(readFileSync(join(dirname(receiptFile), aside[0]!))).toEqual(receipt);
+  for (const file of files) { const value = readFileSync(file, "utf8"); expect(value).toContain(entry); expect(value).not.toContain(other); }
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toEqual({ restored: ["claude"] });
+  for (const file of files) { const value = readFileSync(file, "utf8"); expect(value).toContain(other); expect(value).not.toContain(entry); }
 });
