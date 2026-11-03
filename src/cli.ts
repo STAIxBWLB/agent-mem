@@ -233,7 +233,9 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
   const text = typeof detail.message === "string" ? detail.message : "";
   const code = typeof detail.code === "string" ? detail.code : "";
   let cause = "setup_apply_failed", next = "Review the setup preview and saved setup ownership state before retrying.", partial = true;
-  if (/^installed (?:claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy) CLI does not expose MCP registration; no registration command was run$/.test(text)) {
+  if (text === "Memory operation unavailable or refused; no partial result is shown.") {
+    cause = "setup_policy_refused"; next = "Review setup policy with the person and keep denied configuration private."; partial = false;
+  } else if (/^installed (?:claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy) CLI does not expose MCP registration; no registration command was run$/.test(text)) {
     cause = "native_capability_unverified"; next = "Verify that the installed client can start and exposes MCP administration, then rerun setup preview."; partial = false;
   } else if (/^(?:claude|codex|pi|qwen|gemini) MCP registration timed out in staging; no native output disclosed$/.test(text)) {
     cause = "native_registration_timeout"; next = "Check that the installed client starts promptly, then rerun setup preview."; partial = false;
