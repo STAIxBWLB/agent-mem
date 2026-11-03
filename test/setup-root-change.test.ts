@@ -375,10 +375,13 @@ for (const target of TARGETS) test(target + ": a stale receipt refuses by name; 
   expect(aside).toHaveLength(1); expect(readFileSync(join(dirname(f.receipt), aside[0]!))).toEqual(f.stale);
   f.undo(f.newRoot); restored(live); expect(existsSync(f.receipt)).toBe(false);
 });
-test("claude: a receipt whose runtime still appears live is not stale, and --adopt-current keeps it (#241)", () => {
+for (const spelling of ["plain", "escaped slashes"] as const) test("claude: a receipt whose runtime still appears live is not stale, and --adopt-current keeps it (" + spelling + " JSON, #241)", () => {
   const f = staleFixture("claude"), settings = f.files[1]!, document = JSON.parse(text(settings));
   document.hooks.Stop.push({ hooks: [{ type: "command", command: quote(process.execPath) + " --smol " + quote(f.staleEntry) + " hook Stop", timeout: 1 }] });
-  put(settings, JSON.stringify(document, null, 2) + "\n");
+  const rendered = JSON.stringify(document, null, 2) + "\n";
+  // Valid JSON may spell "/" as "\/"; the decoded command is unchanged.
+  put(settings, spelling === "plain" ? rendered : rendered.replaceAll("/", "\\/"));
+  if (spelling !== "plain") { expect(text(settings)).not.toContain(f.staleEntry); expect(JSON.stringify(JSON.parse(text(settings)))).toContain(f.staleEntry); }
   const options = { ...f.options(f.newRoot), adoptCurrent: true };
   expect(planSetup("claude", "apply", options).actions[0]!.state).not.toContain("stale");
   expect(() => applySetup(planSetup("claude", "apply", options), options)).toThrow("setup-owned");

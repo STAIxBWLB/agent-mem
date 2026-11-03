@@ -426,11 +426,22 @@ function staleReceipt(target: SetupTarget, prior: Receipt): boolean {
     files = prior.changes.map(change => read(change.path));
     const owned = launcher(mcpRecord(target, prior.changes[0]!.after)), live = launcher(mcpRecord(target, files[0]!));
     if (!owned || !live || live.entry === owned.entry) return false;
-    // Raw, shell-quoted and JSON/TOML-escaped spellings of the receipt's entry path.
-    const traces = [owned.entry, quote(owned.entry)].flatMap(value => [value, JSON.stringify(value).slice(1, -1)]);
-    if (files.some(file => file.bytes !== null && traces.some(trace => Buffer.from(file.bytes!, "base64").toString("utf8").includes(trace)))) return false;
+    // Raw and shell-quoted entry, searched in the raw text (with JSON escaping, for the Pi extension source)
+    // and in every decoded JSON/TOML string value, so escapes such as `\/` cannot hide a live entry.
+    const traces = [owned.entry, quote(owned.entry)], escaped = traces.map(value => JSON.stringify(value).slice(1, -1));
+    if (files.some(file => file.bytes !== null && decodedTexts(Buffer.from(file.bytes, "base64").toString("utf8"))
+      .some((value, index) => (index === 0 ? [...traces, ...escaped] : traces).some(trace => value.includes(trace))))) return false;
   } catch { return false; }
   try { prior.changes.forEach((change, index) => restoreChange(prior, change, index, files[index]!)); return false; } catch { return true; }
+}
+/** The raw text first, then every string value it decodes to as JSON, else as TOML. */
+function decodedTexts(raw: string): string[] {
+  const out = [raw], walk = (value: unknown): void => {
+    if (typeof value === "string") out.push(value);
+    else if (value && typeof value === "object") for (const item of Object.values(value)) walk(item);
+  };
+  try { walk(JSON.parse(raw)); } catch { try { walk(Bun.TOML.parse(raw)); } catch { /* Not JSON or TOML (the Pi extension): the raw text alone. */ } }
+  return out;
 }
 /** Keep a stale receipt beside the new one instead of deleting it; the person can inspect or restore it. */
 function setReceiptAside(file: string): void {
