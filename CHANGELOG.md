@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.20.1
 
 - **Setup replaces hooks when its install root changes** (#237). Claude, Codex, Kimi, Qwen, Pi and Jcode retire exact prior MCP-bound commands instead of appending a second root, including adopted and receipt-less wiring. Undo restores original commands and their order while preserving unrelated later settings. Customized controls on adopted prior hooks refuse rather than being discarded. Marked setup apply failures report a data-free cause and next step; unmarked native errors remain unchanged.
 - **Compatibility with N-1 (0.20.0), #237:** root/runtime replacements that remove an adopted original hook write setup receipt v2; this release and doctor read v1 and v2. 0.20.0 refuses apply/undo of a v2 receipt before publishing configuration; run undo with the release that wrote it. First registrations and added-only receipt-owned root replacements retain v1. No memory format or floor changes.
