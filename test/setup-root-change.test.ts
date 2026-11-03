@@ -287,5 +287,14 @@ for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test
   for (const old of f.oldHooks) expect(hookCommands(f).get(old.event)!.filter(command => command === old.command)).toHaveLength(1);
   expect(f.apply(f.newRoot).applied, "matching intent must not hide reintroduced known OLD hooks").toEqual([target]);
   registeredOnly(f, "new"); expect(f.calls).toHaveLength(nativeCalls); expect(JSON.parse(text(f.receipt)).intent).toBe(intent);
-  f.undo(f.newRoot); restored(originalOldWiring); expect(existsSync(f.receipt)).toBe(false);
+  f.undo(f.newRoot); registeredOnly(f, "old");
+  // Reinsertion models an external writer whose TOML serialization discarded
+  // comments/formatting. Undo restores full configuration semantics, not those discarded bytes.
+  for (const [file, before] of originalOldWiring) {
+    expect(before.bytes).not.toBeNull();
+    const original = before.bytes!.toString("utf8"), current = text(file);
+    expect(file.endsWith(".toml") ? Bun.TOML.parse(current) : JSON.parse(current), file)
+      .toEqual(file.endsWith(".toml") ? Bun.TOML.parse(original) : JSON.parse(original));
+  }
+  expect(existsSync(f.receipt)).toBe(false);
 });
