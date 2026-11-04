@@ -18,7 +18,7 @@ function fixture() {
   let closed = false; const close = () => { if (!closed) { store.close(); closed = true; } }; cleanup.push(close);
   return { store, close, home: store.profile.home, own: join(store.dir, "log", `${store.machine.id}.jsonl`) };
 }
-const note = (store: MemoryStore, text: string, scope: "project" | "user" = "project") => store.note({ op: "note", project: "example.test/team/public", scope, tier: "long", kind: "finding", peer: "fixture", source: "person", text, about: [] });
+const note = (store: MemoryStore, text: string, scope: "project" | "shared" = "project") => store.note({ op: "note", project: "example.test/team/public", scope, tier: "long", kind: "finding", peer: "fixture", source: "person", text, about: [] });
 function tree(root: string): unknown {
   return readdirSync(root, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).map(item => {
     const file = join(root, item.name), stat = lstatSync(file, { bigint: true });
@@ -36,7 +36,7 @@ async function actualDeclines(store: MemoryStore, screen?: (row: Record<string, 
 }
 
 for (const profile of ["shared-v1", "generation", "sharded"] as const) test("public inspection matches actual sync declines without mutating " + profile, async () => {
-  const f = fixture(), bad = note(f.store, "private inspection phrase"), good = note(f.store, "ordinary public finding"), user = note(f.store, "private user inspection phrase", "user");
+  const f = fixture(), bad = note(f.store, "private inspection phrase"), good = note(f.store, "ordinary public finding"), user = note(f.store, "private user inspection phrase", "shared");
   f.store.forget(bad, "person");
   let store = f.store;
   if (profile !== "shared-v1") {
@@ -52,7 +52,7 @@ for (const profile of ["shared-v1", "generation", "sharded"] as const) test("pub
   }
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private inspection phrase", "private user inspection phrase"] }));
   const before = tree(f.home);
-  const fetchGuard = spyOn(globalThis, "fetch").mockImplementation(() => { throw Error("inspection attempted network"); });
+  const fetchGuard = spyOn(globalThis, "fetch").mockImplementation(Object.assign(() => { throw Error("inspection attempted network"); }, { preconnect: fetch.preconnect }));
   const spawnGuard = spyOn(Bun, "spawn").mockImplementation(() => { throw Error("inspection attempted a child"); });
   const syncGuard = spyOn(Bun, "spawnSync").mockImplementation(() => { throw Error("inspection attempted a child"); });
   let result: ReturnType<typeof inspectSyncPolicy>;
@@ -105,7 +105,7 @@ test("host narrowing cannot override machine policy and host failures contain no
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["machine-private"] }));
   const result = inspectSyncPolicy(f.store, { screen: row => row.text !== "host-private" });
   expect(result.complete).toBe(true);
-  if (result.complete) expect(result.declined).toEqual([ { id: machine, categories: ["personal-data"] }, { id: host, categories: ["host"] } ].sort((a,b) => a.id.localeCompare(b.id)));
+  if (result.complete) expect(result.declined).toEqual([ { id: machine, categories: ["personal-data" as const] }, { id: host, categories: ["host" as const] } ].sort((a,b) => a.id.localeCompare(b.id)));
   expect(inspectSyncPolicy(f.store, { screen: () => { throw Error("private error literal /hidden/path"); } })).toEqual({ complete: false, reason: "policy-unavailable" });
 });
 

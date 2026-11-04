@@ -105,7 +105,7 @@ export function inspectSyncPolicy(store: MemoryStore, options: SyncPolicyInspect
     for (const row of declined) for (const category of row.categories) byCategory[category]++;
     return { complete: true, declined, counts: { scanned, declined: declined.length, byCategory }, fingerprint: hash(declined) };
   } catch (error) {
-    let reason = failure;
+    let reason: Extract<SyncPolicyInspection, { complete: false }>["reason"] = failure;
     // Caller errors are not trusted diagnostics: never read message, getters or proxy properties.
     try {
       if (error && typeof error === "object" && !types.isProxy(error)) {
