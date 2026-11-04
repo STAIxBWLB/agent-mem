@@ -198,7 +198,7 @@ for (const event of ["PostToolUse", "SessionStart"] as const) test(`functional $
   accepted.push("full queue follow-up");
   const probe = hookRecoveryDiagnostic(f.root);
   const result = f.runFunctional(event, { prompt: "full queue follow-up" }, probe);
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
   const traces = [result.stderr.toString()];
   const codes = traces[0]!.trim().split("\n").map(line => JSON.parse(line) as number[]);
   expect(codes.every(row => Array.isArray(row) && row.every(Number.isFinite)), traces[0]).toBe(true);
