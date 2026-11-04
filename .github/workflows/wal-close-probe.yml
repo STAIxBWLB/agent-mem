@@ -1,0 +1,56 @@
+name: Disposable CaptureStore WAL close probe
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - scripts/wal-close-probe.ts
+      - .github/workflows/wal-close-probe.yml
+permissions:
+  contents: read
+env:
+  FIX_HEAD: cdd196666e7efab2f7ec04c654a1bcfa8fd49517
+jobs:
+  wal-close:
+    if: github.head_ref == 'measure/226-wal-close'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Preserve disposable controller and provenance outside frozen checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/wal-close-evidence"
+          cp scripts/wal-close-probe.ts "$RUNNER_TEMP/wal-close-probe.ts"
+          git rev-parse HEAD > "$RUNNER_TEMP/wal-close-evidence/controller-head.txt"
+          shasum -a 256 "$RUNNER_TEMP/wal-close-probe.ts" > "$RUNNER_TEMP/wal-close-evidence/controller-sha256.txt"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.FIX_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - name: Verify frozen target and native runtime
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$FIX_HEAD" ]]
+          [[ "$(bun --version)" == 1.4.2 ]]
+          git diff --exit-code
+          git rev-parse HEAD > "$RUNNER_TEMP/wal-close-evidence/product-head.txt"
+          shasum -a 256 src/memory/capture.ts > "$RUNNER_TEMP/wal-close-evidence/capture-source-sha256.txt"
+          sw_vers > "$RUNNER_TEMP/wal-close-evidence/os.txt"
+          bun --version > "$RUNNER_TEMP/wal-close-evidence/bun.txt"
+      - name: Twenty fixed paired synthetic WAL-close cycles
+        run: |
+          set -o pipefail
+          bun "$RUNNER_TEMP/wal-close-probe.ts" --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/wal-close-evidence/run" | tee "$RUNNER_TEMP/wal-close-evidence/controller.stdout.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wal-close-native-macos
+          path: ${{ runner.temp }}/wal-close-evidence
