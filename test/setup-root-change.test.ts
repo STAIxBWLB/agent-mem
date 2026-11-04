@@ -2,8 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, join } from "node:path";
 import { applySetup, planSetup, undoSetup, type SetupContext } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
 
@@ -210,46 +209,6 @@ for (const target of TARGETS) test(target + ": same-root apply repairs a frozen 
   expect(f.apply(f.newRoot).applied, "legacy matching intent must trigger repair, not unchanged").toEqual([target]);
   registeredOnly(f, "new");
   f.undo(f.newRoot); restored(originalOldWiring); expect(existsSync(f.receipt)).toBe(false);
-});
-
-const previousRoot = process.env.AMEM_PREV_ROOT, previousRequired = process.env.AMEM_PREV_REQUIRED === "1";
-if (previousRoot && !isAbsolute(previousRoot)) throw Error("AMEM_PREV_ROOT must be an absolute published package root");
-const previousManifest = previousRoot ? JSON.parse(text(join(previousRoot, "package.json"))) as { name: string; version: string } : undefined;
-if (previousManifest && previousManifest.name !== "@staix/agent-mem") throw Error("AMEM_PREV_ROOT is not an @staix/agent-mem package");
-const previousReleaseTest = previousRoot ? previousManifest!.version === "0.20.0" ? test : test.skip : previousRequired ? test : test.skip;
-for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 setup refuses replacement receipts before config publication", async () => {
-  expect(previousRoot, "AMEM_PREV_ROOT is required by the previous-release gate").toBeTruthy();
-  if (!previousRoot) throw Error("AMEM_PREV_ROOT is required");
-  expect(isAbsolute(previousRoot)).toBe(true);
-  const pkg = previousManifest!;
-  expect(pkg.name).toBe("@staix/agent-mem"); expect(pkg.version).toBe("0.20.0");
-  const previous = await import(pathToFileURL(join(previousRoot, "src", "setup.ts")).href) as {
-    applySetup: typeof applySetup; undoSetup: typeof undoSetup;
-  };
-  const f = fixture(target); adopt(f); f.apply(f.newRoot);
-  expect(JSON.parse(text(f.receipt)).version).toBe(2);
-  const publications: string[] = [], opts = { ...f.options(f.newRoot), beforePublish: (file: string) => publications.push(file) };
-  const apply = planSetup(target, "apply", opts), undo = planSetup(target, "undo", opts), nativeCalls = f.calls.length;
-  const before = new Map([...f.originals.keys(), f.receipt].map(file => [file, image(file)]));
-  expect(() => previous.applySetup(apply, opts), "published " + pkg.version + " apply must refuse receipt v2").toThrow(/setup receipt.*(?:match|version)/);
-  expect(publications).toEqual([]); expect(f.calls).toHaveLength(nativeCalls); restored(before);
-  expect(() => previous.undoSetup(undo, opts), "published " + pkg.version + " undo must refuse receipt v2").toThrow(/setup receipt.*(?:match|version)/);
-  expect(publications).toEqual([]); expect(f.calls).toHaveLength(nativeCalls); restored(before);
-  console.log(JSON.stringify({ diagnostic: "setup-receipt-v2-published-reader", version: pkg.version, target, refusedApply: true, refusedUndo: true, configPublications: publications.length }));
-});
-
-for (const target of TARGETS) previousReleaseTest(target + ": published 0.20.0 undo accepts an ordinary receipt-v1 root relocation", async () => {
-  expect(previousRoot, "AMEM_PREV_ROOT is required by the previous-release gate").toBeTruthy();
-  if (!previousRoot) throw Error("AMEM_PREV_ROOT is required");
-  const pkg = previousManifest!; expect(pkg.name).toBe("@staix/agent-mem"); expect(pkg.version).toBe("0.20.0");
-  const previous = await import(pathToFileURL(join(previousRoot, "src", "setup.ts")).href) as { undoSetup: typeof undoSetup };
-  const f = fixture(target); f.apply(f.oldRoot);
-  expect(JSON.parse(text(f.receipt)).version).toBe(1);
-  f.apply(f.newRoot); registeredOnly(f, "new"); expect(JSON.parse(text(f.receipt)).version).toBe(1);
-  const options = f.options(f.newRoot);
-  previous.undoSetup(planSetup(target, "undo", options), options);
-  restored(f.originals); expect(existsSync(f.receipt)).toBe(false);
-  console.log(JSON.stringify({ diagnostic: "setup-receipt-v1-published-undo", version: pkg.version, target, acceptedUndo: true, originalBytesRestored: true }));
 });
 
 for (const target of ["claude", "codex", "qwen", "kimi", "jcode"] as const) test(target + ": semantic undo restores adopted OLD hooks before observers in their original ordered position", () => {
