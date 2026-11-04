@@ -7,12 +7,15 @@ test("review uses host buttons and renders stored evidence as text with missing 
   const node = (tag: string, props: Record<string, unknown> = {}, ...kids: unknown[]): Node => ({ tag, props, kids,
     append(...items) { this.kids.push(...items); }, replaceChildren(...items) { this.kids = items; }, querySelectorAll() { return []; }, contains() { return false; } });
   const buttons: string[] = [];
+  const clicks = new Map<string, () => void>();
+  let navigation: unknown[] = [];
   let detail: Record<string, unknown> | undefined;
   let snapshot: ((s: Record<string, unknown>) => void) | undefined;
-  const host = { tool: "amem", mount: node("mount"), navigate() {}, action() {},
+  const host = { tool: "amem", mount: node("mount"), navigate(...args: unknown[]) { navigation = args; }, action() {},
     onSnapshot(cb: typeof snapshot) { snapshot = cb; }, ui: {
-      h: node, button(label: string) { buttons.push(label); return node("button", { text: label }); },
+      h: node, button(label: string, click: () => void) { buttons.push(label); clicks.set(label, click); return node("button", { text: label }); },
       rows(items: unknown[], render: (item: never) => unknown) { return items.length ? node("rows", {}, ...items.map(item => render(item as never))) : null; },
+      notice: (text: string) => node("notice", { text }),
       row: (props: Record<string, unknown>) => node("row", props), empty: (text: string) => node("empty", { text }),
       detail(props: Record<string, unknown>) { detail = props; return node("detail", props); },
     } };
@@ -29,4 +32,8 @@ test("review uses host buttons and renders stored evidence as text with missing 
   expect(evidence).toContain(quote);
   expect(evidence).toContain("not recorded in the candidate store");
   expect(evidence).not.toContain("innerHTML");
+  snapshot!({ project: null, projects: ["fixture"], error: "Requested project is unavailable" });
+  expect(buttons).toContain("Choose project fixture");
+  clicks.get("Choose project fixture")!();
+  expect(navigation).toEqual(["amem", "review", { project: "fixture" }]);
 });

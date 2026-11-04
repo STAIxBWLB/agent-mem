@@ -7,9 +7,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Complete the acon plugin's published api 1 integration (#158): pin the development contract and conformance suite to `@staix/agent-console` 0.1.0, use the host button kit, and show stored target-note quotes with explicit candidate-provenance limitations. Existing review, screened search/timeline/work reads, goals, capacity, inbox and manifest setup remain in process with zero runtime dependencies.
 - Refuse an unavailable explicitly selected Memory project instead of returning another project's data. Verify manifest hash refusal and refresh against the published console loader.
 
-## Unreleased
-
 - **CI resolves N-1 by minor line** (#249). Compatibility checks select the latest published plain patch from the preceding minor of the same major, with the preceding major as the fallback at minor 0. Patch releases now test the same previous minor as their minor release, instead of the current or preceding patch.
+- **Compatibility with N-1 (0.20.3):** curated, capture, hook-spool, candidates, work-list and sync formats and setup receipt v1/v2 are unchanged; no format floor changes. Both versions use console api 1 and the same plugin manifest format. The console development dependency is not a runtime dependency.
 
 ## 0.20.3
 

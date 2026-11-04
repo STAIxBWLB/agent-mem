@@ -13,9 +13,10 @@ export default (host) => {
 
   const picker = (s) => {
     const list = s.projects ?? [];
+    if (s.error && !s.project && list.length === 1) return btn(`Choose project ${list[0]}`, () => go(panel, { project: list[0] }));
     if (list.length < 2) return list.length ? h("p", { class: "amem-sub", text: `Project ${list[0]}` }) : null;
     const select = h("select", { name: "project", class: "amem-input", "aria-label": "Project", onchange: () => { project = select.value; go(panel); } },
-      list.map((key) => { const o = h("option", { value: key, text: key }); if (key === s.project) o.selected = true; return o; }));
+      [...(!s.project ? [h("option", { value: "", text: "Choose an active project", disabled: true, selected: true })] : []), ...list.map((key) => { const o = h("option", { value: key, text: key }); if (key === s.project) o.selected = true; return o; })]);
     return h("label", { class: "amem-bar" }, h("span", { text: "Project" }), select);
   };
 
