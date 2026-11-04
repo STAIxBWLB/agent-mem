@@ -26,6 +26,8 @@ VARIANTS = ("M", "P", "PW", "PU", "H")
 RESTORE = {"M": (), "P": ("src/hooks.ts", "src/hook-transcript.ts"), "PW": ("src/hook-transcript.ts",), "PU": ("src/hooks.ts",), "H": ()}
 SOURCE_CHANGES = {"src/hooks.ts", "src/hook-transcript.ts", "src/hook-spool.ts"}
 TIMEOUT_SECONDS = 240
+RUN_BUDGET_SECONDS = 105 * 60
+FINISH_RESERVE_SECONDS = 300
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -55,6 +57,12 @@ def file_manifest(root):
 
 def manifest_hash(value):
     return digest_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def can_start_attempt(started, current):
+    # Keep the fixed schedule, but retain unexecuted slots before the120-minute
+    # job deadline so artifact upload has time to preserve every attempted result.
+    return current - started < RUN_BUDGET_SECONDS - FINISH_RESERVE_SECONDS
 
 
 def schedule_for(platform):
@@ -313,6 +321,7 @@ def run_once(arm, preload, attempt, item):
 
 
 def main():
+    run_started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--instrument", type=Path, required=True)
@@ -325,7 +334,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     schedule = schedule_for(args.platform)
     dump(out / "schedule.json", {"platform": args.platform, "main": MAIN, "head": HEAD, "blocks": 10, "scripts": len(schedule), "schedule": schedule, "sha256": manifest_hash(schedule)})
-    summary = {"schema": "task127-diagnostics/v1", "diagnosticOnly": True, "measurementComplete": False, "requested": len(schedule), "executed": 0, "iterations": [], "acceptanceClaim": False}
+    summary = {"schema": "task127-diagnostics/v1", "diagnosticOnly": True, "measurementComplete": False, "requested": len(schedule), "executed": 0, "iterations": [], "acceptanceClaim": False,
+               "runBudgetSeconds": RUN_BUDGET_SECONDS, "finishReserveSeconds": FINISH_RESERVE_SECONDS}
     dump(out / "summary.json", summary)
     preflight = {"main": MAIN, "head": HEAD, "controller": diagnostic_inputs(instrument), "scheduleSHA256": manifest_hash(schedule)}
     try:
@@ -362,6 +372,8 @@ def main():
         try:
             if blocked:
                 raise RuntimeError("not executed after diagnostic ownership/provenance failure: " + blocked)
+            if not can_start_attempt(run_started, time.monotonic()):
+                raise RuntimeError("declared diagnostic run budget exhausted; remaining slots retained unexecuted for artifact upload")
             guard_environment(args.platform)
             arm = out / "variants" / item["variant"]
             expected = variants[item["variant"]]["manifest"]

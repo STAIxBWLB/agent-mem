@@ -37,6 +37,9 @@ def run_checks(controller):
     checks["observer-complete-unresolved-ownership-stops"] = module.observer_stop_reason({"observerComplete": True, "ownershipUnresolved": True}, 0) == "stable PID ownership unresolved after R1; subsequent scripts not executed"
     checks["observer-complete-known-ownership-continues"] = module.observer_stop_reason({"observerComplete": True, "ownershipUnresolved": False}, 0) is None
     checks["observer-corruption-distinct-from-lifecycle"] = module.observer_stop_reason({"observerComplete": False, "ownershipUnresolved": True}, 1) == "out-of-band observer analysis incomplete or invalid"
+    checks["fresh-run-budget-admitted"] = module.can_start_attempt(100, 100)
+    checks["artifact-reserve-refuses-new-attempt"] = not module.can_start_attempt(100, 100 + module.RUN_BUDGET_SECONDS - module.FINISH_RESERVE_SECONDS)
+    checks["budget-refusal-stays-refused"] = not module.can_start_attempt(100, 100 + module.RUN_BUDGET_SECONDS)
     fixture = {100: {"ppid": 1, "pgid": 100, "start": "stamp", "command": "bun harness"}, 101: {"ppid": 100, "pgid": 100, "start": "stamp", "command": "bun child"}, 102: {"ppid": 1, "pgid": 102, "start": "stamp", "command": "bun /unique/arm/src/session-brief-worker.ts"}, 999: {"ppid": 1, "pgid": 999, "start": "stamp", "command": "bun /other/src/session-brief-worker.ts"}}
     checks["owned-only-cleanup-selection"] = set(module.owned_processes(fixture, 100, Path("/unique/arm"))) == {101, 102}
     checks["pid-reuse-identity"] = module.identity(fixture[102]) != module.identity({**fixture[102], "start": "new"})
