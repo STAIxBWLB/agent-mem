@@ -105,8 +105,10 @@ test("the scanner recovers a killed cursor transaction before publishing an unti
   const f = fixture(); await f.scan();
   const file = cursorFile(f);
   const child = `import {Database} from 'bun:sqlite';const db=new Database(process.argv.at(-1));
+const put=db.query('INSERT INTO fallback VALUES (?,?)');db.transaction(()=>{for(let i=0;i<1000;i++)put.run(i.toString(16).padStart(64,'0'),'2000-01-01T00:00:00.000Z');})();
 db.run('PRAGMA cache_size = 1');db.run('BEGIN IMMEDIATE');db.run('UPDATE cursor SET offset = 1');
-const put=db.query('INSERT INTO fallback VALUES (?,?)');for(let i=0;i<1000;i++)put.run(i.toString(16).padStart(64,'0'),'2000-01-01T00:00:00.000Z');
+// Dirty existing pages: inserting only new pages need not spill a journal header on macOS.
+db.run("UPDATE fallback SET at='2099-01-01T00:00:00.000Z'");
 process.kill(process.pid,'SIGKILL');`;
   const killed = Bun.spawnSync([process.execPath, "-e", child, file], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
   expect(killed.exitCode).not.toBe(0);
@@ -118,8 +120,9 @@ process.kill(process.pid,'SIGKILL');`;
   const db = new Database(file, { readonly: true });
   try {
     expect(db.query("SELECT offset FROM cursor").get()).toEqual({ offset: Buffer.byteLength(readFileSync(f.transcript)) });
-    expect(db.query("SELECT COUNT(*) AS count FROM fallback").get()).toEqual({ count: 1 });
-    expect(db.query("SELECT at FROM fallback").get()).not.toEqual({ at: "2000-01-01T00:00:00.000Z" });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback").get()).toEqual({ count: 1001 });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback WHERE at = ?").get("2000-01-01T00:00:00.000Z")).toEqual({ count: 1000 });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback WHERE at = ?").get("2099-01-01T00:00:00.000Z")).toEqual({ count: 0 });
   } finally { db.close(); }
   const first = await f.drain(); expect(first).toHaveLength(1);
   await f.scan(); expect(await f.drain()).toEqual(first);
