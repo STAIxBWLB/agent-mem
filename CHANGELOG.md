@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Screen contentful `settle.target` and `goal_link.by` task keys in outbound sync and inspection for every profile (#263). Preserve validated ID/enum/UTC metadata exclusions and unknown content fields. Restore specific byte/row-bound, changed-input and unavailable-input sync refusal causes.
+
 - Add bounded, read-only outbound policy inspection at the package root (#260): full declined IDs, safe categories/counts and a complete-set fingerprint for shared-v1, generation and opened shard/user-overlay targets. Share canonical screening with sync and expose its content projection for host write-time checks. Incomplete inputs never produce a complete empty set. No storage format, publication or per-row placement change.
 
 ## 0.21.0

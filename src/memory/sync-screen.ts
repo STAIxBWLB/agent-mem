@@ -2,6 +2,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Bi
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { join } from "node:path";
+import { OP_CONTRACTS } from "./ops-contract.ts";
+import { SUGGESTED } from "./store.ts";
 import { checkedEntry } from "./bridge.ts";
 import { loadAmemConfig } from "./config.ts";
 import { createStandalonePolicy, type StandalonePolicyDecline } from "./policy.ts";
@@ -31,12 +33,30 @@ export type SyncScreen = { ok: true } | { ok: false; reason: string };
  * What a row says: everything except the fields the library itself generates (ids, hashes, times, the op and enum names, machine and actor ids). Left IN on purpose
  * are `project`, `peer`, `task`, `about`, `title`, `text`, `milestones` and any field this file has never heard of: an unknown text field must be screened, never skipped.
  */
-const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
+/** Only a known operation's validated id/enum/time operand is generated metadata.
+ * A task key, an unknown operand field or an unsupported operand shape remains content. */
+function generatedOperand(operation: unknown, key: string, value: unknown): boolean {
+  if (key !== "target" && key !== "by" || typeof operation !== "string" || !Object.hasOwn(OP_CONTRACTS, operation)) return false;
+  const field = OP_CONTRACTS[operation]?.payloadSchema?.fields[key];
+  if (typeof value !== "string" || !field) return false;
+  if (field.format === "id") return /^[a-f0-9]{32}$/.test(value);
+  if (field.format === "utc") return Number.isFinite(Date.parse(value));
+  if (field.values) return field.values.includes(value);
+  // Suggestion operands are a closed relation enum plus an immutable entry id, not task text.
+  if (operation === "suggest" && key === "by") {
+    const match = /^([^:]+):[a-f0-9]{32}$/.exec(value);
+    return match !== null && (SUGGESTED as readonly string[]).includes(match[1]!);
+  }
+  return false;
+}
+
 export function syncOutboundContent(row: unknown): Record<string, unknown> {
   if (!row || typeof row !== "object" || Array.isArray(row) || types.isProxy(row) || Object.getOwnPropertySymbols(row).length) throw new Error("outbound row unavailable");
-  const out: Record<string, unknown> = {};
-  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(row))) {
-    if (GENERATED.has(key)) continue;
+  const out: Record<string, unknown> = {}, descriptors = Object.getOwnPropertyDescriptors(row);
+  const operation = descriptors.op?.value;
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (GENERATED.has(key) || generatedOperand(operation, key, descriptor.value)) continue;
     if (!("value" in descriptor) || !descriptor.enumerable) throw new Error("outbound row unavailable");
     Object.defineProperty(out, key, { value: descriptor.value, enumerable: true, writable: true, configurable: true });
   }
@@ -84,7 +104,7 @@ export function screenOutboundRows(store: MemoryStore, pass: RowScreen): SyncScr
 }
 
 export class SyncScreenInputError extends Error {
-  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed") { super(code); }
+  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed", readonly bound?: "bytes" | "rows") { super(code); }
 }
 const sameStat = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
@@ -109,7 +129,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n) throw new SyncScreenInputError("input-unavailable");
-    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound");
+    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound", "bytes");
     const check = () => {
       checkParent();
       const named = lstatSync(file, { bigint: true });
@@ -128,7 +148,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
       if (start === end) { start = end + 1; continue; }
       const line = decoder.decode(bytes.subarray(start, end)); start = end + 1;
       if (!line.trim()) continue;
-      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound");
+      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound", "rows");
       let row: unknown;
       try { row = checkedEntry(JSON.parse(line)); } catch { throw new SyncScreenInputError("input-unavailable"); }
       visit(row as Record<string, unknown>);
@@ -145,6 +165,17 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
 export function screenOwnSegment(dir: string, machineId: string, pass: RowScreen): SyncScreen {
   const declined: string[] = [];
   try { visitOwnSegment(dir, machineId, row => { if (!pass(row)) declined.push(idOf(row)); })(); }
-  catch { return { ok: false, reason: "this machine's long-term segment cannot be read within the screening bounds, so it was not screened; inspect the local input and reopen the store before retrying" }; }
+  catch (error) {
+    let code: unknown, bound: unknown;
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      code = Object.getOwnPropertyDescriptor(error, "code")?.value;
+      bound = Object.getOwnPropertyDescriptor(error, "bound")?.value;
+    }
+    const inspect = "; inspect the local input and reopen the store before retrying";
+    if (code === "input-bound" && bound === "rows") return { ok: false, reason: `more than ${MAX_ROWS} long-term rows, so they were not screened${inspect}` };
+    if (code === "input-bound" && bound === "bytes") return { ok: false, reason: `this machine's long-term segment exceeds ${MAX_BYTES} bytes, so it was not screened${inspect}` };
+    if (code === "input-changed") return { ok: false, reason: "this machine's long-term segment changed while being screened, so it was not screened; wait for writers to finish and retry" };
+    return { ok: false, reason: "this machine's long-term segment is not readable as complete valid rows, so it was not screened" + inspect };
+  }
   return refusal(declined);
 }
