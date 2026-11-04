@@ -114,18 +114,18 @@ export function buildDarwinLockProbe(outputDir: string): string {
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 /** Isolated native child: compiler handles Darwin fcntl's variadic calling convention and system struct layout. */
-async function darwinGetlk(file: string, binary?: string): Promise<DarwinLockObservation> {
+async function darwinGetlk(file: string, binary?: string, timeoutMs = 1000): Promise<DarwinLockObservation> {
   if (process.platform !== "darwin") return { available: false, locks: [], error: "unsupported-darwin-platform" };
   const executable = binary ?? join(dirname(fileURLToPath(import.meta.url)), "task-127-fgetlk");
   const named = lstatSync(executable, { throwIfNoEntry: false });
   if (!named || !named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || !(named.mode & 0o111) || named.size > 1024 * 1024) return { available: false, locks: [], error: "prebuilt-probe-unavailable" };
-  const child = Bun.spawnSync([executable, file], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+  const child = Bun.spawnSync([executable, file], { stdout: "pipe", stderr: "pipe", timeout: Math.max(1, Math.min(1000, timeoutMs)) });
   if (child.exitCode !== 0 || child.stdout.byteLength > 16 * 1024) return { available: false, locks: [], error: child.signalCode ? "probe-signal" : "probe-failed" };
   try { return JSON.parse(child.stdout.toString()) as DarwinLockObservation; }
   catch { return { available: false, locks: [], error: "probe-output-invalid" }; }
 }
 /** Snapshot only, not a final-exit assertion. A released lock or missing PID remains unattributed. */
-export async function snapshotCursorLocks(file: string, candidatePids: readonly number[] = [], options: { probeBinary?: string } = {}): Promise<CursorLockSnapshot> {
+export async function snapshotCursorLocks(file: string, candidatePids: readonly number[] = [], options: { probeBinary?: string; probeTimeoutMs?: number } = {}): Promise<CursorLockSnapshot> {
   const result: CursorLockSnapshot = { diagnostic: "task127-cursor-locks", platform: process.platform, observerPid: process.pid, at: new Date().toISOString(),
     startedMs: now(), finishedMs: 0, available: false, complete: false, locks: [], processes: [], unavailable: [], limitations: [
       "Snapshot races with lock release and PID exit/reuse; no observed conflict does not prove no earlier locker.",
@@ -146,7 +146,7 @@ export async function snapshotCursorLocks(file: string, candidatePids: readonly 
       result.processes = pids.slice(0, MAX_PIDS).map(processIdentity); result.available = true;
       result.limitations.push("/proc/locks is PID-namespace scoped; OFD locks may report PID -1. Waiting rows are marked blocked, not owners.");
     } else if (process.platform === "darwin") {
-      const observed = await darwinGetlk(file, options.probeBinary); result.locks = observed.locks; result.available = observed.available;
+      const observed = await darwinGetlk(file, options.probeBinary, options.probeTimeoutMs); result.locks = observed.locks; result.available = observed.available;
       if (observed.observerPid !== undefined && observed.startedMs !== undefined && observed.finishedMs !== undefined) result.lockObservation = { pid: observed.observerPid, startedMs: observed.startedMs, finishedMs: observed.finishedMs, stage: observed.stage, errno: observed.errno, file: observed.file, fileIdentityUnchanged: observed.fileIdentityUnchanged, monotonicStartedMs: observed.monotonicStartedMs, monotonicFinishedMs: observed.monotonicFinishedMs, clock: observed.clock };
       if (!observed.available) result.unavailable.push(observed.error ?? "getlk-unavailable");
       if (observed.available && (!observed.file || observed.file.dev !== result.file.dev || observed.file.ino !== result.file.ino || observed.fileIdentityUnchanged !== true)) { result.available = false; result.unavailable.push("probe-cursor-identity-mismatch"); }

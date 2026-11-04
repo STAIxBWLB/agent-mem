@@ -86,9 +86,11 @@ export function transformSource(file: string, original: string): string {
         `try { ${p(151)}writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });${p(152)}${p(153)}renameSync(temporary, join(destination, name));${p(154)} }`);
     }
   } else if (file === "scripts/measure-transcript-budget.ts") {
-    after("  let alive = ownedHelpers();", 300); // harness observer is JSON, not this native phase
-    source = once(source, p(300), "await (globalThis as any).__t127r1('before', alive, diagnostic);");
-    source = once(source, "  const survivalMs = performance.now() - exitAt;", "  await (globalThis as any).__t127r1('after', alive, diagnostic);\n  const survivalMs = performance.now() - exitAt;");
+    const sample = (stage: string, current: string) => `(globalThis as any).__t127r1('${stage}', ${current}, diagnostic, performance.timeOrigin + exitAt, R1_POST_EXIT_WINDOW_MS)`;
+    source = once(source, "  let alive = ownedHelpers();", `  let alive = await ${sample("before", "ownedHelpers()")};`);
+    source = once(source, "{ await Bun.sleep(10); alive = ownedHelpers(); }", `{ await Bun.sleep(10); alive = await ${sample("sample", "ownedHelpers()")}; }`);
+    source = once(source, "  const survivalMs = performance.now() - exitAt;", `  alive = await ${sample("after", "ownedHelpers()")};\n  const survivalMs = performance.now() - exitAt;`);
+    source = once(source, "        await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });", "        (globalThis as any).__t127cursorFile(file);\n        await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });");
     source = once(source, '          const db = new Database(file, { readonly: true });\n          try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; offsetSource = "cursor"; }',
       '          try { offset = await (globalThis as any).__t127readCursor(file, { event, logicalRun, followUp }); offsetSource = "cursor"; }');
     source = once(source, "          } finally { db.close(); }", "          }");

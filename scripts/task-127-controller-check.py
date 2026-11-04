@@ -36,7 +36,24 @@ def run_checks(controller):
     checks["cleanup-unknown-blocks"] = not module.analyze(good, "", {**status, "cleanupOK": False})["measurementValid"]
     checks["observer-complete-unresolved-ownership-stops"] = module.observer_stop_reason({"observerComplete": True, "ownershipUnresolved": True}, 0) == "stable PID ownership unresolved after R1; subsequent scripts not executed"
     checks["observer-complete-known-ownership-continues"] = module.observer_stop_reason({"observerComplete": True, "ownershipUnresolved": False}, 0) is None
-    checks["observer-corruption-distinct-from-lifecycle"] = module.observer_stop_reason({"observerComplete": False, "ownershipUnresolved": True}, 1) == "out-of-band observer analysis incomplete or invalid"
+    checks["observer-corruption-does-not-hide-ownership-stop"] = module.observer_stop_reason({"observerComplete": False, "ownershipUnresolved": True}, 1) == "stable PID ownership unresolved after R1; subsequent scripts not executed"
+    checks["incomplete-observer-continues-fixed-schedule"] = all(module.observer_stop_reason(observer, code) is None and not module.observer_diagnostic_complete(observer, code) for observer, code in [({"observerComplete": False, "faults": ["missing worker entry"]}, 0), ({"observerComplete": True, "error": "corrupt trace"}, 0), ({"observerComplete": False}, 1)])
+    checks["valid-observer-diagnostic-complete"] = module.observer_diagnostic_complete({"observerComplete": True}, 0)
+    checks["malformed-row-is-incomplete-not-survivor"] = not module.analyze(good + '\n' + json.dumps({"diagnostic": "transcript-R1", "survivors": "unknown"}), "", status)["diagnosticComplete"] and not module.analyze(good + '\n' + json.dumps({"diagnostic": "transcript-R1", "survivors": "unknown"}), "", status)["r1Survivor"]
+    iterations = [{"status": {"attempted": True, "executed": True, "sourceAfter": "frozen"}, "analysis": {"diagnosticComplete": valid}} for valid in [True, False, True]]
+    checks["mixed-set-schedule-complete-diagnostic-incomplete"] = module.completeness(iterations, 3, None) == {"scheduleComplete": True, "diagnosticComplete": False, "measurementComplete": False}
+    checks["source-guard-prevents-schedule-completion"] = not module.completeness(iterations, 3, "source fingerprint mismatch")["scheduleComplete"]
+    checks["all-valid-separately-complete"] = module.completeness([iterations[0]], 1, None) == {"scheduleComplete": True, "diagnosticComplete": True, "measurementComplete": True}
+    checks["unattempted-slot-keeps-schedule-incomplete"] = not module.completeness([{"status": {"attempted": False}, "analysis": {"diagnosticComplete": False}}], 1, None)["scheduleComplete"]
+    first = module.first_stop(None, "source fingerprint mismatch")
+    checks["first-source-guard-cause-is-preserved"] = module.first_stop(module.first_stop(first, "later ownership failure"), "not executed after prior guard") == "source fingerprint mismatch"
+    checks["timeout-cleanup-established-may-continue"] = module.safety_stop_reason({"executed": True, "timedOut": True, "cleanupOK": True}, {"r1Survivor": False}) is None and not module.analyze(good, "", {**status, "timedOut": True})["diagnosticComplete"]
+    checks["timeout-cleanup-uncertain-stops"] = module.safety_stop_reason({"executed": True, "timedOut": True, "cleanupOK": False}, {"r1Survivor": False}) == "owned process cleanup unavailable or owned worker remained"
+    checks["actual-r1-survivor-stops"] = module.safety_stop_reason({"executed": True, "cleanupOK": True}, {"r1Survivor": True}) == "R1 survivor after the fixed observation window; subsequent scripts not executed"
+    unresolved = module.analyze(good + '\n' + json.dumps({"diagnostic": "task127-ownership-unresolved", "ownershipUnresolved": True, "context": {}, "callId": "synthetic", "birthUncertain": True}) + '\n{"diagnostic":corrupt', "", status)
+    checks["stdout-ownership-stop-independent-of-corrupt-observer"] = not unresolved["diagnosticComplete"] and unresolved["ownershipUnresolved"] and module.safety_stop_reason({"executed": True, "cleanupOK": True}, unresolved) == "stable PID ownership unresolved after R1; subsequent scripts not executed"
+    resolved = module.analyze(good + '\n' + json.dumps({"diagnostic": "task127-ownership-unresolved", "ownershipUnresolved": False}), "", status)
+    checks["stdout-ownership-false-does-not-stop"] = not resolved["ownershipUnresolved"] and module.safety_stop_reason({"executed": True, "cleanupOK": True}, resolved) is None
     checks["fresh-run-budget-admitted"] = module.can_start_attempt(100, 100)
     checks["artifact-reserve-refuses-new-attempt"] = not module.can_start_attempt(100, 100 + module.RUN_BUDGET_SECONDS - module.FINISH_RESERVE_SECONDS)
     checks["budget-refusal-stays-refused"] = not module.can_start_attempt(100, 100 + module.RUN_BUDGET_SECONDS)

@@ -1,10 +1,12 @@
 /** Nonshipping diagnostic runtime; generated preload wrappers call activate(). */
-import { appendFileSync, constants, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { transformSource } from "./task-127-transform.ts";
 import { processIdentity, snapshotCursorLocks } from "./task-127-lock-probe.ts";
 import { readCursorOffset } from "./task-127-read-cursor.ts";
+import { publishStartup } from "./task-127-startup.ts";
+import { mergeCommandMatches, processPresence, sampleStableOwned } from "./task-127-r1.ts";
 
 const LIMIT = 512, RECORD_BYTES = 32, now = () => performance.timeOrigin + performance.now();
 export function activate(repo: string, preload: string): void {
@@ -15,11 +17,9 @@ export function activate(repo: string, preload: string): void {
   if (!/^[a-f0-9-]{36}$/.test(callId)) throw new Error("task127 call identity malformed");
   const role = process.argv.some(arg => arg === join(repo, "src/session-brief-worker.ts")) ? "worker"
     : process.argv.some(arg => arg === join(repo, "bin/amem.js")) ? "cli" : "harness";
-  const stem = `${callId}-${process.pid}`, file = join(trace, stem + ".bin");
-  const fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-  writeFileSync(join(trace, stem + ".json"), JSON.stringify({ schema: 1, callId, pid: process.pid, role,
-    identity: processIdentity(process.pid), entryAt: now(), recordBytes: RECORD_BYTES, limit: LIMIT }) + "\n", { mode: 0o600, flag: "wx" });
-  let sequence = 0, faulted = false, observationCount = 0;
+  const startup = publishStartup({ trace, callId, pid: process.pid, role, identify: () => processIdentity(process.pid) });
+  const { fd, stem } = startup;
+  let sequence = startup.sequence, faulted = false, observationCount = 0;
   const observer = (value: object) => {
     if (observationCount++ >= 24_576) { fault("observer row cap"); return; }
     appendFileSync(join(trace, `${stem}.observer.jsonl`), JSON.stringify({ ...value, at: now(), observerPid: process.pid, callId: activeCall ?? callId }) + "\n", { mode: 0o600 });
@@ -46,10 +46,35 @@ export function activate(repo: string, preload: string): void {
     try { return [JSON.parse(readFileSync(join(trace, activeCall + ".spawn.json"), "utf8")).pid as number]; }
     catch { return []; }
   };
-  const r1 = async (stage: string, alive: number[], context: object) => {
-    const pids = [...new Set([...alive, ...candidates()])];
-    observer({ diagnostic: "task127-r1-identities", stage, context, alive,
-      processes: pids.map(pid => processIdentity(pid)) });
+  let cursorFile: string | undefined, r1Deadline = 0, lockSampleTaken = false;
+  const r1 = async (stage: string, alive: number[], context: object, exitAt: number, windowMs: number): Promise<number[]> => {
+    if (stage === "before") { r1Deadline = exitAt + windowMs; lockSampleTaken = false; }
+    let expected: { pid: number; available: boolean; startIdentity?: string }[] = [], birthUncertain = false;
+    if (activeCall) try {
+      const spawn = JSON.parse(readFileSync(join(trace, activeCall + ".spawn.json"), "utf8"));
+      let identity = spawn.childIdentity;
+      if (!identity?.available) try { identity = JSON.parse(readFileSync(join(trace, `${activeCall}-${spawn.pid}.json`), "utf8")).identity; } catch { /* Parent identity remains explicitly unavailable. */ }
+      expected = [{ pid: spawn.pid, available: identity?.available === true, startIdentity: identity?.startIdentity }];
+    } catch {
+      if (activeCall) try { readFileSync(join(trace, activeCall + ".intent.json")); birthUncertain = true; } catch { /* No spawn intent was published. */ }
+    }
+    const sampled = sampleStableOwned(expected, { processIdentity, getPresence: processPresence });
+    const combined = mergeCommandMatches(alive, sampled);
+    observer({ diagnostic: "task127-r1-identities", stage, context, commandAlive: alive, alive: combined,
+      windowEndMs: r1Deadline, sampled, birthUncertain, processes: sampled.observations.flatMap(row => row.actual ? [row.actual] : []) });
+    if (stage !== "after" && !lockSampleTaken && sampled.stableAlivePids.length && cursorFile && now() < r1Deadline) {
+      lockSampleTaken = true;
+      const remaining = Math.max(1, Math.floor(r1Deadline - now()));
+      observer({ diagnostic: "task127-r1-exiting-locks", context, windowEndMs: r1Deadline,
+        snapshot: await snapshotCursorLocks(cursorFile, sampled.stableAlivePids, { probeTimeoutMs: Math.min(1000, remaining) }) });
+    }
+    if (stage === "after") {
+      const ownershipUnresolved = combined.length > 0 || birthUncertain;
+      observer({ diagnostic: "task127-r1-final", context, windowEndMs: r1Deadline, ownershipUnresolved, alive: combined });
+      if (ownershipUnresolved) console.log(JSON.stringify({ diagnostic: "task127-ownership-unresolved", context, callId: activeCall, ownershipUnresolved: true, birthUncertain }));
+      if (birthUncertain) throw new Error("task127 owned process birth identity unavailable after R1");
+    }
+    return combined;
   };
   const readCursor = (cursor: string, context: object) => readCursorOffset(cursor, {
     onBusy: event => observer({ diagnostic: "task127-cursor-busy", context, ...event }),
@@ -59,17 +84,20 @@ export function activate(repo: string, preload: string): void {
   const port = globalThis as unknown as {
     __t127phase: typeof phase; __t127fixtureEnv: () => NodeJS.ProcessEnv;
     __t127r1: typeof r1; __t127readCursor: typeof readCursor;
+    __t127cursorFile: (file: string) => void;
   };
   port.__t127phase = phase;
   port.__t127fixtureEnv = () => ({ BUN_OPTIONS: `--preload=${preload}`, AMEM_TASK127_TRACE_DIR: trace });
   port.__t127r1 = r1; port.__t127readCursor = readCursor;
-  phase(1);
+  port.__t127cursorFile = file => { cursorFile = file; };
   // ponytail: diagnostic monkeypatches cover Bun's overloads with any; exact argv guards bound the seam.
   // Upgrade: a dedicated test-only subprocess observation port if the native argv contracts change.
   const mutable = Bun as unknown as { spawn: (...args: any[]) => any; spawnSync: (...args: any[]) => any };
   const spawn = mutable.spawn.bind(Bun), spawnSync = mutable.spawnSync.bind(Bun);
   mutable.spawn = (argv, options) => {
     if (!Array.isArray(argv) || argv[2] !== join(repo, "src/session-brief-worker.ts")) return spawn(argv, options);
+    writeFileSync(join(trace, callId + ".intent.json"), JSON.stringify({ schema: 1, callId, parentPid: process.pid,
+      parentIdentity: startup.header.identity, expectedRole: "worker", intendedAt: now() }) + "\n", { mode: 0o600, flag: "wx" });
     const child = spawn([argv[0], argv[1], "--preload", preload, ...argv.slice(2)], {
       ...options, env: { ...options?.env, AMEM_TASK127_TRACE_DIR: trace, AMEM_TASK127_CALL_ID: callId },
     });

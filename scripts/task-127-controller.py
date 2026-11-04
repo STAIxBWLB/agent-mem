@@ -260,6 +260,7 @@ def analyze(stdout, stderr, status):
     receipts = [row for row in rows if row.get("diagnostic") == "budget-group" and row.get("check") == "transcript-hooks"]
     r1 = [row for row in rows if row.get("diagnostic") == "transcript-R1"]
     diagnostic_rows = [row for row in rows if str(row.get("diagnostic", "")).startswith("task127")]
+    ownership_unresolved = any(row.get("diagnostic") == "task127-ownership-unresolved" and row.get("ownershipUnresolved") is True for row in diagnostic_rows)
     classes = []
     text = stdout + "\n" + stderr
     for needle, label in (("hook RSS provenance unknown", "rss-unknown"), ("transcript summaries not durable within", "not-durable"), ("transcript budget scan progress unavailable", "scan-unavailable"), ("transcript summary progress stalled", "strict-stall"), ("SQLITE_BUSY", "harness-busy"), ("database is locked", "harness-busy")):
@@ -267,24 +268,53 @@ def analyze(stdout, stderr, status):
             classes.append(label)
     if any(row.get("outcome") == "wall-max-miss" for row in receipts):
         classes.append("wall-max-miss")
-    survivors = any(type(row.get("survivors")) is not int or row.get("survivors", 0) != 0 for row in r1)
+    survivors = any(type(row.get("survivors")) is int and row["survivors"] > 0 for row in r1)
+    malformed_r1 = [row for row in r1 if type(row.get("survivors")) is not int or row["survivors"] < 0]
     observer_errors = [row for row in diagnostic_rows if row.get("overflow") or row.get("observerComplete") is False or (row.get("diagnostic") == "task127-observer-error")]
     metrics = [row.get("metric") for row in invocations if isinstance(row.get("metric"), dict)]
     return {"scriptExitCode": status.get("exitCode"), "scriptOutcomes": [{key: row.get(key) for key in ("attempt", "outcome", "error", "slow", "before", "after")} for row in receipts],
             "failureClasses": classes, "invocations": len(invocations), "samples": len(samples), "advisoryRows": len(advisories),
-            "advisoryWorkloads": len({(row.get("event"), row.get("logicalRun")) for row in advisories}),
+            "advisoryWorkloads": len({json.dumps([row.get("event"), row.get("logicalRun")], sort_keys=True) for row in advisories}),
             "abandonedChildren": sum(row.get("abandonedChildren", 0) for row in metrics if type(row.get("abandonedChildren", 0)) is int),
-            "r1SurvivorOrMalformed": survivors, "malformedDiagnostics": malformed, "observerErrors": observer_errors,
-            "diagnosticRows": len(diagnostic_rows), "measurementValid": not malformed and not observer_errors and not survivors and not status.get("timedOut") and status.get("cleanupOK") is True,
+            "r1Survivor": survivors, "r1Malformed": malformed_r1, "r1SurvivorOrMalformed": survivors or bool(malformed_r1),
+            "ownershipUnresolved": ownership_unresolved,
+            "malformedDiagnostics": malformed, "observerErrors": observer_errors,
+            "diagnosticRows": len(diagnostic_rows),
+            "diagnosticComplete": not malformed and not malformed_r1 and not observer_errors and not status.get("timedOut") and not status.get("error") and status.get("cleanupOK") is True,
+            "measurementValid": not malformed and not malformed_r1 and not observer_errors and not status.get("timedOut") and not status.get("error") and status.get("cleanupOK") is True,
             "note": "Instrumented source diagnostics only; neither script success nor complete diagnostics is product acceptance or causal attribution."}
 
 
-def observer_stop_reason(observer, exit_code):
-    if exit_code != 0 or observer.get("observerComplete") is not True or observer.get("error"):
-        return "out-of-band observer analysis incomplete or invalid"
+def observer_stop_reason(observer, exit_code=None):
+    """Only ownership evidence stops the fixed schedule, not observer completeness."""
     if observer.get("ownershipUnresolved") is True:
         return "stable PID ownership unresolved after R1; subsequent scripts not executed"
     return None
+
+
+def observer_diagnostic_complete(observer, exit_code):
+    return exit_code == 0 and observer.get("observerComplete") is True and not observer.get("error")
+
+
+def first_stop(blocked, reason):
+    return blocked if blocked is not None else str(reason) or "unspecified safety/source guard failure"
+
+
+def safety_stop_reason(status, analysis):
+    if status.get("executed") and status.get("cleanupOK") is not True:
+        return "owned process cleanup unavailable or owned worker remained"
+    if analysis.get("r1Survivor"):
+        return "R1 survivor after the fixed observation window; subsequent scripts not executed"
+    if analysis.get("ownershipUnresolved") is True:
+        return "stable PID ownership unresolved after R1; subsequent scripts not executed"
+    return None
+
+
+def completeness(iterations, requested, blocked):
+    schedule_complete = len(iterations) == requested and blocked is None and all(row["status"].get("attempted") for row in iterations)
+    diagnostic_complete = schedule_complete and all(row["analysis"].get("diagnosticComplete") and "sourceAfter" in row["status"] for row in iterations)
+    return {"scheduleComplete": bool(schedule_complete), "diagnosticComplete": bool(diagnostic_complete),
+            "measurementComplete": bool(diagnostic_complete)}
 
 
 def run_once(arm, preload, attempt, item):
@@ -297,7 +327,7 @@ def run_once(arm, preload, attempt, item):
     started = time.monotonic()
     with (attempt / "stdout.log").open("wb") as stdout, (attempt / "stderr.log").open("wb") as stderr:
         process = subprocess.Popen(command, cwd=arm, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
-        result.update(executed=True, pid=process.pid)
+        result.update(attempted=True, executed=True, pid=process.pid)
         dump(attempt / "status.json", {**item, **result, "state": "running"})
         try:
             process.wait(timeout=TIMEOUT_SECONDS)
@@ -311,9 +341,10 @@ def run_once(arm, preload, attempt, item):
         result["remainingOwnedProcesses"] = [{"pid": pid, **row} for pid, row in remaining.items()]
         if remaining:
             result["cleanup"] = cleanup_owned(process, arm)
-            # Any unexpected remaining helper makes later scheduled work incomplete,
-            # even when our explicit cleanup eventually succeeds.
-            result["cleanupOK"] = False
+            # A timeout/aborted observer may leave a verified owned helper. Continue
+            # only when explicit cleanup establishes its disappearance; R1 survivor
+            # and same-window PID ownership verdicts remain separate stop guards.
+            result["cleanupOK"] = result["cleanup"]["ok"]
     except (OSError, subprocess.SubprocessError) as error:
         result.update(cleanupOK=False, cleanupObservationError=str(error))
     result["seconds"] = round(time.monotonic() - started, 3)
@@ -335,7 +366,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     schedule = schedule_for(args.platform)
     dump(out / "schedule.json", {"platform": args.platform, "main": MAIN, "head": HEAD, "blocks": 10, "scripts": len(schedule), "schedule": schedule, "sha256": manifest_hash(schedule)})
-    summary = {"schema": "task127-diagnostics/v1", "diagnosticOnly": True, "measurementComplete": False, "requested": len(schedule), "executed": 0, "iterations": [], "acceptanceClaim": False,
+    summary = {"schema": "task127-diagnostics/v2", "diagnosticOnly": True, "scheduleComplete": False, "diagnosticComplete": False, "measurementComplete": False, "requested": len(schedule), "attempted": 0, "executed": 0, "iterations": [], "acceptanceClaim": False,
                "runBudgetSeconds": RUN_BUDGET_SECONDS, "finishReserveSeconds": FINISH_RESERVE_SECONDS}
     dump(out / "summary.json", summary)
     preflight = {"main": MAIN, "head": HEAD, "controller": diagnostic_inputs(instrument), "scheduleSHA256": manifest_hash(schedule)}
@@ -380,56 +411,64 @@ def main():
         attempt.mkdir()
         (attempt / "stdout.log").touch()
         (attempt / "stderr.log").touch()
-        status = {**item, "executed": False, "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        status = {**item, "attempted": False, "executed": False, "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        if blocked is not None:
+            status.update(error="not executed after a prior safety/source guard", blockedBy=blocked)
+        else:
+            try:
+                if not can_start_attempt(run_started, time.monotonic()):
+                    raise RuntimeError("declared diagnostic run budget exhausted; remaining slots retained unexecuted for artifact upload")
+                guard_environment(args.platform)
+                arm = out / "variants" / item["variant"]
+                expected = variants[item["variant"]]["manifest"]
+                if file_manifest(arm) != expected or diagnostic_inputs(instrument) != preflight["controller"] or file_manifest(diagnostic_dir) != preflight["instrumentation"]:
+                    raise RuntimeError("frozen source/controller/instrumentation changed before attempt")
+                status["sourceBefore"] = variants[item["variant"]]["sha256"]
+                status["attempted"] = True
+                status.update(run_once(arm, diagnostic_dir / item["variant"] / "preload.ts", attempt, item))
+                if file_manifest(arm) != expected or diagnostic_inputs(instrument) != preflight["controller"] or file_manifest(diagnostic_dir) != preflight["instrumentation"]:
+                    raise RuntimeError("frozen source/controller/instrumentation changed during attempt")
+                status["sourceAfter"] = variants[item["variant"]]["sha256"]
+            except Exception as error:
+                status["error"] = str(error)
+                # Execution/provenance errors outside the observer analyzer cannot
+                # establish safe ownership/source state for the next scheduled slot.
+                blocked = first_stop(blocked, error)
         try:
-            if blocked:
-                raise RuntimeError("not executed after diagnostic ownership/provenance failure: " + blocked)
-            if not can_start_attempt(run_started, time.monotonic()):
-                raise RuntimeError("declared diagnostic run budget exhausted; remaining slots retained unexecuted for artifact upload")
-            guard_environment(args.platform)
-            arm = out / "variants" / item["variant"]
-            expected = variants[item["variant"]]["manifest"]
-            if file_manifest(arm) != expected or diagnostic_inputs(instrument) != preflight["controller"] or file_manifest(diagnostic_dir) != preflight["instrumentation"]:
-                raise RuntimeError("frozen source/controller/instrumentation changed before attempt")
-            status["sourceBefore"] = variants[item["variant"]]["sha256"]
-            status.update(run_once(arm, diagnostic_dir / item["variant"] / "preload.ts", attempt, item))
-            if file_manifest(arm) != expected or diagnostic_inputs(instrument) != preflight["controller"] or file_manifest(diagnostic_dir) != preflight["instrumentation"]:
-                raise RuntimeError("frozen source/controller/instrumentation changed during attempt")
-            status["sourceAfter"] = variants[item["variant"]]["sha256"]
-            if not status["cleanupOK"]:
-                blocked = "owned process cleanup unavailable or unexpected worker remained"
+            analysis = analyze((attempt / "stdout.log").read_text(errors="replace"), (attempt / "stderr.log").read_text(errors="replace"), status)
         except Exception as error:
-            status["error"] = str(error)
-            blocked = str(error)
-        analysis = analyze((attempt / "stdout.log").read_text(errors="replace"), (attempt / "stderr.log").read_text(errors="replace"), status)
+            analysis = {"diagnosticComplete": False, "measurementValid": False, "parserError": str(error), "failureClasses": [], "advisoryRows": None, "r1Survivor": False}
+        safety_reason = safety_stop_reason(status, analysis)
+        if safety_reason:
+            blocked = first_stop(blocked, safety_reason)
         if status.get("executed"):
             try:
                 with (attempt / "observer.stdout.log").open("wb") as stdout, (attempt / "observer.stderr.log").open("wb") as stderr:
                     observed = subprocess.run(["bun", str(instrument), "--analyze", str(attempt / "trace"), "--stdout", str(attempt / "stdout.log"), "--out", str(attempt / "observer-analysis.json")], stdout=stdout, stderr=stderr, timeout=30)
                 observer = json.loads((attempt / "observer-analysis.json").read_text())
                 analysis["observer"] = {"exitCode": observed.returncode, **observer}
+                analysis["diagnosticComplete"] = analysis["diagnosticComplete"] and observer_diagnostic_complete(observer, observed.returncode)
                 observer_reason = observer_stop_reason(observer, observed.returncode)
                 if observer_reason:
-                    analysis["measurementValid"] = False
-                    blocked = observer_reason
+                    blocked = first_stop(blocked, observer_reason)
             except Exception as error:
-                analysis["measurementValid"] = False
+                analysis["diagnosticComplete"] = False
                 analysis["observerAnalysisError"] = str(error)
-                blocked = "observer analysis unavailable: " + str(error)
-        if analysis["r1SurvivorOrMalformed"] or analysis["observerErrors"] or analysis["malformedDiagnostics"]:
-            blocked = "invalid observation or R1 survivor; subsequent scripts not executed"
         if status.get("executed") and status.get("traceFiles", 0) == 0:
-            analysis["measurementValid"] = False
-            blocked = "instrumented script produced no out-of-band trace files"
+            analysis["diagnosticComplete"] = False
+            analysis["traceUnavailable"] = True
+        analysis["measurementValid"] = analysis["diagnosticComplete"]
         dump(attempt / "status.json", status)
         dump(attempt / "analysis.json", analysis)
         summary["iterations"].append({"status": status, "analysis": analysis})
+        summary["attempted"] = sum(row["status"].get("attempted", False) for row in summary["iterations"])
         summary["executed"] = sum(row["status"].get("executed", False) for row in summary["iterations"])
         summary["blocked"] = blocked
+        summary.update(completeness(summary["iterations"], len(schedule), blocked))
         dump(out / "summary.json", summary)
         print(json.dumps({**item, "executed": status["executed"], "exitCode": status.get("exitCode"), "failureClasses": analysis["failureClasses"], "advisoryRows": analysis["advisoryRows"], "blocked": blocked}), flush=True)
-    summary["measurementComplete"] = summary["executed"] == len(schedule) and not blocked and all(row["analysis"]["measurementValid"] and "sourceAfter" in row["status"] for row in summary["iterations"])
-    summary["note"] = "Every fixed scheduled result retained, no retries/replacements. Product failures are diagnostic outcomes. Causal analysis and reviewer gate remain required; this is never native acceptance."
+    summary.update(completeness(summary["iterations"], len(schedule), blocked))
+    summary["note"] = "Every fixed scheduled result retained, no retries/replacements. Observer incompleteness does not stop the schedule; ownership/safety/source guards do. Schedule completion and diagnostic completeness are separate and never product acceptance."
     dump(out / "summary.json", summary)
     return 0 if summary["measurementComplete"] else 1
 
