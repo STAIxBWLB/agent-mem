@@ -106,11 +106,14 @@ test("the scanner recovers a killed cursor transaction before publishing an unti
   const file = cursorFile(f);
   const child = `import {Database} from 'bun:sqlite';const db=new Database(process.argv.at(-1));
 const put=db.query('INSERT INTO fallback VALUES (?,?)');db.transaction(()=>{for(let i=0;i<1000;i++)put.run(i.toString(16).padStart(64,'0'),'2000-01-01T00:00:00.000Z');})();
-db.run('PRAGMA cache_size = 1');db.run('BEGIN IMMEDIATE');db.run('UPDATE cursor SET offset = 1');
+db.run('PRAGMA cache_size = 1');db.run('PRAGMA main.cache_spill = 1');
+if(db.query('PRAGMA main.cache_spill').get().cache_spill!==1)throw Error('hot-journal spill threshold unavailable');
+db.run('BEGIN IMMEDIATE');db.run('UPDATE cursor SET offset = 1');
 // Dirty existing pages: inserting only new pages need not spill a journal header on macOS.
 db.run("UPDATE fallback SET at='2099-01-01T00:00:00.000Z'");
 process.kill(process.pid,'SIGKILL');`;
   const killed = Bun.spawnSync([process.execPath, "-e", child, file], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  expect(killed.signalCode, killed.stderr.toString()).toBe("SIGKILL");
   expect(killed.exitCode).not.toBe(0);
   // Inspect bytes only: the next measured scanner owns recovery, never a preliminary SQLite open in the harness.
   expect(existsSync(file + "-journal")).toBe(true);
