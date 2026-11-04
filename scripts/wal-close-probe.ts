@@ -4,7 +4,7 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { CaptureStore, CaptureInput } from "../src/memory/capture.ts";
@@ -124,32 +124,77 @@ async function child(repo: string, root: string, verify: boolean): Promise<void>
 }
 export async function runChild(repo: string, root: string, verify: boolean) {
   const stdoutFile = join(root, verify ? "verify.stdout.jsonl" : "primary.stdout.jsonl"), stderrFile = join(root, verify ? "verify.stderr.log" : "primary.stderr.log");
-  writeFileSync(stdoutFile, ""); writeFileSync(stderrFile, ""); const frames: Record<string, unknown>[] = [], startedAt = now();
+  writeFileSync(stdoutFile, ""); writeFileSync(stderrFile, "");
+  const startedAt = now(), frames: Record<string, unknown>[] = [], bound = 256 * 1024;
+  const output = () => ({ chunks: [] as Uint8Array[], receivedBytes: 0, retainedBytes: 0, truncated: false, reader: undefined as ReadableStreamDefaultReader<Uint8Array> | undefined });
+  const stdout = output(), stderr = output();
   const owned = Bun.spawn([process.execPath, fileURLToPath(import.meta.url), "--child", "--repo", repo, "--root", root, ...(verify ? ["--verify"] : [])], {
     detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "", HOME: join(root, "home"), AMEM_HOME: join(root, "memory"), XDG_CONFIG_HOME: join(root, "home/.config"), WAL_PROBE_OWN_GROUP: "1" },
   });
   const processFile = join(root, verify ? "verify-process.json" : "primary-process.json");
   json(processFile, { startedAt, pid: owned.pid, timedOut: false, noticeAt: null, command: verify ? "verify" : "primary" });
-  let noticeAt: number | undefined, timedOut = false, timer: ReturnType<typeof setTimeout> | undefined;
-  const exit = owned.exited.then(code => { noticeAt = now(); if (timer) clearTimeout(timer); return code; });
-  timer = setTimeout(() => { timedOut = true; json(processFile, { startedAt, pid: owned.pid, timedOut, noticeAt: noticeAt ?? null, signalRequestedAt: now(), note: "Logical watchdog; syscall/exit delay may outlast it and must remain censored." }); owned.kill("SIGKILL"); }, 35_000);
-  const consume = async (stream: ReadableStream<Uint8Array>, destination: string, parse: boolean) => {
-    const reader = stream.getReader(), decoder = new TextDecoder(); let text = "", total = 0;
-    try { for (;;) { const next = await reader.read(); if (next.done) break; total += next.value.length; if (total > 256 * 1024) { owned.kill("SIGKILL"); throw Error("child output bound"); }
-      const part = decoder.decode(next.value, { stream: true }); appendFileSync(destination, part);
-      if (parse) { text += part; for (;;) { const newline = text.indexOf("\n"); if (newline < 0) break; const line = text.slice(0, newline); text = text.slice(newline + 1); if (!line) continue;
-        const frame = JSON.parse(line) as Record<string, unknown>; frames.push(frame);
-        if (frame.stage === "ready") { const parentReceived = now(); owned.stdin.write(JSON.stringify({ parentReceived, parentSent: now() }) + "\n"); owned.stdin.end(); }
-      } }
-    } } } finally { reader.releaseLock(); }
+  let noticeAt: number | undefined, exitCode: number | undefined, timedOut = false, failure: unknown;
+  let cleanupUnresolved = false, timer: ReturnType<typeof setTimeout> | undefined;
+  const exit = owned.exited.then(code => { noticeAt = now(); exitCode = code; if (timer) clearTimeout(timer); return code; });
+  timer = setTimeout(() => {
+    timedOut = true;
+    // Censored timeout evidence is preserved even if the requested kill/reap cannot complete.
+    json(processFile, { startedAt, pid: owned.pid, timedOut, noticeAt: noticeAt ?? null, signalRequestedAt: now(), note: "Logical watchdog; syscall/exit delay may outlast it and must remain censored." });
+    owned.kill("SIGKILL");
+  }, 35_000);
+  const consume = async (stream: ReadableStream<Uint8Array>, sink: ReturnType<typeof output>, acknowledgeReady: boolean) => {
+    const reader = stream.getReader(); sink.reader = reader;
+    let waitingForReady = acknowledgeReady, readyBytes = 0; const readyChunks: Uint8Array[] = [];
+    try {
+      for (;;) {
+        const next = await reader.read(); if (next.done) break;
+        sink.receivedBytes += next.value.length;
+        const retained = next.value.slice(0, Math.max(0, bound - sink.retainedBytes));
+        if (retained.length) { sink.chunks.push(retained); sink.retainedBytes += retained.length; }
+        if (sink.receivedBytes > bound) { sink.truncated = true; owned.kill("SIGKILL"); throw Error("child output bound; retained prefix is censored"); }
+        // Before exit, parse only the small ready handshake. Large result/finish JSON and disk I/O wait for exit notice.
+        if (waitingForReady) {
+          const parentReceived = now(); readyBytes += next.value.length;
+          if (readyBytes > 1024) { owned.kill("SIGKILL"); throw Error("clock handshake output bound"); }
+          readyChunks.push(next.value); const ready = Buffer.concat(readyChunks), newline = ready.indexOf(10);
+          if (newline >= 0) {
+            const frame = JSON.parse(ready.subarray(0, newline).toString("utf8")) as { stage?: unknown; at?: unknown };
+            if (frame.stage !== "ready" || typeof frame.at !== "number" || !Number.isFinite(frame.at)) throw Error("clock handshake frame invalid");
+            waitingForReady = false;
+            owned.stdin.write(JSON.stringify({ parentReceived, parentSent: now() }) + "\n"); owned.stdin.end();
+          }
+        }
+      }
+    } finally { sink.reader = undefined; reader.releaseLock(); }
   };
-  try { const [exitCode] = await Promise.all([exit, consume(owned.stdout, stdoutFile, true), consume(owned.stderr, stderrFile, false)]);
-    json(processFile, { startedAt, pid: owned.pid, timedOut, noticeAt, exitCode, signalCode: owned.signalCode });
-    return { startedAt, noticeAt: noticeAt!, seconds: (now() - startedAt) / 1000, exitCode, signalCode: owned.signalCode, timedOut, frames };
+  const stdoutTask = consume(owned.stdout, stdout, !verify), stderrTask = consume(owned.stderr, stderr, false);
+  try {
+    await Promise.all([exit, stdoutTask, stderrTask]);
+    // Child exit notice is already captured and both streams ended. Deferred parsing cannot inflate finish timing.
+    for (const line of Buffer.concat(stdout.chunks).toString("utf8").split("\n")) {
+      if (!line) continue;
+      const frame = JSON.parse(line) as unknown;
+      if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw Error("child output frame invalid");
+      frames.push(frame as Record<string, unknown>);
+    }
+    return { startedAt, noticeAt: noticeAt!, seconds: (now() - startedAt) / 1000, exitCode: exitCode!, signalCode: owned.signalCode, timedOut, frames };
   } catch (error) {
-    if (noticeAt === undefined) { owned.kill("SIGKILL"); const reaped = await Promise.race([exit.then(() => true), Bun.sleep(1000).then(() => false)]); if (!reaped) { owned.unref(); throw Error("owned child cleanup unresolved; stop subsequent cases"); } }
-    throw error;
-  } finally { if (timer) clearTimeout(timer); }
+    failure = error;
+    if (noticeAt === undefined) {
+      owned.kill("SIGKILL"); const reaped = await Promise.race([exit.then(() => true), Bun.sleep(1000).then(() => false)]);
+      if (!reaped) { cleanupUnresolved = true; owned.unref(); failure = Error("owned child cleanup unresolved; stop subsequent cases"); }
+    }
+    if (!cleanupUnresolved) await Promise.allSettled([stdoutTask, stderrTask]);
+    else { void stdout.reader?.cancel().catch(() => {}); void stderr.reader?.cancel().catch(() => {}); }
+    throw failure;
+  } finally {
+    if (timer) clearTimeout(timer);
+    // Finally also preserves raw prefixes and stderr/error frames for failed/censored runs.
+    writeFileSync(stdoutFile, Buffer.concat(stdout.chunks)); writeFileSync(stderrFile, Buffer.concat(stderr.chunks));
+    json(processFile, { startedAt, pid: owned.pid, timedOut, noticeAt: noticeAt ?? null, exitCode: exitCode ?? null, signalCode: owned.signalCode,
+      stdoutBytes: stdout.receivedBytes, stderrBytes: stderr.receivedBytes, outputTruncated: stdout.truncated || stderr.truncated,
+      cleanupUnresolved, error: failure === undefined ? undefined : String(failure), note: "Raw output flushed only after exit/stream end, or from error-finally; result parsing deferred after exit notice." });
+  }
 }
 function percentile(values: number[], q: number): number | null { return values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * q) - 1]! : null; }
 function distribution(values: number[]) { return { count: values.length, minMs: values.length ? Math.min(...values) : null, p50Ms: percentile(values, .5), p95Ms: percentile(values, .95), maxMs: values.length ? Math.max(...values) : null }; }
