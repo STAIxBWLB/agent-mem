@@ -1,7 +1,7 @@
 name: Task 125 disposable cursor and recovery diagnostics
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
 permissions:
   contents: read
 jobs:

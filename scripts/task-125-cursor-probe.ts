@@ -38,7 +38,7 @@ try {
       if (kind === "schemaless") new Database(dbfile).close();
       if (kind === "hot-journal") {
         imported.task125CursorDatabase(dbfile,"1","1",1024).close();
-        const child = `import {Database} from 'bun:sqlite'; const db = new Database(process.argv.at(-1)); db.run('PRAGMA cache_size = 1'); db.run('BEGIN IMMEDIATE'); db.run('UPDATE cursor SET offset = 1'); const put=db.query('INSERT INTO fallback VALUES (?,?)'); for(let i=0;i<1000;i++) put.run(i.toString(16).padStart(64,'0'),'2026-11-04T00:00:00.000Z'); process.kill(process.pid,'SIGKILL');`;
+        const child = `import {Database} from 'bun:sqlite'; const db = new Database(process.argv.at(-1)); const put=db.query('INSERT INTO fallback VALUES (?,?)'); db.transaction(()=>{for(let i=0;i<1000;i++) put.run(i.toString(16).padStart(64,'0'),'2026-11-04T00:00:00.000Z');})(); db.run('PRAGMA cache_size = 1'); db.run('BEGIN IMMEDIATE'); db.run('UPDATE cursor SET offset = 1'); db.run(\"UPDATE fallback SET at='2099-01-01T00:00:00.000Z'\"); process.kill(process.pid,'SIGKILL');`;
         const result = Bun.spawnSync([process.execPath,"-e",child,dbfile],{stdout:"pipe",stderr:"pipe",timeout:5000});
         if (result.exitCode === 0 || !existsSync(dbfile+"-journal")) throw Error("hot-journal child did not leave evidence: "+result.stderr.toString());
         const header = readFileSync(dbfile+"-journal");
@@ -51,7 +51,8 @@ try {
       // Recovery verification is deliberately after the measured helper, never harness healing before it.
       const cursor = db.query('SELECT offset FROM cursor WHERE id=1').get() as {offset:number};
       if (cursor.offset!==0) throw Error("cursor recovery mismatch");
-      if (kind === "hot-journal" && (db.query('SELECT COUNT(*) AS n FROM fallback').get() as {n:number}).n!==0) throw Error("fallback rollback mismatch");
+      if (kind === "hot-journal" && (db.query('SELECT COUNT(*) AS n FROM fallback').get() as {n:number}).n!==1000) throw Error("fallback rollback mismatch");
+      if (kind === "hot-journal" && (db.query("SELECT COUNT(*) AS n FROM fallback WHERE at = ?").get("2026-11-04T00:00:00.000Z") as {n:number}).n!==1000) throw Error("fallback contents did not roll back");
       db.close();
       rows.push({ownedChecks:timing.ownedChecksEnd!-timing.start!,sqliteOpen:timing.openEnd!-timing.ownedChecksEnd!,pragma:timing.pragmaEnd!-timing.openEnd!,transactionBegin:timing.txBodyStart!-timing.txCall!,schemaBody:timing.txBodyEnd!-timing.txBodyStart!,transactionCommit:timing.txReturn!-timing.txBodyEnd!,total:timing.txReturn!-timing.start!});
     }
