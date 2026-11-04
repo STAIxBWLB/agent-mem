@@ -59,6 +59,15 @@ export function placementMarkerRefusal(profile: unknown, shards: unknown): strin
   if (!legacyProfileMarkerShape(profile) || !legacyShardMarkerShape(shards)) return PLACEMENT_MARKER_REFUSAL;
   return undefined;
 }
+/** Selector preflight only recognizes v3. Legacy malformed/split metadata must retain its existing reader/recovery path. */
+// This narrow probe is not a data/transport gate; effects must still use the full runtime guard.
+export function placementSelectorRefusal(home: string): string | undefined {
+  let profile: unknown, shards: unknown;
+  try { profile = readMarker(join(home, "profile.json")); } catch { /* The original selector reader reports this legacy failure. */ }
+  try { shards = readMarker(join(home, "shards.json")); } catch { /* Ordinary migration still owns malformed split-state recovery. */ }
+  if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return undefined;
+  return placementMarkerRefusal(profile, shards);
+}
 /** Only fixed bounded marker reads; no selector rebind, data/index open, cache, lock or child/network call. */
 export function placementRuntimeRefusal(home: string): string | undefined {
   try { const markers = readPlacementRuntimeMarkers(home); return placementMarkerRefusal(markers.profile, markers.shards); }

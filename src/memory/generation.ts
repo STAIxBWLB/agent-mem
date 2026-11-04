@@ -1,4 +1,4 @@
-import { placementMarkerRefusal, readPlacementRuntimeMarkers, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
+import { placementSelectorRefusal, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView, waitForPublicPruneWriter, PUBLIC_PRUNE_INTENT } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
@@ -64,13 +64,13 @@ export function legacyProfileMarkerShape(value: unknown): value is ProfileSelect
     && ["shared-v1", "generation"].includes(selector.kind) && (selector.kind === "generation" ? validGeneration(selector.generation) : selector.generation === undefined);
 }
 function selectorSnapshot(memoryDir: string, deadline: number): { selector?: ProfileSelector; revision: string } {
-  const initial = readPlacementRuntimeMarkers(memoryDir), initialRefusal = placementMarkerRefusal(initial.profile, initial.shards);
+  const initialRefusal = placementSelectorRefusal(memoryDir);
   if (initialRefusal) throw new SyncPlacementRuntimeError(initialRefusal);
   assertNoPublicPruneIntent(memoryDir, deadline);
   // Legacy v2 readers still choose their snapshot after the existing writer wait, never its earlier preflight pair.
-  const markers = readPlacementRuntimeMarkers(memoryDir), refusal = placementMarkerRefusal(markers.profile, markers.shards);
+  const refusal = placementSelectorRefusal(memoryDir);
   if (refusal) throw new SyncPlacementRuntimeError(refusal);
-  const value = markers.profile;
+  const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
   if (!legacyProfileMarkerShape(value)) return unavailable();
   const selector = value as ProfileSelector;
