@@ -3,7 +3,7 @@
   "statistic": "nearest-rank p95 RSS (MB) per group; transcript groups use one value per logical run (its peak over every follow-up)",
   "gate": "a group fails when its p95 exceeds its baseline by more than 10%; a hard 150 MB ceiling applies to every single invocation regardless",
   "derivation": {
-    "hosted-linux": "median of the per-run group p95 across the retained main runs 9986fe6, e287ecf, 1b3ed5d, 85768a5 (#224), d927292 and 9aac257 (GitHub ubuntu-24.04). drain: median of its single sample across the same runs.",
+    "hosted-linux": "All groups except transcript:StopBurst: median of the per-run group p95 across the retained main runs 9986fe6, e287ecf, 1b3ed5d, 85768a5 (#224), d927292 and 9aac257 (GitHub ubuntu-24.04). drain: median of its single sample across the same runs. transcript:StopBurst: median of the per-run p95 across 21 retained ubuntu runs after the 0.20.0 worker redesign (#231, task 110, 02c45be), with hook, worker, spool, harness and fixture sources equal to main cf3f569: 41553860475, 41571764538, 41572884665, 41574641078, 41581533741, 41586580400, 41603521820, 41613574210, 41614750881, 41624252470, 41624629693, 41630113249, 41637055375, 41638880603, 41644196339, 41644409221, 41648003118, 41648266911, 41652440426, 41748034924, 41750679185. The exact median is 98.8359375 MB, rounded to 98.84 MB at the existing baseline precision; per-run p95 range 97.125-105.7890625 MB. No CPU-name or job-outcome filter is applied; this replaces the pre-redesign StopBurst baseline (#228).",
     "hosted-macos": "median of the per-run group p95 across the same retained main runs on GitHub macos-latest (macOS transcript StopBurst has 3 complete runs).",
     "dgx02": "median of the group p95 across 3 unconstrained (no taskset) remote_dev verify runs at main 9aac257 on dgx02, 2026-11-02. Unconstrained, because CI also runs unconstrained; taskset runs characterize contention, not the steady baseline. A dgx02 run must set AMEM_RUNNER=dgx02 to be judged against these.",
     "full-spool": "measure-full-spool-budget is not run by the hosted check, so only dgx02 carries full-spool baselines; a hosted run of it would need one recorded first."
@@ -19,7 +19,7 @@
       "hooks:drain": 89.79,
       "transcript:Stop": 94.81,
       "transcript:SessionEnd": 94.83,
-      "transcript:StopBurst": 96.17
+      "transcript:StopBurst": 98.84
     },
     "hosted-macos": {
       "hooks:plain": 65.19,
