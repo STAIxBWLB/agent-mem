@@ -129,7 +129,8 @@ export class GenerationIndex {
     const legacyHome = this.profile.legacyHome ?? this.profile.home;
     const generation = this.profile.sharded ? undefined : this.profile.generation;
     const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation, readOnly ? reader.sourceByteLimit : undefined, readOnly ? reader.sourceFileLimit : undefined) : undefined);
-    // A readonly inspection must not walk arbitrary archive ancestry or silently adopt a new bridge head.
+    // ponytail: read-only inspection accepts the indexed archived frontier only, without an ancestry walk.
+    // Reopen after ordinary refresh, or add a bounded read-only ancestry witness to support a newer frontier.
     if (readOnly && (commit !== indexedCommit || checkpoints.some(row => row.source === "legacy-main" && row.commit !== commit))) return fail();
     const legacy = this.profile.sharded
       ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !full && !this.options.limits && completeFrontier })

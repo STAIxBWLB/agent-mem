@@ -68,7 +68,10 @@ export class SegmentReader {
     this.remainingFiles = limits.maxRows ?? Infinity;
   }
   inspectionMetrics(): { sourceBytes: number; rows: number } { return { sourceBytes: this.sourceBytes, rows: this.sourceRows }; }
-  /** Inspection counts directory entries and archived segment names before their arrays/maps can grow. */
+  /** Inspection counts directory entries and archived segment names before their arrays/maps can grow.
+   * ponytail: metadata entries share maxRows (public inspection: 20000), including empty files.
+   * Upgrade with a separately budgeted catalog proof if valid profiles need a larger metadata frontier.
+   */
   reserveSourceFiles(count: number): void {
     if (!Number.isSafeInteger(count) || count < 0 || count > this.remainingFiles) throw new SegmentReadBudgetError();
     this.remainingFiles -= count;

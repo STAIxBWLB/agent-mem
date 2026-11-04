@@ -6,6 +6,7 @@ import { inspectSyncPolicy, syncOutboundContent, createStandalonePolicy, MemoryS
 import { syncMemory } from "../src/memory/sync.ts";
 import * as screens from "../src/memory/sync-screen.ts";
 import { migrate } from "../src/memory/migrate.ts";
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { DENY_NAMES, realPath } from "../src/memory/platform.ts";
@@ -35,7 +36,7 @@ async function actualDeclines(store: MemoryStore, screen?: (row: Record<string, 
   finally { observer.mockRestore(); }
 }
 
-for (const profile of ["shared-v1", "generation", "sharded"] as const) test("public inspection matches actual sync declines without mutating " + profile, async () => {
+for (const profile of ["shared-v1", "generation", "sharded", "sharded-v2"] as const) test("public inspection matches actual sync declines without mutating " + profile, async () => {
   const f = fixture(), bad = note(f.store, "private inspection phrase"), good = note(f.store, "ordinary public finding"), user = note(f.store, "private user inspection phrase", "shared");
   f.store.forget(bad, "person");
   let store = f.store;
@@ -46,6 +47,7 @@ for (const profile of ["shared-v1", "generation", "sharded"] as const) test("pub
       store = new MemoryStore({ memoryDir: f.home, profile: { generation: "4".repeat(32) }, deferPromotions: true });
     } else {
       await migrateShards({ memoryDir: f.home, generation: "5".repeat(32), mode: "apply", authorizedPerson: true, tty: true });
+      if (profile === "sharded-v2") await activatePublicPruneView({ memoryDir: f.home, mode: "apply", authorizedPerson: true, tty: true });
       store = openShardStore({ memoryDir: f.home, project: "example.test/team/public", deferPromotions: true });
     }
     cleanup.push(() => store.close());
@@ -170,4 +172,20 @@ test("default policy loosen-and-restore across rows cannot hide a declined row",
     } });
     expect(result).toEqual({ complete: false, reason: "policy-unavailable" });
   } finally { DENY_NAMES.splice(0, DENY_NAMES.length, ...before); }
+});
+
+test("a user-overlay callback cannot change an earlier canonical target and certify a complete set", async () => {
+  const f = fixture(); note(f.store, "canonical original"); note(f.store, "overlay marker", "shared"); f.close();
+  await migrateShards({ memoryDir: f.home, generation: "6".repeat(32), mode: "apply", authorizedPerson: true, tty: true });
+  const store = openShardStore({ memoryDir: f.home, project: "example.test/team/public", deferPromotions: true }); cleanup.push(() => store.close());
+  const authored = note(store, "canonical fresh row"), canonical = store.openedSyncTargets()[0]!;
+  const file = join(canonical.dir, "log", `${canonical.machine.id}.jsonl`);
+  const original = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>).find(row => row.id === authored)!;
+  const { id: _id, ...body } = original, later = { ...body, text: "canonical changed during overlay" };
+  let changed = false;
+  const result = inspectSyncPolicy(store, { screen: row => {
+    if (row.text === "overlay marker") { appendFileSync(file, JSON.stringify({ ...later, id: entryId(later as never) }) + "\n"); changed = true; }
+    return true;
+  } });
+  expect(changed).toBe(true); expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
 });

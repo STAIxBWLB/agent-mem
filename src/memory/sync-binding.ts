@@ -61,4 +61,3 @@ function captureShardSyncBinding(store: MemoryStore, selection: boolean): string
     return digest.digest("hex");
   } catch { return unavailable(); }
 }
-
