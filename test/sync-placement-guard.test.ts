@@ -99,7 +99,7 @@ test("unknown, malformed and split placement markers refuse without disclosing i
 });
 
 test("legacy v1 selectors and captured-v1 journal remain on their existing path", () => {
-  const memoryDir = home(), profile = { schema: "agent-mem.profile/v1", kind: "shared-v1" };
+  const memoryDir = home(), profile = { schema: "agent-mem.profile/v1", kind: "shared-v1" } as const;
   expect(placementRuntimeRefusal(memoryDir)).toBeUndefined();
   writeFileSync(join(memoryDir, "profile.json"), canonicalJSON(profile) + "\n");
   writeFileSync(join(memoryDir, "shards.json"), canonicalJSON({ schema: "agent-mem.shards/v1", generation: G, phase: "captured", selectorRevision: hashJSON(profile), sources: [], machine: { id: "c".repeat(16), label: "legacy" } }) + "\n");
@@ -112,7 +112,7 @@ test("legacy v1 selectors and captured-v1 journal remain on their existing path"
 test("valid v2 selector/view remains readable and byte-identical", async () => {
   const { memoryDir } = await opened("sharded-v2"), before = tree(memoryDir), profile = readProfileJSON(join(memoryDir, "profile.json"));
   expect(placementRuntimeRefusal(memoryDir)).toBeUndefined();
-  expect(readSelector(memoryDir).selector).toEqual(profile); expect(tree(memoryDir)).toEqual(before);
+  expect(profile).toEqual(readSelector(memoryDir).selector); expect(tree(memoryDir)).toEqual(before);
 });
 
 test("descriptor decoder recognizes valid v3 syntax but never enables the existing transport", () => {

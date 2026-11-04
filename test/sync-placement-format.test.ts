@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import {
+  type PlacementBaseV2, type PlacementProfile, type PlacementShards, type PlacementDescriptor,
   PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, PLACEMENT_DESCRIPTOR_SCHEMA, SyncPlacementFormatError,
   validatePlacementProfile, validatePlacementShards, validatePlacementDescriptor, validatePlacementBaseV2, validatePlacementMarkerTransition,
   validatePlacementVersionTransition, decodePlacementProfile, decodePlacementShards, decodePlacementDescriptor,
@@ -8,16 +9,16 @@ import {
 
 const generation = "1".repeat(32), view = "2".repeat(64), head = "3".repeat(64), hash = "4".repeat(64), commit = "5".repeat(40);
 function fixture() {
-  const profile2 = { schema: "agent-mem.profile/v2", kind: "generation", generation, foreignPruneFormat: "agent-mem.public-prune-witness/v1", pruneInputSetHash: view };
+  const profile2 = { schema: "agent-mem.profile/v2", kind: "generation", generation, foreignPruneFormat: "agent-mem.public-prune-witness/v1", pruneInputSetHash: view } satisfies PlacementBaseV2["profile"];
   const shards2 = { schema: "agent-mem.shards/v2", generation, phase: "active", selectorRevision: hashJSON(profile2), sourceGeneration: generation,
     sources: [
       { source: "legacy-local", path: "log/a.jsonl", offset: 100, hash, tailBytes: 0, stamp: '["1","2","100","3","4"]' },
       { source: "legacy-main", path: "log/b.jsonl", offset: 200, hash, tailBytes: 0, commit },
       { source: "generation", path: "local/c.jsonl", offset: 300, hash, tailBytes: 0 },
     ], machine: { id: "6".repeat(16), label: "기기" }, legacyCommit: commit,
-    deadLeasesRemoved: [{ lease: `42-${hash}.json`, at: "2026-11-05T00:00:00.000Z" }] };
-  const profile = { ...profile2, schema: PLACEMENT_PROFILE_SCHEMA, publicationFormat: PLACEMENT_FORMAT, placementHead: head };
-  const shards = { ...shards2, schema: PLACEMENT_SHARDS_SCHEMA, selectorRevision: hashJSON(profile), publicationFormat: PLACEMENT_FORMAT, placementHead: head };
+    deadLeasesRemoved: [{ lease: `42-${hash}.json`, at: "2026-11-05T00:00:00.000Z" }] } satisfies PlacementBaseV2["shards"];
+  const profile = { ...profile2, schema: PLACEMENT_PROFILE_SCHEMA, publicationFormat: PLACEMENT_FORMAT, placementHead: head } satisfies PlacementProfile;
+  const shards = { ...shards2, schema: PLACEMENT_SHARDS_SCHEMA, selectorRevision: hashJSON(profile), publicationFormat: PLACEMENT_FORMAT, placementHead: head } satisfies PlacementShards;
   return { profile2, shards2, profile, shards };
 }
 const encode = (value: unknown) => Buffer.from(canonicalJSON(value) + "\n");
@@ -33,7 +34,7 @@ test("closed placement marker pair and descriptors round-trip canonical UTF8 and
   shards.machine.label = "changed"; shards.sources[0]!.offset = 9; shards.deadLeasesRemoved![0]!.lease = "changed";
   expect(f.shards.machine.label).toBe("기기"); expect(f.shards.sources[0]!.offset).toBe(100); expect(f.shards.deadLeasesRemoved[0]!.lease).not.toBe("changed");
   for (const realm of [{ scope: "user" as const }, { scope: "project" as const, key: "example.test/team/project" }]) {
-    const descriptor = { schema: PLACEMENT_DESCRIPTOR_SCHEMA, publicationFormat: PLACEMENT_FORMAT, ...realm };
+    const descriptor = { schema: PLACEMENT_DESCRIPTOR_SCHEMA, publicationFormat: PLACEMENT_FORMAT, ...realm } satisfies PlacementDescriptor;
     expect(validatePlacementDescriptor(descriptor, realm)).toEqual(descriptor);
     expect(decodePlacementDescriptor(encode(descriptor), realm)).toEqual(descriptor);
   }
