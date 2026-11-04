@@ -54,7 +54,7 @@ export function outboundPolicyEvaluator(home: string, extra?: RowScreen): (row: 
   return row => {
     const text = syncOutboundContent(row), own = policy.inspectStandalone(text);
     if (!own.ok) return own;
-    const accepted = extra?.(text) ?? true;
+    const accepted = extra === undefined ? true : extra(text);
     if (typeof accepted !== "boolean") throw new Error("outbound policy unavailable");
     return accepted ? { ok: true } : { ok: false, category: "host" };
   };
@@ -70,12 +70,16 @@ const idOf = (row: Record<string, unknown>) => typeof row.id === "string" ? row.
 export function screenOutboundRows(store: MemoryStore, pass: RowScreen): SyncScreen {
   const declined: string[] = [];
   let rows = 0;
+  // Actual sync retains its existing canonical refresh/recovery snapshot. Public inspection uses the read-only
+  // source visitor instead, so it never performs this derived-state mutation or adopts a torn prune recovery tail.
   try {
-    store.inspectOutboundRows(row => {
-      if (++rows > MAX_ROWS) throw new Error("outbound row bound");
-      if (!pass(row)) declined.push(idOf(row));
-    }, { maxBytes: MAX_BYTES, maxRows: MAX_ROWS })();
-  } catch { return { ok: false, reason: "this store's long-term rows cannot be read within the screening bounds, so they were not screened; inspect the local inputs and reopen the store before retrying" }; }
+    const snapshot = store.prunePort().snapshot();
+    for (const source of snapshot.rows) {
+      if (source.placement !== "synced" || !(source.own || source.legacy)) continue;
+      if (++rows > MAX_ROWS) return { ok: false, reason: `more than ${MAX_ROWS} long-term rows, so they were not screened` };
+      if (!pass(source.row as unknown as Record<string, unknown>)) declined.push(idOf(source.row as unknown as Record<string, unknown>));
+    }
+  } catch { return { ok: false, reason: "this store's long-term rows cannot be read, so they were not screened; inspect the local inputs and reopen the store before retrying" }; }
   return refusal(declined);
 }
 

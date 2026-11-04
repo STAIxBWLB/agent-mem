@@ -76,6 +76,9 @@ test("full declined set beyond eight IDs and stable sorted fingerprint are not t
   expect(first).toEqual(second); expect(first.complete).toBe(true);
   if (!first.complete) throw Error("incomplete");
   expect(first.declined.map(row => row.id)).toEqual(ids.sort()); expect(first.counts.declined).toBe(12);
+  writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private-word", "irrelevant private policy literal"] }));
+  const sameSet = inspectSyncPolicy(f.store); expect(sameSet.complete).toBe(true);
+  if (sameSet.complete) expect(sameSet.fingerprint).toBe(first.fingerprint);
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private-word row 0"] }));
   const narrowed = inspectSyncPolicy(f.store); expect(narrowed.complete).toBe(true);
   if (narrowed.complete) expect(narrowed.fingerprint).not.toBe(first.fingerprint);
@@ -148,4 +151,23 @@ test("mutable canonical default policy drift cannot certify a complete set", () 
     const result = inspectSyncPolicy(f.store, { screen: () => { DENY_NAMES.push("^canaryfile.txt$"); return true; } });
     expect(result).toEqual({ complete: false, reason: "policy-unavailable" });
   } finally { DENY_NAMES.length = length; }
+});
+
+
+for (const value of [undefined, null, 1]) test("a provided nonboolean host decision is incomplete: " + String(value), () => {
+  const f = fixture(); note(f.store, "ordinary");
+  expect(inspectSyncPolicy(f.store, { screen: (() => value) as never })).toEqual({ complete: false, reason: "policy-unavailable" });
+});
+
+test("default policy loosen-and-restore across rows cannot hide a declined row", () => {
+  const f = fixture(); note(f.store, "ordinary first row"); note(f.store, "a path to .env");
+  const before = [...DENY_NAMES]; let calls = 0;
+  try {
+    const result = inspectSyncPolicy(f.store, { screen: () => {
+      if (++calls === 1) DENY_NAMES.splice(0, DENY_NAMES.length);
+      else DENY_NAMES.push(...before);
+      return true;
+    } });
+    expect(result).toEqual({ complete: false, reason: "policy-unavailable" });
+  } finally { DENY_NAMES.splice(0, DENY_NAMES.length, ...before); }
 });

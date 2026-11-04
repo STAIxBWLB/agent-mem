@@ -60,12 +60,17 @@ export function inspectSyncPolicy(store: MemoryStore, options: SyncPolicyInspect
     // Stale handles are not silently rebound, including a monotone selector change supported by sync itself.
     if (targets.some(target => selectorRevision(target.profile.home) !== target.profile.selectorRevision)) return { complete: false, reason: "binding-changed" };
     if (targets.some(target => (readProfileJSON(join(target.dir, "machine.json"), 4096) as {id?: unknown} | undefined)?.id !== target.machine.id)) return { complete: false, reason: "binding-changed" };
-    const epoch = binding(), policyVersion = options.policyVersion?.();
-    const policy = () => {
-      const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS });
-      if (!defaults) throw new Error("policy unavailable");
-      return hash({ config: loadAmemConfig(store.profile.home).config, defaults });
+    const epoch = binding();
+    failure = "policy-unavailable";
+    const policyVersion = options.policyVersion?.();
+    if (options.policyVersion !== undefined && typeof policyVersion !== "string") throw new Error("host policy unavailable");
+    const defaults = () => {
+      const value = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS });
+      if (!value) throw new Error("policy unavailable");
+      return hash(value);
     };
+    const defaultEpoch = defaults();
+    const policy = () => hash({ config: loadAmemConfig(store.profile.home).config, defaults: defaults() });
     failure = "policy-unavailable";
     const policyEpoch = policy(), evaluate = outboundPolicyEvaluator(store.profile.home, options.screen);
     const assertCurrent = () => {
@@ -84,7 +89,9 @@ export function inspectSyncPolicy(store: MemoryStore, options: SyncPolicyInspect
       const rowHash = hash(row), prior = ids.get(row.id);
       if (prior && prior.hash !== rowHash) throw new Error("row identity changed");
       failure = "policy-unavailable";
+      if (defaults() !== defaultEpoch) throw new Error("default policy changed");
       const verdict = evaluate(row);
+      if (defaults() !== defaultEpoch) throw new Error("default policy changed");
       const item = prior ?? { hash: rowHash, categories: new Set<SyncPolicyCategory>() };
       if (!verdict.ok) item.categories.add(verdict.category);
       ids.set(row.id, item);

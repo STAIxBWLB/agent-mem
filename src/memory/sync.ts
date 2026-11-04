@@ -6,8 +6,7 @@ import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
-import type { RowScreen } from "./sync-screen.ts";
-import { inspectSyncPolicy, type SyncPolicyInspection } from "./sync-policy-inspection.ts";
+import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
 
 /**
@@ -228,13 +227,6 @@ export interface SyncOptions {
 
 export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
 
-function inspectionError(result: SyncPolicyInspection): string | undefined {
-  if (!result.complete) return `this store's long-term outbound policy inspection incomplete (${result.reason}); inspect the local inputs/policy and reopen the store before retrying sync`;
-  const declined = result.declined;
-  if (declined.length) return `the configured privacy policy declines ${declined.length} long-term entr${declined.length === 1 ? "y" : "ies"} (${declined.slice(0, 8).map(row => row.id.slice(0, 8)).join(", ")}${declined.length > 8 ? ", ..." : ""}); fix the entry or the policy, then sync again`;
-  return undefined;
-}
-
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
   assertFormatFloor(store.profile.home, "sync");
   if (store.profile.sharded) {
@@ -246,16 +238,25 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
         if (opts.policyVersion?.() !== policyVersion || shardSyncBinding(store) !== binding) throw new Error("binding changed");
       };
       assertBinding();
-      const screened = inspectSyncPolicy(store, opts); assertBinding();
-      const policyError = inspectionError(screened);
-      if (policyError) return { ok: false, pushed: false, entries: 0, error: policyError };
+      const screen = outboundScreen(store.profile.home, opts.screen);
+      const pass: RowScreen = row => { assertBinding(); const accepted = screen(row); assertBinding(); if (typeof accepted !== "boolean") throw new Error("invalid screen result"); return accepted; };
+      const errors: string[] = [];
+      for (const target of store.openedSyncTargets()) {
+        const screened = screenOutboundRows(target, pass); assertBinding();
+        if (!screened.ok) errors.push(screened.reason);
+      }
+      if (errors.length) return { ok: false, pushed: false, entries: 0, error: errors.join("; ") };
       const transport = await import("./shard-sync.ts"); assertBinding();
       return transport.syncShardedMemory(store, opts);
     } catch { return { ok: false, pushed: false, entries: 0, error: "sharded sync binding or policy unavailable or changed" }; }
   }
   // F4: before anything is staged or pushed, this machine's own long-term notes pass the person's configured policy (every profile: single log, generation, shards).
-  const policyError = inspectionError(inspectSyncPolicy(store, opts));
-  if (policyError) return { ok: false, pushed: false, entries: 0, error: policyError };
+  const pass = outboundScreen(store.profile.home, opts.screen), errors: string[] = [];
+  for (const target of store.openedSyncTargets()) {
+    const screened = target.profile.kind === "generation" ? screenOutboundRows(target, pass) : screenOwnSegment(target.dir, target.machine.id, pass);
+    if (!screened.ok) errors.push(screened.reason);
+  }
+  if (errors.length) return { ok: false, pushed: false, entries: 0, error: errors.join("; ") };
   if (store.profile.kind === "generation") return syncGenerationMemory(store, opts);
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });
