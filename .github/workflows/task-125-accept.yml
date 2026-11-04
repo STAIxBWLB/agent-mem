@@ -1,0 +1,66 @@
+name: Task 125 fixed-head native acceptance
+on:
+  pull_request:
+    types: [synchronize]
+permissions:
+  contents: read
+env:
+  FIX_HEAD: face1187485a72a2f4f0e0b3bae7df17894343cf
+jobs:
+  acceptance:
+    if: github.head_ref == 'measure/226-cursor-recovery'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Preserve nonshipping controller outside the fixed checkout
+        run: |
+          cp scripts/task-125-acceptance20.py "$RUNNER_TEMP/task125-acceptance20.py"
+          cp scripts/task-125-parser-check.py "$RUNNER_TEMP/task125-parser-check.py"
+          cp scripts/task-125-preflight.sh "$RUNNER_TEMP/task125-preflight.sh"
+          mkdir -p "$RUNNER_TEMP/task125-acceptance"
+          git rev-parse HEAD > "$RUNNER_TEMP/task125-acceptance/controller-source-head.txt"
+          echo "$FIX_HEAD" > "$RUNNER_TEMP/task125-acceptance/expected-fix-head.txt"
+          shasum -a 256 "$RUNNER_TEMP/task125-acceptance20.py" "$RUNNER_TEMP/task125-parser-check.py" "$RUNNER_TEMP/task125-preflight.sh" > "$RUNNER_TEMP/task125-acceptance/controller-sha256.txt"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.FIX_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - name: Parser positive control and fifteen independently rejected failures
+        run: python3 "$RUNNER_TEMP/task125-parser-check.py" --controller "$RUNNER_TEMP/task125-acceptance20.py" --report "$RUNNER_TEMP/task125-acceptance/parser-controls.json"
+      - name: Fixed-head preflight
+        run: bash "$RUNNER_TEMP/task125-preflight.sh" "$GITHUB_WORKSPACE" "$FIX_HEAD" "$RUNNER_TEMP/task125-acceptance/preflight"
+      - name: Twenty sequential uninstrumented native macOS attempts
+        if: runner.os == 'macOS'
+        run: |
+          python3 "$RUNNER_TEMP/task125-acceptance20.py" --repo "$GITHUB_WORKSPACE" --head "$FIX_HEAD" --out "$RUNNER_TEMP/task125-acceptance/native20" | tee "$RUNNER_TEMP/task125-acceptance/controller.stdout.log"
+      - name: Strict hosted Ubuntu hook and transcript budgets
+        if: runner.os == 'Linux'
+        run: |
+          set +e
+          bun scripts/measure-hooks-budget.ts > "$RUNNER_TEMP/task125-acceptance/hooks.stdout.log" 2> "$RUNNER_TEMP/task125-acceptance/hooks.stderr.log"
+          hooks_code=$?
+          echo "$hooks_code" > "$RUNNER_TEMP/task125-acceptance/hooks.exit"
+          bun scripts/measure-transcript-budget.ts > "$RUNNER_TEMP/task125-acceptance/transcript.stdout.log" 2> "$RUNNER_TEMP/task125-acceptance/transcript.stderr.log"
+          transcript_code=$?
+          echo "$transcript_code" > "$RUNNER_TEMP/task125-acceptance/transcript.exit"
+          [[ "$hooks_code" == 0 && "$transcript_code" == 0 ]]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task125-acceptance-${{ matrix.os }}
+          path: ${{ runner.temp }}/task125-acceptance

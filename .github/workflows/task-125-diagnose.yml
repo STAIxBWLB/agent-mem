@@ -2,6 +2,13 @@ name: Task 125 disposable cursor and recovery diagnostics
 on:
   pull_request:
     types: [opened, synchronize]
+    paths:
+      - .github/workflows/task-125-diagnose.yml
+      - scripts/task-125-cursor-probe.ts
+      - scripts/task-125-one-hot-journal.ts
+      - scripts/cursor-crash-ffi.ts
+      - scripts/one-hot-journal-ffi-probe.ts
+      - scripts/one-hot-journal-diagnostic.ts
 permissions:
   contents: read
 jobs:
