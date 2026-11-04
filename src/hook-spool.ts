@@ -450,6 +450,35 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
 const RETIRE_AFTER_MS = 7 * 24 * 3600_000, MISSING_CWD_AFTER_MS = 3600_000;
 interface MaintenanceBudget { files: number; bytes: number }
 const maintenanceBudget = (): MaintenanceBudget => ({ files: DRAIN_FILES, bytes: DRAIN_BYTES });
+/** Unpublished private files are not captures. Inspect at most four entries within this publication's maintenance allowance. */
+function cleanStaleWriting(writing: string, budget: MaintenanceBudget): void {
+  const reader = opendirSync(writing);
+  try {
+    for (let scanned = 0; scanned < 4 && budget.files > 0; scanned++) {
+      const entry = reader.readSync(); if (!entry) break;
+      budget.files--;
+      const canonical = entry.name.replace(/\.writing-[a-f0-9]{24}$/, ""), match = namePattern.exec(canonical);
+      if (!match || match[1] !== canonical) continue;
+      let file: OwnedFile | undefined;
+      try {
+        file = openOwned(join(writing, entry.name));
+        if (typeof process.getuid !== "function" || file.initial.uid !== process.getuid() || file.initial.mode & 0o077
+          || Date.now() - file.initial.mtimeMs < MISSING_CWD_AFTER_MS || file.initial.size > budget.bytes) continue;
+        budget.bytes -= file.initial.size;
+        const current = fstatSync(file.fd);
+        if (current.uid === process.getuid() && !(current.mode & 0o077) && owns(file)) rmSync(file.file);
+      } catch { /* Partial, replaced or unsafe evidence stays private; never acknowledge it as a capture. */ }
+      finally { if (file) closeSync(file.fd); }
+    }
+  } finally { reader.closeSync(); }
+}
+/** A writer can change its own size/mtime before a failed write, but never owns a replacement or a shared inode. */
+function ownsWriting(file: OwnedFile): boolean {
+  const named = lstatSync(file.file, { throwIfNoEntry: false }), current = fstatSync(file.fd), uid = process.getuid?.();
+  return !!named && named.isFile() && !named.isSymbolicLink() && named.nlink === 1 && current.nlink === 1
+    && uid !== undefined && current.uid === uid && !(current.mode & 0o077)
+    && named.dev === file.initial.dev && named.ino === file.initial.ino && current.dev === file.initial.dev && current.ino === file.initial.ino;
+}
 /** Private numeric maintenance cursor: each invocation inspects a different bounded slice. */
 function retirementCursor(base: string, capacity: boolean, length: number, pressure = false): { start: number; save(n: number): void } {
   const dir = join(directory(base), ".maintenance"); privateDirectory(dir);
@@ -680,6 +709,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   let destination = dir, deferred = false, backlog = false;
   const budget = maintenanceBudget(), incomingBytes = Buffer.byteLength(bytes), cwdHash = hash(cwd);
+  if (event !== "SessionStart") cleanStaleWriting(writing, budget);
   const withinShare = (rows: ReturnType<typeof entries>, maximum: number) => rows.filter(row => namePattern.exec(row.name)?.[2] === cwdHash).length < maximum / 4;
   const name = `${v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
   let activeInventory: ReturnType<typeof entries> | undefined, reserveInventory: ReturnType<typeof entries> | undefined;
@@ -739,9 +769,19 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
       deferred = true;
     }
   }
-  const temporary = join(writing, name);
-  try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
-  finally { rmSync(temporary, { force: true }); }
+  const temporary = join(writing, `${name}.writing-${randomBytes(12).toString("hex")}`);
+  let fd: number | undefined, created: OwnedFile | undefined;
+  try {
+    fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    created = { file: temporary, fd, initial: fstatSync(fd) };
+    if (!ownsWriting(created)) throw new Error("Hook publication refused: private temporary ownership unavailable. Retry the hook; inspect spool permissions and ownership if it repeats.");
+    writeFileSync(fd, bytes);
+    if (!ownsWriting(created) || !owns({ ...created, initial: fstatSync(fd) })) throw new Error("Hook publication refused: private temporary changed before publication. Retry the hook; inspect competing writers if it repeats.");
+    renameSync(temporary, join(destination, name));
+  } finally {
+    try { if (created && ownsWriting(created)) rmSync(temporary); }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
 }
 

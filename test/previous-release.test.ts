@@ -72,6 +72,24 @@ console.log(JSON.stringify(appended));`)) as string[];
     finally { store.close(); }
   };
 
+  test("the previous reader leaves private writing files alone and keeps or drains native v2 publications", async () => {
+    const f = fixture(), text = "native publication beside private writing";
+    const staged = (await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: text }, f.options))!;
+    expect(staged.name).toMatch(/^hook-v2-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{32}\.json$/);
+    const file = join(spool(f.base), staged.name), before = readFileSync(file);
+    expect(JSON.parse(before.toString())).toMatchObject({ schema: "agent-mem.hook-capture", format: 2 });
+    const writing = join(spool(f.base), ".writing"), legacy = join(writing, staged.name), unique = legacy + ".writing-" + "a".repeat(24);
+    // A fresh private file may belong to a concurrent writer. No reader, including a future N-1 with stale cleanup, may remove it.
+    writeFileSync(legacy, "partial legacy private body", { mode: 0o600 });
+    writeFileSync(unique, "partial unique private body", { mode: 0o600 });
+    const appended = prevHook(f, "private writing compatibility barrier"), left = pending(f.base);
+    expect(appended).toContain("claude:private writing compatibility barrier");
+    expect(appended.includes("claude:" + text)).not.toBe(left.includes(staged.name));
+    if (left.includes(staged.name)) expect(readFileSync(file)).toEqual(before);
+    expect(readFileSync(legacy, "utf8")).toBe("partial legacy private body");
+    expect(readFileSync(unique, "utf8")).toBe("partial unique private body");
+  });
+
   test("hook spool, new to old: the previous release's maintenance and drain keep or drain this build's records, never lose them", async () => {
     const f = fixture();
     const claude = (await stageHookCapture("Stop", { session_id: "s", last_assistant_message: "claude from new" }, f.options))!;

@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **Transcript worker deadline and recovery** (#226). Defer replay-only loading until an admitted opportunity, reserve the complete cold-store path before replay, skip unchanged final cursor updates while retaining their commit, and arm the worker watchdog at spawn. Private `.writing` files now use independent writer names with owned-inode cleanup and a bounded stale sweep; interrupted publication can retry without colliding with another writer's temporary. Published capture names, bytes, formats, durability and resource limits are unchanged; advisory retirement remains a separate decision.
+
 ## 0.21.0
 
 - Complete the acon plugin's published api 1 integration (#158): pin the development contract and conformance suite to `@staix/agent-console` 0.1.0, use the host button kit, and show stored target-note quotes with explicit candidate-provenance limitations. Existing review, screened search/timeline/work reads, goals, capacity, inbox and manifest setup remain in process with zero runtime dependencies.
