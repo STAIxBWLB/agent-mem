@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- **CI resolves N-1 by minor line** (#249). Compatibility checks select the latest published plain patch from the preceding minor of the same major, with the preceding major as the fallback at minor 0. Patch releases now test the same previous minor as their minor release, instead of the current or preceding patch.
+
 ## 0.20.3
 
 - **Setup retires the pre-#145 capture command on a root change** (#246, Refs #241). Replacing the install root also removes the prior root's `ingest codex|kimi|qwen` command written without `--json`, beside the current form, so an upgraded Qwen, Codex or Kimi no longer keeps a second SessionEnd ingest.
