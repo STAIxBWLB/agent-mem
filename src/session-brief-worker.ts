@@ -1,6 +1,5 @@
 import type { BriefOptions } from "./session-brief.ts";
 import type { CaptureStore } from "./memory/capture.ts";
-import { acceptHookProjectReceipt } from "./hook-project.ts";
 import { writeSync } from "node:fs";
 import { hookRssReading, hookPeakRssKB } from "./hook-resources.ts";
 import { rssSourceCode } from "./hook-rss-wire.ts";
@@ -9,6 +8,9 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES, type HookTranscriptProgress } from "./ho
 import { drainHookCaptures, hookCaptureScope, hookReplayBudget } from "./hook-spool.ts";
 /** Existing allowance for the scan's own cursor commit; the parent also retains its cleanup reserve. */
 const SCAN_COMMIT_MS = 20;
+// #226: the measured cold constructor + first append took 27 ms on hosted macOS.
+// ponytail: 30 ms admits that whole path, not merely the append; remeasure if the store's initialization changes.
+const COLD_REPLAY_MS = 30, WARM_REPLAY_MS = 8;
 
 /** #226: options arrive as newline-delimited JSON. A transcript hook first sends the scan options, then (after native
  * metadata) the drain options; other hooks send only the drain options. Total input stays bounded. */
@@ -54,9 +56,8 @@ if (import.meta.main) {
     stop();
   };
   // Ordinary hooks preload only the store, as before. They must not pay for a transcript module they never use.
-  let captureReady = false;
-  const captureModule = import("./memory/capture.ts");
-  captureModule.then(() => { captureReady = true; }, () => { /* Reported when the final drain awaits it. */ });
+  let captureModule: Promise<typeof import("./memory/capture.ts")> | undefined;
+  const loadCapture = () => captureModule ??= import("./memory/capture.ts");
   const next = optionLines(), now = () => performance.timeOrigin + performance.now();
   let store: CaptureStore | undefined;
   try {
@@ -71,6 +72,7 @@ if (import.meta.main) {
     owned = true;
     const end = deadlineAt as number;
     if (now() >= end) { if (scan) progress({ stopReason: "deadline" }); stop(); }
+    if (!scan) void loadCapture().catch(() => {});
     setTimeout(() => { if (scan) progress({ stopReason: "deadline" }); stop(); }, end - now()).unref();
 
     // Read the native receipt while scan setup runs. Publication callbacks await it only when replay can proceed.
@@ -82,6 +84,7 @@ if (import.meta.main) {
       if (options.ownedGroup !== true || options.deadlineAt !== end || !(HOOK_EVENTS as readonly string[]).includes(options.event) || options.event === "SessionStart") return undefined;
       const expectedScope = hookCaptureScope(options.cwd, options.base!);
       let project: string | undefined;
+      const { acceptHookProjectReceipt } = await import("./hook-project.ts");
     try { project = resolveAlias(options.base!, acceptHookProjectReceipt(options.identity, { cwd: options.cwd, base: options.base!, scope: expectedScope, timeRemaining: () => end - now() })); } catch { /* A bound scan may still stage without a project. */ }
       return { options, expectedScope, project };
     })();
@@ -91,20 +94,25 @@ if (import.meta.main) {
     let drainedCount = 0, captured = false, drainStarted = false;
     const replay = async (until: number, waitForReady = true) => {
       // Scanning must not wait on native metadata or cold store imports between summary lines.
-      // The final replay may await them; publication/backpressure callbacks only use ready resources.
-      if (!waitForReady && (!receiptReady || !captureReady)) return false;
-      if (!budget.files || !budget.bytes || until - now() < 8) return false;
-      const context = await ready;
-      if (!context?.project || context.expectedScope === undefined || Math.min(end, until) - now() < 8) return false;
-      const { options, expectedScope, project } = context;
-      const { CaptureStore } = await captureModule;
+      // Replay-only imports begin only at an admitted opportunity; scan setup never preloads the store.
+      if (!waitForReady && !receiptReady) return false;
       const remaining = () => Math.min(end, until) - now();
-      if (remaining() < 8) return false;
+      const minimum = () => store ? WARM_REPLAY_MS : COLD_REPLAY_MS;
+      if (!budget.files || !budget.bytes || remaining() < minimum()) return false;
+      const context = await ready;
+      if (!context?.project || context.expectedScope === undefined || remaining() < minimum()) return false;
+      const { options, expectedScope, project } = context;
+      const { CaptureStore } = await loadCapture();
+      // A cold module load does not authorize construction after it consumed the admission window.
+      if (remaining() < minimum()) return false;
       if (!drainStarted) {
         drain({ startMs: Math.round(now() - (options.hookStartAt ?? end)), drained: drainedCount });
         drainStarted = true;
       }
-      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining, replayBudget: budget }, (input, receipt) => {
+      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope,
+        timeRemaining: () => remaining() - (store ? 0 : COLD_REPLAY_MS - WARM_REPLAY_MS), replayBudget: budget }, (input, receipt) => {
+        // Inventory, policy and claiming also consume time. A declined append must throw so the claim stays pending.
+        if (!store && remaining() < COLD_REPLAY_MS) throw new Error("cold replay deadline reached; leave the claim pending for the next hook");
         store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd });
         const appended = store.append(input, { receipt });
         drain({ drained: ++drainedCount }); // DB commit or durable capture-spool acknowledgement, as in the existing contract.

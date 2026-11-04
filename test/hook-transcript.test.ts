@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanHookTranscriptTail, transcriptSummary, HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
@@ -29,6 +30,100 @@ function fixture() {
   return { ...f, transcript, id, input, scan, add, drain };
 }
 const at = new Date().toISOString();
+const cursorFile = (f: ReturnType<typeof fixture>) => join(f.base, "hook-transcripts", createHash("sha256").update("amem-session\0" + f.id).digest("hex").slice(0, 16) + ".db");
+
+test("an unchanged empty cursor commits without changing the database", async () => {
+  const f = fixture();
+  await f.scan();
+  const file = cursorFile(f), observer = new Database(file, { readonly: true });
+  try {
+    const version = () => (observer.query("PRAGMA data_version").get() as { data_version: number }).data_version;
+    const beforeVersion = version(), beforeBytes = readFileSync(file), before = observer.query("SELECT * FROM cursor").get();
+    await f.scan(); await f.scan();
+    expect(observer.query("SELECT * FROM cursor").get()).toEqual(before);
+    expect(version()).toBe(beforeVersion);
+    expect(readFileSync(file)).toEqual(beforeBytes);
+  } finally { observer.close(); }
+});
+
+test("an incomplete appended line still checkpoints the changed size without advancing", async () => {
+  const f = fixture(); await f.scan();
+  appendFileSync(f.transcript, '{"type":"ai-title"');
+  const result = await f.scan(), db = new Database(cursorFile(f), { readonly: true });
+  try {
+    expect(result?.offset).toBe(0);
+    expect(db.query("SELECT offset,size,readStart FROM cursor").get()).toEqual({ offset: 0, size: Buffer.byteLength(readFileSync(f.transcript)), readStart: 0 });
+  } finally { db.close(); }
+});
+
+test("a first-line untimed fallback commits even when publication backpressures without cursor progress", async () => {
+  const f = fixture(); f.add({ type: "system", subtype: "away_summary", content: "untimed backpressure checkpoint" });
+  await scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, workBudgetMs: 0 });
+  const file = cursorFile(f), before = new Database(file, { readonly: true });
+  let readAt: string;
+  try { readAt = (before.query("SELECT readAt FROM cursor").get() as { readAt: string }).readAt; } finally { before.close(); }
+  const full = spyOn(spool, "stageTranscriptCapture").mockImplementation(async () => { throw new spool.HookSpoolFull(); });
+  try { expect(await f.scan()).toEqual({ offset: 0, stopReason: "spool_full" }); } finally { full.mockRestore(); }
+  const db = new Database(file, { readonly: true });
+  try {
+    expect(db.query("SELECT offset FROM cursor").get()).toEqual({ offset: 0 });
+    expect(db.query("SELECT at FROM fallback").all()).toEqual([{ at: readAt! }]);
+  } finally { db.close(); }
+  await f.scan();
+  const rows = await f.drain();
+  expect(rows).toHaveLength(1); expect(rows[0]?.at).toBe(readAt!);
+});
+
+test("publication before a rolled-back cursor retains the untimed receipt on resume and rotation", async () => {
+  const f = fixture(), row = { type: "system", subtype: "away_summary", content: "untimed interrupted publication" };
+  f.add(row);
+  await expect(scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000,
+    onPublication: async () => { throw new Error("interrupt after durable publication"); } })).rejects.toThrow("interrupt after durable publication");
+  const db = new Database(cursorFile(f), { readonly: true });
+  try {
+    expect(db.query("SELECT offset FROM cursor").get()).toEqual({ offset: 0 });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback").get()).toEqual({ count: 0 });
+  } finally { db.close(); }
+  const first = await f.drain(); expect(first).toHaveLength(1);
+  await f.scan(); expect(await f.drain()).toEqual(first);
+  renameSync(f.transcript, f.transcript + ".old"); f.add(row); await f.scan();
+  expect(await f.drain()).toEqual(first);
+});
+
+test("a schema-less cursor file left before initialization resumes with one valid cursor", async () => {
+  const f = fixture(); await f.scan();
+  writeFileSync(cursorFile(f), "", { mode: 0o600 });
+  f.add({ type: "system", subtype: "away_summary", content: "after interrupted initialization", timestamp: at });
+  await f.scan();
+  const db = new Database(cursorFile(f), { readonly: true });
+  try { expect(db.query("SELECT id,offset FROM cursor").all()).toEqual([{ id: 1, offset: Buffer.byteLength(readFileSync(f.transcript)) }]); }
+  finally { db.close(); }
+  expect((await f.drain()).map(row => row.excerpt)).toEqual(["after interrupted initialization"]);
+});
+
+test("the scanner recovers a killed cursor transaction before publishing an untimed summary", async () => {
+  const f = fixture(); await f.scan();
+  const file = cursorFile(f);
+  const child = `import {Database} from 'bun:sqlite';const db=new Database(process.argv.at(-1));
+db.run('PRAGMA cache_size = 1');db.run('BEGIN IMMEDIATE');db.run('UPDATE cursor SET offset = 1');
+const put=db.query('INSERT INTO fallback VALUES (?,?)');for(let i=0;i<1000;i++)put.run(i.toString(16).padStart(64,'0'),'2000-01-01T00:00:00.000Z');
+process.kill(process.pid,'SIGKILL');`;
+  const killed = Bun.spawnSync([process.execPath, "-e", child, file], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  expect(killed.exitCode).not.toBe(0);
+  // Inspect bytes only: the next measured scanner owns recovery, never a preliminary SQLite open in the harness.
+  expect(existsSync(file + "-journal")).toBe(true);
+  expect(readFileSync(file + "-journal").subarray(0, 8).some(byte => byte !== 0)).toBe(true);
+  f.add({ type: "system", subtype: "away_summary", content: "untimed after hot journal" });
+  await f.scan();
+  const db = new Database(file, { readonly: true });
+  try {
+    expect(db.query("SELECT offset FROM cursor").get()).toEqual({ offset: Buffer.byteLength(readFileSync(f.transcript)) });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT at FROM fallback").get()).not.toEqual({ at: "2000-01-01T00:00:00.000Z" });
+  } finally { db.close(); }
+  const first = await f.drain(); expect(first).toHaveLength(1);
+  await f.scan(); expect(await f.drain()).toEqual(first);
+});
 
 test("only native title, recap and compact fields are extracted", () => {
   expect(transcriptSummary('{"type":"assistant","content":"ordinary"}')).toBeUndefined();

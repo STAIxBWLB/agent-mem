@@ -142,10 +142,15 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   let tracker: HookWorkerRss | undefined, output: Promise<string | undefined> | undefined, exit: Promise<number> | undefined;
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
   const drainProgress: { startMs?: number; drained?: number } = {};
+  let workerDeadline: Promise<undefined> | undefined;
   const spawn = () => {
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
       { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
     owned = child;
+    // Arm at spawn: native metadata can still be awaiting its own cleanup barrier when this deadline arrives.
+    workerDeadline = new Promise<undefined>(resolve => {
+      timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now()));
+    });
     exit = child.exited.then(code => { exited = true; return code; });
     tracker = new HookWorkerRss(child.pid);
     output = boundedOutput(child.stdout, value => tracker!.frame(value), value => {
@@ -190,7 +195,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     close();
     const answer = await Promise.race([
       Promise.all([exit!, output!]),
-      new Promise<undefined>(resolve => { timer = setTimeout(() => { stop(); resolve(undefined); }, Math.max(1, workDeadline - performance.now())); }),
+      workerDeadline!,
     ]);
     if (!answer || !answer[1]) return result;
     const parsed = JSON.parse(answer[1]) as { context?: unknown; captured?: unknown; valid?: unknown; complete?: unknown; rssKB?: unknown; rssTelemetryValid?: unknown };

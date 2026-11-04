@@ -128,6 +128,8 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       db.run("COMMIT"); db.run("BEGIN IMMEDIATE");
       cursor = db.query("SELECT * FROM cursor WHERE id=1").get() as Cursor;
     }
+    const checkpoint = { ...cursor };
+    let fallbackChanged = false;
     const bytes = Buffer.alloc(Math.min(HOOK_TRANSCRIPT_BYTES, Math.max(0, stat.size - cursor.offset)));
     const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
@@ -167,7 +169,8 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
               // Native timestamps normally identify summaries. Untimed content retains its
               // first fallback across rotation, so an unchanged row cannot get a new receipt.
               const digest = hash(JSON.stringify([summary.event, summary.text, summary.subagent ?? false]));
-              db.query("INSERT OR IGNORE INTO fallback VALUES (?,?)").run(digest, cursor.readAt);
+              const inserted = db.query("INSERT OR IGNORE INTO fallback VALUES (?,?)").run(digest, cursor.readAt);
+              fallbackChanged ||= inserted.changes > 0;
               at = (db.query("SELECT at FROM fallback WHERE digest=?").get(digest) as { at: string }).at;
               if (!timestamp(at)) throw new Error("transcript cursor unavailable");
             }
@@ -196,7 +199,13 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     if (!stopReason && start < length && due()) stopReason = "deadline";
     if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";
     assertFormatFloor(base, "hook-spool");
-    db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
+    const next: Cursor = { ...cursor, offset: cursor.offset + start, dev: String(stat.dev), ino: String(stat.ino), size: stat.size };
+    const fields = ["offset", "dev", "ino", "size", "title", "at", "readStart", "readAt", "skipping"] as const;
+    // Compare after the durable read-identity checkpoint; an unchanged offset alone says nothing about the other state.
+    if (fallbackChanged || fields.some(field => next[field] !== checkpoint[field])) {
+      db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(next.offset, next.dev, next.ino, next.size, next.title, next.at, next.skipping);
+    }
+    // A fallback insert can be the only new state (publication backpressure at the first line). Keep its commit.
     db.run("COMMIT");
     return { offset: cursor.offset + start, ...(stopReason ? { stopReason } : {}) };
   } finally {
