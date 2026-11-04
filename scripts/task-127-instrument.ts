@@ -47,6 +47,7 @@ export function analyze(trace: string, stdout: string): object {
   const spawns = new Map<string, { pid: number; parentPid: number; childIdentity?: { available?: boolean; startIdentity?: string } }>();
   const starts: { callId: string; pid: number; role: string; entryAt: number }[] = [];
   const intents = new Map<string, object>();
+  const rawEntries = new Map<string, number>();
   const files = readdirSync(trace);
   if (files.length > 80_000) throw new Error("task127 artifact file cap");
   for (const name of files) {
@@ -75,6 +76,7 @@ export function analyze(trace: string, stdout: string): object {
   }
   for (const name of files.filter(name => name.endsWith(".bin"))) {
     const stem = name.slice(0, -4), bytes = readFileSync(join(trace, name)), header = headers.get(stem), phases: Phase[] = [];
+    if (bytes.length >= 32 && bytes.readUInt32LE(0) === 1 && bytes.readUInt32LE(4) === 0 && Number.isFinite(bytes.readDoubleLE(8))) rawEntries.set(stem, bytes.readDoubleLE(8));
     if (!header || header.schema !== 1 || header.recordBytes !== 32 || header.limit !== 512 || bytes.length % 32 || bytes.length > 16_384) { faults.push("invalid binary/header: " + name); continue; }
     for (let offset = 0; offset < bytes.length; offset += 32) {
       const id = bytes.readUInt32LE(offset), sequence = bytes.readUInt32LE(offset + 4), at = bytes.readDoubleLE(offset + 8);
@@ -126,20 +128,22 @@ export function analyze(trace: string, stdout: string): object {
     const reads = workerPhases.filter(phase => phase.id === 108), consumed = workerPhases.filter(phase => phase.id === 116);
     if (reads.length > 1 || reads.some(phase => phase.a < 0 || phase.a > 256 * 1024)) faults.push("scan read budget or count exceeded: " + call.callId);
     const startupPrefixes = starts.filter(start => start.callId === call.callId);
+    const rawChildEntry = startupPrefixes.some(prefix => prefix.role === "worker" && prefix.pid === spawn?.pid
+      && rawEntries.get(`${call.callId}-${prefix.pid}`) === prefix.entryAt);
     return { ...call, processes: processes.map(([stem, header]) => ({ ...header, phases: records.get(stem) ?? [] })),
       startupAttribution: { intent: intents.get(call.callId) ?? null, spawn: spawn ?? null, prefixes: startupPrefixes,
-        childPhaseObserved: workerPhases.some(phase => phase.id === 1),
+        childEntryPrefixObserved: rawChildEntry, validatedChildPhaseObserved: workerPhases.some(phase => phase.id === 1),
         limitation: "Parent intent/spawn attributes a pre-phase-1 kill; it does not manufacture a child phase or complete trace." },
       readBytes: reads[0]?.a ?? null, consumedBytes: consumed[0]?.a ?? null,
       scanBytesKnown: reads.length === 1, consumedBytesKnown: consumed.length === 1,
-      workerPreEntryOrNotSpawned: worker.length === 0,
+      workerFullHeaderTraceMissing: worker.length === 0,
       observations: observer.filter(row => row.callId === call.callId) };
   });
   const busy = observer.filter(row => row.diagnostic === "task127-cursor-busy");
   const finalOwnership = observer.filter(row => row.diagnostic === "task127-r1-final" && row.ownershipUnresolved === true);
   return { observerComplete: faults.length === 0 && calls.length > 0, faults,
     invocationCount: invocations.length, callMetadataCount: calls.length,
-    missingWorkerEntries: results.filter(row => row.workerPreEntryOrNotSpawned).length,
+    missingFullWorkerHeaders: results.filter(row => row.workerFullHeaderTraceMissing).length,
     overflowOrErrorCount: faults.length, ownershipUnresolved: ownershipStillObserved.length > 0 || finalOwnership.length > 0, ownershipStillObserved, finalOwnership,
     firstBusyCount: busy.filter(row => row.attempt === 1).length,
     cursorBusyObservations: busy, lockObservations: observer.filter(row => row.diagnostic === "task127-first-busy-locks" || row.diagnostic === "task127-r1-exiting-locks"),

@@ -34,9 +34,10 @@ test("task127 native transport retains attributable startup and unknown scan byt
     expect(result.calls[0]!.processes.find(item => item.role === "cli")?.identity.available).toBe(true);
     // Native startup can spend the real deadline before reading: unknown bytes must remain null rather than zero.
     expect(result.calls[0]!.readBytes === null || result.calls[0]!.readBytes! <= 256 * 1024).toBe(true);
-    if (result.calls[0]!.startupAttribution.spawn) {
-      expect(result.calls[0]!.startupAttribution.intent).toBeDefined();
-      expect(result.calls[0]!.startupAttribution.spawn.pid).toBeGreaterThan(0);
+    const attribution = result.calls[0]!.startupAttribution;
+    if (attribution.spawn) {
+      expect(attribution.intent).toBeTruthy();
+      expect(attribution.spawn.pid).toBeGreaterThan(0);
     }
     expect(targets.map(file => readFileSync(join(repo, file), "utf8"))).toEqual(before);
   } finally { rmSync(root, { recursive: true, force: true }); }

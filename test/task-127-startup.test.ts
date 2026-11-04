@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { analyze } from "../scripts/task-127-instrument.ts";
 
 for (const stage of ["before-prefix", "start-record", "binary-open", "entry-written", "header-written"]) {
   test(`task127 startup kill boundary retains attributable prefix: ${stage}`, () => {
@@ -15,6 +16,12 @@ for (const stage of ["before-prefix", "start-record", "binary-open", "entry-writ
       // The parent owns the subprocess handle/PID even when no child JS prefix could be published.
       const binding = { callId, pid: child.pid, parentPid: process.pid, controlledSignal: child.signalCode };
       writeFileSync(join(root, callId + ".spawn.json"), JSON.stringify(binding));
+      writeFileSync(join(root, callId + ".call.json"), JSON.stringify({ callId, event: "Stop", logicalRun: 1, followUp: 0 }));
+      const log = join(root, "stdout.log"); writeFileSync(log, JSON.stringify({ diagnostic: "transcript-budget-invocation", event: "Stop", logicalRun: 1, followUp: 0 }));
+      const decoded = analyze(root, log) as { calls: { startupAttribution: { childEntryPrefixObserved: boolean; validatedChildPhaseObserved: boolean } }[] };
+      const attribution = decoded.calls[0]!.startupAttribution;
+      expect(attribution.childEntryPrefixObserved).toBe(stage === "entry-written" || stage === "header-written");
+      expect(attribution.validatedChildPhaseObserved).toBe(stage === "header-written");
       expect(JSON.parse(readFileSync(join(root, callId + ".intent.json"), "utf8")).callId).toBe(binding.callId);
       expect(binding.pid).toBeGreaterThan(0);
       const prefixes = readdirSync(root).filter(name => name.endsWith(".start.json"));
