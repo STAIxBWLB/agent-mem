@@ -124,7 +124,7 @@ test("the scanner recovers a killed cursor transaction before publishing an unti
   try {
     expect(db.query("SELECT offset FROM cursor").get()).toEqual({ offset: Buffer.byteLength(readFileSync(f.transcript)) });
     expect(db.query("SELECT COUNT(*) AS count FROM fallback").get()).toEqual({ count: 1001 });
-    expect(db.query("SELECT COUNT(*) AS count FROM fallback WHERE at = ?").get("2000-01-01T00:00:00.000Z")).toEqual({ count: 1000 });
+    expect(db.query("SELECT COUNT(*) AS count FROM fallback WHERE at = ?").get("2026-11-04T00:00:00.000Z")).toEqual({ count: 1000 });
     expect(db.query("SELECT COUNT(*) AS count FROM fallback WHERE at = ?").get("2099-01-01T00:00:00.000Z")).toEqual({ count: 0 });
   } finally { db.close(); }
   const first = await f.drain(); expect(first).toHaveLength(1);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Test-only crash factory. All SQLite pointers originate from this child's sqlite3_open.
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
 import { existsSync, readFileSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { endianness } from "node:os";
@@ -27,7 +27,7 @@ const lib = dlopen(library, {
   sqlite3_sourceid: { args: [], returns: FFIType.cstring },
 });
 const s = lib.symbols;
-let connection: number | null = null, stage = "open", lastRc = 0;
+let connection: Pointer | null = null, stage = "open", lastRc = 0;
 // These remain reachable for the entire sqlite3_open call. The output is a C sqlite3* owned solely by this library.
 const filename = Buffer.from(file + "\0"), output = Buffer.alloc(8);
 function record(value: object) { writeSync(1, JSON.stringify({ stage, ...value }) + "\n"); }
@@ -51,7 +51,7 @@ function snapshot(label: string) {
 try {
   const openRc = s.sqlite3_open(ptr(filename), ptr(output));
   const address = output.readBigUInt64LE();
-  if (address > 0n && address <= BigInt(Number.MAX_SAFE_INTEGER)) connection = Number(address);
+  if (address > 0n && address <= BigInt(Number.MAX_SAFE_INTEGER)) connection = Number(address) as Pointer;
   checked(openRc);
   if (connection === null) throw Error("sqlite3_open returned invalid owned pointer");
   record({ library, sqliteVersion: String(s.sqlite3_libversion()), sqliteSourceId: String(s.sqlite3_sourceid()), pointerOrigin: "sqlite3_open-output-only", openRc });
