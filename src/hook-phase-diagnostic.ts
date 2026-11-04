@@ -37,7 +37,7 @@ function memory(): Mapping | undefined {
     return mapped;
   } catch { return; }
 }
-/** Only the owned capture worker writes; the CLI only snapshots. No syscall per phase. */
+/** Only the owned capture worker writes; the CLI only snapshots. No explicit filesystem operation per phase after mapping. */
 export function phase(code: Phase, value = 0, count = 0): void {
   if (!worker) return;
   const map = memory(); if (!map) return;

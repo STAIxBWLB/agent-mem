@@ -144,6 +144,11 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
   const diagnostic = !!process.env.AMEM_TASK123_TRACE;
   let phaseAtKill: unknown;
+  const signalRequests: { epochMs: number; pidExists: boolean | null; groupError: string | null; call: string }[] = [];
+  const diagnosticPidExists = (): boolean | null => {
+    if (!owned) return null;
+    try { process.kill(owned.pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : null; }
+  };
   const drainProgress: { startMs?: number; drained?: number } = {};
   const spawn = () => {
     if (diagnostic) phaseSnapshot(); // Map before work; snapshots at the kill perform no file I/O.
@@ -169,12 +174,18 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const close = () => { try { owned?.stdin.end(); } catch { /* Already closed. */ } };
   const stop = () => {
     if (!owned || exited) return;
-    if (diagnostic) phaseAtKill = { epochMs: performance.timeOrigin + performance.now(), trace: phaseSnapshot() };
+    const requestAt = diagnostic ? performance.timeOrigin + performance.now() : 0, existsBefore = diagnostic ? diagnosticPidExists() : null;
+    if (diagnostic && !killed) phaseAtKill = { epochMs: requestAt, pidExists: existsBefore, trace: phaseSnapshot() };
     tracker!.captureLive();
     killed = true;
     // The still-live leader is the detached process we just spawned, so its group is ours.
     // The capture-only worker owns no native helper; those handles were reaped in this parent.
-    try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already exited. */ } }
+    let groupError: string | null = null, call = "group-call-ok";
+    try { process.kill(-owned.pid, "SIGKILL"); } catch (error) {
+      groupError = (error as NodeJS.ErrnoException).code === "ESRCH" ? "ESRCH" : "other";
+      try { owned.kill("SIGKILL"); call = "child-call-ok"; } catch { call = "both-calls-failed"; }
+    }
+    if (diagnostic && signalRequests.length < 3) signalRequests.push({ epochMs: requestAt, pidExists: existsBefore, groupError, call });
   };
   let timer: ReturnType<typeof setTimeout> | undefined, metadata: Awaited<ReturnType<typeof parentProject>> | undefined;
   try {
@@ -233,7 +244,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
         if (!reaped) try { lateRawMaxRSS = owned.resourceUsage()?.maxRSS ?? null; } catch { /* Diagnostic unavailable. */ }
         console.error(JSON.stringify({ diagnostic: "task123-worker", event, parentPid: process.pid, workerPid: owned.pid,
           killed, reaped, exitedAtReap, exitedNow: exited, reapMs, outputWaitMs, outputLate: body.late, pidExists, lateRawMaxRSS,
-          phaseAtKill, atReturnEpochMs: performance.timeOrigin + performance.now(), trace: phaseSnapshot(!reaped || body.late) }));
+          phaseAtKill, signalRequests, atReturnEpochMs: performance.timeOrigin + performance.now(), trace: phaseSnapshot(!reaped || body.late) }));
       }
       if (early && killed) {
         // #221: a kill without accepted progress is a deadline stop; a kill also skips this call's drain (ruling b).
