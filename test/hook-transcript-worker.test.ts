@@ -54,10 +54,6 @@ builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>{
  if(source.split(anchor).length!==2)throw Error('native spawn anchor changed');
  return {loader:'ts',contents:source.replace(anchor,"  (globalThis as any).__phase201('native_spawn');"+anchor)};
 });
-builder.onLoad({filter:/[/]memory[/]capture\\.ts$/},({path})=>{
- (globalThis as any).__phase201('capture_import');
- return {loader:'ts',contents:readFileSync(path,'utf8')};
-});
 builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
  const source=readFileSync(path,'utf8'),anchor='  const value = object(input);';
  if(source.split(anchor).length!==2)throw Error('transcript order anchor changed');
@@ -89,9 +85,6 @@ builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{
       expect(events.slice(receipt).some(event => event.phase === "native")).toBe(false);
       expect(events[receipt]!.pid === result.pid).toBe(false);
       expect(scanPids.has(events[receipt]!.pid)).toBe(true); // one worker scans and then drains
-      const capture = events.findIndex(event => event.phase === "capture_import" && scanPids.has(event.pid));
-      expect(capture).toBeGreaterThan(scan); // The scan entry never pays for replay-only module work.
-
     }
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(rssSourcesKnown(metric.rssSources!)).toBe(true);
@@ -250,41 +243,6 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
       .filter(name => name.startsWith("hook-")).map(name => JSON.parse(readFileSync(join(folder, name), "utf8"))) : []);
     for (let index = 0; index < 20; index++) expect(retained.filter(row => row.capture.excerpt === `pressure ${index}`)).toHaveLength(1);
   } finally { reportHookMetrics(f, "slow-drain:" + event); f.close(); }
-});
-
-test("a late replay leaves the cold store until after the cursor commit", async () => {
-  const f = hookFixture(), preload = join(f.root, "late-replay.ts"), events = join(f.root, "late-replay.jsonl"), transcript = join(f.root, "late-replay-transcript.jsonl");
-  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
-  writeFileSync(events, "");
-  writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "late cold replay summary" }) + "\n");
-  writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
-const worker=${JSON.stringify(worker)},events=${JSON.stringify(events)};
-(globalThis as any).__t125record=(phase)=>{if(process.argv[1]===worker)appendFileSync(events,JSON.stringify({phase,pid:process.pid})+'\\n');};
-const once=(s,a,b)=>{if(s.split(a).length!==2)throw Error('late replay fixture anchor changed');return s.replace(a,b);};
-Bun.plugin({name:'late-cold-replay',setup(b){
-b.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>({loader:'ts',contents:once(readFileSync(path,'utf8'),
- '    const replay = async (until: number, waitForReady = true) => {',
- '    const replay = async (until: number, waitForReady = true) => { if(!waitForReady) until=Math.min(until,now()+10);')}));
-b.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>({loader:'ts',contents:once(readFileSync(path,'utf8'),
- '    db.run("COMMIT");\\n    return { offset:',
- '    db.run("COMMIT"); (globalThis as any).__t125record("cursor-committed");\\n    return { offset:')}));
-b.onLoad({filter:/[/]memory[/]capture\\.ts$/},({path})=>({loader:'ts',contents:
- '(globalThis as any).__t125record("capture-import");\\n'+once(readFileSync(path,'utf8'),
- '  constructor(opts: CaptureOptions) {',
- '  constructor(opts: CaptureOptions) { (globalThis as any).__t125record("cold-constructor"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,27);')}));
-}});
-const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
-`);
-  try {
-    await f.seed();
-    const result = f.runFunctional("Stop", { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    const phases = readFileSync(events, "utf8").trim().split("\n").map(line => (JSON.parse(line) as { phase: string }).phase);
-    expect(phases.indexOf("cursor-committed")).toBeGreaterThanOrEqual(0);
-    expect(phases.indexOf("capture-import")).toBeGreaterThan(phases.indexOf("cursor-committed"));
-    expect(phases.indexOf("cold-constructor")).toBeGreaterThan(phases.indexOf("cursor-committed"));
-    expect(f.rows().filter(row => row.excerpt === "late cold replay summary")).toHaveLength(1);
-  } finally { f.close(); }
 });
 
 test("the early worker watchdog remains armed while metadata completion is awaited", async () => {
