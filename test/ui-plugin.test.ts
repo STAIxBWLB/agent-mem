@@ -340,3 +340,33 @@ test("Codex P2 (plugin.ts:440): reject then undo restores a 31-day-old unshown c
   const after = new CandidateStore({ memoryDir: f.base });
   try { expect(after.get(id, f.project)).toMatchObject({ status: "pending", createdAt: new Date(created).toISOString() }); } finally { after.close(); }
 });
+
+
+test("an unavailable explicit project never falls back to another project's memory", async () => {
+  const f = fixture(), provider = await open(f.family);
+  expect((await provider.snapshot({ after: 0, panel: "find", project: f.project, q: "console" })).hits).not.toEqual([]);
+  for (const panel of ["find", "search", "timeline", "work", "goals", "review", "recap", "capacity"]) {
+    const result = await provider.snapshot({ after: 0, panel, project: "missing-project", q: "console" });
+    expect(result).toMatchObject({ project: null, error: expect.stringContaining("choose an active project") });
+    expect(result.hits).toBeUndefined();
+    expect(result.rows).toBeUndefined();
+    expect(result.entries).toBeUndefined();
+  }
+  // An omitted project still uses the person's previous valid selection.
+  expect(await provider.snapshot({ after: 0, panel: "find", q: "console" })).toMatchObject({ project: f.project });
+});
+
+test("acon refuses a changed module hash until setup refreshes the manifest", () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-console-hash-")); roots.push(root);
+  const family = join(root, "hub"), module = join(root, "plugin.ts"), env = { AGENTHUB_HOME: family };
+  writeFileSync(module, "export default {};\n");
+  consoleSetup("apply", env, module);
+  expect(scanPlugins(family).entries[0]?.status).toBe("verified");
+  writeFileSync(module, "export default { changed: true };\n");
+  expect(scanPlugins(family).entries[0]?.status).not.toBe("verified");
+  const before = tree(family);
+  expect(consoleSetup("preview", env, module).change).toBe("replace");
+  expect(tree(family)).toEqual(before);
+  consoleSetup("apply", env, module);
+  expect(scanPlugins(family).entries[0]?.status).toBe("verified");
+});
