@@ -1,0 +1,48 @@
+name: Task 125 disposable cursor and recovery diagnostics
+on:
+  pull_request:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: github.head_ref == 'measure/226-cursor-recovery'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Source receipt
+        run: |
+          mkdir -p "$RUNNER_TEMP/task125-diagnose"
+          git rev-parse HEAD > "$RUNNER_TEMP/task125-diagnose/head.txt"
+          git ls-files src test/fakes/hooks-fixture.ts scripts/task-125-cursor-probe.ts scripts/task-125-stale-writing-repro.ts | while IFS= read -r file; do shasum -a 256 "$file"; done > "$RUNNER_TEMP/task125-diagnose/source-sha256.txt"
+          bun --version > "$RUNNER_TEMP/task125-diagnose/bun.txt"
+          sw_vers > "$RUNNER_TEMP/task125-diagnose/os.txt"
+      - name: Fixed cold, schema-less, warm and hot-journal cursor samples
+        run: bun scripts/task-125-cursor-probe.ts "$PWD" > "$RUNNER_TEMP/task125-diagnose/cursor.jsonl" 2> "$RUNNER_TEMP/task125-diagnose/cursor.stderr.log"
+      - name: Retained synthetic publication kill and recovery controls
+        if: always()
+        run: bun scripts/task-125-stale-writing-repro.ts --repo "$PWD" --out "$RUNNER_TEMP/task125-diagnose/recovery" > "$RUNNER_TEMP/task125-diagnose/recovery.stdout.log" 2> "$RUNNER_TEMP/task125-diagnose/recovery.stderr.log"
+      - name: Retain owned synthetic fixture data
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, shutil
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'task125-diagnose'
+          for receipt in (out/'recovery').glob('*/fixture-location.json'):
+              info=json.loads(receipt.read_text()); root=pathlib.Path(info['root'])
+              if info.get('synthetic') is not True or not root.name.startswith('amem-hooks-'):
+                  raise RuntimeError('unexpected synthetic fixture receipt')
+              shutil.copytree(root, receipt.parent/'fixture', symlinks=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task125-cursor-recovery-macos
+          path: ${{ runner.temp }}/task125-diagnose
