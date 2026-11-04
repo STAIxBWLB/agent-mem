@@ -35,11 +35,6 @@ test("task127 real isolated transport correlates native hook, process identities
     // Native startup can spend the real deadline before reading: unknown bytes must remain null rather than zero.
     expect(result.calls[0]!.readBytes === null || result.calls[0]!.readBytes! <= 256 * 1024).toBe(true);
     expect(targets.map(file => readFileSync(join(repo, file), "utf8"))).toEqual(before);
-    const callId = result.calls[0]!.callId, spawned = JSON.parse(readFileSync(join(trace, callId + ".spawn.json"), "utf8"));
-    const ownershipControl = join(trace, "ownership-control.observer.jsonl");
-    writeFileSync(ownershipControl, JSON.stringify({ diagnostic: "task127-r1-identities", stage: "after", callId,
-      at: Date.now(), processes: [spawned.childIdentity] }) + "\n");
-    expect((analyze(trace, log) as { ownershipUnresolved: boolean }).ownershipUnresolved).toBe(true); unlinkSync(ownershipControl);
     writeFileSync(log, ""); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
     writeFileSync(log, stdout + stdout); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
     writeFileSync(log, stdout);
@@ -49,3 +44,25 @@ test("task127 real isolated transport correlates native hook, process identities
     expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
+
+test("task127 ownership uses stable PID identity and does not equate command disappearance with final exit", () => {
+  const root = mkdtempSync(join(tmpdir(), "task127-ownership-control-")), callId = "00000000-0000-0000-0000-000000000001";
+  try {
+    writeFileSync(join(root, callId + ".call.json"), JSON.stringify({ callId, event: "Stop", logicalRun: 1, followUp: 0 }));
+    const identity = (pid: number) => ({ pid, available: true, startIdentity: `${pid}:original-start` });
+    for (const [pid, role] of [[1001, "cli"], [1002, "worker"]] as const) {
+      const stem = `${callId}-${pid}`, record = Buffer.alloc(32); record.writeUInt32LE(1, 0); record.writeDoubleLE(1, 8);
+      writeFileSync(join(root, stem + ".bin"), record);
+      writeFileSync(join(root, stem + ".json"), JSON.stringify({ schema: 1, callId, pid, role, identity: identity(pid), entryAt: 1, recordBytes: 32, limit: 512 }));
+    }
+    writeFileSync(join(root, callId + ".spawn.json"), JSON.stringify({ pid: 1002, parentPid: 1001, childIdentity: identity(1002) }));
+    const log = join(root, "stdout.log"), observation = join(root, "control.observer.jsonl");
+    writeFileSync(log, JSON.stringify({ diagnostic: "transcript-budget-invocation", event: "Stop", logicalRun: 1, followUp: 0 }));
+    const writeObservation = (startIdentity: string) => writeFileSync(observation, JSON.stringify({ diagnostic: "task127-r1-identities", stage: "after", callId, at: 2,
+      alive: [], processes: [{ ...identity(1002), startIdentity, state: "Z" }] }) + "\n");
+    writeObservation("1002:original-start");
+    expect((analyze(root, log) as { ownershipUnresolved: boolean }).ownershipUnresolved).toBe(true);
+    writeObservation("1002:reused-start");
+    expect((analyze(root, log) as { ownershipUnresolved: boolean }).ownershipUnresolved).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
