@@ -1,8 +1,9 @@
 /** Task127 installer/analyzer. It writes only diagnostic output, never an arm's sources. */
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { PHASES, transformSource } from "./task-127-transform.ts";
+import { buildDarwinLockProbe } from "./task-127-lock-probe.ts";
 
 const TARGETS = ["src/hooks.ts", "src/hook-spool.ts", "src/hook-transcript.ts", "src/session-brief-worker.ts",
   "test/fakes/hooks-fixture.ts", "scripts/measure-transcript-budget.ts"];
@@ -12,7 +13,7 @@ function option(name: string): string {
   if (index < 0 || !value || value.startsWith("--")) throw new Error(`missing ${name}`);
   return resolve(value);
 }
-export function install(repo: string, out: string): void {
+export function install(repo: string, out: string, probeBinary?: string): void {
   mkdirSync(out, { recursive: true, mode: 0o700 });
   const sources: Record<string, { before: string; transformed: string }> = {};
   for (const file of TARGETS) {
@@ -20,12 +21,17 @@ export function install(repo: string, out: string): void {
     new Bun.Transpiler({ loader: "ts" }).transformSync(transformed);
     sources[file] = { before: digest(text), transformed: digest(transformed) };
   }
-  for (const name of ["task-127-preload.ts", "task-127-transform.ts", "task-127-lock-probe.ts", "task-127-read-cursor.ts"]) {
+  for (const name of ["task-127-preload.ts", "task-127-transform.ts", "task-127-lock-probe.ts", "task-127-read-cursor.ts", "task-127-fgetlk.c"]) {
     copyFileSync(join(import.meta.dir, name), join(out, name));
+  }
+  if (process.platform === "darwin") {
+    if (probeBinary) { copyFileSync(probeBinary, join(out, "task-127-fgetlk")); chmodSync(join(out, "task-127-fgetlk"), 0o700); }
+    else buildDarwinLockProbe(out);
   }
   const preload = join(out, "preload.ts");
   writeFileSync(preload, `import { activate } from "./task-127-preload.ts";\nactivate(${JSON.stringify(repo)}, ${JSON.stringify(preload)});\n`, { mode: 0o600, flag: "wx" });
   const manifest = { schema: 1, repo, preload, phases: PHASES, recordBytes: 32, maxRecordsPerProcess: 512,
+    nativeProbe: process.platform === "darwin" ? { sha256: digest(readFileSync(join(out, "task-127-fgetlk"))), sourceSHA256: digest(readFileSync(join(out, "task-127-fgetlk.c"))) } : null,
     sources, observerEffects: ["Every native process loads a diagnostic preload, records native start identity, opens an artifact FD and performs bounded unfsynced phase writes.",
       "Parent spawn observes child identity; R1/BUSY observers run outside handler timing but can change inter-call host state.",
       "Matched instrumented outcomes select hypotheses; only separate uninstrumented runs establish acceptance."] };
@@ -133,5 +139,5 @@ if (import.meta.main) {
     const result = analyze(option("--analyze"), option("--stdout"));
     writeFileSync(option("--out"), JSON.stringify(result, null, 2) + "\n");
     process.exitCode = (result as { observerComplete: boolean }).observerComplete ? 0 : 1;
-  } else install(option("--repo"), option("--out"));
+  } else install(option("--repo"), option("--out"), process.argv.includes("--probe-binary") ? option("--probe-binary") : undefined);
 }

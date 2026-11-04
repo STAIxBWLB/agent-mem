@@ -2,9 +2,10 @@
  * Linux layouts: https://man7.org/linux/man-pages/man5/proc_locks.5.html and proc_pid_stat.5.html.
  * Darwin F_GETLK/layout: Apple XNU bsd/sys/fcntl.h and fcntl(2), verified against the installed SDK.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { chmodSync, closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { endianness } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
 const MAX_PROC_BYTES = 4 * 1024 * 1024, MAX_PIDS = 64, MAX_LOCKS = 256;
@@ -22,7 +23,7 @@ export interface CursorLockSnapshot {
   diagnostic: "task127-cursor-locks"; platform: string; observerPid: number; at: string;
   startedMs: number; finishedMs: number; available: boolean; complete: boolean;
   file?: FileIdentity; fileIdentityUnchanged?: boolean;
-  lockObservation?: { pid: number; startedMs: number; finishedMs: number };
+  lockObservation?: { pid: number; startedMs: number; finishedMs: number; stage?: string; errno?: number; file?: FileIdentity; fileIdentityUnchanged?: boolean; monotonicStartedMs?: number; monotonicFinishedMs?: number; clock?: string };
   locks: LockObservation[]; processes: ProcessObservation[]; unavailable: string[]; limitations: string[];
 }
 const now = () => performance.timeOrigin + performance.now();
@@ -93,16 +94,38 @@ export function processIdentity(pid: number): ProcessObservation {
       ppid: info.readUInt32LE(16), pgid: info.readUInt32LE(100), state: `bsd-status-${info.readUInt32LE(4)}`, flags: info.readUInt32LE(0) };
   } catch (error) { return { pid, available: false, source, error: code(error) }; }
 }
-/** Short-lived isolated child: closing an fd in a SQLite-owning process could release its POSIX locks. */
-async function darwinGetlk(file: string): Promise<{ available: boolean; locks: LockObservation[]; error?: string; observerPid?: number; startedMs?: number; finishedMs?: number }> {
-  if (process.platform !== "darwin" || endianness() !== "LE" || !["arm64", "x64"].includes(process.arch)) return { available: false, locks: [], error: "unsupported-darwin-abi" };
-  const child = Bun.spawnSync([process.execPath, fileURLToPath(import.meta.url), "--darwin-getlk", file], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+interface DarwinLockObservation {
+  available: boolean; locks: LockObservation[]; error?: string; observerPid?: number; startedMs?: number; finishedMs?: number;
+  stage?: string; errno?: number; file?: FileIdentity; fileIdentityUnchanged?: boolean;
+  monotonicStartedMs?: number; monotonicFinishedMs?: number; clock?: string;
+}
+/** Explicit preflight build only. Measurements never compile a helper on first BUSY. */
+export function buildDarwinLockProbe(outputDir: string): string {
+  if (process.platform !== "darwin") throw new Error("Darwin lock observer must be built on Darwin");
+  const directory = resolve(outputDir), source = fileURLToPath(new URL("./task-127-fgetlk.c", import.meta.url));
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const destination = join(directory, "task-127-fgetlk");
+  if (lstatSync(destination, { throwIfNoEntry: false })) throw new Error("lock observer output already exists; use a fresh preflight directory");
+  const temporary = mkdtempSync(join(directory, ".fgetlk-build-")), output = join(temporary, "task-127-fgetlk");
+  try {
+    const build = Bun.spawnSync(["/usr/bin/xcrun", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", source, "-o", output], { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+    if (build.exitCode !== 0) throw new Error(`native lock observer build failed: ${build.stderr.toString().slice(0, 4096)}`);
+    chmodSync(output, 0o700); renameSync(output, destination); return destination;
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+/** Isolated native child: compiler handles Darwin fcntl's variadic calling convention and system struct layout. */
+async function darwinGetlk(file: string, binary?: string): Promise<DarwinLockObservation> {
+  if (process.platform !== "darwin") return { available: false, locks: [], error: "unsupported-darwin-platform" };
+  const executable = binary ?? join(dirname(fileURLToPath(import.meta.url)), "task-127-fgetlk");
+  const named = lstatSync(executable, { throwIfNoEntry: false });
+  if (!named || !named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || !(named.mode & 0o111) || named.size > 1024 * 1024) return { available: false, locks: [], error: "prebuilt-probe-unavailable" };
+  const child = Bun.spawnSync([executable, file], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
   if (child.exitCode !== 0 || child.stdout.byteLength > 16 * 1024) return { available: false, locks: [], error: child.signalCode ? "probe-signal" : "probe-failed" };
-  try { return JSON.parse(child.stdout.toString()) as { available: boolean; locks: LockObservation[]; error?: string; observerPid?: number; startedMs?: number; finishedMs?: number }; }
+  try { return JSON.parse(child.stdout.toString()) as DarwinLockObservation; }
   catch { return { available: false, locks: [], error: "probe-output-invalid" }; }
 }
 /** Snapshot only, not a final-exit assertion. A released lock or missing PID remains unattributed. */
-export async function snapshotCursorLocks(file: string, candidatePids: readonly number[] = []): Promise<CursorLockSnapshot> {
+export async function snapshotCursorLocks(file: string, candidatePids: readonly number[] = [], options: { probeBinary?: string } = {}): Promise<CursorLockSnapshot> {
   const result: CursorLockSnapshot = { diagnostic: "task127-cursor-locks", platform: process.platform, observerPid: process.pid, at: new Date().toISOString(),
     startedMs: now(), finishedMs: 0, available: false, complete: false, locks: [], processes: [], unavailable: [], limitations: [
       "Snapshot races with lock release and PID exit/reuse; no observed conflict does not prove no earlier locker.",
@@ -123,9 +146,10 @@ export async function snapshotCursorLocks(file: string, candidatePids: readonly 
       result.processes = pids.slice(0, MAX_PIDS).map(processIdentity); result.available = true;
       result.limitations.push("/proc/locks is PID-namespace scoped; OFD locks may report PID -1. Waiting rows are marked blocked, not owners.");
     } else if (process.platform === "darwin") {
-      const observed = await darwinGetlk(file); result.locks = observed.locks; result.available = observed.available;
-      if (observed.observerPid !== undefined && observed.startedMs !== undefined && observed.finishedMs !== undefined) result.lockObservation = { pid: observed.observerPid, startedMs: observed.startedMs, finishedMs: observed.finishedMs };
+      const observed = await darwinGetlk(file, options.probeBinary); result.locks = observed.locks; result.available = observed.available;
+      if (observed.observerPid !== undefined && observed.startedMs !== undefined && observed.finishedMs !== undefined) result.lockObservation = { pid: observed.observerPid, startedMs: observed.startedMs, finishedMs: observed.finishedMs, stage: observed.stage, errno: observed.errno, file: observed.file, fileIdentityUnchanged: observed.fileIdentityUnchanged, monotonicStartedMs: observed.monotonicStartedMs, monotonicFinishedMs: observed.monotonicFinishedMs, clock: observed.clock };
       if (!observed.available) result.unavailable.push(observed.error ?? "getlk-unavailable");
+      if (observed.available && (!observed.file || observed.file.dev !== result.file.dev || observed.file.ino !== result.file.ino || observed.fileIdentityUnchanged !== true)) { result.available = false; result.unavailable.push("probe-cursor-identity-mismatch"); }
       const pids = [...new Set([...candidates, ...result.locks.map(lock => lock.pid).filter(pid => pid > 0)])];
       if (pids.length > MAX_PIDS) result.unavailable.push("owner-pid-bound");
       result.processes = pids.slice(0, MAX_PIDS).map(processIdentity);
@@ -139,32 +163,7 @@ export async function snapshotCursorLocks(file: string, candidatePids: readonly 
   } catch (error) { result.unavailable.push(code(error)); }
   result.finishedMs = now(); return result;
 }
-async function runDarwinGetlk(file: string): Promise<void> {
-  const startedMs = now();
-  // ponytail: each generic whole-file query reports only its first conflict. Upgrade to version-pinned
-  // SQLite lock-range queries if attribution needs more coverage, retaining isolated readonly observation.
-  // Darwin 64-bit struct flock: off_t start/len, pid_t pid, short type/whence; 24 bytes.
-  // Verified from the installed SDK sys/fcntl.h and Apple XNU's published header. F_GETLK=7, READ=1, UNLOCK=2, WRITE=3.
-  const lib = dlopen("/usr/lib/libSystem.B.dylib", { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
-  let fd: number | undefined;
-  try {
-    const before = identity(file); fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const held = fstatSync(fd, { bigint: true });
-    if (held.dev.toString() !== before.dev || held.ino.toString() !== before.ino) throw Object.assign(new Error("changed"), { code: "cursor-identity-changed" });
-    const locks: LockObservation[] = [];
-    for (const type of [1, 3]) {
-      const flock = Buffer.alloc(24); flock.writeInt16LE(type, 20); // SEEK_SET=0, start=0,len=0 query through EOF.
-      if (lib.symbols.fcntl(fd, 7, ptr(flock)) !== 0) throw Object.assign(new Error("fcntl failed"), { code: "getlk-failed" });
-      const returned = flock.readInt16LE(20);
-      if (returned !== 2) locks.push({ source: "darwin-f-getlk", type: "POSIX", mode: returned === 1 ? "READ" : returned === 3 ? "WRITE" : `unknown-${returned}`,
-        pid: flock.readInt32LE(16), start: flock.readBigInt64LE(0).toString(), end: flock.readBigInt64LE(8) === 0n ? "EOF" : (flock.readBigInt64LE(0) + flock.readBigInt64LE(8) - 1n).toString(), blocked: false });
-    }
-    console.log(JSON.stringify({ available: true, observerPid: process.pid, startedMs, finishedMs: now(), locks }));
-  } finally { if (fd !== undefined) closeSync(fd); lib.close(); }
-}
 if (import.meta.main) {
-  if (process.argv[2] === "--darwin-getlk" && process.argv[3] && process.platform === "darwin") {
-    try { await runDarwinGetlk(process.argv[3]); } catch (error) { console.log(JSON.stringify({ available: false, locks: [], error: code(error), observerPid: process.pid })); }
-  } else if (process.argv[2]) console.log(JSON.stringify(await snapshotCursorLocks(process.argv[2], process.argv.slice(3).map(Number))));
+  if (process.argv[2]) console.log(JSON.stringify(await snapshotCursorLocks(process.argv[2], process.argv.slice(3).map(Number))));
   else throw new Error("usage: bun task-127-lock-probe.ts /synthetic/cursor.db [candidatePID...]");
 }

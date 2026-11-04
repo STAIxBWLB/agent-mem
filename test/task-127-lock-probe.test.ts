@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { linuxDevice, parseProcLocks, parseProcStat, processIdentity, snapshotCursorLocks } from "../scripts/task-127-lock-probe.ts";
+import { buildDarwinLockProbe, linuxDevice, parseProcLocks, parseProcStat, processIdentity, snapshotCursorLocks } from "../scripts/task-127-lock-probe.ts";
 
 test("task127 proc stat identity uses field22 despite spaces and parentheses in comm", () => {
   const fields = Array.from({ length: 20 }, (_, i) => String(i + 4)); fields[0] = "42"; fields[1] = "77"; fields[18] = "999999999999";
@@ -49,14 +49,15 @@ test("task127 observes a real isolated exclusive SQLite locker without changing 
     const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
     const ready = await Promise.race([reader.read(), Bun.sleep(3000).then(() => { throw Error("locker never became ready"); })]); reader.releaseLock();
     expect(new TextDecoder().decode(ready.value)).toBe("ready\n");
-    const observed = await snapshotCursorLocks(file, [child.pid]);
+    const options = process.platform === "darwin" ? { probeBinary: buildDarwinLockProbe(join(root, "probe")) } : {};
+    const observed = await snapshotCursorLocks(file, [child.pid], options);
     expect(observed.available, JSON.stringify(observed)).toBe(true);
     expect(observed.fileIdentityUnchanged).toBe(true);
     expect(observed.locks.some(lock => lock.pid === child!.pid && lock.mode === "WRITE" && !lock.blocked), JSON.stringify(observed)).toBe(true);
     expect(observed.processes.find(item => item.pid === child!.pid)?.available).toBe(true);
     expect(hash()).toBe(before);
     child.stdin!.end(); expect(await child.exited).toBe(0);
-    const after = await snapshotCursorLocks(file, [process.pid]);
+    const after = await snapshotCursorLocks(file, [process.pid], options);
     expect(after.available).toBe(true); expect(after.locks.some(lock => lock.pid === child!.pid)).toBe(false); expect(hash()).toBe(before);
     const alias = join(root, "alias.db"); symlinkSync(file, alias);
     expect((await snapshotCursorLocks(alias)).unavailable).toContain("unsafe-cursor-type");

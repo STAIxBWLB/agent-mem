@@ -138,6 +138,7 @@ def build_variants(repo, directory, variants):
 def diagnostic_inputs(instrument):
     files = {Path(__file__).resolve(), instrument.resolve()}
     files.update(instrument.parent.glob("task-127-*.ts"))
+    files.update(instrument.parent.glob("task-127-*.c"))
     return {str(file): digest_bytes(file.read_bytes()) for file in sorted(files)}
 
 
@@ -347,13 +348,24 @@ def main():
         diagnostic_dir.mkdir()
         for variant in selected:
             target = diagnostic_dir / variant
+            install_command = ["bun", str(instrument), "--repo", str(out / "variants" / variant), "--out", str(target)]
+            shared_probe = diagnostic_dir / selected[0] / "task-127-fgetlk"
+            if args.platform == "macos" and variant != selected[0]:
+                if not shared_probe.is_file():
+                    raise RuntimeError("shared prebuilt native lock probe missing")
+                install_command.extend(["--probe-binary", str(shared_probe)])
             with (out / ("install-" + variant + ".stdout.log")).open("wb") as stdout, (out / ("install-" + variant + ".stderr.log")).open("wb") as stderr:
-                subprocess.run(["bun", str(instrument), "--repo", str(out / "variants" / variant), "--out", str(target)], check=True, stdout=stdout, stderr=stderr)
+                subprocess.run(install_command, check=True, stdout=stdout, stderr=stderr)
             if not (target / "preload.ts").is_file() or not (target / "instrumentation.json").is_file():
                 raise RuntimeError("instrumenter did not produce required files for " + variant)
             if file_manifest(out / "variants" / variant) != variants[variant]["manifest"]:
                 raise RuntimeError("instrumenter changed frozen source bytes for " + variant)
         preflight["instrumentation"] = file_manifest(diagnostic_dir)
+        if args.platform == "macos":
+            probes = {variant: digest_bytes((diagnostic_dir / variant / "task-127-fgetlk").read_bytes()) for variant in selected}
+            if len(set(probes.values())) != 1:
+                raise RuntimeError("native lock observer bytes differ between matched arms")
+            preflight["nativeProbeSHA256"] = probes
         preflight["ok"] = True
     except Exception as error:
         preflight.update(ok=False, error=str(error))
