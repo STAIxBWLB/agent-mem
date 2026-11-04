@@ -154,7 +154,8 @@ export const plugin = {
     const pick = (args: Args, list: string[]) => {
       const asked = str(args.project), key = asked ? resolveAlias(base, asked) : undefined;
       if (key && !list.includes(key) && existsSync(base) && exists(key)) list.push(key);
-      if (key && list.includes(key)) chosen = key;
+      if (key && !list.includes(key)) return undefined;
+      if (key) chosen = key;
       return chosen && list.includes(chosen) ? chosen : list[0];
     };
 
@@ -444,6 +445,7 @@ export const plugin = {
         const args = input as Args;
         if (input.panel === "inbox") return { items: await inbox() };
         const list = projects(), project = pick(args, list);
+        if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
           const q = str(args.q);
           if (!q || !project) return { hits: [], total: 0 };

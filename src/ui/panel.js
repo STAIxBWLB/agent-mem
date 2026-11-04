@@ -6,16 +6,17 @@ export default (host) => {
   host.mount.append(root);
   let panel = "review", params = {}, project = null;
   const go = (p, extra = {}) => host.navigate(host.tool, p, { ...(project ? { project } : {}), ...extra });
-  const btn = (text, onclick, cls = "btn") => h("button", { type: "button", class: cls, text, onclick });
+  const btn = (text, onclick, cls = "btn") => ui.button(text, onclick, { ...(cls.includes("primary") ? { tone: "primary" } : cls.includes("danger") ? { tone: "danger" } : {}) });
   const day = (iso) => (typeof iso === "string" ? iso.slice(0, 16).replace("T", " ") : "");
   const line = (text, max = 120) => { const flat = String(text ?? "").replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat; };
   const act = (input) => host.action({ ...input, ...(project ? { project } : {}) });
 
   const picker = (s) => {
     const list = s.projects ?? [];
+    if (s.error && !s.project && list.length === 1) return btn(`Choose project ${list[0]}`, () => go(panel, { project: list[0] }));
     if (list.length < 2) return list.length ? h("p", { class: "amem-sub", text: `Project ${list[0]}` }) : null;
     const select = h("select", { name: "project", class: "amem-input", "aria-label": "Project", onchange: () => { project = select.value; go(panel); } },
-      list.map((key) => { const o = h("option", { value: key, text: key }); if (key === s.project) o.selected = true; return o; }));
+      [...(!s.project ? [h("option", { value: "", text: "Choose an active project", disabled: true, selected: true })] : []), ...list.map((key) => { const o = h("option", { value: key, text: key }); if (key === s.project) o.selected = true; return o; })]);
     return h("label", { class: "amem-bar" }, h("span", { text: "Project" }), select);
   };
 
@@ -33,7 +34,10 @@ export default (host) => {
       h("p", { class: "amem-sub", text: `Reason: ${r.diff.reason}` })) });
     const evidence = [...(r.evidence ?? []).map((ref) => ({ title: ref, sub: "evidence reference" })),
       ...(r.targets ?? []).map((t) => ({ title: t.text ? line(t.title ?? t.text) : `mem:${t.id} (not visible)`, sub: t.at ? `mem:${t.id.slice(0, 8)} · ${t.kind} · ${day(t.at)}` : "" }))];
-    sections.push({ title: `Evidence (${evidence.length})`, open: evidence.length > 0, body: ui.rows(evidence, (e) => ui.row(e)) ?? ui.empty("No evidence attached", "This kind of candidate carries no references.") });
+    sections.push({ title: `Evidence (${evidence.length})`, open: evidence.length > 0, body: h("div", {},
+      ui.rows(evidence, (e) => ui.row(e)) ?? ui.empty("No evidence attached", "This kind of candidate carries no references."),
+      ...(r.targets ?? []).filter((t) => typeof t.text === "string").map((t) => h("blockquote", {}, h("pre", { class: "amem-pre", text: t.text }))),
+      h("p", { class: "amem-sub", text: "Source session, proposing agent and times seen are not recorded in the candidate store." })) });
     sections.push({ title: `Similar memories (${r.overlaps.length})`, open: r.overlaps.length > 0,
       body: ui.rows(r.overlaps, (o) => ui.row({ title: o.title ?? "Untitled note", sub: `mem:${o.id.slice(0, 8)} · overlap ${o.score.toFixed(2)}` })) ?? ui.empty("No similar memories") });
     if (r.edit !== null) {
