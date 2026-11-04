@@ -49,3 +49,6 @@ export * from "./memory/consolidate.ts";
 export * from "./memory/consolidation-clusters.ts";
 export * from "./memory/consolidation-model.ts";
 export * from "./memory/evidence.ts";
+
+export * from "./memory/sync-policy-inspection.ts";
+export { syncOutboundContent } from "./memory/sync-screen.ts";

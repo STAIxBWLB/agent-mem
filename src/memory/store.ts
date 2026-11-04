@@ -1561,6 +1561,14 @@ export class MemoryStore {
     });
   }
 
+  /** Canonical generation outbound sources only; no refresh, rebind or derived-state write.
+   * Call the returned bounded recheck after visiting all opened targets, before declaring completeness.
+   */
+  inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
+    if (!this.generationIndex) throw Object.assign(new Error("outbound generation input unavailable"), { code: "input-unavailable" });
+    return this.generationIndex.inspectOutboundRows(visit, limits);
+  }
+
   /** Person-local diagnostic receipt; malformed legacy bodies are never included. */
   bridgeStatus(): { skippedRows: number } | undefined {
     return this.generationIndex ? { skippedRows: this.generationIndex.skippedRows() } : undefined;

@@ -1,7 +1,10 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
+import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { join } from "node:path";
+import { checkedEntry } from "./bridge.ts";
 import { loadAmemConfig } from "./config.ts";
-import { createStandalonePolicy } from "./policy.ts";
+import { createStandalonePolicy, type StandalonePolicyDecline } from "./policy.ts";
 import type { MemoryStore } from "./store.ts";
 
 /**
@@ -19,7 +22,8 @@ import type { MemoryStore } from "./store.ts";
  * ponytail: a person clears a declined entry by removing the offending pattern or editing the policy; sync does not skip a row, and `amem forget` is an
  * append-only op that leaves the original row in the log. Upgrade: a per-row placement that keeps a declined note local without refusing the sync.
  */
-const MAX_BYTES = 8 * 1024 * 1024, MAX_ROWS = 20_000;
+export const SYNC_SCREEN_MAX_BYTES = 8 * 1024 * 1024, SYNC_SCREEN_MAX_ROWS = 20_000;
+const MAX_BYTES = SYNC_SCREEN_MAX_BYTES, MAX_ROWS = SYNC_SCREEN_MAX_ROWS;
 
 export type SyncScreen = { ok: true } | { ok: false; reason: string };
 
@@ -28,18 +32,36 @@ export type SyncScreen = { ok: true } | { ok: false; reason: string };
  * are `project`, `peer`, `task`, `about`, `title`, `text`, `milestones` and any field this file has never heard of: an unknown text field must be screened, never skipped.
  */
 const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
-function textOf(row: Record<string, unknown>): Record<string, unknown> {
+export function syncOutboundContent(row: Record<string, unknown>): Record<string, unknown> {
+  if (!row || typeof row !== "object" || Array.isArray(row) || types.isProxy(row) || Object.getOwnPropertySymbols(row).length) throw new Error("outbound row unavailable");
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) if (!GENERATED.has(key)) out[key] = value;
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(row))) {
+    if (GENERATED.has(key)) continue;
+    if (!("value" in descriptor) || !descriptor.enumerable) throw new Error("outbound row unavailable");
+    Object.defineProperty(out, key, { value: descriptor.value, enumerable: true, writable: true, configurable: true });
+  }
   return out;
 }
 
 /** A row passes when the machine's configured policy and the caller's extra screen (if any) both accept its text. */
 export type RowScreen = (row: Record<string, unknown>) => boolean;
-export function outboundScreen(home: string, extra?: RowScreen): RowScreen {
+export type SyncPolicyCategory = StandalonePolicyDecline | "host";
+export type OutboundVerdict = { ok: true } | { ok: false; category: SyncPolicyCategory };
+/** One evaluator for actual sync and public inspection, with the same projection and AND composition. */
+export function outboundPolicyEvaluator(home: string, extra?: RowScreen): (row: Record<string, unknown>) => OutboundVerdict {
   const { config } = loadAmemConfig(home);
   const policy = createStandalonePolicy({ denyPaths: config.denyPaths, piiPatterns: config.piiPatterns });
-  return row => { const text = textOf(row); return policy.screenStandalone(text) && (extra?.(text) ?? true); };
+  return row => {
+    const text = syncOutboundContent(row), own = policy.inspectStandalone(text);
+    if (!own.ok) return own;
+    const accepted = extra?.(text) ?? true;
+    if (typeof accepted !== "boolean") throw new Error("outbound policy unavailable");
+    return accepted ? { ok: true } : { ok: false, category: "host" };
+  };
+}
+export function outboundScreen(home: string, extra?: RowScreen): RowScreen {
+  const evaluate = outboundPolicyEvaluator(home, extra);
+  return row => evaluate(row).ok;
 }
 const refusal = (declined: string[]): SyncScreen => declined.length ? { ok: false, reason: `the configured privacy policy declines ${declined.length} long-term entr${declined.length === 1 ? "y" : "ies"} (${declined.slice(0, 8).join(", ")}${declined.length > 8 ? ", ..." : ""}); fix the entry or the policy, then sync again` } : { ok: true };
 const idOf = (row: Record<string, unknown>) => typeof row.id === "string" ? row.id.slice(0, 8) : "(no id)";
@@ -48,39 +70,77 @@ const idOf = (row: Record<string, unknown>) => typeof row.id === "string" ? row.
 export function screenOutboundRows(store: MemoryStore, pass: RowScreen): SyncScreen {
   const declined: string[] = [];
   let rows = 0;
-  let snapshot: ReturnType<ReturnType<MemoryStore["prunePort"]>["snapshot"]>;
-  // A bootstrap-only handle has no snapshot: that is a refusal like any unreadable source, never an exception out of sync (which promises a result).
-  try { snapshot = store.prunePort().snapshot(); } catch { return { ok: false, reason: "this store's long-term rows cannot be read, so they were not screened" }; }
-  for (const source of snapshot.rows) {
-    if (source.placement !== "synced" || !(source.own || source.legacy)) continue;
-    if (++rows > MAX_ROWS) return { ok: false, reason: `more than ${MAX_ROWS} long-term rows, so they were not screened` };
-    if (!pass(source.row as unknown as Record<string, unknown>)) declined.push(idOf(source.row as unknown as Record<string, unknown>));
-  }
+  try {
+    store.inspectOutboundRows(row => {
+      if (++rows > MAX_ROWS) throw new Error("outbound row bound");
+      if (!pass(row)) declined.push(idOf(row));
+    }, { maxBytes: MAX_BYTES, maxRows: MAX_ROWS })();
+  } catch { return { ok: false, reason: "this store's long-term rows cannot be read within the screening bounds, so they were not screened; inspect the local inputs and reopen the store before retrying" }; }
   return refusal(declined);
 }
 
-/** Screen one machine's own long-term segment under `dir`. */
-export function screenOwnSegment(dir: string, machineId: string, pass: RowScreen): SyncScreen {
-  const file = join(dir, "log", `${machineId}.jsonl`);
+export class SyncScreenInputError extends Error {
+  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed") { super(code); }
+}
+const sameStat = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+
+/** One bounded physical segment. The returned check pins it across the other opened targets and host callbacks too. */
+export function visitOwnSegment(dir: string, machineId: string, visit: (row: Record<string, unknown>) => void): () => void {
+  const parent = join(dir, "log"), parentStat = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
+  if (parentStat && (!parentStat.isDirectory() || parentStat.isSymbolicLink())) throw new SyncScreenInputError("input-unavailable");
+  const checkParent = () => {
+    const now = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
+    if (parentStat ? !now || !now.isDirectory() || now.isSymbolicLink() || now.dev !== parentStat.dev || now.ino !== parentStat.ino : now !== undefined) throw new SyncScreenInputError("input-changed");
+  };
+  const file = join(parent, `${machineId}.jsonl`);
   let fd: number;
   try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true };   // nothing authored here: nothing to push
-    return { ok: false, reason: "this machine's long-term segment cannot be read, so it was not screened" };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return () => {
+      checkParent();
+      if (lstatSync(file, { throwIfNoEntry: false })) throw new SyncScreenInputError("input-changed");
+    };
+    throw new SyncScreenInputError("input-unavailable");
   }
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_BYTES) return { ok: false, reason: `this machine's long-term segment is not a plain file within ${MAX_BYTES} bytes, so it was not screened` };
-    const declined: string[] = [];
-    let rows = 0;
-    for (const line of readFileSync(fd, "utf8").split("\n")) {
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.nlink !== 1n) throw new SyncScreenInputError("input-unavailable");
+    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound");
+    const check = () => {
+      checkParent();
+      const named = lstatSync(file, { bigint: true });
+      if (!named.isFile() || named.isSymbolicLink() || !sameStat(stat, named)) throw new SyncScreenInputError("input-changed");
+    };
+    check();
+    // No whole-file string/split array: the stat bound precedes allocation; the row bound precedes parsing each row.
+    const bytes = Buffer.alloc(Number(stat.size));
+    let at = 0;
+    while (at < bytes.length) { const n = readSync(fd, bytes, at, bytes.length - at, at); if (!n) throw new SyncScreenInputError("input-changed"); at += n; }
+    if (bytes.length && bytes.at(-1) !== 10) throw new SyncScreenInputError("input-unavailable");
+    let start = 0, rows = 0;
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    for (let end = 0; end < bytes.length; end++) {
+      if (bytes[end] !== 10) continue;
+      if (start === end) { start = end + 1; continue; }
+      const line = decoder.decode(bytes.subarray(start, end)); start = end + 1;
       if (!line.trim()) continue;
-      if (++rows > MAX_ROWS) return { ok: false, reason: `more than ${MAX_ROWS} long-term rows, so they were not screened` };
-      let row: Record<string, unknown>;
-      try { row = JSON.parse(line) as Record<string, unknown>; } catch { return { ok: false, reason: "a line of this machine's long-term segment does not parse, so it was not screened" }; }
-      // Every row kind is read, not only notes: a goal's title and milestones sync too, and so does any text an op adds later (see `textOf`).
-      if (!pass(row)) declined.push(idOf(row));
+      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound");
+      let row: unknown;
+      try { row = checkedEntry(JSON.parse(line)); } catch { throw new SyncScreenInputError("input-unavailable"); }
+      visit(row as Record<string, unknown>);
     }
-    return refusal(declined);
+    const expected = createHash("sha256").update(bytes).digest("hex"), digest = createHash("sha256"), buffer = Buffer.alloc(65_536);
+    at = 0;
+    while (at < bytes.length) { const n = readSync(fd, buffer, 0, Math.min(buffer.length, bytes.length - at), at); if (!n) throw new SyncScreenInputError("input-changed"); digest.update(buffer.subarray(0, n)); at += n; }
+    if (expected !== digest.digest("hex") || !sameStat(stat, fstatSync(fd, { bigint: true }))) throw new SyncScreenInputError("input-changed");
+    check(); return check;
   } finally { closeSync(fd); }
+}
+
+/** Screen one machine's own long-term segment under `dir`, using the inspector's same bounded reader. */
+export function screenOwnSegment(dir: string, machineId: string, pass: RowScreen): SyncScreen {
+  const declined: string[] = [];
+  try { visitOwnSegment(dir, machineId, row => { if (!pass(row)) declined.push(idOf(row)); })(); }
+  catch { return { ok: false, reason: "this machine's long-term segment cannot be read within the screening bounds, so it was not screened; inspect the local input and reopen the store before retrying" }; }
+  return refusal(declined);
 }

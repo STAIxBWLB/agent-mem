@@ -6,8 +6,8 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, validateVaultLinkRow, type VaultLink, rebindPublicPruneProfile } from "./generation.ts";
-import { legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
+import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, generationDescriptor, readSelector, validateVaultLinkRow, type VaultLink, rebindPublicPruneProfile } from "./generation.ts";
+import { checkedEntry, completeLines, legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, SegmentReadBudgetError, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
 
@@ -89,24 +89,24 @@ export class GenerationIndex {
     if (!(db.query("PRAGMA table_info(generation_segments)").all() as { name: string }[]).some(row => row.name === "stamp")) db.run("ALTER TABLE generation_segments ADD COLUMN stamp TEXT");
     db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
-  private ownSegments(reader: SegmentReader = this.reader): LegacySegment[] {
+  private ownSegments(reader: SegmentReader = this.reader, full = this.fullCapture): LegacySegment[] {
     const prior = this.options.db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'").all() as (LegacyCheckpoint & { stamp: string | null })[];
     return ["log", "local"].flatMap(folder => {
       const dir = join(this.profile.dir, folder);
       if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) return fail();
-      return readdirSync(dir).sort().filter(name => name.endsWith(".jsonl")).map(name => {
+      return reader.listFiles(dir).filter(name => name.endsWith(".jsonl")).map(name => {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) return fail();
         const path = `${folder}/${name}`, checkpoint = prior.find(row => row.path === path);
-        const data = reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, this.fullCapture);
+        const data = reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, full);
         return { ...data, source: "generation", path, local: folder === "local" };
       });
     });
   }
   /** Authoring handles cannot read or append a partially resumed split; migration index bootstraps use captured limits. */
-  private shardFrontier(): string | undefined {
+  private shardFrontier(readOnly = false): string | undefined {
     if (!this.profile.sharded || this.options.limits !== undefined) return undefined;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      rebindPublicPruneProfile(this.profile);
+    for (let attempt = 0; attempt < (readOnly ? 1 : 6); attempt++) {
+      if (!readOnly) rebindPublicPruneProfile(this.profile);
       const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
       if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) { if (this.profile.foreignPruneFormat) continue; return fail(); }
       if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
@@ -114,8 +114,8 @@ export class GenerationIndex {
     }
     return fail();
   }
-  private capture(reader: SegmentReader = this.reader): { segments: LegacySegment[]; commit?: string } {
-    const shardBefore = this.shardFrontier();
+  private capture(reader: SegmentReader = this.reader, readOnly = false): { segments: LegacySegment[]; commit?: string } {
+    const shardBefore = this.shardFrontier(readOnly), full = this.fullCapture || readOnly;
     const db = this.options.db;
     const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
     const initial = readProfileJSON(join(this.profile.dir, "migration-sources.json")) as { sources?: LegacyCheckpoint[]; legacyCommit?: string } | undefined;
@@ -124,19 +124,22 @@ export class GenerationIndex {
     const checkpoints = [...bySource.values()];
     const persisted = new Set(previous.map(row => `${row.source}:${row.path}`));
     const completeFrontier = checkpoints.every(row => persisted.has(`${row.source}:${row.path}`));
-    const prior = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value ?? initial?.legacyCommit;
+    const indexedCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
+    const prior = indexedCommit ?? initial?.legacyCommit;
     const legacyHome = this.profile.legacyHome ?? this.profile.home;
     const generation = this.profile.sharded ? undefined : this.profile.generation;
-    const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation) : undefined);
+    const commit = this.options.commit ?? (generation ? legacyHead(legacyHome, generation, readOnly ? reader.sourceByteLimit : undefined, readOnly ? reader.sourceFileLimit : undefined) : undefined);
+    // A readonly inspection must not walk arbitrary archive ancestry or silently adopt a new bridge head.
+    if (readOnly && (commit !== indexedCommit || checkpoints.some(row => row.source === "legacy-main" && row.commit !== commit))) return fail();
     const legacy = this.profile.sharded
-      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier })
-      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !this.fullCapture && !this.options.limits && completeFrontier });
-    const own = this.ownSegments(reader);
+      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !full && !this.options.limits && completeFrontier })
+      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !full && !this.options.limits && completeFrontier });
+    const own = this.ownSegments(reader, full);
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
     }
-    if (this.shardFrontier() !== shardBefore) { if (this.profile.foreignPruneFormat) throw new PublicPruneViewChanged(); return fail(); }
+    if (this.shardFrontier(readOnly) !== shardBefore) { if (this.profile.foreignPruneFormat) throw new PublicPruneViewChanged(); return fail(); }
     return { segments: [...legacy, ...own], ...(commit ? { commit } : {}) };
   }
   private index(captured: { segments: LegacySegment[]; commit?: string }): void {
@@ -253,6 +256,79 @@ export class GenerationIndex {
     this.replayProvenance = false;
     this.retainedTail = input.segments.some(segment => segment.tailBytes > 0);
   }
+  /** Inspect canonical outbound sources without refreshing/rebinding the derived index.
+   * The returned check must run before the caller declares the whole opened-target inspection complete.
+   * Each capture accepts <=8MiB source bytes, <=20000 physical nonblank rows and <=16MiB segment reads.
+   * A fresh final capture verifies the same source again (<=32MiB segment verification I/O over both captures).
+   */
+  inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
+    const unavailable = (budget = false): never => { throw Object.assign(new Error("outbound generation input unavailable"), { code: budget ? "input-bound" : "input-unavailable" }); };
+    if (!Number.isSafeInteger(limits.maxBytes) || limits.maxBytes < 0 || limits.maxBytes > 8 * 1024 * 1024
+      || !Number.isSafeInteger(limits.maxRows) || limits.maxRows < 0 || limits.maxRows > 20_000) return unavailable(true);
+    if (this.profile.kind !== "generation" || !this.profile.generation || this.options.limits !== undefined) return unavailable();
+    const profile = canonicalJSON(this.profile);
+    const stamp = (file: string): string | undefined => {
+      const stat = lstatSync(file, { bigint: true, throwIfNoEntry: false });
+      if (!stat) return undefined;
+      if (!stat.isFile() || stat.isSymbolicLink()) return fail();
+      return canonicalJSON([String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)]);
+    };
+    const epoch = (): string => {
+      if (canonicalJSON(this.profile) !== profile) return fail();
+      const selected = readSelector(this.profile.home);
+      if (selected.revision !== this.profile.selectorRevision || selected.selector?.kind !== "generation" || selected.selector.generation !== this.profile.generation) return fail();
+      const shards = this.shardFrontier(true);
+      if (!this.profile.sharded && readProfileJSON(join(this.profile.home, "shards.json")) !== undefined) return fail();
+      if (canonicalJSON(readProfileJSON(join(this.profile.dir, "generation.json"))) !== canonicalJSON(generationDescriptor(this.profile.generation!))) return fail();
+      const paths = [join(this.profile.home, "profile.json"), join(this.profile.home, "shards.json"), join(this.profile.dir, "generation.json"),
+        join(this.profile.dir, "migration-sources.json"), join(this.profile.dir, "project.json"), join(this.profile.legacyHome ?? this.profile.home, "machine.json"),
+        ...(this.profile.legacyMainHome ? [join(this.profile.legacyMainHome, "machine.json")] : [])];
+      return canonicalJSON({ shards, metadata: [...new Set(paths)].map(file => {
+        const before = stamp(file), value = readProfileJSON(file);
+        if (stamp(file) !== before) return fail();
+        return [file, before, hashJSON(value ?? null)];
+      }) });
+    };
+    const protectedRead = <T>(read: () => T): T => {
+      try { return read(); } catch (error) { return unavailable(error instanceof SegmentReadBudgetError); }
+    };
+    const before = protectedRead(epoch);
+    const capture = () => {
+      if (epoch() !== before) return fail();
+      const reader = new SegmentReader(2 * limits.maxBytes, { maxSourceBytes: limits.maxBytes, maxRows: limits.maxRows });
+      const input = this.capture(reader, true);
+      if (input.segments.some(segment => segment.tailBytes !== 0) || epoch() !== before) return fail();
+      const identity = canonicalJSON({ commit: input.commit, segments: input.segments.map(({ bytes: _bytes, local, ...segment }) => ({ ...segment, local })), metrics: reader.inspectionMetrics() });
+      return { input, identity };
+    };
+    const captured = protectedRead(capture);
+    const rows = protectedRead(() => {
+      const rows = new Map<string, PruneSourceRow>();
+      for (const segment of captured.input.segments) for (const bytes of completeLines(segment.bytes)) {
+        if (!bytes.length) continue;
+        const line = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+        if (!line.trim()) { if (segment.source === "generation") return fail(); continue; }
+        const parsed: unknown = JSON.parse(line);
+        const op = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { op?: unknown }).op : undefined;
+        if (segment.source === "generation" && op === "prune") {
+          const row = validatePruneRow(parsed, this.profile.generation!, segment.local ? "local" : "synced");
+          if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) return fail();
+          continue;
+        }
+        if (segment.source === "generation" && op === "vault_link") {
+          const row = validateVaultLinkRow(parsed, this.profile.generation!, segment.local ? "local" : "synced");
+          if (segment.path !== `local/${row.machine}.jsonl`) return fail();
+          continue;
+        }
+        const row = checkedEntry(parsed);
+        rows.set(row.id, coalesceGenerationSource(rows.get(row.id), row, segment));
+      }
+      return [...rows.values()].filter(row => row.placement === "synced" && (row.own || row.legacy)).sort((left, right) => left.row.id.localeCompare(right.row.id));
+    });
+    for (const source of rows) visit(structuredClone(source.row) as unknown as Record<string, unknown>);
+    return () => { protectedRead(() => { if (capture().identity !== captured.identity) return fail(); }); };
+  }
+
   vaultWitnesses(ids: readonly string[]): Map<string, string> {
     if (ids.length > 5000) throw new Error("vault scan budget exceeded");
     return new Map((this.options.db.query("SELECT id,line FROM generation_rows WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; line: string }[])

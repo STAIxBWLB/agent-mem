@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Add bounded, read-only outbound policy inspection at the package root (#260): full declined IDs, safe categories/counts and a complete-set fingerprint for shared-v1, generation and opened shard/user-overlay targets. Share canonical screening with sync and expose its content projection for host write-time checks. Incomplete inputs never produce a complete empty set. No storage format, publication or per-row placement change.
+
 ## 0.21.0
 
 - Complete the acon plugin's published api 1 integration (#158): pin the development contract and conformance suite to `@staix/agent-console` 0.1.0, use the host button kit, and show stored target-note quotes with explicit candidate-provenance limitations. Existing review, screened search/timeline/work reads, goals, capacity, inbox and manifest setup remain in process with zero runtime dependencies.
