@@ -21,11 +21,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/task125-diagnose"
           git rev-parse HEAD > "$RUNNER_TEMP/task125-diagnose/head.txt"
-          git ls-files src test/fakes/hooks-fixture.ts 'scripts/task-125-*.ts' | while IFS= read -r file; do shasum -a 256 "$file"; done > "$RUNNER_TEMP/task125-diagnose/source-sha256.txt"
+          git ls-files src scripts test/fakes/hooks-fixture.ts | while IFS= read -r file; do shasum -a 256 "$file"; done > "$RUNNER_TEMP/task125-diagnose/source-sha256.txt"
           bun --version > "$RUNNER_TEMP/task125-diagnose/bun.txt"
           sw_vers > "$RUNNER_TEMP/task125-diagnose/os.txt"
       - name: One raw hot-journal construction before recovery
-        run: bun scripts/task-125-one-hot-journal.ts --repo "$PWD" --dirty stepped --out "$RUNNER_TEMP/task125-diagnose/one-hot" > "$RUNNER_TEMP/task125-diagnose/one-hot.stdout.log" 2> "$RUNNER_TEMP/task125-diagnose/one-hot.stderr.log"
+        run: bun scripts/one-hot-journal-ffi-probe.ts --repo "$PWD" --out "$RUNNER_TEMP/task125-diagnose/one-hot" > "$RUNNER_TEMP/task125-diagnose/one-hot.stdout.log" 2> "$RUNNER_TEMP/task125-diagnose/one-hot.stderr.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
