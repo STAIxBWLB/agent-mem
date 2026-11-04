@@ -141,6 +141,8 @@ export async function snapshotCursorLocks(file: string, candidatePids: readonly 
 }
 async function runDarwinGetlk(file: string): Promise<void> {
   const startedMs = now();
+  // ponytail: each generic whole-file query reports only its first conflict. Upgrade to version-pinned
+  // SQLite lock-range queries if attribution needs more coverage, retaining isolated readonly observation.
   // Darwin 64-bit struct flock: off_t start/len, pid_t pid, short type/whence; 24 bytes.
   // Verified from the installed SDK sys/fcntl.h and Apple XNU's published header. F_GETLK=7, READ=1, UNLOCK=2, WRITE=3.
   const lib = dlopen("/usr/lib/libSystem.B.dylib", { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
