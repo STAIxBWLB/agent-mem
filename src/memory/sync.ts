@@ -1,3 +1,4 @@
+import { placementRuntimeRefusal } from "./sync-placement-guard.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { closeSync, constants, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
@@ -229,6 +230,8 @@ export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
   assertFormatFloor(store.profile.home, "sync");
+  const placementRefusal = placementRuntimeRefusal(store.profile.home);
+  if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   if (store.profile.sharded) {
     try {
       // Refresh only through the existing proved monotone profile rebind before pinning this attempt.

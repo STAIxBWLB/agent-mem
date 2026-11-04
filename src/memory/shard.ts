@@ -1,3 +1,4 @@
+import { assertPlacementRuntime, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -91,6 +92,15 @@ export function userShardDir(base: string): string {
 }
 
 type ShardedJournal = Record<string, unknown> & ShardedSelection;
+/** Keep the existing active reader shape and the migration's captured-v1/v2 state distinct from v3. */
+export function legacyShardMarkerShape(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (row.schema === SHARDED_SCHEMA || row.schema === SHARDED_V2_SCHEMA) && validGeneration(row.generation)
+    && typeof row.phase === "string" && ["captured", "active"].includes(row.phase) && typeof row.selectorRevision === "string"
+    && (row.schema !== SHARDED_V2_SCHEMA || !Object.keys(row).some(key => !(SHARDED_V2_FIELDS as readonly string[]).includes(key)));
+}
 function shardJournal(memoryDir: string): ShardedJournal {
   const value = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
   if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
@@ -103,12 +113,14 @@ function compatibleShardAdvance(before: ShardedJournal, after: ShardedJournal): 
   return canonicalJSON(old) === canonicalJSON(next);
 }
 function shardSnapshot(memoryDir: string, deadline: number) {
+  assertPlacementRuntime(memoryDir);
   assertNoPublicPruneIntent(memoryDir, deadline);
   let journal = shardJournal(memoryDir);
   for (let attempt = 0; attempt < 6 && Date.now() <= deadline; attempt++) {
     let selector: ReturnType<typeof readSelector>;
     try { selector = readSelector(memoryDir, deadline); }
     catch (error) {
+      if (error instanceof SyncPlacementRuntimeError) throw error;
       // The writer's spent wait budget or unavailable proof is never restarted here.
       if (error instanceof Error && error.message === "public prune view unavailable") throw error;
       const current = shardJournal(memoryDir);
@@ -135,6 +147,7 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
  * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.
  */
 export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }): void {
+  assertPlacementRuntime(memoryDir);
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   const check = (path: string, directory: boolean) => {
     try {

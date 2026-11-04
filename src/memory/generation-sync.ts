@@ -1,3 +1,4 @@
+import { placementRuntimeRefusal } from "./sync-placement-guard.ts";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -74,6 +75,8 @@ function validatePublic(bytes: string, generation: string, path: string, checkPr
 
 /** Separate generation repository, fixed refs and a one-way legacy cache; failures are bounded result receipts. */
 export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
+  const placementRefusal = placementRuntimeRefusal(store.profile.home);
+  if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   let pushed = false, releaseMutation: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const result = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });
   const profile = store.profile, generation = profile.generation, dir = store.dir;

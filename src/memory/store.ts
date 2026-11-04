@@ -1,3 +1,4 @@
+import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { readPublicPruneView } from "./public-prune-view.ts";
 import { INDEX_VERSION, indexFileName } from "./index-file.ts";
@@ -234,6 +235,7 @@ export class MemoryStore {
     if (opts.memoryDir !== undefined && (opts.home !== undefined || typeof opts.memoryDir !== "string" || !opts.memoryDir.trim())) throw new Error("choose a memory home or one explicit memory directory");
     const home = bootstrap?.profile.home ?? opts.memoryDir ?? (opts.home === undefined ? memoryHome() : join(opts.home, "memory"));
     assertFormatFloor(home, "curated");
+    assertPlacementRuntime(home);
     if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation

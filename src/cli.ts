@@ -1,3 +1,5 @@
+import { assertFormatFloor } from "./memory/formats.ts";
+import { placementRuntimeRefusal } from "./memory/sync-placement-guard.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
 import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
@@ -1035,6 +1037,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   // configured remote, nothing when the schedule or the failure backoff says it is not due (`--force` skips that), and it stops a running git step after 30 seconds.
   const ifDue = sub === "sync" && options["--if-due"] === true, syncHome = memoryHome();
   if (options["--force"] === true && !ifDue) throw new Error("--force only applies with sync --if-due");
+  if (sub === "sync") { assertFormatFloor(syncHome, "sync"); const refusal = placementRuntimeRefusal(syncHome); if (refusal) throw new Error("amem sync: " + refusal); }
   if (ifDue) {
     if (options["--remote"] === undefined && !remoteConfigured(syncHome)) return options["--json"] ? JSON.stringify({ ok: true, skipped: "no sync remote configured" }) : "no sync remote configured: nothing to do";
     const state = usableState(readSyncState(syncHome), Date.now());
