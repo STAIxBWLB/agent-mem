@@ -452,6 +452,8 @@ interface MaintenanceBudget { files: number; bytes: number }
 const maintenanceBudget = (): MaintenanceBudget => ({ files: DRAIN_FILES, bytes: DRAIN_BYTES });
 /** Unpublished private files are not captures. Inspect at most four entries within this publication's maintenance allowance. */
 function cleanStaleWriting(writing: string, budget: MaintenanceBudget): void {
+  // ponytail: only the first four directory entries are inspected; young or unremovable entries can starve later stale files.
+  // Upgrade: rotate the bounded scan start with an owned maintenance cursor, like retirementCursor.
   const reader = opendirSync(writing);
   try {
     for (let scanned = 0; scanned < 4 && budget.files > 0; scanned++) {
