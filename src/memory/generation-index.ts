@@ -276,7 +276,7 @@ export class GenerationIndex {
     const epoch = (): string => {
       if (canonicalJSON(this.profile) !== profile) return fail();
       const selected = readSelector(this.profile.home);
-      if (selected.revision !== this.profile.selectorRevision || selected.selector?.kind !== "generation" || selected.selector.generation !== this.profile.generation) return fail();
+      if (selected.revision !== this.profile.selectorRevision || !this.profile.sharded && (selected.selector?.kind !== "generation" || selected.selector.generation !== this.profile.generation)) return fail();
       const shards = this.shardFrontier(true);
       if (!this.profile.sharded && readProfileJSON(join(this.profile.home, "shards.json")) !== undefined) return fail();
       if (canonicalJSON(readProfileJSON(join(this.profile.dir, "generation.json"))) !== canonicalJSON(generationDescriptor(this.profile.generation!))) return fail();
