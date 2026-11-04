@@ -1,3 +1,4 @@
+import { phase } from "./hook-phase-diagnostic.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -95,6 +96,7 @@ function cursorDatabase(file: string, dev: string, ino: string, size: number): D
 
 /** Private per-session transaction serializes screens and cursor advancement. No path or raw id is persisted. */
 export async function scanHookTranscriptTail(input: unknown, options: Options): Promise<HookTranscriptProgress | undefined> {
+  phase(12);
   const value = object(input);
   if (!value || options.policy?.host || typeof value.transcript_path !== "string" || typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256) return;
   if (performance.now() >= options.deadline) return { stopReason: "deadline" };
@@ -114,7 +116,8 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const stat = fstatSync(fd), named = lstatSync(value.transcript_path);
     if (!stat.isFile() || stat.nlink !== 1 || named.isSymbolicLink() || stat.dev !== named.dev || stat.ino !== named.ino) return;
     const dir = join(base, "hook-transcripts"); privateDirectory(dir);
-    db = cursorDatabase(join(dir, `${session}.db`), String(stat.dev), String(stat.ino), stat.size); db.run("BEGIN IMMEDIATE");
+    phase(13); db = cursorDatabase(join(dir, `${session}.db`), String(stat.dev), String(stat.ino), stat.size); phase(14);
+    phase(15); db.run("BEGIN IMMEDIATE"); phase(16);
     let cursor = db.query("SELECT * FROM cursor WHERE id=1").get() as Cursor;
     if (!Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || !Number.isSafeInteger(cursor.size) || cursor.size < 0 || cursor.at !== "" && !timestamp(cursor.at)
       || !Number.isSafeInteger(cursor.readStart) || cursor.readStart < 0 || !timestamp(cursor.readAt) || ![0, 1].includes(cursor.skipping) || !/^(?:[a-f0-9]{64})?$/.test(cursor.title)) throw new Error("transcript cursor unavailable");
@@ -125,11 +128,11 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       if (reset) { cursor.offset = 0; cursor.at = ""; cursor.skipping = 0; }
       db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,at=?,readStart=?,readAt=?,skipping=? WHERE id=1")
         .run(cursor.offset, String(stat.dev), String(stat.ino), stat.size, cursor.at, cursor.offset, new Date().toISOString(), cursor.skipping);
-      db.run("COMMIT"); db.run("BEGIN IMMEDIATE");
+      phase(17); db.run("COMMIT"); phase(18); phase(15); db.run("BEGIN IMMEDIATE"); phase(16);
       cursor = db.query("SELECT * FROM cursor WHERE id=1").get() as Cursor;
     }
     const bytes = Buffer.alloc(Math.min(HOOK_TRANSCRIPT_BYTES, Math.max(0, stat.size - cursor.offset)));
-    const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
+    phase(21); const length = readSync(fd, bytes, 0, bytes.length, cursor.offset); phase(22);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
     let start = 0, stopReason: HookTranscriptProgress["stopReason"];
@@ -174,10 +177,10 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
             const publish = () => stageTranscriptCapture({ agent: "claude", event: summary!.event, excerpt: summary!.text, at, session,
               ...(summary!.subagent || typeof value.agent_id === "string" && value.agent_id.length > 0 ? { subagent: true } : {}) }, { cwd, base, policy: options.policy, deferAtCapacity: true }, summary!.event === "Title" ? `title:${cursor.offset + start}` : undefined);
             let staged: PendingHookCapture | undefined;
-            try { staged = await publish(); }
+            try { phase(30); staged = await publish(); phase(31); }
             catch (error) {
               if (!(error instanceof HookSpoolFull) || due() || !options.onBackpressure || !await options.onBackpressure() || due()) throw error;
-              staged = await publish(); // Same line/receipt, no second read or cursor advance on backpressure.
+              phase(30); staged = await publish(); phase(31); // Same line/receipt, no second read or cursor advance on backpressure.
             }
             if (staged && title) cursor.title = title;
             if (staged) await options.onPublication?.(staged);
@@ -197,9 +200,10 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";
     assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
-    db.run("COMMIT");
+    phase(17); db.run("COMMIT"); phase(18);
     return { offset: cursor.offset + start, ...(stopReason ? { stopReason } : {}) };
   } finally {
-    try { if (db) { try { db.run("ROLLBACK"); } catch { /* Already committed. */ } db.close(); } } finally { closeSync(fd); }
+    phase(19);
+    try { if (db) { try { db.run("ROLLBACK"); } catch { /* Already committed. */ } db.close(); } } finally { closeSync(fd); phase(20); }
   }
 }

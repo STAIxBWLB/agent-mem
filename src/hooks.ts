@@ -1,3 +1,4 @@
+import { phaseSnapshot } from "./hook-phase-diagnostic.ts";
 import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync, type HookProjectReceipt } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
@@ -141,10 +142,13 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   let owned: Bun.Subprocess<"pipe", "pipe", "ignore"> | undefined, exited = false, killed = false, cancelOutput: (() => void) | undefined;
   let tracker: HookWorkerRss | undefined, output: Promise<string | undefined> | undefined, exit: Promise<number> | undefined;
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
+  const diagnostic = !!process.env.AMEM_TASK123_TRACE;
+  let phaseAtKill: unknown;
   const drainProgress: { startMs?: number; drained?: number } = {};
   const spawn = () => {
+    if (diagnostic) phaseSnapshot(); // Map before work; snapshots at the kill perform no file I/O.
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
-      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+      { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base, ...(diagnostic ? { AMEM_TASK123_TRACE: process.env.AMEM_TASK123_TRACE!, AMEM_TASK123_WORKER: "1" } : {}) }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
     owned = child;
     exit = child.exited.then(code => { exited = true; return code; });
     tracker = new HookWorkerRss(child.pid);
@@ -165,6 +169,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const close = () => { try { owned?.stdin.end(); } catch { /* Already closed. */ } };
   const stop = () => {
     if (!owned || exited) return;
+    if (diagnostic) phaseAtKill = { epochMs: performance.timeOrigin + performance.now(), trace: phaseSnapshot() };
     tracker!.captureLive();
     killed = true;
     // The still-live leader is the detached process we just spawned, so its group is ours.
@@ -206,8 +211,12 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     if (owned) {
       stop();
       // #226: bounded reap; a worker stuck in uninterruptible I/O is abandoned after REAP_BOUND_MS, never awaited.
+      const reapStarted = performance.now();
       const reaped = exited || !(await boundedWait(exit!)).late;
+      const reapMs = performance.now() - reapStarted, exitedAtReap = exited;
+      const outputStarted = performance.now();
       const body = reaped ? await boundedWait(output!) : { late: true };
+      const outputWaitMs = performance.now() - outputStarted;
       if (!reaped || body.late) { cancelOutput?.(); owned.unref(); }
       if (!reaped) abandonedChildren++;
       // Bun subprocess usage is bytes; process.resourceUsage is KiB. Not reaped: the last live sample is the RSS (ruling Q2).
@@ -217,6 +226,15 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
       const usage = metadata?.usage ?? { rssKB: 0, rawRssKB: 0, rssSources: emptyRssSources() };
       result.rssKB = usage.rssKB + accounting.rssKB; result.rawRssKB = usage.rawRssKB + workerRawKB; result.rssSources = combineRssSources(usage.rssSources, accounting.rssSources);
       if (drainProgress.startMs !== undefined) lastDrain = { startMs: drainProgress.startMs, drained: drainProgress.drained ?? 0 };
+      if (diagnostic) {
+        // Task 123: observation only, after the unchanged RSS verdict. Never use this usage as a fallback.
+        let pidExists: boolean | null = null, lateRawMaxRSS: number | null = null;
+        try { process.kill(owned.pid, 0); pidExists = true; } catch (error) { pidExists = (error as NodeJS.ErrnoException).code === "ESRCH" ? false : null; }
+        if (!reaped) try { lateRawMaxRSS = owned.resourceUsage()?.maxRSS ?? null; } catch { /* Diagnostic unavailable. */ }
+        console.error(JSON.stringify({ diagnostic: "task123-worker", event, parentPid: process.pid, workerPid: owned.pid,
+          killed, reaped, exitedAtReap, exitedNow: exited, reapMs, outputWaitMs, outputLate: body.late, pidExists, lateRawMaxRSS,
+          phaseAtKill, atReturnEpochMs: performance.timeOrigin + performance.now(), trace: phaseSnapshot(!reaped || body.late) }));
+      }
       if (early && killed) {
         // #221: a kill without accepted progress is a deadline stop; a kill also skips this call's drain (ruling b).
         if (result.transcript?.offset === undefined && result.transcript?.stopReason !== "unavailable") result.transcript = { stopReason: "deadline" };

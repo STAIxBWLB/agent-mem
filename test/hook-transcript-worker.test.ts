@@ -1,3 +1,4 @@
+import { phaseTraceEnv, phaseDiagnostics } from "../scripts/task-123-phase-tools.ts";
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -122,7 +123,8 @@ Bun.plugin({name:'slow-store',setup(b){b.onLoad({filter:/[/]memory[/]capture\\.t
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
   try {
     await f.seed();
-    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
+    const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}`, ...phaseTraceEnv() });
+    if (process.env.TASK123_TRACE_DIR) console.log(JSON.stringify({ diagnostic: "task123-slow-store", platform, event, traces: phaseDiagnostics(result.stderr) }));
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms

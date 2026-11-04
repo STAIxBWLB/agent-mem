@@ -1,4 +1,5 @@
 import { assertFormatFloor } from "./formats.ts";
+import { phase } from "../hook-phase-diagnostic.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -204,6 +205,7 @@ export class CaptureStore {
   readonly recentReadTruncated: boolean = false;
 
   constructor(opts: CaptureOptions) {
+    phase(70);
     if (typeof opts.project !== "string" || !opts.project.trim()) throw new Error("capture shards need a project key");
     if (opts.memoryDir !== undefined && opts.home !== undefined) throw new Error("choose a home or an exact memory directory");
     this.readOnly = opts.readOnly === true;
@@ -278,9 +280,10 @@ export class CaptureStore {
       this.migrated = 0;
       return;
     }
-    const db = new Database(file, { create: true });
+    phase(71); const db = new Database(file, { create: true }); phase(72);
     this.db = db;
     try { chmodSync(file, 0o600); } catch { /* best effort */ }
+    phase(73);
     try {
       db.run(`PRAGMA busy_timeout = ${opts.busyTimeoutMs ?? CAPTURE_BUSY_TIMEOUT_MS}`);
       db.run("PRAGMA journal_mode = WAL");
@@ -298,6 +301,7 @@ export class CaptureStore {
       this.contended = true; // R2: the hook spools and exits instead of waiting out another writer
     }
     this.migrated = this.contended ? 0 : this.migrateLegacy();
+    phase(74);
   }
 
   private existingMachine(): string {
@@ -447,6 +451,7 @@ export class CaptureStore {
     try {
       this.drain(); // replay earlier spooled rows first, so row ids stay in hook order
       // The row and its running byte count commit or roll back together: a lock after the INSERT cannot spool a duplicate.
+      phase(75);
       const result = this.db.transaction((): CaptureAppend => {
         const id = this.insertRow(row, spoolId);
         if (id !== undefined) return { id };
@@ -454,6 +459,7 @@ export class CaptureStore {
         if (!prior) throw new Error("capture receipt lookup failed");
         return { id: prior.id, already: true };
       }).immediate();
+      phase(76);
       try { this.evict(); } catch (error) {
         if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
       }

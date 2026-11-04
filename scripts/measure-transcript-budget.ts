@@ -1,3 +1,4 @@
+import { phaseTraceEnv, phaseDiagnostics } from "./task-123-phase-tools.ts";
 import { measuredHookRss } from "./hook-rss-check.ts";
 /** Every real hook call, including bounded resumptions, is an R2 sample. */
 import { Database } from "bun:sqlite";
@@ -111,8 +112,10 @@ async function measure() {
       let previousAvailable = new Set<string>();
       for (let followUp = 0; followUp <= MAX_FOLLOW_UPS; followUp++) {
         Bun.gc(true);
-        const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
+        const traceEnv = phaseTraceEnv();
+        const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript }, traceEnv);
         const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+        if (process.env.TASK123_TRACE_DIR) console.log(JSON.stringify({ diagnostic: "task123-phase-invocation", event, logicalRun, followUp, traces: phaseDiagnostics(result.stderr) }));
         await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
           exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));

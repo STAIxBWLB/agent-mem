@@ -1,3 +1,4 @@
+import { phase } from "./hook-phase-diagnostic.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
@@ -672,6 +673,7 @@ export async function stageTranscriptCapture(input: CaptureFields, options: Opti
 }
 
 function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {
+  phase(32);
   const { cwd, base } = options;
   const scope = hookCaptureScope(cwd, base) ?? null;
   const v3 = capture.agent !== "claude" || ["Title", "Recap", "Compact"].includes(event);
@@ -740,7 +742,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
     }
   }
   const temporary = join(writing, name);
-  try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, join(destination, name)); }
+  try { phase(34); writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); phase(35); phase(36); renameSync(temporary, join(destination, name)); phase(37); }
   finally { rmSync(temporary, { force: true }); }
   return { name, cwd, receipt: hash(bytes), ...(deferred ? { deferred: true as const } : {}), ...(backlog ? { backlog: true as const } : {}) };
 }

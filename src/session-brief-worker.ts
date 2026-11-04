@@ -1,3 +1,4 @@
+import { phase } from "./hook-phase-diagnostic.ts";
 import type { BriefOptions } from "./session-brief.ts";
 import type { CaptureStore } from "./memory/capture.ts";
 import { acceptHookProjectReceipt } from "./hook-project.ts";
@@ -40,18 +41,21 @@ if (import.meta.main) {
     try { writeSync(1, JSON.stringify({ transcript: lastProgress }) + "\n"); } catch { rssTelemetryValid = false; }
   };
   const drain = (value: { startMs?: number; drained: number }) => { try { writeSync(1, JSON.stringify({ drain: value }) + "\n"); } catch { rssTelemetryValid = false; } };
+  phase(1);
   frame([0]);
   const stop: () => never = () => {
     if (!rssTelemetryValid) frame([4]);
-    const self = hookRssReading(); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
+    phase(57); const self = hookRssReading(); phase(58); frame([3, self.kb, self.rawKB, rssSourceCode(self)]);
+    phase(59);
     if (owned) try { process.kill(-process.pid, "SIGKILL"); } catch { /* A direct unowned invocation has no group. */ }
-    process.exit(0);
+    phase(60); process.exit(0);
   };
   const emit = async (result: unknown) => {
+    phase(55);
     const body = JSON.stringify({ ...(result as object), complete: true, rssTelemetryValid });
     const rssKB = hookPeakRssKB();
     await Bun.stdout.write(body.slice(0, -1) + `,"rssKB":${rssKB}}\n`);
-    stop();
+    phase(56); stop();
   };
   // Ordinary hooks preload only the store, as before. They must not pay for a transcript module they never use.
   let captureReady = false;
@@ -60,7 +64,7 @@ if (import.meta.main) {
   const next = optionLines(), now = () => performance.timeOrigin + performance.now();
   let store: CaptureStore | undefined;
   try {
-    const line = await next();
+    phase(2); const line = await next();
     if (line === undefined) stop();
     const first = JSON.parse(line) as Record<string, unknown>;
     type Scan = { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number };
@@ -104,12 +108,14 @@ if (import.meta.main) {
         drain({ startMs: Math.round(now() - (options.hookStartAt ?? end)), drained: drainedCount });
         drainStarted = true;
       }
+      phase(40, budget.files, budget.bytes);
       const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining, replayBudget: budget }, (input, receipt) => {
-        store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd });
-        const appended = store.append(input, { receipt });
+        if (!store) { phase(42); store = new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd }); phase(43); }
+        phase(44); const appended = store.append(input, { receipt }); phase(45);
         drain({ drained: ++drainedCount }); // DB commit or durable capture-spool acknowledgement, as in the existing contract.
         return appended;
       });
+      phase(41, budget.files, budget.bytes);
       captured ||= drained.captured.includes(options.current);
       return drained.captured.length > 0;
     };
@@ -120,19 +126,23 @@ if (import.meta.main) {
         if (scanEnd - now() < 5) progress({ stopReason: "deadline" });
         else try {
           const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
+          phase(10);
           const scanned = await scanHookTranscriptTail(scan.transcript, {
             cwd: scan.cwd, base: scan.base, policy: scan.policy, deadline: performance.now() + (scanEnd - now()),
             // Same existing oldest-first drain and one shared budget, never a new 32-file allowance per publication.
             onPublication: async () => { await replay(scanEnd, false); },
             onBackpressure: () => replay(scanEnd, false),
           });
+          phase(11);
           if (scanned) progress(scanned);
         } catch { progress({ stopReason: "unavailable" }); }
       }
-      context = await ready;
-      await replay(end); // Newly staged summaries get their final commit opportunity in this hook too.
-    } finally { store?.close(); }
+      phase(50); context = await ready;
+      phase(51); await replay(end); phase(52); // Newly staged summaries get their final commit opportunity in this hook too.
+    } finally { phase(46); store?.close(); phase(47); }
+    phase(53);
     if (!context?.project || hookCaptureScope(context.options.cwd, context.options.base!) !== context.expectedScope) stop();
+    phase(54);
     await emit({ context: "", captured, valid: true });
   } catch { if (owned) stop(); process.exitCode = 1; }
 }
