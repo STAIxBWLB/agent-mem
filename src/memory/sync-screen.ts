@@ -2,6 +2,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Bi
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { join } from "node:path";
+import { OP_CONTRACTS } from "./ops-contract.ts";
+import { SUGGESTED } from "./store.ts";
 import { checkedEntry } from "./bridge.ts";
 import { loadAmemConfig } from "./config.ts";
 import { createStandalonePolicy, type StandalonePolicyDecline } from "./policy.ts";
@@ -31,12 +33,30 @@ export type SyncScreen = { ok: true } | { ok: false; reason: string };
  * What a row says: everything except the fields the library itself generates (ids, hashes, times, the op and enum names, machine and actor ids). Left IN on purpose
  * are `project`, `peer`, `task`, `about`, `title`, `text`, `milestones` and any field this file has never heard of: an unknown text field must be screened, never skipped.
  */
-const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
+/** Only a known operation's validated id/enum/time operand is generated metadata.
+ * A task key, an unknown operand field or an unsupported operand shape remains content. */
+function generatedOperand(operation: unknown, key: string, value: unknown): boolean {
+  if (key !== "target" && key !== "by" || typeof operation !== "string" || !Object.hasOwn(OP_CONTRACTS, operation)) return false;
+  const field = OP_CONTRACTS[operation]?.payloadSchema?.fields[key];
+  if (typeof value !== "string" || !field) return false;
+  if (field.format === "id") return /^[a-f0-9]{32}$/.test(value);
+  if (field.format === "utc") return Number.isFinite(Date.parse(value));
+  if (field.values) return field.values.includes(value);
+  // Suggestion operands are a closed relation enum plus an immutable entry id, not task text.
+  if (operation === "suggest" && key === "by") {
+    const match = /^([^:]+):[a-f0-9]{32}$/.exec(value);
+    return match !== null && (SUGGESTED as readonly string[]).includes(match[1]!);
+  }
+  return false;
+}
+
 export function syncOutboundContent(row: unknown): Record<string, unknown> {
   if (!row || typeof row !== "object" || Array.isArray(row) || types.isProxy(row) || Object.getOwnPropertySymbols(row).length) throw new Error("outbound row unavailable");
-  const out: Record<string, unknown> = {};
-  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(row))) {
-    if (GENERATED.has(key)) continue;
+  const out: Record<string, unknown> = {}, descriptors = Object.getOwnPropertyDescriptors(row);
+  const operation = descriptors.op?.value;
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (GENERATED.has(key) || generatedOperand(operation, key, descriptor.value)) continue;
     if (!("value" in descriptor) || !descriptor.enumerable) throw new Error("outbound row unavailable");
     Object.defineProperty(out, key, { value: descriptor.value, enumerable: true, writable: true, configurable: true });
   }
