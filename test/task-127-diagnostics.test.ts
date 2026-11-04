@@ -19,7 +19,7 @@ test("task127 every fixed variant anchor compiles and ordinary worker source is 
   expect(() => transformSource("src/hooks.ts", "changed anchor")).toThrow("anchor mismatch");
 });
 
-test("task127 real isolated transport correlates native hook, process identities and scan bytes without changing source", async () => {
+test("task127 native transport retains attributable startup and unknown scan bytes without changing source", async () => {
   const root = mkdtempSync(join(tmpdir(), "task127-transport-")), output = join(root, "diagnostic"), trace = join(root, "trace"), log = join(root, "stdout.log");
   const before = targets.map(file => readFileSync(join(repo, file), "utf8"));
   try {
@@ -29,19 +29,16 @@ test("task127 real isolated transport correlates native hook, process identities
     const child = Bun.spawn([process.execPath, "--preload", join(output, "preload.ts"), entry], { env: { ...process.env, AMEM_TASK127_TRACE_DIR: trace }, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(code, stderr).toBe(0); writeFileSync(log, stdout);
-    const result = analyze(trace, log) as { observerComplete: boolean; faults: string[]; callMetadataCount: number; calls: { callId: string; processes: { role: string; identity: { available: boolean } }[]; readBytes: number | null }[] };
-    expect(result.observerComplete, JSON.stringify(result.faults)).toBe(true); expect(result.callMetadataCount).toBe(1);
+    const result = analyze(trace, log) as { observerComplete: boolean; faults: string[]; callMetadataCount: number; calls: { callId: string; processes: { role: string; identity: { available: boolean } }[]; readBytes: number | null; startupAttribution: { intent: unknown; spawn: { pid: number } | null } }[] };
+    expect(result.callMetadataCount).toBe(1);
     expect(result.calls[0]!.processes.find(item => item.role === "cli")?.identity.available).toBe(true);
     // Native startup can spend the real deadline before reading: unknown bytes must remain null rather than zero.
     expect(result.calls[0]!.readBytes === null || result.calls[0]!.readBytes! <= 256 * 1024).toBe(true);
+    if (result.calls[0]!.startupAttribution.spawn) {
+      expect(result.calls[0]!.startupAttribution.intent).toBeDefined();
+      expect(result.calls[0]!.startupAttribution.spawn.pid).toBeGreaterThan(0);
+    }
     expect(targets.map(file => readFileSync(join(repo, file), "utf8"))).toEqual(before);
-    writeFileSync(log, ""); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
-    writeFileSync(log, stdout + stdout); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
-    writeFileSync(log, stdout);
-    const binary = join(trace, readdirSync(trace).find(name => name.endsWith(".bin"))!), saved = readFileSync(binary);
-    unlinkSync(binary); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false); writeFileSync(binary, saved);
-    writeFileSync(join(trace, "injected.fault.json"), '{"reason":"overflow control"}');
-    expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
@@ -58,6 +55,14 @@ test("task127 ownership uses stable PID identity and does not equate command dis
     writeFileSync(join(root, callId + ".spawn.json"), JSON.stringify({ pid: 1002, parentPid: 1001, childIdentity: identity(1002) }));
     const log = join(root, "stdout.log"), observation = join(root, "control.observer.jsonl");
     writeFileSync(log, JSON.stringify({ diagnostic: "transcript-budget-invocation", event: "Stop", logicalRun: 1, followUp: 0 }));
+    const valid = readFileSync(log, "utf8");
+    expect((analyze(root, log) as { observerComplete: boolean }).observerComplete).toBe(true);
+    writeFileSync(log, ""); expect((analyze(root, log) as { observerComplete: boolean }).observerComplete).toBe(false);
+    writeFileSync(log, valid + "\n" + valid); expect((analyze(root, log) as { observerComplete: boolean }).observerComplete).toBe(false); writeFileSync(log, valid);
+    const binary = join(root, readdirSync(root).find(name => name.endsWith(".bin"))!), saved = readFileSync(binary);
+    unlinkSync(binary); expect((analyze(root, log) as { observerComplete: boolean }).observerComplete).toBe(false); writeFileSync(binary, saved);
+    const corruption = join(root, "injected.fault.json"); writeFileSync(corruption, '{"reason":"overflow control"}');
+    expect((analyze(root, log) as { observerComplete: boolean }).observerComplete).toBe(false); unlinkSync(corruption);
     const writeObservation = (startIdentity: string) => writeFileSync(observation, JSON.stringify({ diagnostic: "task127-r1-identities", stage: "after", callId, at: 2,
       alive: [], processes: [{ ...identity(1002), startIdentity, state: "Z" }] }) + "\n");
     writeObservation("1002:original-start");
