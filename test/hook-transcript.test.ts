@@ -1,8 +1,8 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { scanHookTranscriptTail, transcriptSummary, HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import * as spool from "../src/hook-spool.ts";
@@ -104,23 +104,20 @@ test("a schema-less cursor file left before initialization resumes with one vali
 test("the scanner recovers a killed cursor transaction before publishing an untimed summary", async () => {
   const f = fixture(); await f.scan();
   const file = cursorFile(f);
-  const child = `import {Database} from 'bun:sqlite';import {writeSync} from 'node:fs';const db=new Database(process.argv.at(-1));
-const put=db.query('INSERT INTO fallback VALUES (?,?)');db.transaction(()=>{for(let i=0;i<1000;i++)put.run(i.toString(16).padStart(64,'0'),'2000-01-01T00:00:00.000Z');})();
-db.run('PRAGMA cache_size = 1');db.run('PRAGMA main.cache_spill = 1');
-if(db.query('PRAGMA main.cache_spill').get().cache_spill!==1)throw Error('hot-journal spill threshold unavailable');
-db.run('BEGIN IMMEDIATE');db.run('UPDATE cursor SET offset = 1');
-// Dirty existing pages: inserting only new pages need not spill a journal header on macOS.
-db.run("UPDATE fallback SET at='2099-01-01T00:00:00.000Z'");
-writeSync(1,'task125-hot-journal-ready\\n');process.kill(process.pid,'SIGKILL');`;
-  const killed = Bun.spawnSync([process.execPath, "-e", child, file], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  const crash = join(f.root, "cursor-crash"); mkdirSync(crash, { mode: 0o700 });
+  const crashFile = join(crash, "cursor.db"); copyFileSync(file, crashFile);
+  writeFileSync(join(crash, "ffi-fixture-marker.json"), "{}", { mode: 0o600 });
+  // A separate owned writer forces dirty pages out without committing. No production connection's settings change.
+  const killed = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "fakes/cursor-crash.ts"), "--db", crashFile, "--out", crash],
+    { env: f.env, stdout: "pipe", stderr: "pipe", timeout: 5000 });
   expect(killed.signalCode, killed.stderr.toString()).toBe("SIGKILL");
-  expect(killed.stdout.toString()).toContain("task125-hot-journal-ready");
-  expect(killed.exitCode).not.toBe(0);
-  // Inspect bytes only: the next measured scanner owns recovery, never a preliminary SQLite open in the harness.
-  expect(existsSync(file + "-journal")).toBe(true);
-  const journal = readFileSync(file + "-journal");
+  expect(killed.stdout.toString()).toContain('"stage":"kill-ready"');
+  expect(readFileSync(join(crash, "pre-kill.db"))).not.toEqual(readFileSync(join(crash, "seed-committed.db")));
+  const journal = readFileSync(crashFile + "-journal");
   expect(journal.length).toBeGreaterThan(512);
   expect(journal.subarray(0, 8).toString("hex")).toBe("d9d505f920a163d7");
+  // Place the unchanged killed DB/journal bytes at the session path; no SQLite open or journal repair precedes the scanner.
+  renameSync(crashFile, file); renameSync(crashFile + "-journal", file + "-journal");
   f.add({ type: "system", subtype: "away_summary", content: "untimed after hot journal" });
   await f.scan();
   const db = new Database(file, { readonly: true });
