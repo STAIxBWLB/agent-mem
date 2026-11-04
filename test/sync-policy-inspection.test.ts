@@ -23,7 +23,13 @@ const note = (store: MemoryStore, text: string, scope: "project" | "shared" = "p
 function tree(root: string): unknown {
   return readdirSync(root, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).map(item => {
     const file = join(root, item.name), stat = lstatSync(file, { bigint: true });
-    return [item.name, stat.mode.toString(), stat.mtimeNs.toString(), item.isDirectory() ? tree(file) : readFileSync(file).toString("base64")];
+    if (item.isDirectory()) return [item.name, stat.mode.toString(), stat.mtimeNs.toString(), tree(file)];
+    const bytes = readFileSync(file);
+    // SQLite read-only SELECTs coordinate through SHM read-mark[0..4], bytes100..119.
+    // Keep every other SHM byte, durable DB/WAL byte, file metadata and logical table in the assertion.
+    // Format: https://www.sqlite.org/walformat.html#the_wal_index_header
+    if (item.name.endsWith("-shm")) bytes.fill(0, 100, 120);
+    return [item.name, stat.mode.toString(), stat.mtimeNs.toString(), bytes.toString("base64")];
   });
 }
 async function actualDeclines(store: MemoryStore, screen?: (row: Record<string, unknown>) => boolean) {
@@ -53,6 +59,7 @@ for (const profile of ["shared-v1", "generation", "sharded", "sharded-v2"] as co
     cleanup.push(() => store.close());
   }
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private inspection phrase", "private user inspection phrase"] }));
+  const beforeDerived = store.openedSyncTargets().map(target => target.derivedTables());
   const before = tree(f.home);
   const fetchGuard = spyOn(globalThis, "fetch").mockImplementation(Object.assign(() => { throw Error("inspection attempted network"); }, { preconnect: fetch.preconnect }));
   const spawnGuard = spyOn(Bun, "spawn").mockImplementation(() => { throw Error("inspection attempted a child"); });
@@ -67,6 +74,7 @@ for (const profile of ["shared-v1", "generation", "sharded", "sharded-v2"] as co
   expect(result.declined.some(row => row.id === good)).toBe(false);
   expect(result.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   expect(JSON.stringify(result)).not.toContain("inspection phrase"); expect(JSON.stringify(result)).not.toContain(f.home);
+  expect(store.openedSyncTargets().map(target => target.derivedTables())).toEqual(beforeDerived);
   expect(tree(f.home)).toEqual(before);
   expect(await actualDeclines(store)).toEqual(result.declined.map(row => row.id));
 });
