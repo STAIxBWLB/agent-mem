@@ -38,8 +38,10 @@ try {
       if (kind === "schemaless") new Database(dbfile).close();
       if (kind === "hot-journal") {
         imported.task125CursorDatabase(dbfile,"1","1",1024).close();
-        const child = `import {Database} from 'bun:sqlite'; const db = new Database(process.argv.at(-1)); const put=db.query('INSERT INTO fallback VALUES (?,?)'); db.transaction(()=>{for(let i=0;i<1000;i++) put.run(i.toString(16).padStart(64,'0'),'2026-11-04T00:00:00.000Z');})(); db.run('PRAGMA cache_size = 1'); db.run('BEGIN IMMEDIATE'); db.run('UPDATE cursor SET offset = 1'); db.run(\"UPDATE fallback SET at='2099-01-01T00:00:00.000Z'\"); process.kill(process.pid,'SIGKILL');`;
+        const child = `import {Database} from 'bun:sqlite'; const db = new Database(process.argv.at(-1)); const put=db.query('INSERT INTO fallback VALUES (?,?)'); db.transaction(()=>{for(let i=0;i<1000;i++) put.run(i.toString(16).padStart(64,'0'),'2026-11-04T00:00:00.000Z');})(); const beforeSpill=db.query('PRAGMA main.cache_spill').get(); db.run('PRAGMA cache_size = 1'); db.run('PRAGMA main.cache_spill = 1'); const afterSpill=db.query('PRAGMA main.cache_spill').get(); console.log(JSON.stringify({beforeSpill,afterSpill,pageSize:db.query('PRAGMA main.page_size').get(),pageCount:db.query('PRAGMA main.page_count').get()})); if(afterSpill.cache_spill!==1)throw Error('spill threshold not configured'); db.run('BEGIN IMMEDIATE'); db.run('UPDATE cursor SET offset = 1'); db.run(\"UPDATE fallback SET at='2099-01-01T00:00:00.000Z'\"); process.kill(process.pid,'SIGKILL');`;
         const result = Bun.spawnSync([process.execPath,"-e",child,dbfile],{stdout:"pipe",stderr:"pipe",timeout:5000});
+        console.log(JSON.stringify({diagnostic:"task125-hot-journal-child",index,signal:result.signalCode,exitCode:result.exitCode,stdout:result.stdout.toString().slice(0,1024),stderr:result.stderr.toString().slice(0,2048)}));
+        if (result.signalCode !== "SIGKILL") throw Error("fixture child was not SIGKILLed");
         if (result.exitCode === 0 || !existsSync(dbfile+"-journal")) throw Error("hot-journal child did not leave evidence: "+result.stderr.toString());
         const header = readFileSync(dbfile+"-journal");
         if (!header.subarray(0,8).some(byte=>byte!==0)) throw Error("journal lacks a hot header; do not label as recovery");
