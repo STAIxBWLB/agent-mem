@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -61,4 +61,24 @@ test("a store whose rows cannot be read refuses the sync with a result, never an
   const { screenOutboundRows } = await import("../src/memory/sync-screen.ts");
   const broken = { prunePort() { throw new Error("durable prune requires an active generation handle"); } } as unknown as MemoryStore;
   expect(screenOutboundRows(broken, () => true)).toEqual({ ok: false, reason: expect.stringContaining("not screened") });
+});
+
+
+for (const cause of ["bytes", "rows", "changed", "unavailable"] as const) test("own-segment refusal names its safe cause: " + cause, async () => {
+  const { screenOwnSegment, SYNC_SCREEN_MAX_BYTES, SYNC_SCREEN_MAX_ROWS } = await import("../src/memory/sync-screen.ts");
+  const store = new MemoryStore({ memoryDir: temp(), profile: "shared-v1", deferPromotions: true }); cleanup.push(() => store.close());
+  store.note(note("example.test/public", "ordinary fixture row"));
+  const file = join(store.dir, "log", `${store.machine.id}.jsonl`), line = readFileSync(file, "utf8");
+  if (cause === "bytes") truncateSync(file, SYNC_SCREEN_MAX_BYTES + 1);
+  if (cause === "rows") writeFileSync(file, line.repeat(SYNC_SCREEN_MAX_ROWS + 1));
+  if (cause === "unavailable") writeFileSync(file, "malformed synthetic-private-pattern\n");
+  const result = screenOwnSegment(store.dir, store.machine.id, () => {
+    if (cause === "changed") appendFileSync(file, line);
+    return true;
+  });
+  expect(result.ok).toBe(false); if (result.ok) throw Error("expected refusal");
+  const expected = cause === "bytes" ? String(SYNC_SCREEN_MAX_BYTES) : cause === "rows" ? "more than " + SYNC_SCREEN_MAX_ROWS : cause === "changed" ? "changed while being screened" : "not readable as complete valid rows";
+  expect(result.reason).toContain(expected);
+  expect(result.reason).toMatch(/retry|retrying/);
+  expect(result.reason).not.toContain("synthetic-private-pattern"); expect(result.reason).not.toContain(file);
 });

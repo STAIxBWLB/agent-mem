@@ -84,7 +84,7 @@ export function screenOutboundRows(store: MemoryStore, pass: RowScreen): SyncScr
 }
 
 export class SyncScreenInputError extends Error {
-  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed") { super(code); }
+  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed", readonly bound?: "bytes" | "rows") { super(code); }
 }
 const sameStat = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
@@ -109,7 +109,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n) throw new SyncScreenInputError("input-unavailable");
-    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound");
+    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound", "bytes");
     const check = () => {
       checkParent();
       const named = lstatSync(file, { bigint: true });
@@ -128,7 +128,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
       if (start === end) { start = end + 1; continue; }
       const line = decoder.decode(bytes.subarray(start, end)); start = end + 1;
       if (!line.trim()) continue;
-      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound");
+      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound", "rows");
       let row: unknown;
       try { row = checkedEntry(JSON.parse(line)); } catch { throw new SyncScreenInputError("input-unavailable"); }
       visit(row as Record<string, unknown>);
@@ -145,6 +145,17 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
 export function screenOwnSegment(dir: string, machineId: string, pass: RowScreen): SyncScreen {
   const declined: string[] = [];
   try { visitOwnSegment(dir, machineId, row => { if (!pass(row)) declined.push(idOf(row)); })(); }
-  catch { return { ok: false, reason: "this machine's long-term segment cannot be read within the screening bounds, so it was not screened; inspect the local input and reopen the store before retrying" }; }
+  catch (error) {
+    let code: unknown, bound: unknown;
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      code = Object.getOwnPropertyDescriptor(error, "code")?.value;
+      bound = Object.getOwnPropertyDescriptor(error, "bound")?.value;
+    }
+    const inspect = "; inspect the local input and reopen the store before retrying";
+    if (code === "input-bound" && bound === "rows") return { ok: false, reason: `more than ${MAX_ROWS} long-term rows, so they were not screened${inspect}` };
+    if (code === "input-bound" && bound === "bytes") return { ok: false, reason: `this machine's long-term segment exceeds ${MAX_BYTES} bytes, so it was not screened${inspect}` };
+    if (code === "input-changed") return { ok: false, reason: "this machine's long-term segment changed while being screened, so it was not screened; wait for writers to finish and retry" };
+    return { ok: false, reason: "this machine's long-term segment is not readable as complete valid rows, so it was not screened" + inspect };
+  }
   return refusal(declined);
 }
