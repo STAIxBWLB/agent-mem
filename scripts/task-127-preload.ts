@@ -93,11 +93,13 @@ export function activate(repo: string, preload: string): void {
   };
   const targets = new Set(["src/hooks.ts", "src/hook-spool.ts", "src/hook-transcript.ts", "src/session-brief-worker.ts",
     "test/fakes/hooks-fixture.ts", "scripts/measure-transcript-budget.ts"]);
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const filter = new RegExp("^(?:" + [...targets].map(file => escape(join(repo, file))).join("|") + ")$");
   Bun.plugin({ name: "task127-disposable-phases", setup(builder) {
-    builder.onLoad({ filter: /[.](?:ts|js)$/ }, args => {
+    builder.onLoad({ filter }, args => {
       const absolute = resolve(args.path);
       const relative = absolute.startsWith(repo + "/") ? absolute.slice(repo.length + 1) : "";
-      if (!targets.has(relative)) return;
+      if (!targets.has(relative)) throw new Error("task127 diagnostic filter escaped its source boundary");
       return { loader: "ts", contents: transformSource(relative, readFileSync(absolute, "utf8")) };
     });
   } });
