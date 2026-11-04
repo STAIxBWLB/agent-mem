@@ -11,17 +11,37 @@ import { indexFileName } from "../src/memory/index-file.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { previousRelease } from "../scripts/previous-release.ts";
 
-// #199 AC6: this build and the previous published release on one shared home. The CI job `previous-release` resolves
-// that release with scripts/previous-release.ts and sets AMEM_PREV_ROOT; locally the suite skips without it, and
+// #199 AC6 / #249: this build and the previous minor line on one shared home. The CI job `previous-release` resolves
+// its latest published plain release with scripts/previous-release.ts and sets AMEM_PREV_ROOT; locally the suite skips without it, and
 // AMEM_PREV_REQUIRED=1 (set by the job) turns a missing root into a failure instead of a skip.
 const root = process.env.AMEM_PREV_ROOT, required = process.env.AMEM_PREV_REQUIRED === "1";
 
-test("previousRelease picks the highest plain release not newer than package.json", () => {
-  const published = ["0.17.0", "0.18.0", "0.19.0", "0.20.0-rc.1", "0.10.0"];
-  expect(previousRelease("0.19.0", published)).toBe("0.19.0");  // a development tree: the last release
-  expect(previousRelease("0.20.0", published)).toBe("0.19.0");  // a release commit not yet published: the one before
-  expect(previousRelease("0.9.0", published)).toBeUndefined();
+test("previousRelease keeps patches and minor releases on the latest patch of the preceding minor line", () => {
+  const published = ["0.19.2", "0.20.0", "0.18.9", "0.19.10", "0.20.3", "0.19.0", "0.21.0", "1.19.99"];
+  expect(previousRelease("0.20.3", published)).toBe("0.19.10");
+  expect(previousRelease("0.20.0", published)).toBe("0.19.10");
+  expect(previousRelease("0.21.0", published)).toBe("0.20.3");
+  expect(previousRelease("0.21.9", published)).toBe("0.20.3");
+});
+
+test("previousRelease skips prereleases and non-plain versions without jumping across a missing minor line", () => {
+  const published = ["0.18.99", "0.19.0-rc.1", "0.19.4+build.1", "v0.19.9", "0.20.0", "1.19.2"];
+  expect(previousRelease("0.20.3", published)).toBeUndefined();
+  expect(previousRelease("0.20.3", [...published, "0.19.1", "0.19.9-beta.1"])).toBe("0.19.1");
+  expect(previousRelease("0.20.3", [])).toBeUndefined();
   expect(() => previousRelease("next", published)).toThrow("plain semver");
+  expect(() => previousRelease("0.20.0-rc.1", published)).toThrow("plain semver");
+});
+
+test("previousRelease uses the highest plain release of the preceding major only at minor zero", () => {
+  const published = ["0.19.99", "0.20.3", "0.21.2", "0.21.10", "0.22.0-rc.1", "1.0.0", "1.1.3", "1.9.4", "1.10.0", "2.0.0"];
+  expect(previousRelease("1.0.0", published)).toBe("0.21.10");
+  expect(previousRelease("1.0.8", published)).toBe("0.21.10");
+  expect(previousRelease("2.0.0", published)).toBe("1.10.0");
+  expect(previousRelease("2.1.0", published)).toBe("2.0.0");
+  expect(previousRelease("3.0.0", published)).toBe("2.0.0");
+  expect(previousRelease("4.0.0", published)).toBeUndefined();
+  expect(previousRelease("0.0.0", published)).toBeUndefined();
 });
 
 test("the previous-release job has its release", () => { if (required) expect(root, "AMEM_PREV_ROOT").toBeTruthy(); });

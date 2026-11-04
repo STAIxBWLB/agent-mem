@@ -2,10 +2,9 @@
 /**
  * #199 AC6: resolve and unpack the previous published release for the N-1 compatibility job.
  *
- * "Previous release" is the highest published, non-prerelease @staix/agent-mem version that is not newer than this
- * tree's package.json version. On a development tree (package.json still names the last release) that is the
- * release itself; on a release commit (package.json bumped, not yet published) it is the release before. No hand
- * edit is needed per release. The registry is read with a cache-busting request, never `npm view`.
+ * N-1 is the latest published plain release in the preceding minor line of the same major. Patch releases
+ * and development trees keep that minor line's N-1. At minor 0, use the highest release of the preceding
+ * major instead. The registry is read with a cache-busting request, never `npm view`.
  *
  * Usage: bun scripts/previous-release.ts <dir>   (prints `version<TAB>root` and, under GitHub Actions, exports AMEM_PREV_ROOT)
  * Dev-only: the package keeps zero runtime dependencies; this script uses fetch, tar and node built-ins.
@@ -21,7 +20,12 @@ const compare = (a: string, b: string) => { const x = parts(a), y = parts(b); fo
 /** Pure resolver, exported for tests. */
 export function previousRelease(current: string, published: string[]): string | undefined {
   if (!SEMVER.test(current)) throw new Error(`package.json version ${current} is not plain semver`);
-  return published.filter(v => SEMVER.test(v) && compare(v, current) <= 0).sort(compare).at(-1);
+  const [major, minor] = parts(current);
+  return published.filter(v => {
+    if (!SEMVER.test(v)) return false;
+    const [candidateMajor, candidateMinor] = parts(v);
+    return minor > 0 ? candidateMajor === major && candidateMinor === minor - 1 : candidateMajor === major - 1;
+  }).sort(compare).at(-1);
 }
 
 if (import.meta.main) {
@@ -32,7 +36,7 @@ if (import.meta.main) {
   if (!response.ok) throw new Error(`registry read failed: ${response.status}`);
   const doc = await response.json() as { versions: Record<string, { dist: { tarball: string; integrity?: string } }> };
   const version = previousRelease(current, Object.keys(doc.versions));
-  if (!version) throw new Error(`no published ${NAME} release at or below ${current}`);
+  if (!version) throw new Error(`no published N-1 ${NAME} release for ${current}; check stable registry versions in the preceding minor line (or preceding major for minor 0) and retry`);
   const dist = doc.versions[version]!.dist;
   // Fail closed: the tarball must come from the registry host and carry a sha512 integrity to check against.
   if (new URL(dist.tarball).host !== "registry.npmjs.org" || new URL(dist.tarball).protocol !== "https:") throw new Error(`unexpected tarball host for ${version}: ${dist.tarball}`);
