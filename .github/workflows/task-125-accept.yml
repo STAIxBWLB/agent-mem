@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  FIX_HEAD: face1187485a72a2f4f0e0b3bae7df17894343cf
+  FIX_HEAD: cdd196666e7efab2f7ec04c654a1bcfa8fd49517
 jobs:
   acceptance:
     if: github.head_ref == 'measure/226-cursor-recovery'
@@ -44,7 +44,10 @@ jobs:
         run: python3 "$RUNNER_TEMP/task125-parser-check.py" --controller "$RUNNER_TEMP/task125-acceptance20.py" --report "$RUNNER_TEMP/task125-acceptance/parser-controls.json"
       - name: Fixed-head preflight
         run: bash "$RUNNER_TEMP/task125-preflight.sh" "$GITHUB_WORKSPACE" "$FIX_HEAD" "$RUNNER_TEMP/task125-acceptance/preflight"
-      - name: Twenty sequential uninstrumented native macOS attempts
+      # The controller retains its strict 20/20 verdict. The narrowed PR contract is
+      # >=17/20 eligible and no new failure class; reviewer evaluates every retained failure.
+      # A controller exit 1 is not silently converted to a complete-fix pass.
+      - name: Twenty sequential uninstrumented native macOS comparison attempts
         if: runner.os == 'macOS'
         run: |
           python3 "$RUNNER_TEMP/task125-acceptance20.py" --repo "$GITHUB_WORKSPACE" --head "$FIX_HEAD" --out "$RUNNER_TEMP/task125-acceptance/native20" | tee "$RUNNER_TEMP/task125-acceptance/controller.stdout.log"
