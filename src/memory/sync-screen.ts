@@ -32,7 +32,7 @@ export type SyncScreen = { ok: true } | { ok: false; reason: string };
  * are `project`, `peer`, `task`, `about`, `title`, `text`, `milestones` and any field this file has never heard of: an unknown text field must be screened, never skipped.
  */
 const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
-export function syncOutboundContent(row: Record<string, unknown>): Record<string, unknown> {
+export function syncOutboundContent(row: unknown): Record<string, unknown> {
   if (!row || typeof row !== "object" || Array.isArray(row) || types.isProxy(row) || Object.getOwnPropertySymbols(row).length) throw new Error("outbound row unavailable");
   const out: Record<string, unknown> = {};
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(row))) {
