@@ -1,6 +1,6 @@
 import { createHash, randomBytes, type Hash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, opendirSync, unlinkSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { memoryGitArgv, memoryGitEnv, realPath } from "./platform.ts";
@@ -51,7 +51,39 @@ const statStamp = (stat: { dev: bigint | number; ino: bigint | number; size: big
 export class SegmentReader {
   private readonly prefixes = new Map<string, PrefixState>();
   private measured: SegmentReadMetrics = { bytesRead: 0, bytesHashed: 0, coldChanged: 0 };
-  constructor(private remainingBytes = Infinity) { if (remainingBytes !== Infinity && (!Number.isSafeInteger(remainingBytes) || remainingBytes < 0)) failure(); }
+  private remainingSourceBytes: number;
+  private remainingRows: number;
+  private remainingFiles: number;
+  private sourceBytes = 0;
+  private sourceRows = 0;
+  /** Optional inspection limits do not change ordinary incremental-reader semantics. */
+  readonly sourceByteLimit?: number;
+  readonly sourceFileLimit?: number;
+  constructor(private remainingBytes = Infinity, limits: { maxSourceBytes?: number; maxRows?: number } = {}) {
+    for (const value of [remainingBytes, limits.maxSourceBytes ?? Infinity, limits.maxRows ?? Infinity]) if (value !== Infinity && (!Number.isSafeInteger(value) || value < 0)) failure();
+    this.sourceByteLimit = limits.maxSourceBytes;
+    this.remainingSourceBytes = limits.maxSourceBytes ?? Infinity;
+    this.remainingRows = limits.maxRows ?? Infinity;
+    this.sourceFileLimit = limits.maxRows;
+    this.remainingFiles = limits.maxRows ?? Infinity;
+  }
+  inspectionMetrics(): { sourceBytes: number; rows: number } { return { sourceBytes: this.sourceBytes, rows: this.sourceRows }; }
+  /** Inspection counts directory entries and archived segment names before their arrays/maps can grow.
+   * ponytail: metadata entries share maxRows (public inspection: 20000), including empty files.
+   * Upgrade with a separately budgeted catalog proof if valid profiles need a larger metadata frontier.
+   */
+  reserveSourceFiles(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 0 || count > this.remainingFiles) throw new SegmentReadBudgetError();
+    this.remainingFiles -= count;
+  }
+  listFiles(dir: string): string[] {
+    if (this.sourceFileLimit === undefined) return readdirSync(dir).sort();
+    const reader = opendirSync(dir), names: string[] = [];
+    try {
+      for (;;) { const entry = reader.readSync(); if (!entry) break; this.reserveSourceFiles(1); names.push(entry.name); }
+    } finally { reader.closeSync(); }
+    return names.sort();
+  }
   metrics(): SegmentReadMetrics { return { ...this.measured }; }
   resetMetrics(): void { this.measured = { bytesRead: 0, bytesHashed: 0, coldChanged: 0 }; }
   read(path: string, prior?: LegacyCheckpoint, full = false, immutable = false): SegmentBytes {
@@ -60,6 +92,8 @@ export class SegmentReader {
     const stamp = statStamp(before), size = Number(before.size);
     if (prior && size < prior.offset) failure();
     if (!full && prior?.stamp === stamp) return { bytes: Buffer.alloc(0), start: prior.offset, offset: prior.offset, hash: prior.hash, tailBytes: size - prior.offset, stamp };
+    if (size > this.remainingSourceBytes) throw new SegmentReadBudgetError();
+    this.remainingSourceBytes -= size; this.sourceBytes += size;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const opened = fstatSync(fd, { bigint: true });
@@ -73,6 +107,11 @@ export class SegmentReader {
       const all = read(size), end = all.lastIndexOf(10) + 1, bytes = all.subarray(0, end);
       if (prior && end < prior.offset) failure();
       if (!read(end).equals(bytes) || fstatSync(fd, { bigint: true }).size < opened.size) failure();
+      // Count physical nonblank source rows before any canonical source map can grow.
+      if (this.remainingRows !== Infinity) for (const line of completeLines(bytes)) if (line.toString("utf8").trim()) {
+        if (this.remainingRows < 1) throw new SegmentReadBudgetError();
+        this.remainingRows--; this.sourceRows++;
+      }
       const after = lstatSync(path, { bigint: true });
       if (after.isSymbolicLink() || after.dev !== opened.dev || after.ino !== opened.ino) failure();
       const cached = immutable ? undefined : this.prefixes.get(path);
@@ -116,7 +155,7 @@ function checkpointMap(rows: readonly LegacyCheckpoint[] = []): Map<string, Lega
   return map;
 }
 
-function checkedEntry(value: unknown): Entry {
+export function checkedEntry(value: unknown): Entry {
   if (!value || typeof value !== "object" || Array.isArray(value)) malformed();
   const row = value as Record<string, unknown>;
   const operation = row.op;
@@ -141,7 +180,7 @@ function checkedEntry(value: unknown): Entry {
   return row as unknown as Entry;
 }
 
-function* completeLines(bytes: Buffer): Generator<Buffer> {
+export function* completeLines(bytes: Buffer): Generator<Buffer> {
   let start = 0;
   while (start < bytes.length) { const end = bytes.indexOf(10, start); if (end < 0) failure(); yield bytes.subarray(start, end); start = end + 1; }
 }
@@ -198,7 +237,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
   for (const folder of ["log", "local"]) {
     const dir = join(root, folder);
     if (!directory(dir, true)) continue;
-    for (const name of readdirSync(dir).sort()) {
+    for (const name of options.reader ? options.reader.listFiles(dir) : readdirSync(dir).sort()) {
       if (!name.endsWith(".jsonl")) continue;
       const path = `${folder}/${name}`;
       if (!segmentPath(path)) failure();
@@ -212,11 +251,12 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
   }
   if ((options.commit || options.previousCommit) && !options.generation || options.previousCommit && !commitId(options.previousCommit)) failure();
   if (options.generation !== undefined) {
-    const commit = options.commit ?? legacyHead(root, options.generation);
+    const commit = options.commit ?? legacyHead(root, options.generation, options.reader?.sourceByteLimit, options.reader?.sourceFileLimit);
     if (commit) {
-      const manifest = archived(root, options.generation, commit);
+      const manifest = archived(root, options.generation, commit, options.reader?.sourceByteLimit, options.reader?.sourceFileLimit);
+      options.reader?.reserveSourceFiles(manifest.segments.length);
       directory(join(archiveDir(root, options.generation, commit), "log"));
-      for (const prior of new Set([...(options.previousCommit ? [options.previousCommit] : []), ...[...checkpoints.values()].filter(row => row.source === remoteSource).map(row => row.commit!)])) if (!archivedAncestor(root, options.generation, prior, commit)) failure();
+      for (const prior of new Set([...(options.previousCommit ? [options.previousCommit] : []), ...[...checkpoints.values()].filter(row => row.source === remoteSource).map(row => row.commit!)])) if (!archivedAncestor(root, options.generation, prior, commit, options.reader?.sourceByteLimit)) failure();
       for (const segment of manifest.segments) {
         const reader = options.reader ?? new SegmentReader(), incremental = options.incremental && !limits;
         const data = reader.read(join(archiveDir(root, options.generation, commit), segment.path), incremental ? checkpoints.get(`${remoteSource}:${segment.path}`) : undefined, !incremental, true);
@@ -239,15 +279,21 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
   return result;
 }
 
-function capturedIdentity(path: string): string {
+function capturedIdentity(path: string, maximum?: number): string {
   const before = lstatSync(path);
   if (before.isSymbolicLink() || !before.isFile()) failure();
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
-    if (stat.dev !== before.dev || stat.ino !== before.ino || stat.size > 4096) failure();
+    if (maximum !== undefined && (before.size > maximum || stat.size > maximum)) throw new SegmentReadBudgetError();
+    if (stat.dev !== before.dev || stat.ino !== before.ino || stat.size > (maximum ?? 4096)) failure();
+    if (maximum !== undefined && (stat.size !== before.size || stat.mtimeMs !== before.mtimeMs || stat.ctimeMs !== before.ctimeMs)) failure();
     const bytes = Buffer.alloc(stat.size);
     if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) failure();
+    if (maximum !== undefined) {
+      const after = fstatSync(fd), named = lstatSync(path);
+      if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino) failure();
+    }
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } finally { closeSync(fd); }
 }
@@ -266,14 +312,14 @@ function cachedGit(cache: string, args: string[], allowMissing = false): Buffer 
   return run.stdout;
 }
 /** Last explicitly fetched legacy main, not a claim about the current remote state. Never fetches or writes. */
-function head(homeM: string, generation: string): string | undefined {
+function head(homeM: string, generation: string, maximumArchiveBytes?: number, maximumArchiveSegments?: number): string | undefined {
   const root = realPath(homeM); directory(root);
   const dir = fixedGeneration(root, generation);
   if (!directory(dir, true)) return undefined;
   const active = readProfileJSON(join(dir, "bridge-snapshot.json"), 4096) as { schema?: unknown; generation?: unknown; commit?: unknown } | undefined;
   if (!active) return undefined;
   if (active.schema !== "agent-mem.legacy-head/v1" || active.generation !== generation || typeof active.commit !== "string" || !commitId(active.commit)) failure();
-  archived(root, generation, active.commit);
+  archived(root, generation, active.commit, maximumArchiveBytes, maximumArchiveSegments);
   return active.commit;
 }
 
@@ -281,8 +327,8 @@ function head(homeM: string, generation: string): string | undefined {
 export function readLegacySnapshot(homeM: string, options: LegacySnapshotOptions = {}): LegacySegment[] {
   try { return snapshot(homeM, options); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
-export function legacyHead(homeM: string, generation: string): string | undefined {
-  try { return head(homeM, generation); } catch { return failure(); }
+export function legacyHead(homeM: string, generation: string, maximumArchiveBytes?: number, maximumArchiveSegments?: number): string | undefined {
+  try { return head(homeM, generation, maximumArchiveBytes, maximumArchiveSegments); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
 
 
@@ -301,9 +347,11 @@ function archiveDir(root: string, generation: string, commit: string): string {
   const dir = join(fixedGeneration(root, generation), "bridge-snapshots");
   directory(dir); const target = join(dir, commit); directory(target); return target;
 }
-function archived(root: string, generation: string, commit: string): LegacyArchive {
-  const value = readProfileJSON(join(archiveDir(root, generation, commit), "snapshot.json"), 32 * 1024 * 1024) as LegacyArchive | undefined;
+function archived(root: string, generation: string, commit: string, maximumBytes?: number, maximumSegments?: number): LegacyArchive {
+  const file = join(archiveDir(root, generation, commit), "snapshot.json");
+  const value = (maximumBytes === undefined ? readProfileJSON(file, 32 * 1024 * 1024) : JSON.parse(capturedIdentity(file, Math.min(maximumBytes, 32 * 1024 * 1024)))) as LegacyArchive | undefined;
   if (!value || value.schema !== "agent-mem.legacy-snapshot/v1" || value.generation !== generation || value.commit !== commit || value.previousCommit !== undefined && !commitId(value.previousCommit) || !Array.isArray(value.segments)) failure();
+  if (maximumSegments !== undefined && value.segments.length > maximumSegments) throw new SegmentReadBudgetError();
   const paths = new Set<string>();
   for (const segment of value.segments) {
     if (!segment || !segmentPath(segment.path) || !segment.path.startsWith("log/") || paths.has(segment.path) || !Number.isSafeInteger(segment.offset) || segment.offset < 0 || !/^[a-f0-9]{64}$/.test(segment.hash) || !Number.isSafeInteger(segment.tailBytes) || segment.tailBytes < 0) failure();
@@ -311,9 +359,9 @@ function archived(root: string, generation: string, commit: string): LegacyArchi
   }
   return value;
 }
-function archivedAncestor(root: string, generation: string, previous: string, commit: string): boolean {
+function archivedAncestor(root: string, generation: string, previous: string, commit: string, maximumBytes?: number): boolean {
   const visited = new Set<string>();
-  for (let cursor: string | undefined = commit; cursor && !visited.has(cursor); cursor = archived(root, generation, cursor).previousCommit) {
+  for (let cursor: string | undefined = commit; cursor && !visited.has(cursor); cursor = archived(root, generation, cursor, maximumBytes).previousCommit) {
     if (cursor === previous) return true;
     visited.add(cursor);
   }

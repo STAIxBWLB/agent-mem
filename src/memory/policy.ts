@@ -6,6 +6,7 @@ import { nodePath, pathCandidates } from "./project.ts";
 
 /** True means the complete value is public. Hosts may narrow, never replace, standalone policy. */
 export interface MemoryPolicy { screen(value: unknown): Promise<boolean> }
+export type StandalonePolicyDecline = "secret" | "personal-data" | "deny-path" | "private-or-invalid";
 /**
  * The standalone policy. `screenStandalone` is its own part only (secrets, default PII, configured PII patterns and deny paths) as a synchronous
  * answer, for callers that cannot await (the store's promotion screen); it never asks the host, so a caller with a host uses `screen`.
@@ -17,6 +18,11 @@ export interface StandalonePolicy extends MemoryPolicy {
    * separately (the claude-mem import reports `pii` and `secret` skips as two numbers). True means the value names personal data or something configured.
    */
   declinesPersonal(text: string): boolean;
+}
+/** Additive inspection surface; existing StandalonePolicy implementations need no new method. */
+export interface InspectableStandalonePolicy extends StandalonePolicy {
+  /** Safe standalone classification only; no input, configured literal or host verdict is returned. */
+  inspectStandalone(value: unknown): { ok: true } | { ok: false; category: StandalonePolicyDecline };
 }
 export interface StandalonePolicyOptions {
   denyPaths?: readonly string[];
@@ -153,7 +159,7 @@ function mayNeedPathCheck(text: string, probe: DefaultPathProbe | undefined, den
 }
 
 /** No filesystem, model, network or storage work occurs while constructing or screening this policy. */
-export function createStandalonePolicy(options: StandalonePolicyOptions = {}): StandalonePolicy {
+export function createStandalonePolicy(options: StandalonePolicyOptions = {}): InspectableStandalonePolicy {
   if (!options || typeof options !== "object" || types.isProxy(options) || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length) throw new Error("invalid standalone policy options");
   const descriptors = Object.getOwnPropertyDescriptors(options);
   for (const [key, descriptor] of Object.entries(descriptors)) if (!["denyPaths", "piiPatterns", "host"].includes(key) || !("value" in descriptor)) throw new Error("invalid standalone policy options");
@@ -163,34 +169,34 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
   if (host !== undefined && (!host || typeof host.screen !== "function")) throw new Error("invalid host policy");
   // ponytail: retain at most 512 exact strings / 64 KiB per immutable policy configuration.
   // Evict the batch when full; a measured need for better hit rates can upgrade this to an LRU.
-  const textChecks = new Map<string, boolean>(); let textBytes = 0;
+  const textChecks = new Map<string, StandalonePolicyDecline | null>(); let textBytes = 0;
   let defaultDenyRevision = "";
   // ponytail: the negative probe supports at most 64 dense default entries and 256-character simple name sources.
   // Everything else falls back; extend the grammar only with differential proof, never an approximate verdict.
   let pathProbe: DefaultPathProbe | undefined;
   let defaultsWerePlain = false;
-  const publicText = (text: string): boolean => {
+  const textDecline = (text: string): StandalonePolicyDecline | null => {
     const cached = textChecks.get(text);
     if (cached !== undefined) return cached;
     const check = () => {
-      if (looksSecret(text)) return false;
+      if (looksSecret(text)) return "secret" as const;
       const unquoted = text.replace(/["']/g, "");
-      if (unquoted !== text && looksSecret(unquoted)) return false;
+      if (unquoted !== text && looksSecret(unquoted)) return "secret" as const;
       const normalized = fold(text);
-      if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return false;
-      if (!mayNeedPathCheck(normalized, pathProbe, deny)) return true;
+      if (defaultPii(normalized) || pii.some(pattern => normalized.includes(pattern))) return "personal-data" as const;
+      if (!mayNeedPathCheck(normalized, pathProbe, deny)) return null;
       const candidates = normalized.includes("/") || /\.[a-z]/.test(normalized) ? pathCandidates(normalized) : [];
       const paths = [normalized, nodePath(normalized), ...candidates, ...normalized.split(/[\s"'`(){}\[\],;:=<>]+/)];
-      return ![...new Set(paths)].some(path => path && isDenied(posix.normalize(path), deny));
+      return [...new Set(paths)].some(path => path && isDenied(posix.normalize(path), deny)) ? "deny-path" as const : null;
     };
-    const allowed = check(), bytes = Buffer.byteLength(text);
+    const category = check(), bytes = Buffer.byteLength(text);
     if (bytes <= 1024) {
       if (textChecks.size >= 512 || textBytes + bytes > 64 * 1024) { textChecks.clear(); textBytes = 0; }
-      textChecks.set(text, allowed); textBytes += bytes;
+      textChecks.set(text, category); textBytes += bytes;
     }
-    return allowed;
+    return category;
   };
-  const standalone = (value: unknown): { ok: boolean; value?: unknown } => {
+  const standalone = (value: unknown): { ok: true; value: unknown } | { ok: false; category: StandalonePolicyDecline } => {
     try {
       // The exported default lists can be tightened by a host between calls.
       // A getter can change behavior without changing its first serialized value: validate shape every time.
@@ -202,12 +208,15 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
       else if (changed || !defaultsWerePlain) pathProbe = defaultPathProbe();
       defaultsWerePlain = defaultsPlain;
       const complete = snapshot(value);
-      if (!complete) return { ok: false };
+      if (!complete) return { ok: false, category: "private-or-invalid" };
       // Only pure text checks are reused. Shape/bounds/private flags and the host's detached
       // snapshot are fresh on every call; no row or host verdict is cached.
-      for (const text of complete.texts) if (!publicText(text)) return { ok: false };
+      for (const text of complete.texts) {
+        const category = textDecline(text);
+        if (category !== null) return { ok: false, category };
+      }
       return { ok: true, value: complete.value };
-    } catch { return { ok: false }; }
+    } catch { return { ok: false, category: "private-or-invalid" }; }
   };
   const personal = (text: string): boolean => {
     const normalized = fold(text);
@@ -218,6 +227,10 @@ export function createStandalonePolicy(options: StandalonePolicyOptions = {}): S
   };
   return {
     screenStandalone: value => standalone(value).ok,
+    inspectStandalone: value => {
+      const result = standalone(value);
+      return result.ok ? { ok: true } : { ok: false, category: result.category };
+    },
     declinesPersonal: text => personal(text),
     async screen(value: unknown): Promise<boolean> {
       try {
