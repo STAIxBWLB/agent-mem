@@ -1,0 +1,65 @@
+name: Task 127 disposable matched phase and lock diagnostics
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/task-127-diagnostics.yml
+      - scripts/task-127-*
+      - test/task-127-*
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    if: github.head_ref == 'measure/226-handoff-diagnostics'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: ubuntu-latest
+            platform: ubuntu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - name: Freeze controller and host provenance
+        run: |
+          mkdir -p "$RUNNER_TEMP/task127-diagnostics/preflight"
+          git rev-parse HEAD > "$RUNNER_TEMP/task127-diagnostics/controller-source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/task127-diagnostics/controller-source-status.txt"
+          git ls-files 'scripts/task-127-*' .github/workflows/task-127-diagnostics.yml 'test/task-127-*' | while IFS= read -r file; do shasum -a 256 "$file"; done > "$RUNNER_TEMP/task127-diagnostics/controller-sha256.txt"
+          bun --version > "$RUNNER_TEMP/task127-diagnostics/bun.txt"
+          uname -a > "$RUNNER_TEMP/task127-diagnostics/os.txt"
+      - name: Frozen dependency and typecheck preflight
+        run: |
+          bun install --frozen-lockfile > "$RUNNER_TEMP/task127-diagnostics/preflight/install.stdout.log" 2> "$RUNNER_TEMP/task127-diagnostics/preflight/install.stderr.log"
+          bun x tsc --noEmit > "$RUNNER_TEMP/task127-diagnostics/preflight/typecheck.stdout.log" 2> "$RUNNER_TEMP/task127-diagnostics/preflight/typecheck.stderr.log"
+          bun scripts/check-boundary.ts > "$RUNNER_TEMP/task127-diagnostics/preflight/boundary.stdout.log" 2> "$RUNNER_TEMP/task127-diagnostics/preflight/boundary.stderr.log"
+      - name: Pure controller schedule, provenance and parser controls
+        run: python3 scripts/task-127-controller-check.py --report "$RUNNER_TEMP/task127-diagnostics/preflight/controller-controls.json"
+      - name: Focused diagnostic transport and lock controls
+        run: |
+          diagnostic_tests=(test/task-127-*.test.ts)
+          [[ -f "${diagnostic_tests[0]}" ]]
+          bun test "${diagnostic_tests[@]}" > "$RUNNER_TEMP/task127-diagnostics/preflight/diagnostic-tests.stdout.log" 2> "$RUNNER_TEMP/task127-diagnostics/preflight/diagnostic-tests.stderr.log"
+      - name: Serial fixed schedule with every diagnostic outcome retained
+        run: |
+          python3 scripts/task-127-controller.py --repo "$GITHUB_WORKSPACE" --instrument "$GITHUB_WORKSPACE/scripts/task-127-instrument.ts" --platform '${{ matrix.platform }}' --out "$RUNNER_TEMP/task127-diagnostics/run" | tee "$RUNNER_TEMP/task127-diagnostics/controller.stdout.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task127-diagnostics-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/task127-diagnostics
+            !${{ runner.temp }}/task127-diagnostics/run/variants/**
