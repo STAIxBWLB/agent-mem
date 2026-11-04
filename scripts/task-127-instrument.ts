@@ -38,11 +38,13 @@ export function analyze(trace: string, stdout: string): object {
   const faults: string[] = [], headers = new Map<string, Header>(), records = new Map<string, Phase[]>();
   const calls: { callId: string; event: string; logicalRun: number; followUp: number }[] = [];
   const observer: Record<string, unknown>[] = [];
+  const spawns = new Map<string, { pid: number; parentPid: number; childIdentity?: { available?: boolean; startIdentity?: string } }>();
   const files = readdirSync(trace);
   if (files.length > 60_000) throw new Error("task127 artifact file cap");
   for (const name of files) {
     if (name.endsWith(".fault.json")) faults.push(name + ": " + readFileSync(join(trace, name), "utf8").slice(0, 500));
     else if (name.endsWith(".call.json")) calls.push(JSON.parse(readFileSync(join(trace, name), "utf8")));
+    else if (name.endsWith(".spawn.json")) spawns.set(name.slice(0, -11), JSON.parse(readFileSync(join(trace, name), "utf8")));
     else if (name.endsWith(".observer.jsonl")) {
       for (const line of readFileSync(join(trace, name), "utf8").trim().split("\n").filter(Boolean)) {
         try { observer.push(JSON.parse(line)); } catch { faults.push("malformed observer: " + name); }
@@ -51,6 +53,12 @@ export function analyze(trace: string, stdout: string): object {
       try { headers.set(name.slice(0, -5), JSON.parse(readFileSync(join(trace, name), "utf8"))); }
       catch { faults.push("malformed header: " + name); }
     }
+  }
+  const binaries = new Set(files.filter(name => name.endsWith(".bin")).map(name => name.slice(0, -4)));
+  for (const [stem, header] of headers) {
+    if (!binaries.has(stem)) faults.push("header without binary: " + stem);
+    if (stem !== `${header.callId}-${header.pid}` || !["cli", "worker", "harness"].includes(header.role)) faults.push("header identity mismatch: " + stem);
+    if (!(header.identity as { available?: boolean })?.available) faults.push("entry PID identity unavailable: " + stem);
   }
   for (const name of files.filter(name => name.endsWith(".bin"))) {
     const stem = name.slice(0, -4), bytes = readFileSync(join(trace, name)), header = headers.get(stem), phases: Phase[] = [];
@@ -72,14 +80,34 @@ export function analyze(trace: string, stdout: string): object {
   const invocations = diagnostics.filter(row => row.diagnostic === "transcript-budget-invocation");
   const key = (row: { event?: unknown; logicalRun?: unknown; followUp?: unknown }) => JSON.stringify([row.event, row.logicalRun, row.followUp]);
   const byKey = new Map(calls.map(call => [key(call), call]));
+  const callIds = new Set(calls.map(call => call.callId));
   if (byKey.size !== calls.length) faults.push("duplicate workload call mapping");
+  const invocationKeys = new Set(invocations.map(key));
+  if (invocationKeys.size !== invocations.length) faults.push("duplicate native invocation");
+  if (invocations.length !== calls.length) faults.push("invocation/call count mismatch");
   for (const invocation of invocations) if (!byKey.has(key(invocation))) faults.push("invocation without call mapping: " + key(invocation));
+  for (const call of calls) if (!invocationKeys.has(key(call))) faults.push("call without native invocation: " + key(call));
+  for (const [, header] of headers) if (header.role !== "harness" && !callIds.has(header.callId)) faults.push("orphan process header: " + header.callId);
+  const ownershipStillObserved: object[] = [];
   const results = calls.map(call => {
     const processes = [...headers.entries()].filter(([, header]) => header.callId === call.callId && header.role !== "harness");
     const cli = processes.filter(([, header]) => header.role === "cli");
     if (cli.length !== 1) faults.push("missing/duplicate CLI process: " + call.callId);
     const worker = processes.filter(([, header]) => header.role === "worker");
     if (worker.length > 1) faults.push("multiple workers for one call: " + call.callId);
+    const spawn = spawns.get(call.callId);
+    if (spawn && spawn.parentPid !== cli[0]?.[1].pid) faults.push("spawn parent mismatch: " + call.callId);
+    if (worker.length && worker[0]![1].pid !== spawn?.pid) faults.push("worker/spawn mismatch: " + call.callId);
+    const observedIdentity = worker[0]?.[1].identity as { available?: boolean; startIdentity?: string } | undefined;
+    if (observedIdentity?.available && spawn?.childIdentity?.available && observedIdentity.startIdentity !== spawn.childIdentity.startIdentity) faults.push("worker start identity changed: " + call.callId);
+    const expectedIdentity = observedIdentity?.available ? observedIdentity : spawn?.childIdentity;
+    for (const row of observer.filter(row => row.callId === call.callId && row.diagnostic === "task127-r1-identities" && row.stage === "after")) {
+      for (const process of row.processes as { pid: number; available: boolean; startIdentity?: string; state?: string }[]) {
+        if (process.pid === spawn?.pid && process.available && expectedIdentity?.available && process.startIdentity === expectedIdentity.startIdentity) {
+          ownershipStillObserved.push({ callId: call.callId, at: row.at, process, limitation: "PID still observed after command-path R1 check; may be exiting/zombie, not final-exit or lock ownership proof" });
+        }
+      }
+    }
     const workerPhases = worker.flatMap(([stem]) => records.get(stem) ?? []);
     const reads = workerPhases.filter(phase => phase.id === 108), consumed = workerPhases.filter(phase => phase.id === 116);
     if (reads.length > 1 || reads.some(phase => phase.a < 0 || phase.a > 256 * 1024)) faults.push("scan read budget or count exceeded: " + call.callId);
@@ -93,7 +121,8 @@ export function analyze(trace: string, stdout: string): object {
   return { observerComplete: faults.length === 0 && calls.length > 0, faults,
     invocationCount: invocations.length, callMetadataCount: calls.length,
     missingWorkerEntries: results.filter(row => row.workerPreEntryOrNotSpawned).length,
-    overflowOrErrorCount: faults.length, firstBusyCount: busy.filter(row => row.attempt === 1).length,
+    overflowOrErrorCount: faults.length, ownershipUnresolved: ownershipStillObserved.length > 0, ownershipStillObserved,
+    firstBusyCount: busy.filter(row => row.attempt === 1).length,
     cursorBusyObservations: busy, lockObservations: observer.filter(row => row.diagnostic === "task127-first-busy-locks"),
     calls: results, limitations: ["Absent worker entry may be a kill before preload entry; it is not proof of process exit.",
       "Last numeric phase bounds an observed interval, not a kernel stack or guaranteed syscall cause.",

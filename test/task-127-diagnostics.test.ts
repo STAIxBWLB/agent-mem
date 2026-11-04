@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { analyze, install } from "../scripts/task-127-instrument.ts";
@@ -35,6 +35,11 @@ test("task127 real isolated transport correlates native hook, process identities
     // Native startup can spend the real deadline before reading: unknown bytes must remain null rather than zero.
     expect(result.calls[0]!.readBytes === null || result.calls[0]!.readBytes! <= 256 * 1024).toBe(true);
     expect(targets.map(file => readFileSync(join(repo, file), "utf8"))).toEqual(before);
+    writeFileSync(log, ""); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
+    writeFileSync(log, stdout + stdout); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
+    writeFileSync(log, stdout);
+    const binary = join(trace, readdirSync(trace).find(name => name.endsWith(".bin"))!), saved = readFileSync(binary);
+    unlinkSync(binary); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false); writeFileSync(binary, saved);
     writeFileSync(join(trace, "injected.fault.json"), '{"reason":"overflow control"}');
     expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }

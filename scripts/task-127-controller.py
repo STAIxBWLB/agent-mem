@@ -270,6 +270,14 @@ def analyze(stdout, stderr, status):
             "note": "Instrumented source diagnostics only; neither script success nor complete diagnostics is product acceptance or causal attribution."}
 
 
+def observer_stop_reason(observer, exit_code):
+    if exit_code != 0 or observer.get("observerComplete") is not True or observer.get("error"):
+        return "out-of-band observer analysis incomplete or invalid"
+    if observer.get("ownershipUnresolved") is True:
+        return "stable PID ownership unresolved after R1; subsequent scripts not executed"
+    return None
+
+
 def run_once(arm, preload, attempt, item):
     env = os.environ.copy()
     trace = attempt / "trace"
@@ -376,9 +384,10 @@ def main():
                     observed = subprocess.run(["bun", str(instrument), "--analyze", str(attempt / "trace"), "--stdout", str(attempt / "stdout.log"), "--out", str(attempt / "observer-analysis.json")], stdout=stdout, stderr=stderr, timeout=30)
                 observer = json.loads((attempt / "observer-analysis.json").read_text())
                 analysis["observer"] = {"exitCode": observed.returncode, **observer}
-                if observed.returncode != 0 or observer.get("observerComplete") is not True or observer.get("error"):
+                observer_reason = observer_stop_reason(observer, observed.returncode)
+                if observer_reason:
                     analysis["measurementValid"] = False
-                    blocked = "out-of-band observer analysis incomplete or invalid"
+                    blocked = observer_reason
             except Exception as error:
                 analysis["measurementValid"] = False
                 analysis["observerAnalysisError"] = str(error)

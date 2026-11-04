@@ -74,7 +74,7 @@ export function activate(repo: string, preload: string): void {
       ...options, env: { ...options?.env, AMEM_TASK127_TRACE_DIR: trace, AMEM_TASK127_CALL_ID: callId },
     });
     writeFileSync(join(trace, callId + ".spawn.json"), JSON.stringify({ callId, pid: child.pid, parentPid: process.pid,
-      parentIdentity: processIdentity(process.pid), spawnedAt: now() }) + "\n", { mode: 0o600, flag: "wx" });
+      parentIdentity: processIdentity(process.pid), childIdentity: processIdentity(child.pid), spawnedAt: now() }) + "\n", { mode: 0o600, flag: "wx" });
     return child;
   };
   mutable.spawnSync = (argv, options) => {
