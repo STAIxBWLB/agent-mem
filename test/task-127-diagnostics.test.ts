@@ -29,12 +29,17 @@ test("task127 real isolated transport correlates native hook, process identities
     const child = Bun.spawn([process.execPath, "--preload", join(output, "preload.ts"), entry], { env: { ...process.env, AMEM_TASK127_TRACE_DIR: trace }, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(code, stderr).toBe(0); writeFileSync(log, stdout);
-    const result = analyze(trace, log) as { observerComplete: boolean; faults: string[]; callMetadataCount: number; calls: { processes: { role: string; identity: { available: boolean } }[]; readBytes: number | null }[] };
+    const result = analyze(trace, log) as { observerComplete: boolean; faults: string[]; callMetadataCount: number; calls: { callId: string; processes: { role: string; identity: { available: boolean } }[]; readBytes: number | null }[] };
     expect(result.observerComplete, JSON.stringify(result.faults)).toBe(true); expect(result.callMetadataCount).toBe(1);
     expect(result.calls[0]!.processes.find(item => item.role === "cli")?.identity.available).toBe(true);
     // Native startup can spend the real deadline before reading: unknown bytes must remain null rather than zero.
     expect(result.calls[0]!.readBytes === null || result.calls[0]!.readBytes! <= 256 * 1024).toBe(true);
     expect(targets.map(file => readFileSync(join(repo, file), "utf8"))).toEqual(before);
+    const callId = result.calls[0]!.callId, spawned = JSON.parse(readFileSync(join(trace, callId + ".spawn.json"), "utf8"));
+    const ownershipControl = join(trace, "ownership-control.observer.jsonl");
+    writeFileSync(ownershipControl, JSON.stringify({ diagnostic: "task127-r1-identities", stage: "after", callId,
+      at: Date.now(), processes: [spawned.childIdentity] }) + "\n");
+    expect((analyze(trace, log) as { ownershipUnresolved: boolean }).ownershipUnresolved).toBe(true); unlinkSync(ownershipControl);
     writeFileSync(log, ""); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
     writeFileSync(log, stdout + stdout); expect((analyze(trace, log) as { observerComplete: boolean }).observerComplete).toBe(false);
     writeFileSync(log, stdout);
