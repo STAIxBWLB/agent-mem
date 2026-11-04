@@ -32,7 +32,7 @@ test("task127 stable sampling is merged into the existing command observation wi
 });
 
 test("task127 missing identity requires presence evidence and permissions remain unknown", () => {
-  const cases: [ProcessObservation, ProcessPresence, string][] = [
+  const cases: [ProcessObservation, ProcessPresence, "gone" | "unknown"][] = [
     [unavailable("ENOENT"), { state: "absent", code: "ESRCH" }, "gone"],
     [unavailable("EACCES"), { state: "unknown", code: "EPERM" }, "unknown"],
     [unavailable("proc-pidinfo-unavailable-or-layout"), { state: "absent", code: "ESRCH" }, "gone"],
