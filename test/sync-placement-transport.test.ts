@@ -20,6 +20,7 @@ import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow
 import { shardKeyHash } from "../src/memory/shard.ts";
 import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
+import { syncOutboundContent } from "../src/memory/sync-screen.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 
 const PROJECT = "example.test/placement/transport", USER_REF = "refs/heads/amem/u", PROJECT_REF = `refs/heads/amem/p/${shardKeyHash(PROJECT)}`;
@@ -324,6 +325,8 @@ test("a permitted native prune uses exact already-public held target and basis p
   const f = await publishedPruneFixture(), target = f.source.ids.target!;
   const before = git(f.remote, "rev-parse", PROJECT_REF), oldFiles = new Set(git(f.remote, "ls-tree", "-r", "--name-only", before).split("\n").filter(Boolean));
   const oldRows = verifiedPublicRows(f.remote);
+  expect(Object.keys(syncOutboundContent(oldRows.get(f.prune.targets[0]!.basis.id)))).toEqual([]);
+  expect(Object.keys(syncOutboundContent(f.prune)).length).toBeGreaterThan(0);
   f.source.policy(["strict public prune target"]); f.source.changePolicyEpoch();
   // A demotion's validated ID/UTC operands are generated metadata, so its projected content is empty.
   // This fresh host restriction holds that already-public basis as well as the machine-policy-held target.
@@ -337,8 +340,9 @@ test("a permitted native prune uses exact already-public held target and basis p
   for (const file of newPacks) expect(git(f.remote, "show", `${after}:${file}`)).not.toContain("strict public prune target");
   const manifests = files.filter(file => file.startsWith("prune-witnesses/") && !oldFiles.has(file)).map(file => JSON.parse(git(f.remote, "show", `${after}:${file}`)) as PublicPruneWitnessV1);
   const manifest = manifests.find(value => value.prune.id === f.prune.id); expect(manifest).toBeDefined();
+  expect(Object.keys(syncOutboundContent(manifest!)).length).toBeGreaterThan(0);
   expect(manifest!.prune).toEqual(f.prune); expect(manifest!.realm).toEqual({ scope: "project", key: PROJECT });
-  expect(manifest!.prune.generation).toBe(f.source.store.profile.generation);
+  expect(manifest!.prune.generation).toBe(f.source.store.profile.generation!);
   for (const item of f.prune.targets) for (const required of [item, item.basis]) {
     const witness = manifest!.witnesses.find(value => value.id === required.id); expect(witness).toBeDefined();
     expect(witness!.rowHash).toBe(required.rowHash); expect(oldFiles.has(witness!.pack)).toBe(true);
