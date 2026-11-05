@@ -3,7 +3,7 @@ import { canonicalJSON } from "../src/memory/generation.ts";
 import { planPrune, applyPrune } from "../src/memory/prune.ts";
 import { placementKeyId } from "../src/memory/sync-placement-journal-format.ts";
 import { memoryGitEnv } from "../src/memory/platform.ts";
-import { inspectSyncPlacement, MemoryStore, openShardStore } from "../src/index.ts";
+import { inspectSyncPlacement, MemoryStore, openShardStore, syncMemory, holdPlacementRow } from "../src/index.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
@@ -82,7 +82,7 @@ test("missing and mismatched fresh attestations fail closed without a fingerprin
 
 for (const kind of ["bytes", "rows", "torn"] as const) test(`incomplete ${kind} source never returns a fingerprint or heals input`, async () => {
   const f = await fixture(), file = join(f.store.dir, "log", `${f.store.machine.id}.jsonl`);
-  writeFileSync(file, kind === "rows" ? "\n".repeat(20001) : kind === "torn" ? "{unfinished" : "", { mode: 0o600 });
+  writeFileSync(file, kind === "rows" ? "{}\n".repeat(20001) : kind === "torn" ? "{unfinished" : "", { mode: 0o600 });
   if (kind === "bytes") truncateSync(file, 8 * 1024 * 1024 + 1);
   const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
   expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
@@ -116,3 +116,30 @@ test("a policy-version change cannot produce a complete fingerprint", async () =
   const result = await inspectSyncPlacement(f.store, { ...f.opts(), policyVersion: () => String(version++) });
   expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
 });
+
+test("intrinsically local short notes and vault links are reported without publishing or returning their bodies/paths", async () => {
+  const f = await fixture(), source = [...f.capture().rows.values()].find(value => value.key.id === f.ids.project)!;
+  const path = "notes/inspection-private-path.md", link = f.store.recordVaultLink(source.key.id, path, f.project, source.key.rowHash);
+  const short = f.store.note({ ...inspectionNote("private short body not for a report", f.project), tier: "short" });
+  const before = f.snapshot(), report = await inspectSyncPlacement(f.store, f.opts());
+  expect(f.snapshot()).toEqual(before); expect(report.complete).toBe(true); if (!report.complete) throw Error("local fixture inspection incomplete");
+  for (const id of [link, short]) expect(report.rows.find(row => row.id === id)).toMatchObject({ sourcePlacement: "local", disposition: "held", reason: "source-local" });
+  expect(JSON.stringify(report)).not.toContain(path); expect(JSON.stringify(report)).not.toContain("private short body");
+  expect((await syncMemory(f.store, f.opts())).ok).toBe(true); expect(f.reachableIds()).not.toContain(link); expect(f.reachableIds()).not.toContain(short);
+}, 20_000);
+
+test("a journal write in the last host callback cannot pass the final passive proof", async () => {
+  const f = await fixture(); expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  let calls = 0;
+  const baseline = await inspectSyncPlacement(f.store, { ...f.opts(), policyVersion: () => { calls++; return "initial"; } });
+  expect(baseline.complete).toBe(true); const last = calls; expect(last).toBeGreaterThan(0);
+  const source = [...f.capture().rows.values()].find(row => row.key.id === f.ids.project)!; calls = 0; let changed = false;
+  const result = await inspectSyncPlacement(f.store, { ...f.opts(), policyVersion: () => {
+    if (++calls === last) {
+      changed = true; holdPlacementRow(f.home, { epochHash: f.epochHash, expectedHead: f.projection().headHash, requestId: "d".repeat(64), key: source.key }, f.port, "person");
+    }
+    return "initial";
+  } });
+  expect(changed).toBe(true); expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
+  expect(f.projection().states.find(state => state.key.id === source.key.id)?.reasons).toContain("person-local");
+}, 20_000);
