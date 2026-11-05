@@ -42,16 +42,16 @@ function refuse(): never { throw new Error("placement sync unavailable"); }
 function directory(file: string): void { const s = lstatSync(file); if (!s.isDirectory() || s.isSymbolicLink()) refuse(); }
 function emptyHistory(): ShardHistory { return { rows: new Map(), files: new Map(), origins: new Map(), manifests: new Map(), version: "v3" }; }
 /** Internal phase observer is a fault seam, not part of SyncOptions or the package barrel. */
-export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions = {}, phase?: Phase): Promise<SyncResult> {
-  return new PlacementTransport(store, opts, phase).run();
+export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions = {}, phase?: Phase, testOnlyError?: (error:unknown)=>void): Promise<SyncResult> {
+  return new PlacementTransport(store, opts, phase, testOnlyError).run();
 }
 class PlacementTransport {
-  readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly home: string; readonly root: string; readonly cache: string;
+  readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly testOnlyError?: (error:unknown)=>void; readonly home: string; readonly root: string; readonly cache: string;
   readonly releases: (() => void)[] = []; readonly temporary: string[] = []; readonly refs: string[] = [];
   targets: Target[] = []; homeMutation?: MutationHandle; epochHash = ""; journal!: PlacementJournalRead; capture?: PlacementCapture;
   machineId = ""; url = ""; revision = ""; accepted = false; factual = false; attempted = false; lastPolicyCheckUnixMs?: number; lastPolicyHash?: string; attemptHash?: string;
   applications?: ShardSyncApplications; current?: Materialized; recovered = false;
-  constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase) { this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
+  constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void) { this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
   attest(): void {
     if (!this.opts.placementAttestation || this.opts.screen && !this.opts.policyVersion) refuse();
     const value = memoryPolicySnapshot(this.opts.placementAttestation());
@@ -375,7 +375,7 @@ class PlacementTransport {
       const planned = root.targets[index]!;
       const head = planned.publish ? planned.commit : target.remote;
       if (head) {
-        const actual = await target.auditor.history(head); target.remote = head; target.remoteHistory = actual; target.candidate = actual;
+        const actual = await target.auditor.history(head); target.remoteHistory = actual; target.candidate = actual;
         target.rows = new Map(actual.rows); target.fetched = new Set(actual.rows.keys()); target.origins = new Map(actual.origins);
       } else { target.rows.clear(); target.fetched.clear(); target.candidate = emptyHistory(); }
     }
@@ -450,13 +450,15 @@ class PlacementTransport {
       if(!read.facts.some(fact=>fact.phase==="publication-intent"))recordPlacementPublicationPhase(this.home,this.epochHash,material.bundle.root.seal,"publication-intent",{artifactFactHash:artifact.seal,policyHash:material.bundle.root.policyHash,policyCheckUnixMs:this.lastPolicyCheckUnixMs},this.storage());
       await this.observe("before-cas");this.check();
       for(const target of this.targets)for(const check of target.selectorChecks??[])check();
+      this.lastPolicyCheckUnixMs=Date.now(); this.lastPolicyHash=material.bundle.root.policyHash;
       const participating=material.bundle.root.targets.map((target,index)=>({target,index})).filter(item=>item.target.publish);
       this.attempted=participating.length>0;
       const sent=participating.length?await generationSyncGit(this.root,this.args(["push","--atomic","--no-follow-tags","-q",...participating.map(({target,index})=>`--force-with-lease=${shardSyncRef(this.targets[index]!.realm)}:${target.expectedRemoteHead??""}`),"origin",...participating.map(({target,index})=>`${target.commit}:${shardSyncRef(this.targets[index]!.realm)}`)]),this.opts.signal):{code:0};
       this.accepted=sent.code===0;await this.observe("cas-returned");
       if(!this.accepted)return this.result(false,"unknown","The placement publication outcome is unknown; retained receipts may have published. Recheck this exact attempt before retrying.");
       this.factual=true;return await this.finish(material);
-    }catch{
+    }catch(error){
+      try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
       return this.result(false,this.attemptHash?"unknown":"not-needed",this.attemptHash?"Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.":"Placement sync is unavailable; verify the active epoch, selected sources, policy, private remote and writer pins before retrying.");
     }finally{
       for(const ref of this.refs)try{await generationSyncGit(this.root,this.args(["update-ref","--no-deref","-d",ref]),undefined);}catch{}

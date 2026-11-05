@@ -97,7 +97,7 @@ test("two independently activated homes exchange allowed project/user originals 
     return { allowed, user, declined, forgotten, task };
   } });
   const ownIds = [...source.capture().rows.values()].map(row => row.row.id).sort();
-  const sent = await syncMemory(source.store, source.opts(remote));
+  const sent = await syncPlacementMemory(source.store, source.opts(remote), undefined, error => console.error("isolated transport diagnostic", error));
   expect(sent).toMatchObject({ ok: true, pushed: true, placementPublication: { outcome: "committed", policyCeiling: "last-positive-check-before-in-flight-push" } });
   expect(refs(remote).sort()).toEqual([PROJECT_REF, USER_REF].sort());
   assertNeverPublished(source.home, remote, ["NEVER_PUBLIC_NOTE", "NEVER_PUBLIC_FORGOTTEN_ORIGINAL", "NEVER_PUBLIC_TASK"]);

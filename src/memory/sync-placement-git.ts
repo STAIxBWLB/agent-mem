@@ -53,8 +53,11 @@ function compile(files: ReadonlyMap<string, Uint8Array>, parent: string | null, 
     if (bytes.at(-1) !== 10 || validPack && hash(bytes) !== pack![2]) return fail();
     if (isShardManifestPath(path)) decodeShardManifest(path, bytes);
     if (path === "shard.json") {
-      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as ShardSyncRealm;
-      decodePlacementTransportDescriptor(bytes, parsed);
+      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail();
+      const realm: ShardSyncRealm = parsed.scope === "user" ? { scope: "user" }
+        : parsed.scope === "project" && typeof parsed.key === "string" ? { scope: "project", key: parsed.key } : fail();
+      decodePlacementTransportDescriptor(bytes, realm);
     }
     entries.push({ path, bytes });
   }

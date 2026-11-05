@@ -97,3 +97,15 @@ test("file, body, timestamp and parent bounds fail before any write or caller ge
   expect(() => compilePlacementGitObjects(proxied, null, WHEN)).toThrow(PlacementGitObjectError);
   expect(calls).toBe(0);
 });
+
+
+test("full placement descriptors use a closed scope/key realm while retaining strict descriptor validation", () => {
+  for (const realm of [{ scope: "user" }, { scope: "project", key: "synthetic-git" }]) {
+    const descriptor = { schema: PLACEMENT_DESCRIPTOR_SCHEMA, ...realm, publicationFormat: PLACEMENT_FORMAT };
+    const bytes = Buffer.from(canonicalJSON(descriptor) + "\n");
+    const result = compilePlacementGitObjects(new Map([["shard.json", bytes]]), null, WHEN);
+    expect(result.objects.find(object => object.type === "blob" && object.path === "shard.json")?.bytes).toEqual(bytes);
+    const extra = Buffer.from(canonicalJSON({ ...descriptor, unexpected: true }) + "\n");
+    expect(() => compilePlacementGitObjects(new Map([["shard.json", extra]]), null, WHEN)).toThrow(PlacementGitObjectError);
+  }
+});
