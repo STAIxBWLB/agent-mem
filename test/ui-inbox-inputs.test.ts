@@ -25,7 +25,12 @@ function rawFixture() { const base = home(); mkdirSync(join(base, "log")); const
 test("targetless inbox input inventory ignores ordinary curated accepts and hook/work/setup/capture churn", () => {
   const base = home();
   const candidates = new CandidateStore({ memoryDir: base }); try { candidates.put({ project: "project", kind: "memory", text: "targetless item" }, "public"); } finally { candidates.close(); }
-  const tracker = createInboxSourceTracker(base), result = computeInbox(base, memo(base), tracker.beforeProject), before = tracker.before();
+  const reads = spyOn(MemoryStore.prototype, "get");
+  const tracker = createInboxSourceTracker(base);
+  let result: ReturnType<typeof computeInbox>;
+  try { result = computeInbox(base, memo(base), tracker.beforeProject); expect(reads).not.toHaveBeenCalled(); }
+  finally { reads.mockRestore(); }
+  const before = tracker.before();
   expect(result.items.some(item => item.kind === "memory")).toBe(true); expect(before.roots).toEqual([]);
   const memory = new MemoryStore({ memoryDir: base, deferPromotions: true }); cleanup.push(() => memory.close());
   memory.note(note("ordinary accept without a dependency"));
@@ -37,7 +42,11 @@ test("real referenced-source plain-note append is soft, while forget is hard and
   const base = home(), memory = new MemoryStore({ memoryDir: base, deferPromotions: true }); cleanup.push(() => memory.close());
   const expiresAt = new Date(Date.now() + 60000).toISOString(), target = memory.note({ ...note("referenced target"), tier: "short", expires: expiresAt });
   const candidates = new CandidateStore({ memoryDir: base }); try { candidates.put({ project: "project", kind: "correction", target: { id: target, revision: candidateTargetRevision(memory.get(target, "project")!) }, proposedText: "ordinary proposal", reason: "evidence" }, "public"); } finally { candidates.close(); }
-  const tracker = createInboxSourceTracker(base), result = computeInbox(base, memo(base), tracker.beforeProject), before = tracker.before();
+  const reads = spyOn(MemoryStore.prototype, "get"), tracker = createInboxSourceTracker(base);
+  let result: ReturnType<typeof computeInbox>;
+  try { result = computeInbox(base, memo(base), tracker.beforeProject); expect(reads).toHaveBeenCalledTimes(1); }
+  finally { reads.mockRestore(); }
+  const before = tracker.before();
   expect(before.roots).toContain("log"); expect(before.version).toBe(tracker.after().version); expect(result.expiresAt).toBe(Date.parse(expiresAt));
   memory.note(note("new ordinary source note")); const appended = inboxSourceChange(base, before); expect(appended.changed).toBe(true); expect(appended.hard).toBe(false);
   expect(memory.forget(target, "person", "project")).toBeDefined(); const forgotten = inboxSourceChange(base, appended.sources); expect(forgotten.changed).toBe(true); expect(forgotten.hard).toBe(true);

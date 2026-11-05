@@ -48,13 +48,20 @@ export function candidateText(input: CandidateInput): string {
 }
 export const candidateTargets = (input: CandidateInput) => "targets" in input ? input.targets : "target" in input && input.target ? [input.target] : [];
 /** Shared with Review: the candidate, every target, and the promotion goal must pass current policy. */
-export function visibleCandidate(candidate: Candidate, project: string, store: MemoryStore | undefined, policy: StandalonePolicy): boolean {
+export function visibleCandidate(candidate: Candidate, project: string, store: MemoryStore | undefined, policy: StandalonePolicy, onExpiry?: (at: number) => void): boolean {
   if (!policy.screenStandalone(candidate)) return false;
   const input = candidate.input, targets = candidateTargets(input);
   if (!targets.length && input.kind !== "promotion") return true;
   if (!store) return false;
-  if (targets.some(target => { const view = store.get(target.id, project); return !view || view.project !== project || !policy.screenStandalone(view); })) return false;
+  let expiresAt: number | undefined;
+  for (const target of targets) {
+    const view = store.get(target.id, project);
+    if (!view || view.project !== project || !policy.screenStandalone(view)) return false;
+    const at = view.expiresAt ? Date.parse(view.expiresAt) : Number.NaN;
+    if (Number.isFinite(at) && at > Date.now()) expiresAt = expiresAt === undefined ? at : Math.min(expiresAt, at);
+  }
   if (input.kind === "promotion") { const goal = store.goalOf(input.goalId, project); if (!goal || !policy.screenStandalone(goal)) return false; }
+  if (expiresAt !== undefined) onExpiry?.(expiresAt);
   return true;
 }
 export interface CapacityMemo { policy: string; until: number; item: InboxItem | null; captureConfig: string }
@@ -88,11 +95,7 @@ export function computeInbox(base: string, previous?: CapacityMemo, beforeProjec
               } else store = openCuratedForRead(base, project);
               opened = true;
             }
-            if (!visibleCandidate(candidate, project, store, policy)) continue;
-            for (const target of candidateTargets(candidate.input)) {
-              const value = store?.get(target.id, project)?.expiresAt, at = value ? Date.parse(value) : Number.NaN;
-              if (Number.isFinite(at) && at > Date.now()) expiresAt = expiresAt === null ? at : Math.min(expiresAt, at);
-            }
+            if (!visibleCandidate(candidate, project, store, policy, at => { expiresAt = expiresAt === null ? at : Math.min(expiresAt, at); })) continue;
             const kind = candidate.input.kind;
             add({ id: candidate.id, group: "candidate", kind, title: oneLine(candidateText(candidate.input)), project, at: candidate.createdAt,
               verbs: [...kind !== "decay" && kind !== "model-answer" ? [{ id: "accept", label: "Accept", primary: true }] : [], { id: "reject", label: "Reject", reason: "optional" }],
