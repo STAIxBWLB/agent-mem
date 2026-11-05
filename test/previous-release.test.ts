@@ -13,6 +13,10 @@ import { CandidateStore } from "../src/memory/candidates.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { previousRelease } from "../scripts/previous-release.ts";
+import { migrateShards } from "../src/memory/shard-migration.ts";
+import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
+import { openShardStore } from "../src/memory/store.ts";
+import { createPlacementInspectionFixture, createInspectionRemote, inspectionGit, inspectionNote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 
 // #199 AC6 / #249: this build and the previous minor line on one shared home. The CI job `previous-release` resolves
 // its latest published plain release with scripts/previous-release.ts and sets AMEM_PREV_ROOT; locally the suite skips without it, and
@@ -179,5 +183,68 @@ console.log(JSON.stringify(result));`));
     expect(JSON.parse(run(f, `const {MemoryStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});let upgrade=false;try{new MemoryStore({memoryDir:${JSON.stringify(f.base)}});}catch(error){upgrade=String(error.message).includes('Upgrade amem');}console.log(JSON.stringify({upgrade}));`))).toEqual({ upgrade: true });
     expect(() => new MemoryStore({ memoryDir: f.base })).toThrow("Upgrade amem"); expect(snapshot()).toEqual(floored);
   });
+
+  test("an actually activated v3 home refuses previous-release read, write and sync before admission or unfiltered publication", async () => {
+    const host = fixture(), active = await createPlacementInspectionFixture(); clean.push(active.close);
+    const previous = { ...host, env: { ...host.env, AMEM_HOME: active.home, AGENTHUB_HOME: active.root } };
+    const probe = () => JSON.parse(run(previous, `const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+let effects=0,admitted=0;
+Bun.spawn=()=>{effects++;throw Error('unexpected child');};Bun.spawnSync=()=>{effects++;throw Error('unexpected child');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
+const results=[];
+for(const operation of ['read','write','sync']){
+  let store;
+  try {
+    store=openShardStore({memoryDir:${JSON.stringify(active.home)},project:${JSON.stringify(active.project)}});admitted++;
+    if(operation==='read')store.list({project:${JSON.stringify(active.project)}});
+    else if(operation==='write')store.note(${JSON.stringify(inspectionNote("N1 must not append to activated placement", active.project))});
+    else await syncMemory(store,{remote:${JSON.stringify(active.remote)},visibility:async()=>{effects++;return 'private';}});
+    results.push({operation,refused:false});
+  } catch(error){results.push({operation,refused:true,message:String(error.message),code:error.code??null});}
+  finally{store?.close();}
+}
+console.log(JSON.stringify({results,effects,admitted}));`)) as {results:{operation:string;refused:boolean;message:string;code:string|null}[];effects:number;admitted:number};
+    const before = active.snapshot(), observed = probe();
+    expect(observed.results.map(value=>({operation:value.operation,refused:value.refused}))).toEqual([
+      {operation:"read",refused:true},{operation:"write",refused:true},{operation:"sync",refused:true},
+    ]);
+    expect(observed.effects).toBe(0); expect(observed.admitted).toBe(0);
+    for (const value of observed.results) expect(value.message).toContain("inspect the local profile before continuing");
+    expect(active.snapshot()).toEqual(before);
+    expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe(""); expect(active.reachableIds()).toEqual([]);
+    // A known old release cannot gain new diagnostics retroactively. The documented existing person-authored
+    // home floor supplies its actionable upgrade remedy; activation/runtime code must never install that floor.
+    const currentVersion = (JSON.parse(readFileSync(new URL("../package.json",import.meta.url),"utf8")) as {version:string}).version;
+    writeFileSync(join(active.home,"formats.json"),canonicalJSON([{surface:"home",minReader:currentVersion,since:"2026-11-06"}])+"\n",{mode:0o600});
+    const floored = active.snapshot(), floorResult = probe();
+    for(const value of floorResult.results){expect(value.refused).toBe(true);expect(value.code).toBe("format_floor");expect(value.message).toContain(`Upgrade amem to ${currentVersion} or later.`);}
+    expect(floorResult.effects).toBe(0); expect(floorResult.admitted).toBe(0); expect(active.snapshot()).toEqual(floored);
+    expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");
+  },30_000);
+
+  for(const version of ["v1","v2"] as const)test(`inactive ${version} shards preserve previous-release reads, writes and ordinary local Git sync`,async()=>{
+    const f = fixture(), original = new MemoryStore({memoryDir:f.base,deferPromotions:true});
+    let initial:string;
+    try{initial=original.note(inspectionNote(`ordinary ${version} initial source`,f.project));}finally{original.close();}
+    const generation=createHash("sha256").update(f.root).digest("hex").slice(0,32);
+    expect((await migrateShards({memoryDir:f.base,generation,mode:"apply",authorizedPerson:true,tty:true})).active).toBe(true);
+    if(version==="v2")await activatePublicPruneView({memoryDir:f.base,mode:"apply",authorizedPerson:true,tty:true});
+    const remote=createInspectionRemote(f.root,"ordinary-n1.git"),markers=["profile.json","shards.json"].map(name=>readFileSync(join(f.base,name),"utf8"));
+    const observed=JSON.parse(run(f,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+const store=openShardStore({memoryDir:${JSON.stringify(f.base)},project:${JSON.stringify(f.project)},deferPromotions:true});
+try{
+const read=store.list({project:${JSON.stringify(f.project)}}).map(value=>value.id);
+const written=store.note(${JSON.stringify(inspectionNote(`ordinary ${version} previous-release append`,f.project))});
+const synced=await syncMemory(store,{remote:${JSON.stringify(remote)},visibility:async()=> 'private'});
+console.log(JSON.stringify({read,written,ok:synced.ok}));
+}finally{store.close();}`)) as {read:string[];written:string;ok:boolean};
+    expect(observed.read).toContain(initial!); expect(observed.ok).toBe(true);
+    expect(reachableInspectionRowIds(remote)).toEqual([initial!,observed.written].sort());
+    expect(["profile.json","shards.json"].map(name=>readFileSync(join(f.base,name),"utf8"))).toEqual(markers);
+    expect(existsSync(join(f.base,"sync-placement"))).toBe(false);
+    const current=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
+    try{expect(current.list({project:f.project}).map(value=>value.id).sort()).toEqual([initial!,observed.written].sort());}finally{current.close();}
+  },30_000);
 
 });

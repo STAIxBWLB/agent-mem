@@ -57,6 +57,8 @@ test("stage 5: prepared v2 to fixture v3, filtered publication, inspection, seco
   expect(first.rows.find(row => row.id === source.ids.dependent)).toMatchObject({ disposition: "held", reason: "related-local" });
   const eligible = first.rows.filter(row => row.disposition === "eligible").map(row => row.id).sort();
   expect(source.reachableIds()).toEqual(eligible);
+  expect(source.store.get(source.ids.declined!, source.project)?.text).toBe("NEVER_PUBLIC_STAGE5_BODY");
+  expect(source.projection().states.find(row => row.key.id === source.ids.declined)?.held).toBe(true);
 
   const receiver = await createPlacementInspectionFixture({ prepared, generation: source.generation,
     seed: (store, project) => ({ seed: store.note(inspectionNote("stage-5 second-machine original", project)) }) }); homes.push(receiver);
@@ -85,7 +87,10 @@ test("stage 5: prepared v2 to fixture v3, filtered publication, inspection, seco
   expect(applyPrune(source.store.prunePort(), plan, auth).completed).toContain(prune.id);
   const pruning = await publish(source);
   expect(pruning.rows.find(row => row.id === prune.id)?.disposition).toBe("eligible");
+  const receiverSeals = new Set(receiver.publications().map(row => row.bundle.root.seal));
   expect((await syncMemory(receiver.store, receiver.opts(source.remote))).ok).toBe(true);
+  const finalInspection = await inspect(receiver);
+  for (const publication of receiver.publications().filter(row => !receiverSeals.has(row.bundle.root.seal))) matchPlan(finalInspection, publication);
   expect(receiver.store.get(source.ids.forgotten!, source.project)).toBeUndefined();
   expect(receiver.store.get(source.ids.target!, source.project)).toBeUndefined();
   expect(receiver.store.prunePort().snapshot().pruned).toContain(source.ids.target!);
