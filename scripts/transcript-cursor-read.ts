@@ -1,7 +1,7 @@
 /** Measurement-only cursor observation. Never recover or reopen a hook database writable. */
 import { Database } from "bun:sqlite";
 
-export const TRANSCRIPT_CURSOR_BUSY_MS = 25;
+export const TRANSCRIPT_CURSOR_BUSY_MS = 2000;
 /** One immediate read followed by at most one bounded wait, outside the measured hook interval. */
 export function readTranscriptCursorOffset(file: string, onBusy = () => {
   console.log(JSON.stringify({ diagnostic: "transcript-cursor-busy", waitBoundMs: TRANSCRIPT_CURSOR_BUSY_MS }));

@@ -29,9 +29,10 @@ async function fixture(work: (file: string, child: ReturnType<typeof spawnLock>)
 test("readonly measurement retries BUSY and waits for the actual writer to release", async () => {
   await fixture(async (file, child) => {
     const before = readFileSync(file), mtime = statSync(file).mtimeMs;
-    let busy = 0;
+    let busy = 0; const started = performance.now();
     const offset = readTranscriptCursorOffset(file, () => { busy++; child.stdin.write("release\n"); child.stdin.flush(); });
     expect(offset).toBe(1234); expect(busy).toBe(1);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(150);
     await child.exited;
     expect(readFileSync(file)).toEqual(before); expect(statSync(file).mtimeMs).toBe(mtime);
   });
@@ -41,7 +42,7 @@ test("persistent BUSY is an actionable measurement failure, never a fabricated o
   await fixture(async file => {
     let busy = 0; const started = performance.now();
     expect(() => readTranscriptCursorOffset(file, () => { busy++; })).toThrow(`SQLITE_BUSY persisted through the ${TRANSCRIPT_CURSOR_BUSY_MS} ms read-only wait`);
-    expect(busy).toBe(1); expect(performance.now() - started).toBeLessThan(1000);
+    expect(busy).toBe(1); expect(performance.now() - started).toBeLessThan(5000);
   });
 });
 

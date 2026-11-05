@@ -8,6 +8,6 @@ if (process.argv[3] === "hot") db.run("UPDATE spill SET data=randomblob(4096)");
 process.stdout.write("locked\n");
 try {
   for await (const chunk of Bun.stdin.stream()) {
-    if (new TextDecoder().decode(chunk).includes("release")) { await Bun.sleep(5); break; }
+    if (new TextDecoder().decode(chunk).includes("release")) { await Bun.sleep(200); break; }
   }
 } finally { db.run("ROLLBACK"); db.close(); }
