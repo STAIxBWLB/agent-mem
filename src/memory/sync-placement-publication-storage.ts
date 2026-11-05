@@ -50,23 +50,37 @@ export function readPlacementPublication(home: string, epochHash: string, attemp
 }
 export type PlacementPublicationFactInput = { exportHash: string }
   | { artifactFactHash: string; policyHash: string; policyCheckUnixMs: number }
-  | { intentFactHash: string; journal: { sequence: number; headHash: string }; outcomeHash: string; outcome: "committed" | "unknown" };
+  | { intentFactHash: string | null; journal: { sequence: number; headHash: string }; outcomeHash: string; outcome: "committed" | "unknown" };
 export function recordPlacementPublicationPhase(home: string, epochHash: string, attemptHash: string, phase: PlacementPublicationPhase,
   input: PlacementPublicationFactInput, opts: PlacementStorageOptions): void {
   if (!validHash(attemptHash)) fail();
   const read = readPlacementPublication(home, epochHash, attemptHash), names = publicationFileNames(read.bundle.root);
   const index = ["artifact-built", "publication-intent", "completed"].indexOf(phase); if (index < 0) fail();
-  const previous = index === 0 ? read.bundle.root.seal : read.facts[index - 1]?.seal;
+  const existing = read.facts.find(fact => fact.phase === phase);
+  const prior = phase === "completed" ? read.facts.filter(fact => fact.phase !== "completed").at(-1)
+    : phase === "publication-intent" ? read.facts.find(fact => fact.phase === "artifact-built") : undefined;
+  const previous = existing?.previousHash ?? prior?.seal ?? (phase === "publication-intent" ? undefined : read.bundle.root.seal);
   if (!previous) fail("pending");
   const fact = createPlacementPublicationFact(attemptHash, previous, phase, input);
   const file = `${stem(attemptHash)}${["artifact", "intent", "receipt"][index]}.json`;
   withPlacementPublicationMetadata(home, epochHash, opts, names, io => {
     const before = io.publication(attemptHash), journal = io.journal();
-    if (before.facts.some((value, at) => at < index && canonicalJSON(value) !== canonicalJSON(read.facts[at]))) fail("changed");
-    if (index > 0 && before.facts[index - 1]?.seal !== previous) fail("changed");
+    const saved = before.facts.find(value => value.phase === phase);
+    if (before.phase === "completed") {
+      if (!saved || canonicalJSON(saved) !== canonicalJSON(fact)) fail("conflict");
+      io.complete(file, publicationBytes(fact), "publication-fact-written", "publication-fact-fsync"); io.check(); return;
+    }
+    const durablePrior = phase === "completed" ? before.facts.at(-1)
+      : phase === "publication-intent" ? before.facts.find(value => value.phase === "artifact-built") : undefined;
+    if ((saved?.previousHash ?? durablePrior?.seal ?? read.bundle.root.seal) !== previous) fail("changed");
+    if (phase === "artifact-built" && before.phase !== "prepared" && !saved || phase === "publication-intent" && !durablePrior) fail("pending");
     if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== read.bundle.root.policyHash)) fail("conflict");
-    if (fact.phase === "completed" && (journal.pending || fact.intentFactHash !== previous || fact.journal.sequence !== journal.sequence || fact.journal.headHash !== journal.headHash)) fail("conflict");
+    if (fact.phase === "completed") {
+      const intent = before.facts.find(value => value.phase === "publication-intent");
+      if (journal.pending || fact.intentFactHash !== (intent?.seal ?? null) || fact.journal.sequence !== journal.sequence || fact.journal.headHash !== journal.headHash
+        || fact.outcome === "committed" && (!intent || journal.sequence !== read.bundle.root.journal.sequence + read.bundle.root.reservedRecords)) fail("conflict");
+    }
     io.complete(file, publicationBytes(fact), "publication-fact-written", "publication-fact-fsync");
-    io.check(); const done = io.publication(attemptHash); if (canonicalJSON(done.facts[index]) !== canonicalJSON(fact)) fail("changed");
+    io.check(); const done = io.publication(attemptHash); if (canonicalJSON(done.facts.find(value => value.phase === phase)) !== canonicalJSON(fact)) fail("changed");
   });
 }

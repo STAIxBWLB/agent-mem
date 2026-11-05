@@ -317,12 +317,14 @@ function publicationRead(p: Paths, attemptHash: string): PlacementPublicationSto
     const bytes = readOwned(join(p.dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
     if (bytes === undefined) fail("corrupt"); // Every future phase slot was reserved before root acknowledgement.
     if (!bytes.length) { absent = true; continue; }
-    if (absent) fail("corrupt");
+    if (absent && suffix !== "receipt") fail("corrupt");
     if (bytes.at(-1) !== 10) { pending = true; absent = true; continue; }
     const fact = decode(bytes, validatePlacementPublicationFact), previous = facts.at(-1)?.seal ?? root.seal;
     if (fact.attemptHash !== attemptHash || fact.previousHash !== previous || fact.phase !== (["artifact-built", "publication-intent", "completed"] as const)[index]) fail("corrupt");
+    const intentFact = facts.find(fact => fact.phase === "publication-intent");
     if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== root.policyHash)
-      || fact.phase === "completed" && (fact.intentFactHash !== previous || fact.journal.sequence < root.journal.sequence || fact.journal.sequence > root.journal.sequence + root.reservedRecords)) fail("corrupt");
+      || fact.phase === "completed" && (fact.intentFactHash !== (intentFact?.seal ?? null) || fact.journal.sequence < root.journal.sequence || fact.journal.sequence > root.journal.sequence + root.reservedRecords
+        || fact.outcome === "committed" && (!intentFact || fact.journal.sequence !== root.journal.sequence + root.reservedRecords))) fail("corrupt");
     facts.push(fact); phase = fact.phase;
   }
   return { bundle, phase, facts, pending };

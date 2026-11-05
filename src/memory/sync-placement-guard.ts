@@ -3,7 +3,7 @@ import { types } from "node:util";
 /** Stage1 only: recognized placement selectors never authorize an existing runtime or transport. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
-import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape } from "./generation.ts";
+import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
 import { legacyShardMarkerShape } from "./shard.ts";
 import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 
@@ -80,10 +80,15 @@ function placementFencePresent(home: string): boolean {
   return lstatSync(join(home, "sync-placement", "active.json"), { throwIfNoEntry: false }) !== undefined;
 }
 /** Only fixed bounded marker reads; no selector rebind, data/index open, cache, lock or child/network call. */
-export function placementRuntimeRefusal(home: string): string | undefined {
+export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
   try { const fenced = placementFencePresent(home), markers = readPlacementRuntimeMarkers(home);
     const refusal = placementMarkerRefusal(markers.profile, markers.shards);
-    if (refusal === PLACEMENT_STAGE1_REFUSAL) return readActivePlacementBinding(home, markers.profile, markers.shards) ? undefined : refusal;
+    if (refusal === PLACEMENT_STAGE1_REFUSAL) {
+      const active=readActivePlacementBinding(home,markers.profile,markers.shards);
+      if(!active)return refusal;
+      if(bound && (bound.kind!=="generation"||bound.sharded!==true||bound.generation!==active.profile.generation||bound.publicationFormat!==active.profile.publicationFormat||bound.placementHead!==active.profile.placementHead)) return PLACEMENT_MARKER_REFUSAL;
+      return undefined;
+    }
     return refusal ?? (fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
   catch { return PLACEMENT_MARKER_REFUSAL; }
 }

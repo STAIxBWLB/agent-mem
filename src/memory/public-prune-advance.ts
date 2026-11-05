@@ -97,7 +97,7 @@ function proofs(intent: AdvanceIntent): (()=>void)[] {
   for(const [key,set] of Object.entries(intent.view.realms)){
     if(old.realms[key]===set)continue;
     const binding=intent.bindings.find(item=>item.key===key);guard(binding);
-    const load=createPublicPruneReplayCache({dir:binding.dir,realm:key==="user"?{scope:"user"}:{scope:"project",key:key.slice(8)},receivingGeneration:intent.generation,inputSetHash:set});
+    const load=createPublicPruneReplayCache({dir:binding.dir,realm:key==="user"?{scope:"user"}:{scope:"project",key:key.slice(8)},receivingGeneration:intent.generation,inputSetHash:set,...(previous.schema==="agent-mem.profile/v3"?{publicationFormat:"agent-mem.sync-placement/v1" as const}:{})});
     const check=()=>{const proof:PublicPruneProjection=load();guard(old.realms[key]===undefined||proof.commitments.includes(old.realms[key]!));};check();checks.push(check);
   }
   return checks;

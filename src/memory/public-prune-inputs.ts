@@ -20,7 +20,7 @@ export interface PublicPruneInputV1 {
   schema: "agent-mem.public-prune-input/v1"; realm: ShardSyncRealm; receivingGeneration: string;
   selectorRevision: string; witnessHash: string; source: Source;
 }
-export interface PublicPruneBinding { realm: ShardSyncRealm; receivingGeneration: string; selectorRevision: string; inputSetHash: string | null }
+export interface PublicPruneBinding { publicationFormat?: "agent-mem.sync-placement/v1"; realm: ShardSyncRealm; receivingGeneration: string; selectorRevision: string; inputSetHash: string | null }
 /** Complete Git object bytes, including the uncompressed '<type> <size>\0' header. */
 export interface PublicPruneObject { oid: string; bytes: Uint8Array }
 export interface PublicPruneInputOptions {
@@ -32,7 +32,7 @@ declare const planBrand: unique symbol;
 export interface PublicPruneInputPlan { readonly [planBrand]: true }
 export interface PublicPruneInputRegistration { inputHash?: string; inputSetHash: string; previous: string | null }
 export interface PublicPruneReplayInput {
-  dir: string; realm: ShardSyncRealm; receivingGeneration: string; inputSetHash: string;
+  dir: string; realm: ShardSyncRealm; receivingGeneration: string; inputSetHash: string; publicationFormat?: "agent-mem.sync-placement/v1";
   nativeTargets?: readonly string[]; ordinary?: readonly Entry[];
 }
 export interface PublicPruneProjection {
@@ -68,9 +68,10 @@ export function validatePublicPruneInput(v: unknown): PublicPruneInputV1 {
   });
 }
 function binding(v: PublicPruneBinding): PublicPruneBinding {
-  guard(object(v) && exact(v, ["realm", "receivingGeneration", "selectorRevision", "inputSetHash"]));
+  guard(object(v) && exact(v, ["realm", "receivingGeneration", "selectorRevision", "inputSetHash", ...(v.publicationFormat === undefined ? [] : ["publicationFormat"])]));
+  guard(v.publicationFormat === undefined || v.publicationFormat === "agent-mem.sync-placement/v1");
   guard(hex(v.receivingGeneration, 32) && (hex(v.selectorRevision, 64) || v.selectorRevision === "absent") && (v.inputSetHash === null || hex(v.inputSetHash, 64)));
-  return { realm: selectedRealm(v.realm), receivingGeneration: v.receivingGeneration, selectorRevision: v.selectorRevision, inputSetHash: v.inputSetHash };
+  return { realm: selectedRealm(v.realm), receivingGeneration: v.receivingGeneration, selectorRevision: v.selectorRevision, inputSetHash: v.inputSetHash, ...(v.publicationFormat ? {publicationFormat:v.publicationFormat} : {}) };
 }
 function json(bytes: Buffer): unknown {
   guard(bytes.length > 0 && bytes.length <= PUBLIC_PRUNE_INPUT_MAX_BYTES, "resource");
@@ -99,7 +100,7 @@ function treeEntries(body: Buffer): Map<string, { mode: string; oid: string }> {
   return entries;
 }
 /** Exact path closure only. Sibling object bodies are neither requested nor retained. */
-function graph(input: PublicPruneInputV1, load: (oid: string) => Buffer): { proof: VerifiedPublicPruneWitness; used: Set<string> } {
+function graph(input: PublicPruneInputV1, load: (oid: string) => Buffer, publicationFormat?: "agent-mem.sync-placement/v1"): { proof: VerifiedPublicPruneWitness; used: Set<string> } {
   const used = new Set<string>(), cache = new Map<string, GitObject>(), trees = new Map<string, ReturnType<typeof treeEntries>>(); let total = 0;
   const get = (oid: string, type: GitObject["type"]): GitObject => {
     let item = cache.get(oid);
@@ -121,7 +122,8 @@ function graph(input: PublicPruneInputV1, load: (oid: string) => Buffer): { proo
     }
     return { oid, body: get(oid, "blob").body };
   };
-  guard(["v2", "v3"].includes(decodePlacementTransportDescriptor(path("shard.json").body, input.realm)));
+  const version = decodePlacementTransportDescriptor(path("shard.json").body, input.realm);
+  guard(version === "v2" || version === "v3" && publicationFormat === "agent-mem.sync-placement/v1");
   const manifest = path(input.source.manifestPath); guard(manifest.oid === input.source.manifestBlob);
   const raw = json(manifest.body); guard(object(raw) && Array.isArray(raw.witnesses) && raw.witnesses.length <= 64 && object(raw.pruneOccurrence));
   const refs = [raw.pruneOccurrence, ...raw.witnesses], packs = new Map<string, { pack: string; blob: string; bytes: Buffer }>();
@@ -150,7 +152,7 @@ export function preparePublicPruneInput(options: PublicPruneInputOptions): Publi
       }
       input = validatePublicPruneInput({ schema: "agent-mem.public-prune-input/v1", realm: expected.realm, receivingGeneration: expected.receivingGeneration,
         selectorRevision: expected.selectorRevision, witnessHash: value.witnessHash, source: value.source });
-      const checked = graph(input, oid => { const bytes = objects.get(oid); guard(bytes); return bytes; });
+      const checked = graph(input, oid => { const bytes = objects.get(oid); guard(bytes); return bytes; }, expected.publicationFormat);
       guard(checked.used.size === objects.size); // never retain whole sibling subtrees or unrelated private bodies
     }
     guard(canonicalJSON(binding(options.current())) === canonicalJSON(expected), "binding");
@@ -201,7 +203,7 @@ function replay(input: Omit<PublicPruneReplayInput, "dir">, load: Loader): Publi
   for (const member of members) {
     const descriptor = validatePublicPruneInput(json(data("input", member)));
     guard(hashJSON(descriptor) === member && descriptor.receivingGeneration === input.receivingGeneration && canonicalJSON(descriptor.realm) === canonicalJSON(selected));
-    const { proof } = graph(descriptor, oid => data("object", oid)), prune = proof.manifest.prune, hash = prunePayloadHash(prune), key = `${canonicalJSON(selected)}:${prune.id}`;
+    const { proof } = graph(descriptor, oid => data("object", oid), input.publicationFormat), prune = proof.manifest.prune, hash = prunePayloadHash(prune), key = `${canonicalJSON(selected)}:${prune.id}`;
     guard(!identities.has(key) || identities.get(key) === hash); identities.set(key, hash);
     for (const ref of proof.manifest.witnesses) { guard(!rowHashes.has(ref.id) || rowHashes.get(ref.id) === ref.rowHash); rowHashes.set(ref.id, ref.rowHash); }
     for (const target of prune.targets) targets.add(target.id);
@@ -311,7 +313,7 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
     for (const suffix of ["", "-wal", "-shm", "-journal"]) { const stat = lstatSync(join(dir, "mutation-lock.db" + suffix), { throwIfNoEntry: false }); if (stat) privateStat(stat); }
     const release = options.mutation ?? acquireMutation(dir); guard(release); assertMutationHandle(release, dir); try {
       current(); assertMutationHandle(release, dir); recoverLinkedTemps(dir, release); current(); const previous = expected.inputSetHash;
-      const members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, (kind, id) => read(dir, kind, id)).inputs : [];
+      const members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, ...(expected.publicationFormat ? {publicationFormat:expected.publicationFormat} : {}), inputSetHash: previous }, (kind, id) => read(dir, kind, id)).inputs : [];
       const inputHash = prepared.input && hashJSON(prepared.input), includes = inputHash !== undefined && members.includes(inputHash);
       const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration,
         previous, inputs: [...new Set([...members, ...(inputHash ? [inputHash] : [])])].sort() };
@@ -322,7 +324,7 @@ export function persistPublicPruneInput(plan: PublicPruneInputPlan, options: { o
       if (prepared.input && inputHash) writes.set(`input:${inputHash}`, { kind: "input", id: inputHash, bytes: Buffer.from(canonicalJSON(prepared.input) + "\n") });
       if (inputSetHash !== previous) writes.set(`set:${inputSetHash}`, { kind: "set", id: inputSetHash, bytes: Buffer.from(canonicalJSON(set) + "\n") });
       // Preflight the complete future committed view and byte budget before the first archive write.
-      replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash }, (kind, id) => writes.get(`${kind}:${id}`)?.bytes ?? read(dir, kind, id));
+      replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, ...(expected.publicationFormat ? {publicationFormat:expected.publicationFormat} : {}), inputSetHash }, (kind, id) => writes.get(`${kind}:${id}`)?.bytes ?? read(dir, kind, id));
       capacity(dir, writes); current();
       for (const value of writes.values()) { assertMutationHandle(release, dir); write(dir, value.kind, value.id, value.bytes, options.observe); current(); assertMutationHandle(release, dir); }
       return { ...(inputHash ? { inputHash } : {}), inputSetHash, previous };
@@ -385,12 +387,12 @@ function batchOverlay(batch: PreparedBatch): { writes: Map<string, ArchiveWrite>
   };
   const load: Loader = (kind, id) => writes.get(`${kind}:${id}`)?.bytes ?? read(batch.dir, kind, id);
   let previous = expected.inputSetHash, lastInputHash: string | undefined;
-  let members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, load).inputs : [];
+  let members = previous ? replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, ...(expected.publicationFormat ? {publicationFormat:expected.publicationFormat} : {}), inputSetHash: previous }, load).inputs : [];
   for (const prepared of batch.inputs) {
     guard(prepared.input); const input = prepared.input, inputHash = hashJSON(input); lastInputHash = inputHash;
     // Every descriptor stays bound to the actual initial selector revision, never a simulated callback.
     guard(canonicalJSON(prepared.binding) === canonicalJSON(expected));
-    const checked = graph(input, oid => { const bytes = prepared.objects.get(oid); guard(bytes); return bytes; });
+    const checked = graph(input, oid => { const bytes = prepared.objects.get(oid); guard(bytes); return bytes; }, expected.publicationFormat);
     guard(checked.used.size === prepared.objects.size);
     for (const [oid, bytes] of prepared.objects) add("object", oid, bytes);
     add("input", inputHash, Buffer.from(canonicalJSON(input) + "\n"));
@@ -404,7 +406,7 @@ function batchOverlay(batch: PreparedBatch): { writes: Map<string, ArchiveWrite>
     const set: PublicPruneInputSetV1 = { schema: "agent-mem.public-prune-input-set/v1", receivingGeneration: expected.receivingGeneration, previous: null, inputs: [] };
     previous = hashJSON(set); add("set", previous, Buffer.from(canonicalJSON(set) + "\n"));
   }
-  replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, inputSetHash: previous }, load);
+  replay({ realm: expected.realm, receivingGeneration: expected.receivingGeneration, ...(expected.publicationFormat ? {publicationFormat:expected.publicationFormat} : {}), inputSetHash: previous }, load);
   // capacity removes already-complete candidates only from its private working copy.
   capacity(batch.dir, writes);
   return { writes, result: { inputSetHash: previous, previous: expected.inputSetHash, ...(lastInputHash ? { inputHash: lastInputHash } : {}) } };
@@ -448,7 +450,7 @@ export function persistPublicPruneInputBatch(batch: PublicPruneInputBatch, optio
       batchCurrent(prepared, mutation); write(prepared.dir, item.kind, item.id, item.bytes, options?.observe); batchCurrent(prepared, mutation);
     }
     // Validate installed bytes too, including exact retries and interrupted prior attempts.
-    replay({ realm: prepared.binding.realm, receivingGeneration: prepared.binding.receivingGeneration, inputSetHash: result.inputSetHash }, (kind, id) => read(prepared.dir, kind, id));
+    replay({ realm: prepared.binding.realm, receivingGeneration: prepared.binding.receivingGeneration, ...(prepared.binding.publicationFormat ? {publicationFormat:prepared.binding.publicationFormat} : {}), inputSetHash: result.inputSetHash }, (kind, id) => read(prepared.dir, kind, id));
     batchCurrent(prepared, mutation); return result;
   });
 }

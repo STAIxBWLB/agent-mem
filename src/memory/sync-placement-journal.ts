@@ -1,4 +1,5 @@
-import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
+import { assertPlacementViewAdvance } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { types } from "node:util";
 import { randomBytes } from "node:crypto";
@@ -88,8 +89,8 @@ function active(home: string, input: PlacementEffectRequest, port: PlacementCapt
     || canonicalJSON(capture.context.writers) !== canonicalJSON(journal.activation.writers)
     || canonicalJSON(capture.context.realms.map(({ bindingHash: _hash, ...identity }) => identity))
       !== canonicalJSON(journal.activation.realms.map(({ bindingHash: _hash, ...identity }) => identity))) fail("changed");
-  const markers = readPlacementRuntimeMarkers(capture.home), binding = readActivePlacementBinding(capture.home, markers.profile, markers.shards);
-  if (!binding || binding.epoch.contextHash !== journal.epoch.contextHash) fail("changed");
+  const markers = readPlacementRuntimeMarkers(capture.home), profile = validatePlacementProfile(markers.profile);
+  assertPlacementViewAdvance(capture.home, journal.activation, profile, validatePlacementShards(markers.shards, profile));
   const projection = rebuildPlacementProjection(journal.epoch, journal.records);
   const source = capture.rows.get(placementKeyId(input.key)); if (!source) fail("changed");
   return { capture, journal, projection, source };

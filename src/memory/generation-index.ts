@@ -197,7 +197,7 @@ export class GenerationIndex {
       return;
     }
     if (!this.foreignCache || this.foreignCache.set !== set) this.foreignCache = { set, load: createPublicPruneReplayCache({ dir: profile.dir,
-      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set }) };
+      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set, ...(profile.publicationFormat ? {publicationFormat:profile.publicationFormat} : {}) }) };
     const proof = this.foreignCache.load();
     if (validateRows || this.foreignStamp !== set) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
       const expected = proof.rowHashes.get(item.id); if (expected && hashJSON(JSON.parse(item.line)) !== expected) return fail();

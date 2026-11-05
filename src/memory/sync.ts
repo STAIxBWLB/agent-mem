@@ -1,3 +1,5 @@
+import { syncPlacementMemory } from "./sync-placement-transport.ts";
+import type { PlacementCapturePort } from "./sync-placement-capture.ts";
 import { placementRuntimeRefusal } from "./sync-placement-guard.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { closeSync, constants, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
@@ -17,6 +19,8 @@ import { shardSyncBinding } from "./sync-binding.ts";
  */
 export type Visibility = "public" | "private" | "unknown";
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
+  placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
+    lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
 }
 
@@ -215,6 +219,8 @@ function lock(dir: string): (() => void) | undefined {
 }
 
 export interface SyncOptions {
+  /** Fresh compatibility facts for an already activated v3 profile; never activates a legacy profile or bypasses policy. */
+  placementAttestation?: PlacementCapturePort["attest"];
   /** Set (or replace) the remote first: a person's choice. */
   remote?: string;
   visibility?: (url: string) => Promise<Visibility>;
@@ -230,8 +236,9 @@ export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
   assertFormatFloor(store.profile.home, "sync");
-  const placementRefusal = placementRuntimeRefusal(store.profile.home);
+  const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
+  if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return syncPlacementMemory(store, opts);
   if (store.profile.sharded) {
     try {
       // Refresh only through the existing proved monotone profile rebind before pinning this attempt.

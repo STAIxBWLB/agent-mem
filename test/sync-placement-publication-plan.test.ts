@@ -36,7 +36,7 @@ function fixture(reserved = 1) {
   for (let i = 0; i < reserved; i++) { const record = createPlacementRecord(epochHash, i + 1, head, event(i + 1)); recordSizes.push(publicationBytes(record).length); head = record.seal; }
   const input = { epochHash, generation, homeHash: context.homeHash, contextHash: hashJSON(context), markerHash: h("markers"), sourceHash: context.sourceHash, aliasesHash: context.aliasesHash,
     policyHash: context.policyHash, remoteHash: h("remote"), journal: { sequence: 0, headHash: epochHash }, reservedRecords: reserved, reservedRecordBytes: recordSizes, createdUnixSeconds: 123456,
-    targets: [{ realm: key.realm, refHash: h("ref"), expectedRemoteHead: null, expectedCacheHead: null, descriptorHash: h("descriptor"), exportSetHash: h("export"), tree: "1".repeat(40), commit: "2".repeat(40) }] };
+    targets: [{ realm: key.realm, publish: true, refHash: h("ref"), expectedRemoteHead: null, expectedCacheHead: null, descriptorHash: h("descriptor"), exportSetHash: h("export"), tree: "1".repeat(40), commit: "2".repeat(40) }] };
   const items = { sources: [{ realm: key.realm, source: "generation" as const, pathHash: h("path"), dev: "1", ino: "2", byteLength: 4, hash: h("prefix"), mtimeNs: "3", ctimeNs: "4" }],
     decisions: [{ key, eligible: false, sourcePlacement: "synced" as const, reason: "person-local" as const, dependencies: [] }],
     objects: [{ targetIndex: 0, type: "blob" as const, path: "shard.json", oid: "3".repeat(40), sha256: h("descriptor"), size: 100 }] };
@@ -169,4 +169,38 @@ test("publication decisions preserve exact safe compiler refusal reasons", () =>
     const bundle = planPlacementPublication(f.input, { ...f.items, decisions: [{ ...f.items.decisions[0]!, reason }] });
     expect(bundle.chunks.find(c => c.kind === "decisions")!.items[0]).toMatchObject({ reason });
   }
+});
+
+
+test("withheld targets bind absent/audited heads without candidate objects or new commits", () => {
+  const f = fixture(0), absent = { ...f.input.targets[0]!, publish: false, tree: null, commit: null };
+  const bundle = planPlacementPublication({ ...f.input, targets: [absent] }, { ...f.items, objects: [] });
+  expect(validatePlacementPublicationBundle(bundle).root.targets[0]).toMatchObject({ publish: false, tree: null, commit: null, expectedRemoteHead: null, expectedCacheHead: null });
+  expect(bundle.chunks.some(c => c.kind === "objects")).toBe(false);
+  expect(() => planPlacementPublication({ ...f.input, targets: [{ ...absent, commit: "4".repeat(40) }] }, { ...f.items, objects: [] })).toThrow();
+  expect(() => planPlacementPublication({ ...f.input, targets: [absent] }, f.items)).toThrow();
+  const prior = { ...absent, expectedRemoteHead: "5".repeat(40), tree: "6".repeat(40), commit: "5".repeat(40) };
+  expect(planPlacementPublication({ ...f.input, targets: [prior] }, { ...f.items, objects: [] }).root.targets[0]).toEqual(prior);
+  expect(() => planPlacementPublication({ ...f.input, targets: [{ ...prior, commit: "7".repeat(40) }] }, { ...f.items, objects: [] })).toThrow();
+});
+
+
+test("prepared plan can terminate unknown without inventing artifact/intent/publication evidence", () => {
+  const f = fixture(0); preparePlacementPublication(f.home, f.bundle, f.opts);
+  expect(() => recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "completed", { intentFactHash: null, journal: f.input.journal, outcomeHash: h("unattempted"), outcome: "committed" }, f.opts)).toThrow();
+  recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "completed", { intentFactHash: null, journal: f.input.journal, outcomeHash: h("unattempted"), outcome: "unknown" }, f.opts);
+  const read = readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal);
+  expect(read.phase).toBe("completed"); expect(read.facts).toHaveLength(1);
+  expect(read.facts[0]).toMatchObject({ phase: "completed", previousHash: f.bundle.root.seal, intentFactHash: null, outcome: "unknown" });
+  for (const suffix of ["artifact", "intent"]) expect(readFileSync(join(f.dir, `publication-${f.bundle.root.seal}-${suffix}.json`)).length).toBe(0);
+  expect(readPlacementJournal(f.home, f.epochHash)).toMatchObject({ sequence: 0, records: [] });
+});
+
+test("artifact-built plan can terminate unknown only against its exact durable artifact parent", () => {
+  const f = fixture(0); preparePlacementPublication(f.home, f.bundle, f.opts); const built = artifact(f);
+  recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "completed", { intentFactHash: null, journal: f.input.journal, outcomeHash: h("stale-policy"), outcome: "unknown" }, f.opts);
+  const read = readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal);
+  expect(read.facts).toHaveLength(2); expect(read.facts[1]).toMatchObject({ phase: "completed", previousHash: built.seal, intentFactHash: null, outcome: "unknown" });
+  expect(readFileSync(join(f.dir, `publication-${f.bundle.root.seal}-intent.json`)).length).toBe(0);
+  expect(() => recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "publication-intent", { artifactFactHash: built.seal, policyHash: f.input.policyHash, policyCheckUnixMs: 1 }, f.opts)).toThrow();
 });

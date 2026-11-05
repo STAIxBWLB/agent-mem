@@ -18,8 +18,8 @@ export type PlacementPublicationDecisionReason = PlacementHoldReason | "journal-
 export interface PlacementPublicationDecision { key: PlacementKey; sourcePlacement: "local" | "synced"; eligible: boolean; reason: PlacementPublicationDecisionReason; dependencies: PlacementKey[] }
 export interface PlacementPublicationObject { targetIndex: number; type: "blob" | "tree" | "commit"; path: string | null; oid: string; sha256: string; size: number }
 export interface PlacementPublicationTarget {
-  realm: PlacementRealm; refHash: string; expectedRemoteHead: string | null; expectedCacheHead: string | null;
-  descriptorHash: string; exportSetHash: string; tree: string; commit: string;
+  realm: PlacementRealm; publish: boolean; refHash: string; expectedRemoteHead: string | null; expectedCacheHead: string | null;
+  descriptorHash: string; exportSetHash: string; tree: string | null; commit: string | null;
 }
 export type PlacementPublicationChunkKind = "sources" | "decisions" | "objects";
 export interface PlacementPublicationChunk { schema: typeof PLACEMENT_PUBLICATION_CHUNK_SCHEMA; kind: PlacementPublicationChunkKind; index: number; items: (PlacementPublicationSource | PlacementPublicationDecision | PlacementPublicationObject)[] }
@@ -33,7 +33,7 @@ export interface PlacementPublicationBundle { root: PlacementPublicationRoot; ch
 export type PlacementPublicationFact = {
   schema: typeof PLACEMENT_PUBLICATION_FACT_SCHEMA; attemptHash: string; previousHash: string; seal: string;
 } & ({ phase: "artifact-built"; exportHash: string } | { phase: "publication-intent"; artifactFactHash: string; policyHash: string; policyCheckUnixMs: number }
-  | { phase: "completed"; intentFactHash: string; journal: { sequence: number; headHash: string }; outcomeHash: string; outcome: "committed" | "unknown" });
+  | { phase: "completed"; intentFactHash: string | null; journal: { sequence: number; headHash: string }; outcomeHash: string; outcome: "committed" | "unknown" });
 export type PlacementPublicationPhase = PlacementPublicationFact["phase"];
 const reasons: readonly PlacementPublicationDecisionReason[] = ["journal-hold", "source-local", "unsupported-reference", "unverified-prune", null, "secret", "personal-data", "deny-path", "private-or-invalid", "host", "person-local", "related-local"];
 const kinds: readonly PlacementPublicationChunkKind[] = ["sources", "decisions", "objects"];
@@ -99,10 +99,13 @@ function normalizedRoot(input: unknown, checkSeal = true): PlacementPublicationR
   if (reservedRecordBytes.length !== v.reservedRecords || reservedRecordBytes.some(x => !number(x, PLACEMENT_PUBLICATION_RECORD_MAX_BYTES) || x < 1)) return fail();
   const journal = frontier(v.journal); if (journal.sequence + v.reservedRecords > PLACEMENT_JOURNAL_MAX_RECORDS) return fail("bound");
   const targets = array(v.targets, 2).map(x => {
-    const t = object(x, ["realm", "refHash", "expectedRemoteHead", "expectedCacheHead", "descriptorHash", "exportSetHash", "tree", "commit"]);
-    if (![t.refHash, t.descriptorHash, t.exportSetHash].every(x => hex(x)) || !hex(t.tree, 40) || !hex(t.commit, 40)
+    const t = object(x, ["realm", "publish", "refHash", "expectedRemoteHead", "expectedCacheHead", "descriptorHash", "exportSetHash", "tree", "commit"]);
+    if (typeof t.publish !== "boolean" || ![t.refHash, t.descriptorHash, t.exportSetHash].every(x => hex(x))
       || [t.expectedRemoteHead, t.expectedCacheHead].some(x => x !== null && !hex(x, 40))) return fail();
-    return { realm: realm(t.realm), refHash: t.refHash as string, expectedRemoteHead: t.expectedRemoteHead as string | null, expectedCacheHead: t.expectedCacheHead as string | null, descriptorHash: t.descriptorHash as string, exportSetHash: t.exportSetHash as string, tree: t.tree, commit: t.commit };
+    if (t.publish ? !hex(t.tree, 40) || !hex(t.commit, 40)
+      : t.expectedRemoteHead === null ? t.tree !== null || t.commit !== null || t.expectedCacheHead !== null
+      : !hex(t.tree, 40) || t.commit !== t.expectedRemoteHead) return fail();
+    return { realm: realm(t.realm), publish: t.publish, refHash: t.refHash as string, expectedRemoteHead: t.expectedRemoteHead as string | null, expectedCacheHead: t.expectedCacheHead as string | null, descriptorHash: t.descriptorHash as string, exportSetHash: t.exportSetHash as string, tree: t.tree as string | null, commit: t.commit as string | null };
   });
   if (!targets.length || new Set(targets.map(t => canonicalJSON(t.realm))).size !== targets.length || new Set(targets.map(t => t.refHash)).size !== targets.length) return fail();
   let lastKind = 0;
@@ -128,7 +131,7 @@ export function validatePlacementPublicationBundle(input: unknown): PlacementPub
       let identity: string;
       if (chunk.kind === "sources") { const s = row as PlacementPublicationSource; sourceBytes += s.byteLength; identity = canonicalJSON([s.realm, s.source, s.pathHash]); }
       else if (chunk.kind === "decisions") { const d = row as PlacementPublicationDecision; identity = canonicalJSON([d.key.realm, d.key.id]); }
-      else { const o = row as PlacementPublicationObject; if (o.targetIndex >= root.targets.length) return fail(); identity = canonicalJSON([o.targetIndex, o.type, o.path]); }
+      else { const o = row as PlacementPublicationObject; if (o.targetIndex >= root.targets.length || !root.targets[o.targetIndex]!.publish) return fail(); identity = canonicalJSON([o.targetIndex, o.type, o.path]); }
       const key = chunk.kind + identity; if (seen.has(key)) return fail(); seen.add(key);
     }
   }
@@ -167,7 +170,7 @@ function normalizedFact(input: unknown, checkSeal = true): PlacementPublicationF
   const v = object(input, ["schema", "attemptHash", "previousHash", "phase", "seal", ...extra]);
   if (v.schema !== PLACEMENT_PUBLICATION_FACT_SCHEMA || ![v.attemptHash, v.previousHash, v.seal].every(x => hex(x))) return fail();
   if (phase === "artifact-built" && !hex(v.exportHash) || phase === "publication-intent" && (!hex(v.artifactFactHash) || !hex(v.policyHash) || !number(v.policyCheckUnixMs))
-    || phase === "completed" && (!hex(v.intentFactHash) || !hex(v.outcomeHash) || !["committed", "unknown"].includes(v.outcome as string))) return fail();
+    || phase === "completed" && (v.intentFactHash !== null && !hex(v.intentFactHash) || !hex(v.outcomeHash) || !["committed", "unknown"].includes(v.outcome as string) || v.outcome === "committed" && v.intentFactHash === null)) return fail();
   if (phase === "completed") v.journal = frontier(v.journal);
   const { seal, ...body } = v; if (checkSeal && hashJSON(body) !== seal) return fail("corrupt");
   return bounded(v as unknown as PlacementPublicationFact, PLACEMENT_JOURNAL_ROOT_MAX_BYTES);

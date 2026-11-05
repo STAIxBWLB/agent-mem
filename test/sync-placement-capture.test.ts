@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
@@ -115,4 +116,44 @@ for (const kind of ["prune", "vault_link"] as const) test(`capture rejects a val
   const project = readdirSync(join(f.home, "projects"))[0]!;
   writeFileSync(join(f.home, "projects", project, "local", "different-machine.jsonl"), canonicalJSON(row) + "\n", { mode: 0o600 });
   expect(() => captureSyncPlacementContext(f.home, f.port)).toThrow();
+});
+
+
+test("fenced capture can recheck bound metadata without reparsing source bodies", async () => {
+  const f = await fixture(), capture = captureSyncPlacementContext(f.home, f.port, [{scope:"user"}]);
+  capture.assertUnchanged();
+  const store = openShardStore({memoryDir:f.home,user:true,deferPromotions:true});
+  try { store.note({op:"note",project:"placement-capture",scope:"shared",tier:"long",kind:"finding",peer:"person",source:"person",text:"new source after bound capture",about:[]}); }
+  finally { store.close(); }
+  expect(() => capture.assertUnchanged()).toThrow();
+});
+
+test("selected proof does not open an unrelated project's descriptor or body", async () => {
+  const f=await fixture(), dir=join(f.home,"projects","a".repeat(16));
+  mkdirSync(dir,{mode:0o700}); writeFileSync(join(dir,"project.json"),"unrelated malformed descriptor",{mode:0o600});
+  writeFileSync(join(dir,"generation.json"),"unrelated malformed generation",{mode:0o600});
+  const capture=captureSyncPlacementContext(f.home,f.port,[{scope:"user"}]);
+  expect(capture.context.realms).toHaveLength(1); expect(capture.context.realms[0]?.scope).toBe("user");
+  expect([...capture.rows.values()].every(source=>source.key.realm.scope==="user")).toBe(true);
+  capture.assertUnchanged();
+  expect(()=>captureSyncPlacementContext(f.home,f.port)).toThrow();
+});
+
+test("internal native pending-tail proof binds exact bytes without parsing or healing them", async () => {
+  const f=await fixture(), captured=captureSyncPlacementContext(f.home,f.port), source=[...captured.rows.values()].find(item=>item.key.realm.scope==="user")!;
+  const generation="e".repeat(32),machine="a".repeat(16),at="2026-10-01T00:00:00.000Z";
+  const body:Omit<PruneRow,"id">={schema:"agent-mem.prune/v1",op:"prune",generation,machine,at,actor:"person",placement:"synced",cutoff:at,
+    targets:[{id:source.key.id,rowHash:source.key.rowHash,expiredAt:at,basis:{kind:"note",id:source.key.id,rowHash:source.key.rowHash}}]};
+  const row=validatePruneRow({...body,id:pruneId(body)},generation,"synced"),line=canonicalJSON(row)+"\n",raw=Buffer.from(line).subarray(0,83);
+  const relative=`log/${machine}.jsonl`,file=join(f.home,"user",relative),hash=(v:string|Uint8Array)=>createHash("sha256").update(v).digest("hex");
+  writeFileSync(file,raw,{mode:0o600});
+  expect(()=>captureSyncPlacementContext(f.home,f.port,[{scope:"user"}])).toThrow();
+  const proof={realm:{scope:"user" as const},pathHash:hash(relative),offset:0,prefixHash:hash(""),line};
+  const snapshot=captureSyncPlacementContext(f.home,f.port,[{scope:"user"}],[proof]);
+  expect(snapshot.prefixes.find(prefix=>prefix.pathHash===proof.pathHash)).toMatchObject({byteLength:raw.length,hash:hash(raw)});
+  expect([...snapshot.rows.values()].some(item=>item.row.id===row.id)).toBe(false); expect(readFileSync(file)).toEqual(raw);
+  snapshot.assertUnchanged();
+  expect(()=>captureSyncPlacementContext(f.home,f.port,[{scope:"user"}],[{...proof,prefixHash:"b".repeat(64)}])).toThrow();
+  writeFileSync(file,Buffer.from("changed pending tail"),{mode:0o600});
+  expect(()=>snapshot.assertUnchanged()).toThrow();
 });

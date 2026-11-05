@@ -6,6 +6,7 @@ import { PUBLIC_PRUNE_MAX_PACKS, PUBLIC_PRUNE_MAX_WITNESSES, verifyPublicPruneWi
 
 type ObjectType = "commit" | "tree" | "blob";
 export interface PublicPruneGitGraphOptions {
+  publicationFormat?: "agent-mem.sync-placement/v1";
   commit: string; manifestPath: string; manifestBlob: string; realm: ShardSyncRealm;
   readObject: (oid: string) => Promise<{ type: ObjectType; body: Uint8Array }>;
 }
@@ -64,7 +65,8 @@ export async function collectPublicPruneGitGraph(options: PublicPruneGitGraphOpt
       }
       const value = await get(oid, "blob"); return { oid, body: value.body };
     };
-    guard(["v2", "v3"].includes(decodePlacementTransportDescriptor((await path("shard.json")).body, realm)));
+    const version = decodePlacementTransportDescriptor((await path("shard.json")).body, realm);
+    guard(version === "v2" || version === "v3" && options.publicationFormat === "agent-mem.sync-placement/v1");
     const manifest = await path(manifestPath); guard(manifest.oid === manifestBlob);
     const raw = decodeShardManifest(manifestPath, manifest.body);
     guard(object(raw) && object(raw.pruneOccurrence) && Array.isArray(raw.witnesses));
