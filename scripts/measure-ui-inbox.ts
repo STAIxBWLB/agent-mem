@@ -88,7 +88,7 @@ async function main() {
     check(p95(warm)<1000&&maxLagMs<1000&&control.length>0&&p95(control)<1000,"inbox or independent event-loop response exceeded one second");
     const writer=new CandidateStore({memoryDir:fixture.base});try{writer.put({project:fixture.projects[0]!,kind:"memory",text:"new source invalidation fixture"},"public");}finally{writer.close();}
     const invalidatedAt=performance.now(),invalidated=await cache.snapshot();report.invalidationSnapshotMs=performance.now()-invalidatedAt;report.invalidationComplete=invalidated.complete;
-    const refreshed=await waitForComplete(()=>cache!.snapshot());validate(refreshed);report.invalidationTimeToCompleteMs=performance.now()-invalidatedAt;check(starts===2&&maxActive===1,"one source invalidation did not produce exactly one refresh");
+    const refreshed=await waitForComplete(()=>cache!.snapshot());validate(refreshed);report.invalidationTimeToCompleteMs=performance.now()-invalidatedAt;check(Number(starts)===2&&maxActive===1,"one source invalidation did not produce exactly one refresh");
     await cache.close();cache=undefined;
     const openAt=performance.now();provider=await plugin.open({home:fixture.family,log:()=>{}});report.openMs=performance.now()-openAt;
     const publicSnapshot=async()=>await provider!.snapshot({panel:"inbox",after:0}) as unknown as InboxSnapshot;

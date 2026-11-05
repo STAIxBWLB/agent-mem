@@ -74,7 +74,7 @@ export function computeInbox(base: string, previous?: CapacityMemo): InboxComput
           if (!opened && (candidateTargets(candidate.input).length || candidate.input.kind === "promotion")) { store = openCuratedForRead(base, project); opened = true; }
           if (!visibleCandidate(candidate, project, store, policy)) continue;
           const kind = candidate.input.kind;
-          add({ id: candidate.id, group: "candidate", kind, title: oneLine(candidateText(candidate.input)), at: candidate.createdAt,
+          add({ id: candidate.id, group: "candidate", kind, title: oneLine(candidateText(candidate.input)), project, at: candidate.createdAt,
             verbs: [...kind !== "decay" && kind !== "model-answer" ? [{ id: "accept", label: "Accept", primary: true }] : [], { id: "reject", label: "Reject", reason: "optional" }],
             link: { panel: "review", params: { project, id: candidate.id } } });
         }

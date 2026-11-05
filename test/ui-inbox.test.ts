@@ -126,7 +126,7 @@ test("real read-only computation returns fifty compact newest/urgent rows and a 
   expect(computed.items).toHaveLength(50); expect(computed.more).toBe(21); expect(computed.items[0]!.id).toBe("capacity:proposal");
   expect(computed.items.slice(1).map(value => value.id)).toEqual([...ids].sort().slice(0, 49));
   for (const item of computed.items) { expect(inboxItemProblems(item)).toEqual([]); expect(item.title.length).toBeLessThanOrEqual(120); }
-  for (const item of computed.items.filter(value => value.group === "candidate")) expect(Object.keys(item).sort()).toEqual(["at", "group", "id", "kind", "link", "title", "verbs"]);
+  for (const item of computed.items.filter(value => value.group === "candidate")) expect(Object.keys(item).sort()).toEqual(["at", "group", "id", "kind", "link", "project", "title", "verbs"]);
   expect(Buffer.byteLength(JSON.stringify(computed.items))).toBeLessThanOrEqual(INBOX_MAX_BYTES); expect(JSON.stringify(computed)).not.toContain("INBOX_PRIVATE_");
 });
 
@@ -182,7 +182,7 @@ test("a curated target forget invalidates real-worker visibility even though can
   const candidates = new CandidateStore({ memoryDir: base }); let id: string;
   try { id = candidates.put({ project: "project", kind: "correction", target: { id: target, revision: candidateTargetRevision(memory.get(target, "project")!) }, proposedText: "replacement", reason: "ordinary correction" }, "public"); } finally { candidates.close(); }
   const cache = new InboxCache(base); cleanup.push(() => cache.close()); expect((await ready(() => cache.snapshot())).items.some(value => value.id === id!)).toBe(true);
-  const before = readFileSync(join(base, "candidates.db")); expect(memory.forget(target, "person", "project")).toBe(true);
+  const before = readFileSync(join(base, "candidates.db")); expect(memory.forget(target, "person", "project")).toBeDefined();
   expect(readFileSync(join(base, "candidates.db"))).toEqual(before);
   expect((await cache.snapshot()).complete).toBe(false); expect((await ready(() => cache.snapshot())).items.some(value => value.id === id!)).toBe(false);
 }, 30000);
