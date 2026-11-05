@@ -10,7 +10,7 @@ import { captureSyncPlacementContext } from "../src/memory/sync-placement-captur
 import { canonicalJSON, vaultLinkId, validateVaultLinkRow } from "../src/memory/generation.ts";
 import { pruneId, validatePruneRow, type PruneRow } from "../src/memory/prune.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
-import { planPlacementJournal, preparePlacementJournal } from "../src/memory/sync-placement-journal.ts";
+import { planPlacementJournal, preparePlacementJournal, type PlacementJournalPort } from "../src/memory/sync-placement-journal.ts";
 import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
 
 const roots: string[] = [];
@@ -27,7 +27,7 @@ async function fixture() {
   await migrateShards({ memoryDir: home, generation: "e".repeat(32), mode: "apply", authorizedPerson: true, tty: true });
   await activatePublicPruneView({ memoryDir: home, mode: "apply", authorizedPerson: true, tty: true });
   let version = "initial", pin = "2".repeat(64);
-  const port = { attest: () => ({ writers: [{ writerId: "1".repeat(64), version: "0.22.0", pin,
+  const port: PlacementJournalPort = { attest: () => ({ writers: [{ writerId: "1".repeat(64), version: "0.22.0", pin,
     publicationFormat: PLACEMENT_FORMAT, compatible: true as const }], legacySyncQuiesced: true as const }),
     policyVersion: () => version, authorize: () => true };
   return { home, port, project, user, local, setVersion: () => { version = "changed"; }, setPin: () => { pin = "3".repeat(64); } };

@@ -29,7 +29,7 @@ export interface PlacementCapture {
   markerHash: string; fingerprint: string; directories: string[]; rows: Map<string, PlacementSourceRow>;
   assertCurrent(): void;
 }
-const fail = (code: "changed" | "invalid" | "bound" = "changed"): never => { throw new SyncPlacementJournalError(code); };
+function fail(code: "changed" | "invalid" | "bound" = "changed"): never { throw new SyncPlacementJournalError(code); }
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const stamp = (s: BigIntStats) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].map(String);
 const same = (a: BigIntStats, b: BigIntStats) => canonicalJSON(stamp(a)) === canonicalJSON(stamp(b));

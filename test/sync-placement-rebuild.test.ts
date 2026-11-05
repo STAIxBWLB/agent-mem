@@ -28,10 +28,10 @@ test("static journal fixture seals and independent expected states match increme
     projection.apply(raw);
     expect(projection.sequence).toBe(at + 1); expect(projection.headHash).toBe(raw.seal);
     expect(rebuildPlacementProjection(initial, fixture.records.slice(0, at + 1)).states()).toEqual(projection.states());
-    if (at === 3) expect(projection.states()).toEqual(fixture.expectedAfterRelease);
+    if (at === 3) expect<unknown>(projection.states()).toEqual(fixture.expectedAfterRelease);
   }
-  expect(projection.states()).toEqual(fixture.expectedStates); expect(projection.headHash).toBe(fixture.expectedHead);
-  const complete = rebuildPlacementProjection(initial, fixture.records); expect(complete.states()).toEqual(fixture.expectedStates);
+  expect<unknown>(projection.states()).toEqual(fixture.expectedStates); expect(projection.headHash).toBe(fixture.expectedHead);
+  const complete = rebuildPlacementProjection(initial, fixture.records); expect<unknown>(complete.states()).toEqual(fixture.expectedStates);
   expect(placementKeyId(key())).toBe(hashJSON(key()));
   expect(JSON.stringify(projection.states())).not.toContain("private-canary");
 });
@@ -52,7 +52,7 @@ test("hold reasons stay sticky, release alone clears them and recorded exposure 
   projection.apply(fixture.records[3]); expect(projection.get(key())?.held).toBe(false);
   for (const row of fixture.records.slice(4, 7)) projection.apply(row);
   expect(projection.get(key())).toMatchObject({ held: true, reasons: ["related-local"], exposure: "published" });
-  expect(projection.get(key())?.attempts).toEqual(fixture.expectedStates.find(state => state.key.id === key().id)!.attempts);
+  expect<unknown>(projection.get(key())?.attempts).toEqual(fixture.expectedStates.find(state => state.key.id === key().id)!.attempts);
   const next = createPlacementRecord(projection.epochHash, 8, projection.headHash, { ...event(3), requestId: "a".repeat(64), sourcePlacement: "local" });
   projection.apply(next); expect(projection.get(key())).toMatchObject({ sourcePlacement: "local", held: false, exposure: "published" });
 });
@@ -89,7 +89,7 @@ test("unknown/future/ambiguous-extra fields and malformed closed records refuse 
 });
 
 test("active fence is a closed body-free fact and epoch bounds are fixed", () => {
-  const value = { schema: PLACEMENT_ACTIVE_FENCE_SCHEMA, epochHash: fixture.epochHash, homeHash: fixture.epoch.homeHash, generation: fixture.epoch.generation };
+  const value = { schema: PLACEMENT_ACTIVE_FENCE_SCHEMA as typeof PLACEMENT_ACTIVE_FENCE_SCHEMA, epochHash: fixture.epochHash, homeHash: fixture.epoch.homeHash, generation: fixture.epoch.generation };
   expect(validatePlacementActiveFence(value)).toEqual(value);
   rejected(() => validatePlacementActiveFence({ ...value, body: "private-canary" }));
   rejected(() => validatePlacementActiveFence({ ...value, epochHash: fixture.epochHash + "\n" }));

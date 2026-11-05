@@ -23,7 +23,7 @@ export interface PlacementJournalPort extends PlacementCapturePort {
   authorize(binding: Readonly<PlacementAuthorizationBinding>): boolean;
   screen?: RowScreen;
 }
-const fail = (code: "invalid" | "changed" | "authorization" | "policy" | "local" | "conflict" | "pending" | "busy" = "invalid"): never => { throw new SyncPlacementJournalError(code); };
+function fail(code: "invalid" | "changed" | "authorization" | "policy" | "local" | "conflict" | "pending" | "busy" = "invalid"): never { throw new SyncPlacementJournalError(code); }
 function protectedCall<T>(work: () => T): T {
   try { return work(); } catch (error) { if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SyncPlacementJournalError) throw error; return fail("changed"); }
 }
