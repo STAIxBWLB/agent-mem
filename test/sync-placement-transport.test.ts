@@ -23,6 +23,7 @@ import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { syncOutboundContent } from "../src/memory/sync-screen.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 
+// Real local-Git round trips: hosted macOS runs these at up to ~20 s, so each keeps a 60 s test-local allowance (global --timeout unchanged).
 const PROJECT = "example.test/placement/transport", USER_REF = "refs/heads/amem/u", PROJECT_REF = `refs/heads/amem/p/${shardKeyHash(PROJECT)}`;
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -306,7 +307,7 @@ test("same-generation v3 native prune retains exact public witnesses, original r
   expect(receiver.store.get(f.source.ids.target!, PROJECT)).toBeUndefined();
   const before = canonicalJSON(snapshot); receiver.store.rebuild(); expect(canonicalJSON(receiver.store.prunePort().snapshot())).toBe(before);
   const bytes = authoredBytes(receiver.home), plans = receiver.plans(); expect((await syncMemory(receiver.store, receiver.opts(f.remote))).ok).toBe(true); expect(authoredBytes(receiver.home)).toEqual(bytes); expect(receiver.plans()).toEqual(plans);
-}, 20_000);
+}, 60_000);
 
 test("foreign supported v3 prune activates its complete graph without appending a native translation", async () => {
   const f = await publishedPruneFixture(); expect((await syncMemory(f.source.store, f.source.opts(f.remote))).ok).toBe(true);
@@ -319,7 +320,7 @@ test("foreign supported v3 prune activates its complete graph without appending 
   const before = canonicalJSON(snapshot); receiver.store.rebuild(); expect(canonicalJSON(receiver.store.prunePort().snapshot())).toBe(before);
   const stored = authoredBytes(receiver.home), plans = receiver.plans(); expect((await syncMemory(receiver.store, receiver.opts(f.remote))).ok).toBe(true);
   expect(authoredBytes(receiver.home)).toEqual(stored); expect(receiver.plans()).toEqual(plans);
-}, 20_000);
+}, 60_000);
 
 test("a permitted native prune uses exact already-public held target and basis packs without resending their bodies", async () => {
   const f = await publishedPruneFixture(), target = f.source.ids.target!;
@@ -356,7 +357,7 @@ test("a permitted native prune uses exact already-public held target and basis p
   expect(reachableBytes(f.remote)).toContain("strict public prune target"); // Historical disclosure is retained, never retracted.
   const receiver = await fixture(); expect((await syncMemory(receiver.store, receiver.opts(f.remote))).ok).toBe(true);
   expect(receiver.store.get(target, PROJECT)).toBeUndefined(); expect(receiver.store.prunePort().snapshot().pruned).toContain(target);
-}, 20_000);
+}, 60_000);
 
 function nativePruneTargets(f: Awaited<ReturnType<typeof fixture>>, targets: string[]): PruneRow {
   const auth = { project: PROJECT, actor: "person" as const, authorize: () => true,
@@ -382,7 +383,7 @@ test("a legitimate native prune of an unpublished held target stays whole and ne
   expect(held(f, prune.id)).toMatchObject({ held: true, exposure: "unknown" });
   assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_NATIVE_PRUNE_TARGET", prune.id]);
   expect(candidateBytes(f.home)).not.toContain('"op":"prune"');
-}, 20_000);
+}, 60_000);
 
 test("a mixed native prune with public-held and unpublished-held targets never splits or backfills its original", async () => {
   const remote = bare(), f = await fixture({ seed: store => ({ public: store.note(note("MIXED_ALREADY_PUBLIC_TARGET")) }) });
@@ -400,7 +401,7 @@ test("a mixed native prune with public-held and unpublished-held targets never s
   expect(authoredBytes(f.home)).toEqual(physical); expect(held(f, prune.id)).toMatchObject({ held: true, exposure: "unknown" });
   assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_MIXED_PRUNE_TARGET", prune.id]);
   expect(candidateBytes(f.home)).not.toContain('"op":"prune"');
-}, 20_000);
+}, 60_000);
 
 test("an unwitnessed locally pruned legacy original never gets first publication or a candidate object", async () => {
   const remote = bare(), f = await fixture({ seed(store) {
@@ -412,7 +413,7 @@ test("an unwitnessed locally pruned legacy original never gets first publication
   assertNeverPublished(f.home, remote, ["UNWITNESSED_PRUNED_CANARY"]);
   expect(reachableBytes(remote)).toContain(f.ids.allowed!); expect(reachableBytes(remote)).not.toContain(prune.id);
   expect(f.store.get(f.ids.target!, PROJECT)).toBeUndefined();
-}, 20_000);
+}, 60_000);
 
 test("receiver policy-held incoming public goal cannot authorize a fresh dependent, and first-attempt exposure/holds are durable", async () => {
   const remote = bare(), source = await fixture({ patterns: [], seed: store => ({ goal: store.goal({ project: PROJECT, scope: "project", title: "ALREADY_PUBLIC_PRIVATE_GOAL", milestones: [], dependsOn: [], actor: "person" }) }) });
@@ -428,7 +429,7 @@ test("receiver policy-held incoming public goal cannot authorize a fresh depende
   expect((await syncMemory(receiver.store, receiver.opts(remote))).ok).toBe(true);
   expect(receiver.plans()).toEqual(plans); expect(authoredBytes(receiver.home)).toEqual(physical);
   expect(held(receiver, source.ids.goal!)).toMatchObject({ held: true, exposure: "published" });
-}, 20_000);
+}, 60_000);
 
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 async function pendingNativePruneFixture(mode: "valid" | "invalid-tail" | "missing-fetched") {
@@ -451,7 +452,6 @@ async function pendingNativePruneFixture(mode: "valid" | "invalid-tail" | "missi
   return { ...f, receiver, row, plan, line, prefix, segment, pending };
 }
 
-// This local-Git recovery round trip exceeds 20 s on hosted macOS; keep its allowance test-local.
 test("ordinary v3 sync resumes an actual owned PARTIAL native prune claim from exact fetched proof, preserving the original once", async () => {
   const f = await pendingNativePruneFixture("valid");
   expect(() => f.receiver.capture()).toThrow(); // A raw partial tail alone is never a general capture admission port.
@@ -474,7 +474,7 @@ for (const mode of ["invalid-tail", "missing-fetched"] as const) test("v3 pendin
   const result = await syncMemory(f.receiver.store, f.receiver.opts(f.remote)); expect(result).toMatchObject({ ok: false, pushed: false });
   expect(authoredBytes(f.receiver.home)).toEqual(before); expect(readFileSync(f.pending)).toEqual(claim); expect(f.receiver.plans()).toEqual(plans);
   expect(git(f.remote, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(heads);
-}, 20_000);
+}, 60_000);
 
 /** Isolated crash-prefix construction only. Production recovery must complete the prefix itself; tests never heal it. */
 function persistCrashPrefix(file: string, bytes: Uint8Array): void {
