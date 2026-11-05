@@ -1,7 +1,7 @@
 import { assertFormatFloor } from "./formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CANDIDATE_SHOWN_GRACE_MS, hasShownColumn } from "./candidate-pending.ts";
 import { oneLine } from "./note-add.ts";
@@ -130,6 +130,55 @@ function retryLocked(work: () => void): void {
   }
 }
 
+type CandidateRow = { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null };
+/** Canonical persisted decoding shared by the writer and its read-only inbox port. */
+function decodeCandidate(row: CandidateRow, unknownKind: () => void): Candidate | undefined {
+  const input = JSON.parse(row.payload) as CandidateInput;
+  if (input && typeof input === "object" && !KINDS.includes(input.kind)) { unknownKind(); return undefined; }
+  validate(input);
+  if (hash({ schema: "agent-mem.candidate/v1", input }) !== row.id) throw new Error("candidate content hash mismatch");
+  return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id };
+}
+const CANDIDATE_EXPIRED_SQL = "at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))";
+const CANDIDATE_PRIORITY_SQL = "CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC";
+export interface PendingCandidateReader { projects(): string[]; list(projects: readonly string[]): Candidate[] }
+/** Internal inbox read port. It neither creates/migrates a database nor prunes or stamps any row.
+ * The port is valid only during the synchronous callback. No immutable fallback may hide current WAL frames. */
+export function withPendingCandidates<T>(memoryDir: string, run: (reader: PendingCandidateReader) => T): T {
+  assertFormatFloor(memoryDir, "candidates");
+  const file = join(memoryDir, "candidates.db"), stat = lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("pending candidates unavailable");
+  const db = new Database(file, { readonly: true }); let closed = false;
+  try {
+    const shown = hasShownColumn(db), now = Date.now();
+    const live = (scope: boolean) => `WITH raw AS (SELECT rowid AS candidate_rowid, id, project, kind, payload, at, status, note_id, ${shown ? "shown_at" : "NULL AS shown_at"} FROM candidates${scope ? " WHERE project IN (SELECT value FROM json_each(?))" : ""}),
+      live AS (SELECT * FROM raw WHERE NOT (${CANDIDATE_EXPIRED_SQL})),
+      retained AS (SELECT *, row_number() OVER (PARTITION BY project ORDER BY ${CANDIDATE_PRIORITY_SQL}, candidate_rowid DESC) AS retention_rank FROM live)`;
+    const assertOpen = () => { if (closed) throw new Error("pending candidate reader is closed"); };
+    return run({
+      projects() {
+        assertOpen();
+        const rows = db.query(`${live(false)} SELECT DISTINCT project FROM retained WHERE retention_rank <= ? AND status = 'pending' AND kind IN (SELECT value FROM json_each(?)) ORDER BY project`)
+          .all(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.count, JSON.stringify(KINDS)) as { project: string }[];
+        if (rows.some(row => !text(row.project, 400))) throw new Error("pending candidate project unavailable");
+        return rows.map(row => row.project);
+      },
+      list(projects) {
+        assertOpen();
+        if (!Array.isArray(projects) || projects.some(project => !text(project, 400))) throw new Error("invalid candidate project scope");
+        if (!projects.length) return [];
+        const rows = db.query(`${live(true)} SELECT * FROM retained WHERE retention_rank <= ? AND status = 'pending' AND kind IN (SELECT value FROM json_each(?)) ORDER BY at DESC, candidate_rowid DESC LIMIT ?`)
+          .all(JSON.stringify([...new Set(projects)]), now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.count, JSON.stringify(KINDS), CANDIDATE_RETENTION.count) as (CandidateRow & { project: string })[];
+        return rows.flatMap(row => {
+          const candidate = decodeCandidate(row, () => {});
+          if (candidate && candidate.input.project !== row.project) throw new Error("candidate project binding mismatch");
+          return candidate ? [candidate] : [];
+        });
+      },
+    });
+  } finally { closed = true; db.close(); }
+}
+
 /** The queue holds the cap's worth of candidates nobody has seen. Named so a caller (the MCP tool) can map it. */
 export class CandidateQueueFull extends Error {
   readonly code = "candidate_queue_full";
@@ -184,20 +233,16 @@ export class CandidateStore {
       this.retainConsolidationReviews();
       // Candidates (AC4, no candidate expires unshown): by age only a decided one, or a pending one that was shown and has had its grace period, goes. By count three tiers decide who is
       // kept: unshown pending first, then shown pending, then decided, so a cap eviction takes decided rows before a shown one (which is owed its grace) and shown ones before an unseen one.
-      this.db.query("DELETE FROM candidates WHERE at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))").run(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS);
-      this.db.query(`DELETE FROM candidates WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC, rowid DESC) AS rank FROM candidates) WHERE rank > ?)`).run(CANDIDATE_RETENTION.count);
+      this.db.query(`DELETE FROM candidates WHERE ${CANDIDATE_EXPIRED_SQL}`).run(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS);
+      this.db.query(`DELETE FROM candidates WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY ${CANDIDATE_PRIORITY_SQL}, rowid DESC) AS rank FROM candidates) WHERE rank > ?)`).run(CANDIDATE_RETENTION.count);
       this.db.query("DELETE FROM counters WHERE at <= ?").run(now - COUNTER_RETENTION.ageMs);
       this.db.query("DELETE FROM counters WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY project ORDER BY at DESC, rowid DESC) AS rank FROM counters) WHERE rank > ?)").run(COUNTER_RETENTION.count);
     }).immediate();
   }
   /** #199: rows of a kind this version does not know (a newer writer's) are skipped and counted here, never thrown. */
   skippedUnknownKinds = 0;
-  private decode(row: { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null }): Candidate | undefined {
-    const input = JSON.parse(row.payload) as CandidateInput;
-    if (input && typeof input === "object" && !KINDS.includes(input.kind)) { this.skippedUnknownKinds++; return undefined; }
-    validate(input);
-    if (hash({ schema: "agent-mem.candidate/v1", input }) !== row.id) throw new Error("candidate content hash mismatch");
-    return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id };
+  private decode(row: CandidateRow): Candidate | undefined {
+    return decodeCandidate(row, () => { this.skippedUnknownKinds++; });
   }
   put(rawInput: CandidateInput, verdict: CandidateVerdict): string {
     // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
