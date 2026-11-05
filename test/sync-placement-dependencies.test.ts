@@ -135,6 +135,41 @@ test("prune requires exact whole-original proof and all target/basis endpoints i
   expect(forRow(decisions(rows, { verifiedPrunes: [wrongHash] }), manifest).eligible).toBe(false);
 });
 
+test("a proved prune admits held target and basis only through exact verified-public occurrences", () => {
+  const target = note(), basis = op("demote", target, AT), base = prune([target]);
+  const { id: _id, ...original } = base;
+  const body = { ...original, targets: [{ ...base.targets[0]!, basis: { kind: "demote" as const, id: basis.id as string, rowHash: hashJSON(basis) } }] };
+  const row = { ...body, id: pruneId(body) };
+  const rows = [source(target, { held: true }), source(basis, { held: true }), source(row)];
+  const proof = { verifiedPrunes: [key(row)], publicEndpoints: [endpoint(target), endpoint(basis)] };
+  const result = decisions(rows, proof);
+  expect(forRow(result, row).eligible).toBe(true);
+  expect(forRow(result, target).eligible).toBe(false); expect(forRow(result, basis).eligible).toBe(false);
+  expect(JSON.stringify(result)).not.toContain(target.text as string);
+  expect(forRow(decisions(rows, { ...proof, verifiedPrunes: [] }), row)).toMatchObject({ eligible: false, reason: "unverified-prune" });
+  expect(forRow(decisions(rows, { ...proof, publicEndpoints: [endpoint(target, U), endpoint(basis)] }), row).eligible).toBe(false);
+  const { id: _rowId, ...wrongGenerationBody } = { ...row, generation: "9".repeat(32) };
+  const wrongGeneration = { ...wrongGenerationBody, id: pruneId(wrongGenerationBody) };
+  expect(forRow(decisions([source(target, { held: true }), source(basis, { held: true }), source(wrongGeneration)],
+    { verifiedPrunes: [key(wrongGeneration)], publicEndpoints: proof.publicEndpoints }), wrongGeneration).eligible).toBe(false);
+});
+
+test("an unpublished held prune endpoint holds the whole original without a public-body fallback", () => {
+  const target = note(), row = prune([target]);
+  const result = decisions([source(target, { held: true }), source(row)], { verifiedPrunes: [key(row)] });
+  expect(forRow(result, row)).toMatchObject({ eligible: false, reason: "related-local" });
+  expect(JSON.stringify(result)).not.toContain(target.text as string);
+});
+
+test("a mixed public and unpublished held target set never splits or rewrites the prune", () => {
+  const published = note(), unpublished = note(), row = prune([published, unpublished]);
+  const result = decisions([source(published, { held: true }), source(unpublished, { held: true }), source(row)],
+    { verifiedPrunes: [key(row)], publicEndpoints: [endpoint(published)] });
+  expect(result.filter(value => value.key.id === row.id)).toHaveLength(1);
+  expect(forRow(result, row)).toMatchObject({ key: key(row), eligible: false, reason: "related-local" });
+  expect(JSON.stringify(result)).not.toContain(unpublished.text as string);
+});
+
 test("unsupported operations and reference forms are explicitly held without invented parsing", () => {
   const a = note(), b = note(), g = goal();
   const malformed = [authored("future", { text: "private-canary" }), goal([`goal:${g.id}`]),

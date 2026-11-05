@@ -222,7 +222,7 @@ function compile(raw: PlacementDependencyInput): DependencyDecision[] {
       case "prune":
         if (!verified.has(placementKeyId(node.key))) node.reason ??= "unverified-prune";
         for (const target of row.targets as { id: string; rowHash: string; basis: { id: string; rowHash: string } }[]) {
-          node.refs.push({ id: target.id, hash: target.rowHash, sameRealm: true }, { id: target.basis.id, hash: target.basis.rowHash, sameRealm: true });
+          node.refs.push({ id: target.id, hash: target.rowHash, sameRealm: true, publicHeld: true }, { id: target.basis.id, hash: target.basis.rowHash, sameRealm: true, publicHeld: true });
         }
         break;
       case "settle": case "vault_link": break;

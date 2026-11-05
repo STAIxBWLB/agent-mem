@@ -18,6 +18,7 @@ import * as publicationStorage from "../src/memory/sync-placement-publication-st
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
+import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 
@@ -319,16 +320,82 @@ test("foreign supported v3 prune activates its complete graph without appending 
   expect(authoredBytes(receiver.home)).toEqual(stored); expect(receiver.plans()).toEqual(plans);
 });
 
-test("policy-held public endpoint withholds a new native prune instead of publishing a manifest with a refused dependency", async () => {
+test("a permitted native prune uses exact already-public held target and basis packs without resending their bodies", async () => {
   const f = await publishedPruneFixture(), target = f.source.ids.target!;
-  f.source.policy(["strict public prune target"]);
-  const before = git(f.remote, "rev-parse", PROJECT_REF), result = await syncMemory(f.source.store, f.source.opts(f.remote));
-  expect(result.ok).toBe(true); expect(git(f.remote, "rev-parse", PROJECT_REF)).toBe(before);
-  expect(reachableBytes(f.remote)).not.toContain(f.prune.id); expect(held(f.source, target)).toMatchObject({ held: true, exposure: "published" });
-  expect(held(f.source, f.prune.id)).toMatchObject({ held: true, exposure: "unknown" });
+  const before = git(f.remote, "rev-parse", PROJECT_REF), oldFiles = new Set(git(f.remote, "ls-tree", "-r", "--name-only", before).split("\n").filter(Boolean));
+  const oldRows = verifiedPublicRows(f.remote);
+  f.source.policy(["strict public prune target"]); f.source.changePolicyEpoch();
+  // A demotion's validated ID/UTC operands are generated metadata, so its projected content is empty.
+  // This fresh host restriction holds that already-public basis as well as the machine-policy-held target.
+  const opts: SyncOptions = { ...f.source.opts(f.remote), screen: value => Object.keys(value).length > 0 };
+  const result = await syncMemory(f.source.store, opts); expect(result.ok).toBe(true);
+  const after = git(f.remote, "rev-parse", PROJECT_REF); expect(after).not.toBe(before);
+  const files = git(f.remote, "ls-tree", "-r", "--name-only", after).split("\n").filter(Boolean);
+  const newPacks = files.filter(file => file.startsWith("rows/") && !oldFiles.has(file));
+  const newRows = newPacks.flatMap(file => git(f.remote, "show", `${after}:${file}`).split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
+  expect(newRows).toEqual([f.prune]);
+  for (const file of newPacks) expect(git(f.remote, "show", `${after}:${file}`)).not.toContain("strict public prune target");
+  const manifests = files.filter(file => file.startsWith("prune-witnesses/") && !oldFiles.has(file)).map(file => JSON.parse(git(f.remote, "show", `${after}:${file}`)) as PublicPruneWitnessV1);
+  const manifest = manifests.find(value => value.prune.id === f.prune.id); expect(manifest).toBeDefined();
+  expect(manifest!.prune).toEqual(f.prune); expect(manifest!.realm).toEqual({ scope: "project", key: PROJECT });
+  expect(manifest!.prune.generation).toBe(f.source.store.profile.generation);
+  for (const item of f.prune.targets) for (const required of [item, item.basis]) {
+    const witness = manifest!.witnesses.find(value => value.id === required.id); expect(witness).toBeDefined();
+    expect(witness!.rowHash).toBe(required.rowHash); expect(oldFiles.has(witness!.pack)).toBe(true);
+    expect(witness!.blob).toBe(git(f.remote, "rev-parse", `${before}:${witness!.pack}`));
+    expect(hashJSON(oldRows.get(required.id))).toBe(required.rowHash);
+    expect(held(f.source, required.id)).toMatchObject({ held: true, exposure: "published" });
+  }
+  expect((oldRows.get(f.prune.targets[0]!.basis.id) as { op: string }).op).toBe("demote");
+  expect(held(f.source, target)).toMatchObject({ held: true, exposure: "published" });
+  expect(held(f.source, f.prune.id)).toMatchObject({ held: false, exposure: "published" });
+  expect(reachableBytes(f.remote)).toContain("strict public prune target"); // Historical disclosure is retained, never retracted.
   const receiver = await fixture(); expect((await syncMemory(receiver.store, receiver.opts(f.remote))).ok).toBe(true);
-  expect(receiver.store.get(target, PROJECT)?.text).toBe("strict public prune target");
-  expect(receiver.store.prunePort().snapshot().pruned).not.toContain(target);
+  expect(receiver.store.get(target, PROJECT)).toBeUndefined(); expect(receiver.store.prunePort().snapshot().pruned).toContain(target);
+});
+
+function nativePruneTargets(f: Awaited<ReturnType<typeof fixture>>, targets: string[]): PruneRow {
+  const auth = { project: PROJECT, actor: "person" as const, authorize: () => true,
+    policy: { revision: () => "synthetic-public-prune-v1", classify: () => "public" as const, attest: () => true } };
+  const plan = planPrune(f.store.prunePort(), { cutoff: new Date(f.clock.now).toISOString(), targets }, auth);
+  expect(plan.rows).toHaveLength(1); expect(plan.rows[0]!.placement).toBe("synced");
+  expect(plan.rows[0]!.payload.targets.map(target => target.id).sort()).toEqual([...targets].sort());
+  expect(applyPrune(f.store.prunePort(), plan, auth).completed).toContain(plan.rows[0]!.payload.id);
+  return plan.rows[0]!.payload;
+}
+
+test("a legitimate native prune of an unpublished held target stays whole and never hydrates its body", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ bootstrap: store.note(note("native unpublished bootstrap")) }) });
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true); // Installs the actual publisher boundary for later person operations.
+  const target = f.store.note(note("NEVER_PUBLIC_NATIVE_PRUNE_TARGET")); expect(f.store.demote(target, "person", PROJECT)).toBeDefined();
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true); expect(held(f, target)).toMatchObject({ held: true, exposure: "unknown" });
+  f.clock.now += 2000;
+  // The existing person-authorized native API may classify a physical synced row public. Transport must
+  // independently require an actual public occurrence, rather than treating that source classification as disclosure.
+  const prune = nativePruneTargets(f, [target]), head = git(remote, "rev-parse", PROJECT_REF), physical = authoredBytes(f.home);
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+  expect(git(remote, "rev-parse", PROJECT_REF)).toBe(head); expect(authoredBytes(f.home)).toEqual(physical);
+  expect(held(f, prune.id)).toMatchObject({ held: true, exposure: "unknown" });
+  assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_NATIVE_PRUNE_TARGET", prune.id]);
+  expect(candidateBytes(f.home)).not.toContain('"op":"prune"');
+});
+
+test("a mixed native prune with public-held and unpublished-held targets never splits or backfills its original", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ public: store.note(note("MIXED_ALREADY_PUBLIC_TARGET")) }) });
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+  expect(f.store.demote(f.ids.public!, "person", PROJECT)).toBeDefined(); expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+  const hidden = f.store.note(note("NEVER_PUBLIC_MIXED_PRUNE_TARGET")); expect(f.store.demote(hidden, "person", PROJECT)).toBeDefined();
+  f.policy(["NEVER_PUBLIC_", "MIXED_ALREADY_PUBLIC_TARGET"]);
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+  expect(held(f, f.ids.public!)).toMatchObject({ held: true, exposure: "published" }); expect(held(f, hidden)).toMatchObject({ held: true, exposure: "unknown" });
+  f.clock.now += 2000;
+  const prune = nativePruneTargets(f, [f.ids.public!, hidden]), head = git(remote, "rev-parse", PROJECT_REF), physical = authoredBytes(f.home);
+  const beforeRows = [...verifiedPublicRows(remote).keys()].sort();
+  expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+  expect(git(remote, "rev-parse", PROJECT_REF)).toBe(head); expect([...verifiedPublicRows(remote).keys()].sort()).toEqual(beforeRows);
+  expect(authoredBytes(f.home)).toEqual(physical); expect(held(f, prune.id)).toMatchObject({ held: true, exposure: "unknown" });
+  assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_MIXED_PRUNE_TARGET", prune.id]);
+  expect(candidateBytes(f.home)).not.toContain('"op":"prune"');
 });
 
 test("an unwitnessed locally pruned legacy original never gets first publication or a candidate object", async () => {
@@ -516,4 +583,16 @@ test("source-local already-public row keeps its frozen hold when policy drifts a
   expect((await syncMemory(receiver.store, receiver.opts(remote))).ok).toBe(true);
   expect(held(receiver, original.id)).toMatchObject({ held: true, exposure: "published" });
   expect(git(remote, "rev-parse", PROJECT_REF)).toBe(remoteHead);
+});
+
+for (const kind of ["missing", "incompatible", "throwing"] as const) test(`actual v3 sync refuses ${kind} writer attestation before cache, publication or source effects`, async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ row: store.note(note("attestation refusal source original")) }) });
+  const physical = authoredBytes(f.home), plans = f.plans(), cache = join(f.home, "shard-sync-placement");
+  const opts: SyncOptions = { ...f.opts(remote), placementAttestation: kind === "missing" ? undefined
+    : kind === "incompatible" ? () => ({ writers: [], legacySyncQuiesced: true })
+    : () => { throw Error("NEVER_PUBLIC_ATTESTATION_FAILURE"); } };
+  expect(existsSync(cache)).toBe(false);
+  const result = await syncMemory(f.store, opts);
+  expect(result).toMatchObject({ ok: false, pushed: false }); expect(JSON.stringify(result)).not.toContain("NEVER_PUBLIC_ATTESTATION_FAILURE");
+  expect(existsSync(cache)).toBe(false); expect(refs(remote)).toEqual([]); expect(authoredBytes(f.home)).toEqual(physical); expect(f.plans()).toEqual(plans);
 });
