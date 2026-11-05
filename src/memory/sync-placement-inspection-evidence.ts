@@ -104,8 +104,8 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
   objects?.assertCurrent(); snapshot.assertCurrent(); return result;
 }
 
-const unavailable = (): never => { throw new SyncPlacementJournalError("corrupt"); };
-const bound = (): never => { throw new SyncPlacementJournalError("bound"); };
+function unavailable(): never { throw new SyncPlacementJournalError("corrupt"); }
+function bound(): never { throw new SyncPlacementJournalError("bound"); }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const oid = (value: string) => /^[a-f0-9]{40}$/.test(value);
 const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];

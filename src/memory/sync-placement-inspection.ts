@@ -69,12 +69,13 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 function physical(realm: ShardSyncRealm): PlacementKey["realm"] { return realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: digest(realm.key) }; }
 function callbacks(input: SyncPlacementInspectionOptions): SyncPlacementInspectionOptions {
   if (!input || typeof input !== "object" || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) fail("policy-unavailable");
-  const fields = Object.getOwnPropertyDescriptors(input), result: SyncPlacementInspectionOptions = {};
-  for (const key of ["screen", "policyVersion", "placementAttestation"] as const) {
-    const field = fields[key]; if (!field) continue;
+  const fields = Object.getOwnPropertyDescriptors(input);
+  const read = <K extends keyof SyncPlacementInspectionOptions>(key: K): SyncPlacementInspectionOptions[K] => {
+    const field = fields[key]; if (!field) return undefined;
     if (!("value" in field) || !field.enumerable || field.value !== undefined && typeof field.value !== "function") fail("policy-unavailable");
-    result[key] = field.value;
-  }
+    return field.value as SyncPlacementInspectionOptions[K];
+  };
+  const result = { screen: read("screen"), policyVersion: read("policyVersion"), placementAttestation: read("placementAttestation") };
   if (result.screen && !result.policyVersion) fail("policy-unavailable"); return result;
 }
 function inactive(store: MemoryStore): Extract<SyncPlacementInspection, { complete: false }> {
@@ -187,7 +188,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     }
     return { complete: true, rows, counts, fingerprint: hashJSON(rows) };
   } catch (error) {
-    let reason = phase;
+    let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof Incomplete) reason = error.reason;
       else if (error instanceof SegmentReadBudgetError) reason = "input-bound";
