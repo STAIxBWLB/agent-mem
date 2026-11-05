@@ -67,20 +67,30 @@ export function computeInbox(base: string, previous?: CapacityMemo): InboxComput
   };
   if (existsSync(join(base, "candidates.db"))) withPendingCandidates(base, reader => {
     const projects = [...new Set(reader.projects().map(project => aliases.get(project) ?? project))].filter(project => active(project) === "active").sort();
-    for (const project of projects) {
-      let store: MemoryStore | undefined, opened = false;
-      try {
-        for (const candidate of reader.list([project, ...aliasedKeys(base, project)])) {
-          if (!policy.screenStandalone(candidate)) continue;
-          if (!opened && (candidateTargets(candidate.input).length || candidate.input.kind === "promotion")) { store = openCuratedForRead(base, project); opened = true; }
-          if (!visibleCandidate(candidate, project, store, policy)) continue;
-          const kind = candidate.input.kind;
-          add({ id: candidate.id, group: "candidate", kind, title: oneLine(candidateText(candidate.input)), project, at: candidate.createdAt,
-            verbs: [...kind !== "decay" && kind !== "model-answer" ? [{ id: "accept", label: "Accept", primary: true }] : [], { id: "reject", label: "Reject", reason: "optional" }],
-            link: { panel: "review", params: { project, id: candidate.id } } });
-        }
-      } finally { store?.close(); }
-    }
+    const reuseShared = !existsSync(join(base, "shards.json")) && aliases.size === 0;
+    let shared: MemoryStore | undefined, sharedOpened = false;
+    try {
+      for (const project of projects) {
+        let store: MemoryStore | undefined, opened = false;
+        try {
+          for (const candidate of reader.list([project, ...aliasedKeys(base, project)])) {
+            if (!policy.screenStandalone(candidate)) continue;
+            if (!opened && (candidateTargets(candidate.input).length || candidate.input.kind === "promotion")) {
+              if (reuseShared) {
+                if (!sharedOpened) { shared = openCuratedForRead(base, project); sharedOpened = true; }
+                store = shared;
+              } else store = openCuratedForRead(base, project);
+              opened = true;
+            }
+            if (!visibleCandidate(candidate, project, store, policy)) continue;
+            const kind = candidate.input.kind;
+            add({ id: candidate.id, group: "candidate", kind, title: oneLine(candidateText(candidate.input)), project, at: candidate.createdAt,
+              verbs: [...kind !== "decay" && kind !== "model-answer" ? [{ id: "accept", label: "Accept", primary: true }] : [], { id: "reject", label: "Reject", reason: "optional" }],
+              link: { panel: "review", params: { project, id: candidate.id } } });
+          }
+        } finally { if (!reuseShared) store?.close(); }
+      }
+    } finally { shared?.close(); }
   });
   let capacity = previous;
   const captureConfig = inboxCaptureConfigVersion(base);
@@ -108,13 +118,14 @@ export interface InboxSources { paths: string[]; version: string }
 const MAX_SOURCES = 16_384;
 const excludedDirectories = new Set(["machine", "readers", "shard-readers", "hook-spool", "shard-sync", "shard-sync-placement", ".git", "node_modules"]);
 function included(name: string): boolean { return name !== "metrics.jsonl" && (!/\.db(?:-wal|-shm)?$/.test(name) || name === "candidates.db" || name === "candidates.db-wal"); }
-function stamp(base: string, relative: string): string | undefined {
+function stamp(base: string, relative: string, budget = { left: MAX_SOURCES }): string | undefined {
   const file = join(base, relative), stat = lstatSync(file, { bigint: true, throwIfNoEntry: false });
   if (!stat || relative === "candidates.db-wal" && stat.size === 0n) return undefined;
   if (stat.isSymbolicLink()) throw Error("inbox source is unavailable");
   if (stat.isDirectory()) {
     const names: string[] = [], dir = opendirSync(file);
     try { let entry; while ((entry = dir.readSync())) {
+      if (--budget.left < 0) throw Error("inbox source inventory exceeds its bound");
       if (entry.isDirectory() ? excludedDirectories.has(entry.name) : !included(entry.name)) continue;
       if (names.length >= MAX_SOURCES) throw Error("inbox source inventory exceeds its bound");
       if (entry.name === "candidates.db-wal" && !lstatSync(join(file, entry.name), { bigint: true }).size) continue;
@@ -132,16 +143,17 @@ export function inboxSourceVersion(base: string, paths: readonly string[]): stri
   if (!Array.isArray(paths) || !paths.length || paths.length > MAX_SOURCES || !paths.includes("") || new Set(paths).size !== paths.length
     || paths.some(relative => typeof relative !== "string" || relative.startsWith("/") || Buffer.byteLength(relative) > 4096
       || relative !== "" && relative.split("/").some(part => !part || part === "." || part === ".."))) throw Error("inbox source inventory is invalid");
-  const hash = createHash("sha256"); for (const relative of paths) hash.update(JSON.stringify([relative, stamp(base, relative) ?? null])); return hash.digest("hex");
+  const hash = createHash("sha256"), budget = { left: MAX_SOURCES }; for (const relative of paths) hash.update(JSON.stringify([relative, stamp(base, relative, budget) ?? null])); return hash.digest("hex");
 }
 export function inboxSources(base: string): InboxSources {
-  const paths: string[] = [];
+  const paths: string[] = []; let entries = 0;
   const visit = (relative: string) => {
     if (paths.length >= MAX_SOURCES) throw Error("inbox source inventory exceeds its bound");
     paths.push(relative); const file = join(base, relative), stat = lstatSync(file, { throwIfNoEntry: false });
     if (!stat?.isDirectory()) return;
     const dir = opendirSync(file);
     try { let entry; while ((entry = dir.readSync())) {
+      if (++entries > MAX_SOURCES) throw Error("inbox source inventory exceeds its bound");
       if (entry.isDirectory() ? excludedDirectories.has(entry.name) : !included(entry.name)) continue;
       if (entry.name === "candidates.db-wal" && !lstatSync(join(file, entry.name)).size) continue;
       visit(relative ? `${relative}/${entry.name}` : entry.name);

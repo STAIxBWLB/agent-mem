@@ -1,6 +1,7 @@
 /// <reference lib="dom.asynciterable" />
 import { afterEach, expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
+import * as fsModule from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,6 +9,7 @@ import { inboxItemProblems, stableAtProblems } from "@staix/agent-console/confor
 import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
 import { DENY_SEGMENTS } from "../src/memory/platform.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import * as curatedRead from "../src/memory/curated-read.ts";
 import { writeCaptureConfigFile } from "../src/memory/capture.ts";
 import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
 import { appendLifecycle } from "../src/memory/lifecycle.ts";
@@ -114,6 +116,18 @@ test("failed jobs have bounded retry and closing an in-flight cache cancels it a
   await cache.close(); expect(work.jobs[1]!.cancelled).toBeGreaterThan(0); await expect(cache.snapshot()).rejects.toThrow("closed");
 });
 
+test("source enumeration is bounded even when every directory entry would be ignored", () => {
+  const base = home(); let seen = 0, closed = 0;
+  const directory = { readSync() { if (++seen > 20000) throw Error("synthetic fixture limit reached"); return { name: "derived-index.db", isDirectory: () => false }; }, closeSync() { closed++; } };
+  const reader = spyOn(fsModule, "opendirSync").mockReturnValue(directory as unknown as ReturnType<typeof fsModule.opendirSync>);
+  try {
+    for (const inspect of [() => inboxSources(base), () => inboxSourceVersion(base, [""])]) {
+      seen = 0; expect(inspect).toThrow("inbox source inventory exceeds its bound"); expect(seen).toBeLessThan(20000);
+    }
+    expect(closed).toBe(2);
+  } finally { reader.mockRestore(); }
+});
+
 test("real read-only computation returns fifty compact newest/urgent rows and a privacy-safe more count", () => {
   const base = home(), store = new CandidateStore({ memoryDir: base, now: () => Date.parse("2026-11-01T00:00:00.000Z") });
   const ids: string[] = [];
@@ -129,6 +143,23 @@ test("real read-only computation returns fifty compact newest/urgent rows and a 
   for (const item of computed.items) { expect(inboxItemProblems(item)).toEqual([]); expect(item.title.length).toBeLessThanOrEqual(120); }
   for (const item of computed.items.filter(value => value.group === "candidate")) expect(Object.keys(item).sort()).toEqual(["at", "group", "id", "kind", "link", "project", "title", "verbs"]);
   expect(Buffer.byteLength(JSON.stringify(computed.items))).toBeLessThanOrEqual(INBOX_MAX_BYTES); expect(JSON.stringify(computed)).not.toContain("INBOX_PRIVATE_");
+});
+
+test("one unsplit curated reader serves targeted candidates from distinct unaliased projects", () => {
+  const base = home(), memory = new MemoryStore({ memoryDir: base }), candidates = new CandidateStore({ memoryDir: base });
+  const ids: string[] = [];
+  try {
+    for (const project of ["project-a", "project-b"]) {
+      const target = memory.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: `ordinary target ${project}`, about: [] });
+      ids.push(candidates.put({ project, kind: "correction", target: { id: target, revision: candidateTargetRevision(memory.get(target, project)!) }, proposedText: `corrected ${project}`, reason: "fixture evidence" }, "public"));
+    }
+  } finally { candidates.close(); memory.close(); }
+  const calls = spyOn(curatedRead, "openCuratedForRead");
+  try {
+    const value = computeInbox(base, { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: null });
+    expect(value.items.map(item => item.id).sort()).toEqual(ids.sort()); expect(calls).toHaveBeenCalledTimes(1);
+    expect(new Set(value.items.map(item => item.project))).toEqual(new Set(["project-a", "project-b"]));
+  } finally { calls.mockRestore(); }
 });
 
 test("a changed home capture config does not reuse old capacity advice inside its memo lifetime", () => {
@@ -215,12 +246,12 @@ async function blockingJob(base: string) {
   } finally { spy.mockRestore(); }
 }
 function gone(pid: number) { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } }
-test("closing a real owned refresh reaps its worker and owned descendant", async () => {
+test("closing a cooperative native fixture reaps its worker and owned descendant", async () => {
   const f = await blockingJob(home()); cleanup.push(() => f.job.cancel());
   const at = performance.now(); await f.job.cancel(); await f.settled;
   expect(performance.now() - at).toBeLessThan(2500); expect(gone(f.pids.pid)).toBe(true); expect(gone(f.pids.child)).toBe(true);
 }, 7000);
-test("the actual thirty-second refresh deadline reaps a blocked worker group", async () => {
+test("the actual thirty-second refresh deadline reaps a cooperative native fixture group", async () => {
   const started = performance.now(), f = await blockingJob(home()); cleanup.push(() => f.job.cancel());
   const outcome = await f.settled; expect("error" in outcome).toBe(true);
   expect(performance.now() - started).toBeGreaterThanOrEqual(29000); expect(performance.now() - started).toBeLessThan(34000);

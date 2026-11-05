@@ -1,10 +1,11 @@
 /** One-shot, owned background process. Never imported by the console request handler. */
-import { DENY_NAMES, DENY_SEGMENTS, processSignature } from "../memory/platform.ts";
+import { DENY_NAMES, DENY_SEGMENTS, processSignatureAsync, processGroupIdAsync } from "../memory/platform.ts";
 import { memoryPolicySnapshot } from "../memory/policy.ts";
 import { computeInbox, inboxSources, type CapacityMemo, type InboxDefaults } from "./inbox.ts";
 
 process.once("disconnect", () => process.exit());
-process.once("SIGTERM", () => process.exit());
+// Keep the leader identity while synchronous owned children settle or the parent force-kills the group.
+process.on("SIGTERM", () => {});
 process.once("message", (message: unknown) => {
   try {
     const input = message as { type?: unknown; base?: unknown; capacity?: CapacityMemo; defaults?: InboxDefaults };
@@ -21,4 +22,6 @@ process.once("message", (message: unknown) => {
     process.send?.({ type: "failed" }, () => process.disconnect?.());
   }
 });
-process.send?.({ type: "ready", pid: process.pid, signature: processSignature(process.pid) });
+void Promise.all([processSignatureAsync(process.pid), processGroupIdAsync(process.pid)]).then(([signature, group]) => {
+  process.send?.({ type: "ready", pid: process.pid, signature, group });
+});

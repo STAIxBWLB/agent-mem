@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { processSignature } from "../../src/memory/platform.ts";
+import { processSignatureAsync, processGroupIdAsync } from "../../src/memory/platform.ts";
 
 let child: ReturnType<typeof spawn> | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -20,4 +20,6 @@ process.once("message", (message: unknown) => {
   writeFileSync(join(input.base, "ui-inbox-worker.json"), JSON.stringify({ pid: process.pid, child: child.pid }), { mode: 0o600 });
   timer = setInterval(() => {}, 1000);
 });
-process.send?.({ type: "ready", pid: process.pid, signature: processSignature(process.pid) });
+void Promise.all([processSignatureAsync(process.pid), processGroupIdAsync(process.pid)]).then(([signature, group]) => {
+  process.send?.({ type: "ready", pid: process.pid, signature, group });
+});
