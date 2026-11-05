@@ -100,8 +100,9 @@ async function main() {
   try{
     const seedAt=performance.now(),fixture=seedInboxBenchmark(root,shape);report.seedMs=performance.now()-seedAt;report.counts={curated:fixture.curatedRows,candidates:fixture.candidateRows,captures:fixture.captureRows};
     process.env.AMEM_HOME=fixture.base;
-    let starts=0,active=0,maxActive=0;const startTimes:number[]=[];
-    cache=new InboxCache(fixture.base,{runner:(base,capacity)=>{starts++;startTimes.push(performance.now());active++;maxActive=Math.max(active,maxActive);const job=runInboxJob(base,capacity);return{...job,result:job.result.finally(()=>{active--;})};}});
+    let starts=0,active=0,maxActive=0;const startTimes:number[]=[],refreshOutcomes:Record<string,unknown>[]=[],refreshMessages:string[]=[];
+    report.refreshOutcomes=refreshOutcomes;report.refreshMessages=refreshMessages;report.refreshStartsMs=startTimes;
+    cache=new InboxCache(fixture.base,{log:line=>refreshMessages.push(line),runner:(base,capacity)=>{starts++;const started=performance.now();startTimes.push(started);active++;maxActive=Math.max(active,maxActive);const job=runInboxJob(base,capacity);return{...job,result:job.result.then(value=>{refreshOutcomes.push({type:"result",durationMs:performance.now()-started});return value;},error=>{refreshOutcomes.push({type:error instanceof Error?error.name:"unknown",durationMs:performance.now()-started});throw error;}).finally(()=>{active--;})};}});
     let last=performance.now(),maxLagMs=0,ticks=0;const control:number[]=[];
     timer=setInterval(()=>{const now=performance.now();maxLagMs=Math.max(maxLagMs,now-last-10);last=now;ticks++;},10);
     server=Bun.serve({port:0,hostname:"127.0.0.1",fetch:request=>request.headers.get("authorization")==="Bearer offline-fixture"?Response.json({ok:true}):new Response("unauthorized",{status:401})});
