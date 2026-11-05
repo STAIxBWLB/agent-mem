@@ -1,9 +1,8 @@
 import { fork } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { configuredPolicyOptions } from "../memory/config.ts";
 import { processSignature, realPath } from "../memory/platform.ts";
-import { INBOX_MAX_BYTES, INBOX_MAX_ITEMS, inboxSourceVersion, type CapacityMemo, type InboxComputation, type InboxItem, type InboxSources } from "./inbox.ts";
+import { INBOX_MAX_BYTES, INBOX_MAX_ITEMS, inboxPolicyDefaults, inboxPolicyVersion, inboxSourceVersion, type CapacityMemo, type InboxComputation, type InboxItem, type InboxSources } from "./inbox.ts";
 
 export interface InboxJobResult { computation: InboxComputation; sources: InboxSources }
 export interface InboxJob { result: Promise<InboxJobResult>; cancel(): Promise<void> }
@@ -14,6 +13,7 @@ const WORK_MS = 30_000, REAP_MS = 2000, RETRY_MS = 1000;
 /** A detached group belongs to this live native child handle, as in the hook worker. It is never reused after exit.
  * No idle daemon/thread/watcher is added: every refresh process exits after its one result. */
 export const runInboxJob: InboxRunner = (base, capacity) => {
+  const defaults = inboxPolicyDefaults();
   const child = fork(fileURLToPath(new URL("./inbox-worker.ts", import.meta.url)), [],
     { execPath: process.execPath, execArgv: ["--smol"], detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
   let exited = false, ready = false, payload: InboxJobResult | undefined, changed = false;
@@ -32,7 +32,7 @@ export const runInboxJob: InboxRunner = (base, capacity) => {
     const message = value as { type?: unknown; pid?: unknown; signature?: unknown; computation?: InboxComputation; sources?: InboxSources };
     if (message?.type === "ready" && !ready) {
       if (!child.pid || message.pid !== child.pid || typeof message.signature !== "string" || processSignature(child.pid) !== message.signature) { kill(); return; }
-      ready = true; child.send({ type: "run", base, capacity });
+      ready = true; child.send({ type: "run", base, capacity, defaults });
     } else if (ready && message?.type === "result" && message.computation && message.sources) payload = { computation: message.computation, sources: message.sources };
     else if (ready && message?.type === "changed") changed = true;
     } catch { kill(); fail(Error("inbox worker unavailable")); }
@@ -81,7 +81,7 @@ export class InboxCache {
     try { task = this.runner(this.base, this.capacity); } catch { this.failedAt = this.now(); return; }
     this.task = task; this.dirty = false;
     void task.result.then(result => {
-      const revision = JSON.stringify(configuredPolicyOptions(this.base)), computation = result.computation;
+      const revision = inboxPolicyVersion(this.base), computation = result.computation;
       if (generation !== this.generation || computation.policy !== revision || inboxSourceVersion(this.base, result.sources.paths) !== result.sources.version) { this.dirty = true; return; }
       if (computation.items.length > INBOX_MAX_ITEMS || Buffer.byteLength(JSON.stringify(computation.items)) > INBOX_MAX_BYTES || !Number.isSafeInteger(computation.more) || computation.more < 0) throw Error("invalid inbox result");
       const cap = computation.items.find(item => item.id === "capacity:proposal");
@@ -93,14 +93,15 @@ export class InboxCache {
     });
   }
   snapshot(): Promise<InboxSnapshot> {
-    if (this.request) return this.request;
+    if (this.request) return this.request.then(snapshot => structuredClone(snapshot));
     const request = Promise.resolve().then(() => {
       if (this.closed) throw Error("inbox provider is closed");
       try {
-        const revision = JSON.stringify(configuredPolicyOptions(this.base));
+        const revision = inboxPolicyVersion(this.base);
         if (this.policy !== undefined && this.policy !== revision) this.invalidate(true);
         this.policy = revision;
         if (this.cache && (inboxSourceVersion(this.base, this.cache.sources.paths) !== this.cache.sources.version || this.capacity && this.now() >= this.capacity.until)) this.invalidate();
+        if (this.cache && inboxPolicyVersion(this.base) !== revision) throw Error("inbox policy changed");
         if (this.cache) return { items: structuredClone(this.cache.computation.items), more: this.cache.computation.more, complete: true, refreshing: false, generatedAt: this.generatedAt };
         if (this.failedAt === undefined || this.now() - this.failedAt >= RETRY_MS) this.refresh();
         const unavailable = this.failedAt !== undefined && !this.task;
@@ -114,7 +115,7 @@ export class InboxCache {
     });
     this.request = request;
     void request.finally(() => { if (this.request === request) this.request = undefined; }).catch(() => {});
-    return request;
+    return request.then(snapshot => structuredClone(snapshot));
   }
   async close(): Promise<void> {
     this.closed = true; this.cache = undefined; this.capacity = undefined; this.generation++;

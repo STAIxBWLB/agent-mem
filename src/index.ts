@@ -19,7 +19,15 @@ export * from "./memory/project.ts";
 export * from "./memory/home.ts";
 export * from "./memory/platform.ts";
 export * from "./memory/commands.ts";
-export * from "./memory/candidates.ts";
+export {
+  CANDIDATE_DB_BUSY_TIMEOUT_MS, ACCEPTED_CONSOLIDATION_PREFIX, CANDIDATE_RETENTION, CONSOLIDATION_REVIEW_LIMIT,
+  ConsolidationReviewLimit, COUNTER_RETENTION, candidateInputId, acceptedCorrectionText, goalPromotionLinked,
+  candidateTargetRevision, CandidateQueueFull, CandidateStore,
+} from "./memory/candidates.ts";
+export type {
+  CandidateVerdict, CandidateTarget, CandidateInput, CandidateStatus, Candidate, ConsolidationReview, CandidateFilter,
+  CounterKey, CounterValues, Counter, CandidateAcceptance, CandidateAcceptanceResult,
+} from "./memory/candidates.ts";
 export * from "./memory/ops-contract.ts";
 export * from "./memory/generation.ts";
 export * from "./memory/migrate.ts";

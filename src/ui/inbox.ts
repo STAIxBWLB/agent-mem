@@ -7,7 +7,8 @@ import { capacityReport } from "../memory/capacity.ts";
 import { configuredPolicy, configuredPolicyOptions } from "../memory/config.ts";
 import { openCuratedForRead } from "../memory/curated-read.ts";
 import { lifecycleResolver } from "../memory/lifecycle.ts";
-import type { StandalonePolicy } from "../memory/policy.ts";
+import { memoryPolicySnapshot, type StandalonePolicy } from "../memory/policy.ts";
+import { DENY_NAMES, DENY_SEGMENTS } from "../memory/platform.ts";
 import { aliasedKeys, effectiveAliases } from "../memory/shard.ts";
 import type { MemoryStore } from "../memory/store.ts";
 
@@ -16,6 +17,16 @@ export interface InboxItem {
   chip?: { text: string; tone: "ok" | "warn" | "err" | "neutral" };
   verbs: { id: string; label: string; primary?: boolean; reason?: "optional" | "required" }[];
   link: { panel: string; params?: Record<string, string> };
+}
+export interface InboxDefaults { names: string[]; segments: string[] }
+export function inboxPolicyDefaults(): InboxDefaults {
+  const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS });
+  if (!defaults || !Array.isArray(defaults.names) || !Array.isArray(defaults.segments)
+    || !defaults.names.every(value => typeof value === "string") || !defaults.segments.every(value => typeof value === "string")) throw Error("inbox policy is unavailable");
+  return defaults;
+}
+export function inboxPolicyVersion(base: string): string {
+  return createHash("sha256").update(JSON.stringify({ options: configuredPolicyOptions(base), defaults: inboxPolicyDefaults() })).digest("hex");
 }
 export const INBOX_MAX_ITEMS = 50, INBOX_MAX_BYTES = 64 * 1024;
 export const CAPACITY_CACHE_MS = 5 * 60_000;
@@ -47,7 +58,7 @@ export interface InboxComputation { items: InboxItem[]; more: number; policy: st
 const order = (a: InboxItem, b: InboxItem) => Number(b.group === "alert") - Number(a.group === "alert") || b.at.localeCompare(a.at) || a.id.localeCompare(b.id);
 /** Only row-rendered fields cross the worker boundary; details stay in the item's panel. */
 export function computeInbox(base: string, previous?: CapacityMemo): InboxComputation {
-  const revision = JSON.stringify(configuredPolicyOptions(base)), policy = configuredPolicy(base), active = lifecycleResolver(base), aliases = effectiveAliases(base);
+  const revision = inboxPolicyVersion(base), policy = configuredPolicy(base), active = lifecycleResolver(base), aliases = effectiveAliases(base);
   const items: InboxItem[] = []; let count = 0;
   const add = (item: InboxItem) => {
     if (!policy.screenStandalone(item)) return;
@@ -87,7 +98,7 @@ export function computeInbox(base: string, previous?: CapacityMemo): InboxComput
   }
   if (capacity.item) add(capacity.item);
   while (Buffer.byteLength(JSON.stringify({ items, more: count - items.length })) > INBOX_MAX_BYTES - 512 && items.length) items.pop();
-  if (JSON.stringify(configuredPolicyOptions(base)) !== revision) throw Error("inbox policy changed");
+  if (inboxPolicyVersion(base) !== revision) throw Error("inbox policy changed");
   return { items, more: count - items.length, policy: revision, capacity };
 }
 
@@ -116,6 +127,9 @@ function stamp(base: string, relative: string): string | undefined {
  * ponytail: at most 16384 source files/directories. Larger homes need a core append-revision protocol instead of
  * relaxing the bound or silently treating an incomplete inventory as an unchanged snapshot. */
 export function inboxSourceVersion(base: string, paths: readonly string[]): string {
+  if (!Array.isArray(paths) || !paths.length || paths.length > MAX_SOURCES || !paths.includes("") || new Set(paths).size !== paths.length
+    || paths.some(relative => typeof relative !== "string" || relative.startsWith("/") || Buffer.byteLength(relative) > 4096
+      || relative !== "" && relative.split("/").some(part => !part || part === "." || part === ".."))) throw Error("inbox source inventory is invalid");
   const hash = createHash("sha256"); for (const relative of paths) hash.update(JSON.stringify([relative, stamp(base, relative) ?? null])); return hash.digest("hex");
 }
 export function inboxSources(base: string): InboxSources {
