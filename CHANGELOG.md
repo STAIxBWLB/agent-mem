@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Use unique owned private hook-spool temporaries so a killed write cannot block the next deterministic publication. Bound stale private cleanup to four entries per maintenance call after one hour, outside SessionStart; published names, bytes and formats stay unchanged. Refs #226.
+
 - Add #261 stage 3 placement-filtered shard publication: sealed bounded plans, operation-aware dependency holds, exact multi-ref publication, truthful exposure recovery and monotone v3 prune-view maintenance. Keep original payloads and all limits, and preserve v1/v2 behavior. Real-home activation and release remain separate.
 
 - Add the private bounded placement/publication journal and journal-only rebuild for #261 stage 2, with fresh source proofs and explicit policy-screened person release. Transport and activation remain disabled. Preserve legacy profile diagnostics on ordinary store opens.
