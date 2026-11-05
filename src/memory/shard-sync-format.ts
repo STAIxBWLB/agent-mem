@@ -60,6 +60,15 @@ export function decodeShardDescriptor(bytes: Uint8Array, realm: ShardSyncRealm):
   if (!version || canonicalJSON(value) + "\n" !== shardSyncDescriptor(realm, version)) throw new ShardSyncFormatError(label, "descriptor realm or schema mismatch");
   return version;
 }
+/** Known wire metadata for activated placement audit/proof only. Legacy transports retain their v3 refusal. */
+export function decodePlacementTransportDescriptor(bytes: Uint8Array, realm: ShardSyncRealm): "v1" | "v2" | "v3" {
+  const value = decodeMetadata(bytes, shardSyncLabel(realm));
+  if (value.schema === PLACEMENT_DESCRIPTOR_SCHEMA) {
+    try { validatePlacementDescriptor(value, realm); } catch { throw new ShardSyncFormatError(shardSyncLabel(realm), "invalid placement descriptor"); }
+    return "v3";
+  }
+  return decodeShardDescriptor(bytes, realm);
+}
 export function isShardManifestPath(path: string): boolean { return MANIFEST.exec(path)?.[0] === path; }
 /** Shape and lineage classification belong to Layer 1 after complete pack acquisition. */
 export function decodeShardManifest(path: string, bytes: Uint8Array): unknown {

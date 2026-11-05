@@ -1,3 +1,5 @@
+import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { types } from "node:util";
 import { randomBytes } from "node:crypto";
 import { canonicalJSON, hashJSON } from "./generation.ts";
@@ -82,12 +84,12 @@ function active(home: string, input: PlacementEffectRequest, port: PlacementCapt
   const capture = captureSyncPlacementContext(home, port), journal = readPlacementJournal(capture.home, input.epochHash);
   if (capture.activeHead !== input.epochHash || journal.epoch.homeHash !== capture.context.homeHash
     || journal.epoch.generation !== (capture.context.profile as { generation: string }).generation
-    || hashJSON(capture.context.profile) !== journal.activation.previousProfileHash
-    || hashJSON(capture.context.shards) !== journal.activation.previousShardsHash
     || journal.activation.targetProfile.placementHead !== input.epochHash
     || canonicalJSON(capture.context.writers) !== canonicalJSON(journal.activation.writers)
     || canonicalJSON(capture.context.realms.map(({ bindingHash: _hash, ...identity }) => identity))
       !== canonicalJSON(journal.activation.realms.map(({ bindingHash: _hash, ...identity }) => identity))) fail("changed");
+  const markers = readPlacementRuntimeMarkers(capture.home), binding = readActivePlacementBinding(capture.home, markers.profile, markers.shards);
+  if (!binding || binding.epoch.contextHash !== journal.epoch.contextHash) fail("changed");
   const projection = rebuildPlacementProjection(journal.epoch, journal.records);
   const source = capture.rows.get(placementKeyId(input.key)); if (!source) fail("changed");
   return { capture, journal, projection, source };

@@ -1,7 +1,7 @@
 /** Bounded selected-path acquisition only. Transport admission and receiving binding stay with the caller. */
 import { createHash } from "node:crypto";
 import { PUBLIC_PRUNE_GRAPH_MAX_BYTES, PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, PUBLIC_PRUNE_INPUT_MAX_BYTES, PublicPruneInputError, type PublicPruneObject } from "./public-prune-inputs.ts";
-import { decodeShardDescriptor, decodeShardManifest, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { decodePlacementTransportDescriptor, decodeShardManifest, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
 import { PUBLIC_PRUNE_MAX_PACKS, PUBLIC_PRUNE_MAX_WITNESSES, verifyPublicPruneWitness } from "./public-prune-witness.ts";
 
 type ObjectType = "commit" | "tree" | "blob";
@@ -64,7 +64,7 @@ export async function collectPublicPruneGitGraph(options: PublicPruneGitGraphOpt
       }
       const value = await get(oid, "blob"); return { oid, body: value.body };
     };
-    guard(decodeShardDescriptor((await path("shard.json")).body, realm) === "v2");
+    guard(["v2", "v3"].includes(decodePlacementTransportDescriptor((await path("shard.json")).body, realm)));
     const manifest = await path(manifestPath); guard(manifest.oid === manifestBlob);
     const raw = decodeShardManifest(manifestPath, manifest.body);
     guard(object(raw) && object(raw.pruneOccurrence) && Array.isArray(raw.witnesses));

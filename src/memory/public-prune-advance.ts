@@ -1,3 +1,4 @@
+import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 /** Already-v2 monotone commit. Native rows stay unchanged; readers apply the proved growing mask on rebind. */
 import { createHash } from "node:crypto";
 import { constants, closeSync, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -73,10 +74,15 @@ function checked(value: unknown, home: string): AdvanceIntent {
   guard(value.schema === "agent-mem.public-prune-advance/v1" && value.home === home && hex(value.generation,32) && hex(value.expectedRevision,64));
   for(const key of ["previousProfile","previousShards","finalProfile","finalShards"])guard(typeof value[key] === "string");
   const previous=JSON.parse(value.previousProfile as string), oldShards=JSON.parse(value.previousShards as string), final=JSON.parse(value.finalProfile as string), shards=JSON.parse(value.finalShards as string), view=validatePublicPruneView(value.view);
-  guard(object(previous) && exact(previous,["schema","kind","generation","foreignPruneFormat","pruneInputSetHash"]) && previous.kind === "generation" && hex(previous.pruneInputSetHash,64) && previous.schema === "agent-mem.profile/v2" && previous.generation === value.generation && previous.foreignPruneFormat === "agent-mem.public-prune-witness/v1" && hashJSON(previous) === value.expectedRevision);
-  guard(object(final) && exact(final,["schema","kind","generation","foreignPruneFormat","pruneInputSetHash"]) && final.schema === previous.schema && final.kind === "generation" && final.generation === value.generation && final.foreignPruneFormat === previous.foreignPruneFormat && final.pruneInputSetHash === publicPruneViewHash(view));
+  const placed = previous?.schema === "agent-mem.profile/v3";
+  const profileFields = ["schema","kind","generation","foreignPruneFormat","pruneInputSetHash", ...(placed ? ["publicationFormat","placementHead"] : [])];
+  const shardFields: readonly string[] = [...SHARDED_V2_FIELDS, ...(placed ? ["publicationFormat","placementHead"] : [])];
+  if (placed) { validatePlacementShards(oldShards, validatePlacementProfile(previous)); validatePlacementShards(shards, validatePlacementProfile(final)); }
+  guard(object(previous) && exact(previous,profileFields) && previous.kind === "generation" && hex(previous.pruneInputSetHash,64) && previous.schema === (placed ? "agent-mem.profile/v3" : "agent-mem.profile/v2") && previous.generation === value.generation && previous.foreignPruneFormat === "agent-mem.public-prune-witness/v1" && hashJSON(previous) === value.expectedRevision);
+  guard(object(final) && exact(final,profileFields) && final.schema === previous.schema && final.kind === "generation" && final.generation === value.generation && final.foreignPruneFormat === previous.foreignPruneFormat && final.pruneInputSetHash === publicPruneViewHash(view));
+  if (placed) guard(final.publicationFormat === previous.publicationFormat && final.placementHead === previous.placementHead);
   guard(view.receivingGeneration === value.generation && canonicalJSON(final)+"\n" === value.finalProfile && hashJSON(final) === value.finalProfileHash && hashJSON(shards) === value.finalShardsHash && canonicalJSON(shards)+"\n" === value.finalShards);
-  guard(object(oldShards) && object(shards) && Object.keys(oldShards).every(key=>(SHARDED_V2_FIELDS as readonly string[]).includes(key)) && Object.keys(shards).every(key=>(SHARDED_V2_FIELDS as readonly string[]).includes(key)) && oldShards.phase === "active" && oldShards.generation === value.generation && oldShards.schema === "agent-mem.shards/v2" && oldShards.selectorRevision === value.expectedRevision && shards.selectorRevision === value.finalProfileHash);
+  guard(object(oldShards) && object(shards) && Object.keys(oldShards).every(key=>shardFields.includes(key)) && Object.keys(shards).every(key=>shardFields.includes(key)) && oldShards.phase === "active" && oldShards.generation === value.generation && oldShards.schema === (placed ? "agent-mem.shards/v3" : "agent-mem.shards/v2") && oldShards.selectorRevision === value.expectedRevision && shards.selectorRevision === value.finalProfileHash);
   const {selectorRevision:_old,...a}=oldShards,{selectorRevision:_new,...b}=shards;guard(canonicalJSON(a)===canonicalJSON(b));
   guard(Array.isArray(value.bindings) && value.bindings.length <= 1024 && object(value.root) && exact(value.root,["dev","ino","aliasesHash","machineHash"]) && hex(value.root.aliasesHash,64) && hex(value.root.machineHash,64));
   let prior="";for(const item of value.bindings){guard(object(item)&&exact(item,["key","dir","dev","ino","metadata"])&&typeof item.key==="string"&&item.key>prior&&item.dir===realmDir(home,item.key)&&hex(item.metadata,64));prior=item.key;}
@@ -128,7 +134,7 @@ function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefine
 }
 export async function advancePublicPruneView(options: PublicPruneAdvanceOptions):Promise<PublicPruneAdvanceResult>{
   const home=realPath(options.memoryDir),root=owned(home,true),selection=readSelector(home),profile=selection.selector;
-  guard(profile?.schema==="agent-mem.profile/v2"&&selection.revision===options.expectedRevision);
+  guard((profile?.schema==="agent-mem.profile/v2"||profile?.schema==="agent-mem.profile/v3")&&selection.revision===options.expectedRevision);
   const view=validatePublicPruneView(options.view);guard(view.receivingGeneration===profile.generation);
   const previousProfile=raw(join(home,"profile.json")),previousShards=raw(join(home,"shards.json")),old=readPublicPruneViewForActivation(home,profile.pruneInputSetHash,profile.generation);
   const bindings:Binding[]=[];

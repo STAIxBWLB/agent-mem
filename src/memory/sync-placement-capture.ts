@@ -1,3 +1,5 @@
+import type { PlacementPublicationSource } from "./sync-placement-publication-plan.ts";
+import { validatePlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import { types } from "node:util";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, type BigIntStats } from "node:fs";
@@ -26,7 +28,7 @@ export interface PlacementCapturePort {
 export interface PlacementSourceRow { key: PlacementKey; row: Entry; sourcePlacement: "local" | "synced"; intrinsicLocal: boolean }
 export interface PlacementCapture {
   home: string; context: SyncPlacementActivationContext; activeHead?: string;
-  markerHash: string; fingerprint: string; directories: string[]; rows: Map<string, PlacementSourceRow>;
+  markerHash: string; fingerprint: string; directories: string[]; prefixes: PlacementPublicationSource[]; rows: Map<string, PlacementSourceRow>;
   assertCurrent(): void;
 }
 function fail(code: "changed" | "invalid" | "bound" = "changed"): never { throw new SyncPlacementJournalError(code); }
@@ -40,7 +42,14 @@ function ownedDirectory(dir: string): BigIntStats {
 }
 /** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
  * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
-function capture(homeInput: string, port: PlacementCapturePort): Omit<PlacementCapture, "assertCurrent"> {
+function capture(homeInput: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[]): Omit<PlacementCapture, "assertCurrent"> {
+  let selection: PlacementRealm[] | undefined;
+  if (selected !== undefined) {
+    if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
+    const copied = memoryPolicySnapshot(selected); if (!copied) fail();
+    selection = copied.map(realm => validatePlacementKey({ realm, id: "0".repeat(32), rowHash: "0".repeat(64) }).realm);
+    if (!selection.length || new Set(selection.map(realm => canonicalJSON(realm))).size !== selection.length) fail();
+  }
   // All host callouts precede filesystem capture: a callback cannot alter input after its final proof.
   const attestation = memoryPolicySnapshot(port.attest()), policyVersion = port.policyVersion?.();
   if (!attestation) fail();
@@ -90,7 +99,7 @@ function capture(homeInput: string, port: PlacementCapturePort): Omit<PlacementC
   // An in-flight migration/prune is never accepted as a stable placement source.
   for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) if (lstatSync(join(home, name), { throwIfNoEntry: false })) fail();
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
-  const rows = new Map<string, PlacementSourceRow>(), directories = [home];
+  const rows = new Map<string, PlacementSourceRow>(), directories = [home], prefixes: PlacementPublicationSource[] = [];
   const realms: SyncPlacementActivationContext["realms"][number][] = [];
   const listing = (dir: string, optional = false): string[] => {
     const s = lstatSync(dir, { throwIfNoEntry: false });
@@ -134,6 +143,12 @@ function capture(homeInput: string, port: PlacementCapturePort): Omit<PlacementC
       if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.nlink !== 1 || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o022) !== 0) fail();
       if (segment.tailBytes) fail();
       facts.push([dir, segment.source, segment.path, segment.offset, segment.hash, segment.stamp]);
+      if (!segment.stamp || !["generation", "legacy-local", "legacy-main"].includes(segment.source)) fail();
+      const physical: unknown = JSON.parse(segment.stamp);
+      if (!Array.isArray(physical) || physical.length !== 5 || !physical.every(value => typeof value === "string" && /^[0-9]+$/.test(value))) fail();
+      prefixes.push({ realm: identity, source: segment.source as PlacementPublicationSource["source"], pathHash: digest(segment.path),
+        dev: physical[0] as string, ino: physical[1] as string, byteLength: segment.offset, hash: segment.hash,
+        mtimeNs: physical[3] as string, ctimeNs: physical[4] as string });
       for (const line of completeLines(segment.bytes)) {
         if (!line.length) continue;
         const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
@@ -159,15 +174,19 @@ function capture(homeInput: string, port: PlacementCapturePort): Omit<PlacementC
     const bindingHash = hashJSON(facts.slice(beforeFacts));
     realms.push({ ...identity, bindingHash });
   };
-  realm(join(home, "user"), { scope: "user" });
+  if (!selection || selection.some(item => item.scope === "user")) realm(join(home, "user"), { scope: "user" });
   for (const name of listing(join(home, "projects"), true)) {
     if (!/^[a-f0-9]{16}$/.test(name)) fail();
+    if (selection && !selection.some(item => item.scope === "project" && item.keyHash.slice(0,16) === name)) continue;
     const dir = join(home, "projects", name), project = json(join(dir, "project.json"));
     if (typeof project?.key !== "string" || shardKeyHash(project.key) !== name) fail();
     // Capture scaffolds are not curated realms, but their identity still binds this inventory.
     if (!lstatSync(join(dir, "generation.json"), { throwIfNoEntry: false })) continue;
-    realm(dir, { scope: "project", keyHash: digest(project.key) }, project.key);
+    const keyHash = digest(project.key);
+    if (selection && !selection.some(item => item.scope === "project" && item.keyHash === keyHash)) fail();
+    realm(dir, { scope: "project", keyHash }, project.key);
   }
+  if (selection && realms.length !== selection.length) fail();
   const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS }); if (!defaults) fail();
   const context: SyncPlacementActivationContext = { ...base, homeHash: hashJSON([home, String(root.dev), String(root.ino), String(root.uid)]), sourceHash: hashJSON(facts),
     aliasesHash: digest(aliases ?? Buffer.alloc(0)), policyHash: hashJSON({ config: loadAmemConfig(home).config, defaults, policyVersion }), realms,
@@ -175,11 +194,13 @@ function capture(homeInput: string, port: PlacementCapturePort): Omit<PlacementC
   // Reuse the closed stage-1 context validator, including writer/version/realm bounds.
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
-  return { home, context, ...(activeHead ? { activeHead } : {}), markerHash, fingerprint: hashJSON({ context, markerHash }), directories: directories.sort(), rows };
+  return { home, context, ...(activeHead ? { activeHead } : {}), markerHash, fingerprint: hashJSON({ context, markerHash }), directories: directories.sort(), prefixes, rows };
 }
-export function captureSyncPlacementContext(home: string, port: PlacementCapturePort): PlacementCapture {
+export function captureSyncPlacementContext(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[]): PlacementCapture {
   try {
-    const before = capture(home, port);
-    return { ...before, assertCurrent: () => { try { if (capture(home, port).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
+    const selection = selected === undefined ? undefined : memoryPolicySnapshot(selected);
+    if (selected !== undefined && !selection) fail();
+    const before = capture(home, port, selection);
+    return { ...before, assertCurrent: () => { try { if (capture(home, port, selection).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
   } catch (error) { if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SyncPlacementJournalError) throw error; return fail(); }
 }

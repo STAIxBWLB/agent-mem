@@ -1634,7 +1634,7 @@ function initializeShard(home: string, opts: { project?: string; user?: boolean 
   writeProfileJSON(join(dir, "migration-sources.json"), { schema: "agent-mem.migration-sources/v1", sources });
   const selected = readSelector(home).selector;
   const profile: BoundProfile = { kind: "generation", home, dir, generation, selectorRevision: selection.selectorRevision,
-    ...(selected?.schema === "agent-mem.profile/v2" ? {foreignPruneFormat: selected.foreignPruneFormat, pruneInputSetHash: selected.pruneInputSetHash} : {}),
+    ...((selected?.schema === "agent-mem.profile/v2" || selected?.schema === "agent-mem.profile/v3") ? {foreignPruneFormat: selected.foreignPruneFormat, pruneInputSetHash: selected.pruneInputSetHash, ...(selected.schema === "agent-mem.profile/v3" ? {publicationFormat:selected.publicationFormat,placementHead:selected.placementHead} : {})} : {}),
     legacyHome, legacyMainHome: join(dir, "legacy-main"), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
   buildGenerationIndex(profile, sources);
   writeProfileJSON(join(dir, "generation-seal.json"), { schema: "agent-mem.generation-seal/v1", generation,
@@ -1657,6 +1657,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   const missing = !existsSync(join(dir, "generation.json"));
   if (missing) {
     const selected = readSelector(home).selector;
+    if (selected?.schema === "agent-mem.profile/v3") throw new Error("sync placement realm was not activated; review a complete realm inventory before opening a new curated shard");
     if (selected?.schema === "agent-mem.profile/v2") {
       const view = readPublicPruneView(home, selected.pruneInputSetHash, selected.generation), key = opts.user ? "user" : `project:${opts.project}`;
       if (view.realms[key] || ["generation-seal.json", "migration-sources.json", "machine.json"].some(name => existsSync(join(dir, name)))) throw new Error("v2 generation input unavailable; reader cannot repair committed inputs");

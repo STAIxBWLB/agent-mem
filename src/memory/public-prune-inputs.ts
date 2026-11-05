@@ -7,7 +7,7 @@ import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mu
 import { realPath } from "./platform.ts";
 import { entryId, type Entry } from "./store.ts";
 import { prunePayloadHash } from "./prune.ts";
-import { shardSyncRef, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { decodePlacementTransportDescriptor, shardSyncRef, type ShardSyncRealm } from "./shard-sync-format.ts";
 import { verifyPublicPruneWitness, type VerifiedPublicPruneWitness } from "./public-prune-witness.ts";
 
 import { PUBLIC_PRUNE_INPUT_MAX_BYTES, PUBLIC_PRUNE_REPLAY_MAX_BYTES, PUBLIC_PRUNE_MAX_SETS, PublicPruneInputError, validatePublicPruneInputSet, type PublicPruneInputSetV1 } from "./public-prune-input-chain.ts";
@@ -121,8 +121,7 @@ function graph(input: PublicPruneInputV1, load: (oid: string) => Buffer): { proo
     }
     return { oid, body: get(oid, "blob").body };
   };
-  const expected = { schema: "agent-mem.shard-sync/v2", ...input.realm };
-  guard(canonicalJSON(json(path("shard.json").body)) === canonicalJSON(expected));
+  guard(["v2", "v3"].includes(decodePlacementTransportDescriptor(path("shard.json").body, input.realm)));
   const manifest = path(input.source.manifestPath); guard(manifest.oid === input.source.manifestBlob);
   const raw = json(manifest.body); guard(object(raw) && Array.isArray(raw.witnesses) && raw.witnesses.length <= 64 && object(raw.pruneOccurrence));
   const refs = [raw.pruneOccurrence, ...raw.witnesses], packs = new Map<string, { pack: string; blob: string; bytes: Buffer }>();

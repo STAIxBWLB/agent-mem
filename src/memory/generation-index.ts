@@ -109,7 +109,7 @@ export class GenerationIndex {
       if (!readOnly) rebindPublicPruneProfile(this.profile);
       const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
       if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) { if (this.profile.foreignPruneFormat) continue; return fail(); }
-      if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+      if (!value || value.schema !== (this.profile.publicationFormat ? "agent-mem.shards/v3" : this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
       return hashJSON(value);
     }
     return fail();
