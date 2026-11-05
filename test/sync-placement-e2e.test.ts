@@ -90,7 +90,9 @@ test("stage 5: prepared v2 to fixture v3, filtered publication, inspection, seco
   const receiverSeals = new Set(receiver.publications().map(row => row.bundle.root.seal));
   expect((await syncMemory(receiver.store, receiver.opts(source.remote))).ok).toBe(true);
   const finalInspection = await inspect(receiver);
-  for (const publication of receiver.publications().filter(row => !receiverSeals.has(row.bundle.root.seal))) matchPlan(finalInspection, publication);
+  const finalPublications = receiver.publications().filter(row => !receiverSeals.has(row.bundle.root.seal));
+  expect(finalPublications).toHaveLength(1);
+  matchPlan(finalInspection, finalPublications[0]!);
   expect(receiver.store.get(source.ids.forgotten!, source.project)).toBeUndefined();
   expect(receiver.store.get(source.ids.target!, source.project)).toBeUndefined();
   expect(receiver.store.prunePort().snapshot().pruned).toContain(source.ids.target!);
