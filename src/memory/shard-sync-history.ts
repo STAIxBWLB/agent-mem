@@ -1,5 +1,6 @@
 /** Complete selected-realm immutable history audit; Git acquisition and binding checks belong to the caller. */
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { canonicalJSON, validGeneration } from "./generation.ts";
 import { validatePruneRow, type PruneRow } from "./prune.ts";
 import { verifyPublicPruneWitness } from "./public-prune-witness.ts";
@@ -23,10 +24,30 @@ export interface ShardHistoryAuditorOptions {
    * Body bytes, without the Git object header; the auditor verifies each requested identity itself. */
   object?(oid: string, type: "commit" | "tree"): Promise<Buffer>;
 }
+export type ShardHistoryCause = "unavailable" | "blob" | "forbidden-entry";
+const refusals: Record<ShardHistoryCause, string> = {
+  unavailable: "Shard history is unavailable, inconsistent or unsupported; retain and inspect the complete selected history before continuing.",
+  blob: "Shard history blob is unavailable or its identity, bound or complete newline is invalid; retain and inspect the selected history before continuing.",
+  "forbidden-entry": "Shard history contains a forbidden historical tree entry; retain and inspect the selected history before continuing.",
+};
 export class ShardHistoryError extends Error {
-  constructor() { super("Shard history is unavailable, inconsistent or unsupported; retain and inspect the complete selected history before continuing."); this.name = "ShardHistoryError"; }
+  readonly code: ShardHistoryCause;
+  constructor(code: ShardHistoryCause = "unavailable") {
+    const safe = typeof code === "string" && Object.hasOwn(refusals, code) ? code : "unavailable";
+    super(refusals[safe]); this.code = safe; this.name = "ShardHistoryError";
+  }
 }
-function fail(): never { throw new ShardHistoryError(); }
+function cause(error: unknown): ShardHistoryCause {
+  try {
+    if (!error || typeof error !== "object" || types.isProxy(error) || !(error instanceof ShardHistoryError)) return "unavailable";
+    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+    return descriptor && "value" in descriptor && typeof descriptor.value === "string" && Object.hasOwn(refusals, descriptor.value)
+      ? descriptor.value as ShardHistoryCause : "unavailable";
+  } catch { return "unavailable"; }
+}
+/** Never reads an external message/getter; only this module's closed own data-code selects safe static text. */
+export function shardHistoryRefusal(error: unknown): string { return refusals[cause(error)]; }
+function fail(code: ShardHistoryCause = "unavailable"): never { throw new ShardHistoryError(code); }
 const oid = (v: unknown): v is string => typeof v === "string" && v.length === 40 && /^[a-f0-9]+$/.test(v);
 const packPath = (v: string) => /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/.exec(v)?.[0] === v;
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
@@ -54,16 +75,18 @@ export class ShardHistoryAuditor {
     this.#options = { ...options, realm: structuredClone(options.realm), publicPrune: options.publicPrune ?? options.placement };
   }
   async #blob(object: string, path: string): Promise<Buffer> {
-    const maximum = path === "shard.json" || isShardManifestPath(path) ? 64 * 1024 : SHARD_PACK_MAX_BYTES;
-    let bytes = this.#blobs.get(object);
-    if (!bytes) {
-      const result = await this.#options.blob(object, path);
-      if (!(result instanceof Uint8Array)) fail(); bytes = Buffer.from(result);
-      if (bytes.length < 1 || bytes.length > maximum || bytes.at(-1) !== 10
-        || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== object) fail();
-      this.#blobs.set(object, bytes);
-    }
-    if (bytes.length > maximum) fail(); return bytes;
+    try {
+      const maximum = path === "shard.json" || isShardManifestPath(path) ? 64 * 1024 : SHARD_PACK_MAX_BYTES;
+      let bytes = this.#blobs.get(object);
+      if (!bytes) {
+        const result = await this.#options.blob(object, path);
+        if (!(result instanceof Uint8Array)) fail("blob"); bytes = Buffer.from(result);
+        if (bytes.length < 1 || bytes.length > maximum || bytes.at(-1) !== 10
+          || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== object) fail("blob");
+        this.#blobs.set(object, bytes);
+      }
+      if (bytes.length > maximum) fail("blob"); return bytes;
+    } catch { return fail("blob"); }
   }
   async #object(object: string, type: "commit" | "tree"): Promise<Buffer> {
     if (!this.#options.object || !oid(object)) return fail();
@@ -98,15 +121,19 @@ export class ShardHistoryAuditor {
     const parsed = new Map<string, ReturnType<typeof parsePublicPruneGitTree>>(), entries: string[] = [];
     const walk = async (object: string, prefix: string): Promise<void> => {
       let tree = parsed.get(object);
-      if (!tree) { tree = parsePublicPruneGitTree(await this.#object(object, "tree")); parsed.set(object, tree); }
+      if (!tree) {
+        const bytes = await this.#object(object, "tree");
+        try { tree = parsePublicPruneGitTree(bytes); } catch { return fail("forbidden-entry"); }
+        parsed.set(object, tree);
+      }
       for (const [name, entry] of tree) {
         const path = prefix ? `${prefix}/${name}` : name;
         if (entry.mode === "40000") {
           const allowed = !prefix ? name === "rows" || name === "prune-witnesses"
             : prefix === "rows" && name.length === 64 && /^[a-f0-9]+$/.test(name);
-          if (!allowed) return fail(); await walk(entry.oid, path);
+          if (!allowed) return fail("forbidden-entry"); await walk(entry.oid, path);
         } else {
-          if (path !== "shard.json" && !packPath(path) && !isShardManifestPath(path)) return fail();
+          if (path !== "shard.json" && !packPath(path) && !isShardManifestPath(path)) return fail("forbidden-entry");
           entries.push(`100644 blob ${entry.oid}\t${path}`);
         }
       }
@@ -120,9 +147,9 @@ export class ShardHistoryAuditor {
     const objects = new Map<string, string>(), manifests = new Map<string, ShardHistoryManifest>();
     for (const entry of entries) {
       const match = /^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
-      if (!match || match[0] !== entry) fail();
+      if (!match || match[0] !== entry) fail("forbidden-entry");
       const path = match[2]!, object = match[1]!;
-      if (files.has(path) || path !== "shard.json" && !packPath(path) && !isShardManifestPath(path)) fail();
+      if (files.has(path) || path !== "shard.json" && !packPath(path) && !isShardManifestPath(path)) fail("forbidden-entry");
       files.set(path, await this.#blob(object, path)); objects.set(path, object);
     }
     const descriptor = files.get("shard.json"); if (!descriptor) return fail();
@@ -189,7 +216,7 @@ export class ShardHistoryAuditor {
       }
       if (!latest || lines.at(-1)?.split(" ")[0] !== tip) return fail();
       this.#histories.set(tip, latest); return detached(latest);
-    } catch { return fail(); }
+    } catch (error) { return fail(cause(error)); }
     finally { this.#running = false; }
   }
 }

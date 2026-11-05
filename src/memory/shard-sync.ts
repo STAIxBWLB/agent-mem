@@ -1,6 +1,6 @@
 import { syncPlacementMemory } from "./sync-placement-transport.ts";
 import { ShardSyncApplications, ShardSyncApplicationError } from "./shard-sync-applications.ts";
-import { ShardHistoryAuditor, ShardHistoryError } from "./shard-sync-history.ts";
+import { ShardHistoryAuditor, ShardHistoryError, shardHistoryRefusal } from "./shard-sync-history.ts";
 import { validatePlacementProfile, type PlacementProfile } from "./sync-placement-format.ts";
 import { placementRuntimeRefusal } from "./sync-placement-guard.ts";
 import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineages } from "./prune-publisher-lineage.ts";
@@ -720,7 +720,8 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     }
     return fail("shard sync selected-ref push failed");
   } catch (error) {
-    if (error instanceof PublicPruneInputError || error instanceof ShardSyncFormatError || error instanceof ShardHistoryError || error instanceof ShardSyncApplicationError || error instanceof SyncRefusal) return fail(error.message);
+    if (error instanceof ShardHistoryError) return fail(shardHistoryRefusal(error));
+    if (error instanceof PublicPruneInputError || error instanceof ShardSyncFormatError || error instanceof ShardSyncApplicationError || error instanceof SyncRefusal) return fail(error.message);
     try { testOnlyUnexpectedError?.(error); } catch { /* A test observer cannot change the neutral result. */ }
     return fail("shard sync unavailable");
   } finally {

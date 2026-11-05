@@ -254,7 +254,7 @@ class PlacementTransport {
     // Incoming verified occurrences are selected immutable originals too. Classify them before import so a private
     // remote goal cannot temporarily authorize a new dependent, and exposure/holds are durable in this same attempt.
     const seenSources=new Set(sources.map(source=>placementKeyId(source.key)));
-    for(const [index,target]of this.targets.entries())for(const row of old[index]?.rows.values()??[])if(row.op!=="prune"){
+    for(const [index,target]of this.targets.entries())for(const row of old[index]?.rows.values()??[])if(row.op!=="prune"||row.generation===target.generation){
       const key=keyFor(target,row),id=placementKeyId(key);if(seenSources.has(id))continue;seenSources.add(id);
       admit(row); sources.push({key,row,sourcePlacement:"synced",policy:this.evaluate(row),held:!!projection.get(key)?.held});
     }

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { ShardHistoryAuditor, ShardHistoryError, type ShardHistoryAuditorOptions } from "../src/memory/shard-sync-history.ts";
+import { ShardHistoryAuditor, ShardHistoryError, shardHistoryRefusal, type ShardHistoryAuditorOptions } from "../src/memory/shard-sync-history.ts";
 import { encodeShardPacks, shardSyncDescriptor, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
 import { PLACEMENT_DESCRIPTOR_SCHEMA, PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
@@ -167,4 +167,31 @@ test("raw commit messages remain opaque bytes while only tree and parent headers
   const body = Buffer.concat([Buffer.from(`tree ${f.graph.rootTree.oid}\nauthor Fixture <fixture@sync.invalid> 0 +0000\ncommitter Fixture <fixture@sync.invalid> 0 +0000\n\n`), message]);
   const raw = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]), commit = createHash("sha1").update(raw).digest("hex"); f.objects.set(commit, raw);
   expect((await new ShardHistoryAuditor({ ...f.options, git: async () => commit }).history(commit)).rows.has(f.graph.note.id)).toBe(true);
+});
+
+
+test("classified blob acquisition and forbidden-entry failures retain safe static causes", async () => {
+  const f = fixture(); f.add(C(1), [], tree("v3", []));
+  for (const blob of [async () => { throw new Error("private-canary"); }, async () => Buffer.from("incomplete tail")]) {
+    try { await new ShardHistoryAuditor({ ...f.options, blob }).history(C(1)); throw Error("accepted bad blob"); }
+    catch (error) { expect(error).toBeInstanceOf(ShardHistoryError); expect(shardHistoryRefusal(error)).toContain("blob"); expect(shardHistoryRefusal(error)).not.toContain("private-canary"); }
+  }
+  const forbidden = tree("v3", []); forbidden.set("private-canary.txt", Buffer.from("private-canary\n")); f.add(C(2), [], forbidden);
+  try { await new ShardHistoryAuditor(f.options).history(C(2)); throw Error("accepted forbidden entry"); }
+  catch (error) { expect(shardHistoryRefusal(error)).toContain("forbidden historical tree entry"); expect(shardHistoryRefusal(error)).not.toContain("private-canary"); }
+});
+
+test("safe history refusals never read caller messages, proxy traps or accessor cause codes", () => {
+  let calls = 0;
+  const fallback = shardHistoryRefusal(undefined);
+  const arbitrary = Object.defineProperty({ code: "blob" }, "message", { get() { calls++; return "private-canary"; } });
+  expect(shardHistoryRefusal(arbitrary)).toBe(fallback);
+  const own = new ShardHistoryError("blob"); Object.defineProperty(own, "message", { get() { calls++; return "private-canary"; } });
+  expect(shardHistoryRefusal(own)).toContain("blob");
+  const accessor = Object.defineProperty(new ShardHistoryError("blob"), "code", { get() { calls++; return "blob"; } });
+  expect(shardHistoryRefusal(accessor)).toBe(fallback);
+  const proxy = new Proxy(own, { getPrototypeOf() { calls++; throw Error("private-canary"); }, get() { calls++; throw Error("private-canary"); } });
+  expect(shardHistoryRefusal(proxy)).toBe(fallback);
+  const unknown = Object.defineProperty(new ShardHistoryError(), "code", { value: "private-canary" });
+  expect(shardHistoryRefusal(unknown)).toBe(fallback); expect(calls).toBe(0);
 });
