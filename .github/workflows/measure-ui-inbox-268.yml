@@ -1,0 +1,67 @@
+name: measure-ui-inbox-268
+on:
+  pull_request:
+    paths: [.github/workflows/measure-ui-inbox-268.yml]
+permissions:
+  contents: read
+concurrency:
+  group: measure-ui-inbox-268-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  FIX_HEAD: 35db96559d5417c537ff23e52f089ec792c32883
+jobs:
+  native-inbox:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.FIX_HEAD }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - name: Verify fixed product checkout
+        run: |
+          inbox_head=$(git rev-parse HEAD)
+          test "$inbox_head" = "$FIX_HEAD"
+          echo "$inbox_head"
+      - run: bun install --frozen-lockfile
+      - run: bun x tsc --noEmit
+      - run: bun scripts/check-boundary.ts
+      - name: Compare runtime root exports with main 27dd80c
+        run: |
+          set -o pipefail
+          bun scripts/compare-root-exports.ts | tee root-exports.json
+      - name: Current-head UI, lifecycle and 0.1.3 conformance tests
+        run: bun test --timeout 40000 test/ui-plugin.test.ts test/ui-inbox.test.ts test/ui-inbox-process.test.ts test/ui-inbox-candidates.test.ts test/ui-inbox-benchmark.test.ts
+      - name: Realistic fixture, all outcomes retained
+        run: |
+          set -o pipefail
+          bun scripts/measure-ui-inbox.ts | tee ui-inbox-realistic.json
+      - run: npm pack --dry-run
+      - name: Previous-release compatibility
+        env:
+          AMEM_PREV_REQUIRED: "1"
+        run: |
+          read -r AMEM_PREV_VERSION AMEM_PREV_ROOT < <(bun scripts/previous-release.ts "$RUNNER_TEMP/amem-inbox-prev")
+          echo "previous release: $AMEM_PREV_VERSION"
+          AMEM_PREV_ROOT="$AMEM_PREV_ROOT" bun test --timeout 20000 test/previous-release.test.ts
+      - name: Retain exact-head evidence in the job summary
+        if: always() && !cancelled()
+        run: |
+          {
+            echo "## Inbox evidence at $FIX_HEAD"
+            for inbox_result in root-exports.json ui-inbox-realistic.json; do
+              if [ -f "$inbox_result" ]; then
+                echo "### $inbox_result"
+                echo '```json'
+                cat "$inbox_result"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
