@@ -2,35 +2,22 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
-
-- Verify #261 placement stages together through fake-home/local-Git publication, inspection, second-machine import and later forget/prune, with N-1 refusal and legacy interoperability coverage. Clarify source-local dispositions and conservative offline inspection. Real-home activation, the marker writer and release remain separate.
-
-- Add bounded IDs-only `inspectSyncPlacement` for activated v3 homes (#261 stage 4): source placement, unchanged outbound decisions, separate intrinsic-local metadata, safe categories and event/receipt/history-verified exposure. Reuse the publication planner and journal projection; the complete-set fingerprint covers both lists and incomplete inputs have none. Inspection performs no mutation, recovery or network operation. Activation and release remain separate.
-
-- Use unique owned private hook-spool temporaries so a killed write cannot block the next deterministic publication. Bound stale private cleanup to four entries per maintenance call after one hour, outside SessionStart; published names, bytes and formats stay unchanged. Refs #226.
-
-- Add #261 stage 3 placement-filtered shard publication: sealed bounded plans, operation-aware dependency holds, exact multi-ref publication, truthful exposure recovery and monotone v3 prune-view maintenance. Keep original payloads and all limits, and preserve v1/v2 behavior. Real-home activation and release remain separate.
-
-- Bound console inbox snapshots to 50 compact items with a `more` count, reuse one background computation across concurrent requests, and invalidate cached data on source or policy changes (#268). Keep expensive catalog/capacity work off the request loop; validate against console 0.1.3.
-
-- Add the private bounded placement/publication journal and journal-only rebuild for #261 stage 2, with fresh source proofs and explicit policy-screened person release. Transport and activation remain disabled. Preserve legacy profile diagnostics on ordinary store opens.
-
-- Document the accepted transcript-summary timing ceiling under contention/slow runners: capture can be deferred without losing its transcript source; limits, R1, fail-closed RSS, durability and the hosted-macOS advisory are unchanged (#226).
-
-- Add stage 1 closed placement-aware v3 format/activation-plan validation (#261): exact commitments, monotone upgrade checks, person/writer-attestation ports and fail-closed runtime guards. Validation is data-only (`activated: false`); no transport, journal effects or real-home activation are enabled.
-
-- Screen contentful `settle.target` and `goal_link.by` task keys in outbound sync and inspection for every profile (#263). Preserve validated ID/enum/UTC metadata exclusions and unknown content fields. Restore specific byte/row-bound, changed-input and unavailable-input sync refusal causes.
-
-- Add bounded, read-only outbound policy inspection at the package root (#260): full declined IDs, safe categories/counts and a complete-set fingerprint for shared-v1, generation and opened shard/user-overlay targets. Share canonical screening with sync and expose its content projection for host write-time checks. Incomplete inputs never produce a complete empty set. No storage format, publication or per-row placement change.
-
 ## 0.21.0
 
+- Verify #261 placement stages together through fake-home/local-Git publication, inspection, second-machine import and later forget/prune, with N-1 refusal and legacy interoperability coverage. Clarify source-local dispositions and conservative offline inspection. Real-home activation, the marker writer and release remain separate.
+- Add bounded IDs-only `inspectSyncPlacement` for activated v3 homes (#261 stage 4): source placement, unchanged outbound decisions, separate intrinsic-local metadata, safe categories and event/receipt/history-verified exposure. Reuse the publication planner and journal projection; the complete-set fingerprint covers both lists and incomplete inputs have none. Inspection performs no mutation, recovery or network operation. Activation and release remain separate.
+- Use unique owned private hook-spool temporaries so a killed write cannot block the next deterministic publication. Bound stale private cleanup to four entries per maintenance call after one hour, outside SessionStart; published names, bytes and formats stay unchanged. Refs #226.
+- Add #261 stage 3 placement-filtered shard publication: sealed bounded plans, operation-aware dependency holds, exact multi-ref publication, truthful exposure recovery and monotone v3 prune-view maintenance. Keep original payloads and all limits, and preserve v1/v2 behavior. Real-home activation and release remain separate.
+- Bound console inbox snapshots to 50 compact items with a `more` count, reuse one background computation across concurrent requests, and invalidate cached data on source or policy changes (#268). Keep expensive catalog/capacity work off the request loop; validate against console 0.1.3.
+- Add the private bounded placement/publication journal and journal-only rebuild for #261 stage 2, with fresh source proofs and explicit policy-screened person release. Transport and activation remain disabled. Preserve legacy profile diagnostics on ordinary store opens.
+- Document the accepted transcript-summary timing ceiling under contention/slow runners: capture can be deferred without losing its transcript source; limits, R1, fail-closed RSS, durability and the hosted-macOS advisory are unchanged (#226).
+- Add stage 1 closed placement-aware v3 format/activation-plan validation (#261): exact commitments, monotone upgrade checks, person/writer-attestation ports and fail-closed runtime guards. Validation is data-only (`activated: false`); no transport, journal effects or real-home activation are enabled.
+- Screen contentful `settle.target` and `goal_link.by` task keys in outbound sync and inspection for every profile (#263). Preserve validated ID/enum/UTC metadata exclusions and unknown content fields. Restore specific byte/row-bound, changed-input and unavailable-input sync refusal causes.
+- Add bounded, read-only outbound policy inspection at the package root (#260): full declined IDs, safe categories/counts and a complete-set fingerprint for shared-v1, generation and opened shard/user-overlay targets. Share canonical screening with sync and expose its content projection for host write-time checks. Incomplete inputs never produce a complete empty set. No storage format, publication or per-row placement change.
 - Complete the acon plugin's published api 1 integration (#158): pin the development contract and conformance suite to `@staix/agent-console` 0.1.0, use the host button kit, and show stored target-note quotes with explicit candidate-provenance limitations. Existing review, screened search/timeline/work reads, goals, capacity, inbox and manifest setup remain in process with zero runtime dependencies.
 - Refuse an unavailable explicitly selected Memory project instead of returning another project's data. Verify manifest hash refusal and refresh against the published console loader.
-
 - **CI resolves N-1 by minor line** (#249). Compatibility checks select the latest published plain patch from the preceding minor of the same major, with the preceding major as the fallback at minor 0. Patch releases now test the same previous minor as their minor release, instead of the current or preceding patch.
-- **Compatibility with N-1 (0.20.3):** curated, capture, hook-spool, candidates, work-list and sync formats and setup receipt v1/v2 are unchanged; no format floor changes. Both versions use console api 1 and the same plugin manifest format. The console development dependency is not a runtime dependency.
+- **Compatibility with N-1 (0.20.3):** curated, capture, hook-spool, candidates, work-list and setup receipt v1/v2 formats are unchanged, and no code raises a format floor. Hook-spool temporaries now carry a unique suffix inside the private `.writing` directory, which 0.20.3 already skips; published records keep their names and bytes. Sync: shared-v1, generation and v1/v2 shard sync are unchanged. Tests cover 0.20.3 reading, appending and syncing to local Git on v1/v2 shard homes migrated by this release, and this release reading the result. The v3 placement publication profile is opt-in and cannot be activated with this release: the library ships placement preparation and activation-plan validation only, with no CLI command, and no activation writer ships. 0.20.3 refuses an activated v3 home before any read, write or sync effect. Before activating placement, the person raises the `home` format floor to 0.21.0 so 0.20.3 reports `Upgrade amem to 0.21.0 or later.`; without that floor 0.20.3 still refuses, with `no active curated shard migration`. Both versions use console api 1 and the same plugin manifest format; the console development dependency is not a runtime dependency.
 
 ## 0.20.3
 
