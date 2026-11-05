@@ -1,7 +1,7 @@
 name: measure-ui-inbox-268
 on:
   pull_request:
-    paths: [.github/workflows/measure-ui-inbox-268.yml]
+    paths: [.github/workflows/measure-ui-inbox-268.yml, .github/measure-ui-inbox-changing.test.ts]
 permissions:
   contents: read
 concurrency:
@@ -9,6 +9,7 @@ concurrency:
   cancel-in-progress: false
 env:
   FIX_HEAD: 778d1d18ff32af5a1a5d2ca098fe32a6652a4a63
+  MEASURE_HEAD: ${{ github.event.pull_request.head.sha }}
 jobs:
   native-inbox:
     timeout-minutes: 15
@@ -22,6 +23,14 @@ jobs:
         with:
           ref: ${{ env.FIX_HEAD }}
           fetch-depth: 0
+      - name: Extract immutable changing-source harness after fixed product checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$FIX_HEAD"
+          [[ "$MEASURE_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          git fetch --no-tags origin "$MEASURE_HEAD"
+          test "$(git rev-parse FETCH_HEAD)" = "$MEASURE_HEAD"
+          git show "${MEASURE_HEAD}:.github/measure-ui-inbox-changing.test.ts" > test/measure-ui-inbox-changing.test.ts
+          test "$(git rev-parse HEAD)" = "$FIX_HEAD"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: .bun-version
@@ -43,6 +52,10 @@ jobs:
         run: |
           set -o pipefail
           bun scripts/measure-ui-inbox.ts | tee ui-inbox-realistic.json
+      - name: Changing-source p95 and unchanged-inventory zero-tail-I/O proof
+        run: |
+          set -o pipefail
+          bun test --timeout 300000 test/measure-ui-inbox-changing.test.ts 2>&1 | tee ui-inbox-changing-tests.log
       - run: npm pack --dry-run
       - name: Previous-release compatibility
         env:
@@ -56,7 +69,7 @@ jobs:
         run: |
           {
             echo "## Inbox evidence at $FIX_HEAD"
-            for inbox_result in root-exports.json ui-inbox-realistic.json; do
+            for inbox_result in root-exports.json ui-inbox-realistic.json ui-inbox-changing.json; do
               if [ -f "$inbox_result" ]; then
                 echo "### $inbox_result"
                 echo '```json'
@@ -65,3 +78,14 @@ jobs:
               fi
             done
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain measurement evidence files
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-inbox-${{ matrix.os }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            root-exports.json
+            ui-inbox-realistic.json
+            ui-inbox-changing.json
+            ui-inbox-changing-tests.log
