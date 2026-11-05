@@ -17,7 +17,11 @@ export * from "./memory/sync.ts";
 export * from "./memory/import.ts";
 export * from "./memory/project.ts";
 export * from "./memory/home.ts";
-export * from "./memory/platform.ts";
+export {
+  canonicalPath, realPath, DENY_SEGMENTS, DENY_NAMES, isDenied, memoryGitArgv, memoryGitEnv, memoryGitSync,
+  withGitTimeout, processSignature, processLiveness,
+} from "./memory/platform.ts";
+export type { Liveness } from "./memory/platform.ts";
 export * from "./memory/commands.ts";
 export {
   CANDIDATE_DB_BUSY_TIMEOUT_MS, ACCEPTED_CONSOLIDATION_PREFIX, CANDIDATE_RETENTION, CONSOLIDATION_REVIEW_LIMIT,

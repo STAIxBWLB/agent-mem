@@ -92,7 +92,7 @@ test("actual PRODUCT worker retains its verified idle leader on TERM before GO, 
     if (timer) clearTimeout(timer); timer = undefined;
     expect(value.type).toBe("ready"); expect(value.pid).toBe(child.pid!); expect(value.group).toBe(child.pid!);
     expect(value.signature).toMatch(/^[a-f0-9]{64}$/);
-    expect(value.signature).toBe(await platform.processSignatureAsync(child.pid!)); verified = true;
+    expect(await platform.processSignatureAsync(child.pid!)).toBe(value.signature); verified = true;
     expect(child.exitCode).toBeNull(); process.kill(-child.pid!, "SIGTERM"); await Bun.sleep(150);
     expect(exited).toBe(false); expect(child.exitCode).toBeNull(); expect(child.signalCode).toBeNull();
     expect(await platform.processSignatureAsync(child.pid!)).toBe(value.signature);

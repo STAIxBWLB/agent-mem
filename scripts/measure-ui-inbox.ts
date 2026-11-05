@@ -1,5 +1,5 @@
 /** Offline #268 evidence. Seeding is outside every latency clock; every worker reads only this owned fake home.
- * Run serially after resource admission: bun scripts/measure-ui-inbox.ts [--projects=20] [--candidates=100] [--curated=1000] [--captures=500]. */
+ * Run serially after resource admission: bun scripts/measure-ui-inbox.ts [--projects=20] [--candidates=100] [--curated=1000] [--captures=500] [--report-only-timing]. */
 import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, fsyncSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +15,15 @@ interface Shape { projects: number; candidates: number; curated: number; capture
 const p95 = (values: number[]) => [...values].sort((a,b) => a-b)[Math.ceil(values.length * .95)-1] ?? Number.NaN;
 const stats = (values: number[]) => ({ count: values.length, p95Ms: p95(values), maxMs: Math.max(...values) });
 function check(value: unknown, message: string): asserts value { if (!value) throw Error(message); }
+/** Timing-only reporting never downgrades correctness, missing telemetry or cleanup failures. */
+export function classifyInboxBenchmark(correctnessPass: boolean, timings: Readonly<Record<string, number>>, reportOnlyTiming = false) {
+  const entries = Object.entries(timings), telemetryValid = entries.length > 0 && entries.every(([,value]) => Number.isFinite(value) && value >= 0);
+  const timingFailures = entries.filter(([,value]) => Number.isFinite(value) && value >= 1000).map(([name]) => name);
+  const timingPass = telemetryValid && timingFailures.length === 0;
+  return { correctnessPass: correctnessPass && telemetryValid, timingPass, telemetryValid, reportOnlyTiming, timingFailures,
+    pass: correctnessPass && telemetryValid && (timingPass || reportOnlyTiming) };
+}
+
 function validate(value: InboxSnapshot, complete = true): void {
   check(!complete || value.complete, "inbox sample was not a complete result");
   check(value.items.length <= INBOX_MAX_ITEMS && Number.isSafeInteger(value.more) && value.more >= 0, "inbox item/more bound failed");
@@ -84,6 +93,7 @@ async function main() {
   const option=(key:string,fallback:number)=>{const raw=process.argv.find(arg=>arg.startsWith(`--${key}=`))?.split("=")[1],value=raw===undefined?fallback:Number(raw);check(Number.isSafeInteger(value)&&value>0,`invalid fixture ${key}`);return value;};
   const shape={projects:option("projects",20),candidates:option("candidates",100),curated:option("curated",1000),captures:option("captures",500)};
   check(shape.candidates<=500&&shape.curated>=2,"fixture exceeds candidate cap or lacks required targets");
+  const reportOnlyTiming=process.argv.includes("--report-only-timing"), timings:Record<string,number>={};let correctnessPass=false;
   const root=mkdtempSync(join(tmpdir(),"amem-measure-ui-inbox-")), priorAmem=process.env.AMEM_HOME;
   let cache:InboxCache|undefined, provider:Awaited<ReturnType<typeof plugin.open>>|undefined, timer:ReturnType<typeof setInterval>|undefined, server:ReturnType<typeof Bun.serve>|undefined;
   const report:Record<string,unknown>={diagnostic:"ui-inbox-benchmark",fixture:shape,bun:Bun.version,platform:process.platform,arch:process.arch,coldDefinition:"new provider/worker after fixture seeding; OS file cache is not flushed",synthetic:true};
@@ -103,13 +113,18 @@ async function main() {
     const warm:number[]=[],payloads:number[]=[];
     for(let index=0;index<40;index++){const at=performance.now(),value=await cache.snapshot();validate(value);check(value.items.length===50&&value.more>0,"warm measurement was empty or incomplete");payloads.push(Buffer.byteLength(JSON.stringify(value)));warm.push(performance.now()-at);}
     report.warm=stats(warm);report.maxPayloadBytes=Math.max(...payloads);report.readyItems=complete.items.length;report.more=complete.more;report.singleFlight={starts,maxActive};report.eventLoop={ticks,maxLagMs,authenticatedControl:stats(control)};
-    check(p95(warm)<1000&&maxLagMs<1000&&control.length>0&&p95(control)<1000,"inbox or independent event-loop response exceeded one second");
+    check(ticks>0&&control.length>0,"independent event-loop responsiveness was not actually observed");
+    Object.assign(timings,{coldConcurrentMs:report.coldConcurrentMs,warmP95Ms:p95(warm),eventLoopMaxLagMs:maxLagMs,authenticatedControlP95Ms:p95(control)});
+    let changedCandidateId="", appended=false;
     const writer=new CandidateStore({memoryDir:fixture.base});try{
-      if(shape.candidates<500){writer.put({project:fixture.projects[0]!,kind:"memory",text:"new source invalidation fixture"},"public");report.invalidationMutation="append";}
-      else{const pending=writer.list({project:fixture.projects[0]!,status:"pending",limit:1})[0];check(pending,"fixture at capacity has no pending candidate");writer.reject(pending.id,{project:fixture.projects[0]!,actor:"person",verdict:"public"});report.invalidationMutation="reject-at-cap";}
+      if(shape.candidates<500){changedCandidateId=writer.put({project:fixture.projects[0]!,kind:"memory",text:"new source invalidation fixture"},"public");appended=true;report.invalidationMutation="append";}
+      else{const pending=writer.list({project:fixture.projects[0]!,status:"pending",limit:1})[0];check(pending,"fixture at capacity has no pending candidate");changedCandidateId=pending.id;check(complete.items.some(item=>item.id===pending.id),"rejected candidate was not visible before invalidation");writer.reject(pending.id,{project:fixture.projects[0]!,actor:"person",verdict:"public"});report.invalidationMutation="reject-at-cap";}
     }finally{writer.close();}
     const invalidatedAt=performance.now(),invalidated=await cache.snapshot();report.invalidationSnapshotMs=performance.now()-invalidatedAt;report.invalidationComplete=invalidated.complete;
+    check(!invalidated.complete,"source invalidation returned a stale complete snapshot");
     const refreshed=await waitForComplete(()=>cache!.snapshot());validate(refreshed);report.invalidationTimeToCompleteMs=performance.now()-invalidatedAt;check(Number(starts)===2&&maxActive===1,"one source invalidation did not produce exactly one refresh");
+    check(changedCandidateId.length===64&&refreshed.items.some(item=>item.id===changedCandidateId)===appended,"completed invalidation snapshot did not reflect the actual candidate change");
+    report.invalidationFreshness={candidateId:changedCandidateId,present:appended,verified:true};
     await cache.close();cache=undefined;
     const openAt=performance.now();provider=await plugin.open({home:fixture.family,log:()=>{}});report.openMs=performance.now()-openAt;
     const publicSnapshot=async()=>await provider!.snapshot({panel:"inbox",after:0}) as unknown as InboxSnapshot;
@@ -118,14 +133,21 @@ async function main() {
     const providerWarm:number[]=[];
     for(let index=0;index<40;index++){const at=performance.now(),value=await publicSnapshot();validate(value);check(value.items.length===50&&value.more>0,"provider warm sample was incomplete or empty");providerWarm.push(performance.now()-at);}
     report.providerWarm=stats(providerWarm);
-    check(p95(providerWarm)<1000&&(report.openMs as number)<1000&&(report.providerColdSnapshotMs as number)<1000&&(report.invalidationSnapshotMs as number)<1000,"open/cold/invalidation cost was hidden or over one second");
-    report.pass=true;
-  }catch(error){report.pass=false;report.error=error instanceof Error?error.message:"benchmark unavailable";process.exitCode=1;}
+    Object.assign(timings,{providerWarmP95Ms:p95(providerWarm),openMs:report.openMs,providerColdSnapshotMs:report.providerColdSnapshotMs,invalidationSnapshotMs:report.invalidationSnapshotMs});
+    correctnessPass=true;
+  }catch(error){report.error=error instanceof Error?error.message:"benchmark unavailable";}
   finally{
     if(timer)clearInterval(timer);let cleaned=true;
-    for(const close of [()=>cache?.close(),()=>provider?.close(),()=>server?.stop(true)])try{await close();}catch{cleaned=false;report.pass=false;report.cleanup="owned worker cleanup unavailable";process.exitCode=1;}
+    for(const close of [()=>cache?.close(),()=>provider?.close(),()=>server?.stop(true)])try{await close();}catch{cleaned=false;correctnessPass=false;report.cleanup="owned worker cleanup unavailable";}
     if(priorAmem===undefined)delete process.env.AMEM_HOME;else process.env.AMEM_HOME=priorAmem;
-    if(cleaned)rmSync(root,{recursive:true,force:true});else report.retainedFixture=root;
+    if(cleaned)try{rmSync(root,{recursive:true,force:true});}catch{cleaned=false;correctnessPass=false;report.cleanup="owned fixture cleanup unavailable";}
+    if(!cleaned)report.retainedFixture=root;
+    const verdict=classifyInboxBenchmark(correctnessPass,timings,reportOnlyTiming);Object.assign(report,verdict,{timings});
+    if(!verdict.pass)process.exitCode=1;
+    if(verdict.correctnessPass&&!verdict.timingPass&&reportOnlyTiming){
+      console.warn(JSON.stringify({diagnostic:"ui-inbox-timing-warning",timingPass:false,timingFailures:verdict.timingFailures,timings}));
+      if(process.env.GITHUB_ACTIONS==="true")console.warn(`::warning title=Console inbox timing::Report-only timing miss: ${verdict.timingFailures.join(", ")}. Correctness remains strict.`);
+    }
     console.log(JSON.stringify(report,null,2));
   }
 }
