@@ -424,6 +424,17 @@ export const plugin = {
         }
       },
       async action(input) {
+        const result = await performAction(input);
+        if (result.ok) {
+          const id = str(input.id);
+          const hard = ["capacity_apply", "project_forget", "prune", "decay_apply", "accept_undo"].includes(input.action);
+          const removes = ["accept", "reject", "edit_accept"].includes(input.action);
+          inboxCache.invalidate({ hard, capacity: hard || input.action === "gc", ...(removes && id ? { removeIds: [id] } : {}), ...(input.action === "reject_undo" ? { added: 1 } : {}) });
+        }
+        return result;
+      },
+    };
+    async function performAction(input: { action: string; confirmed?: true; fingerprint?: string } & Args): Promise<ActionResult> {
         const args = input as Args;
         try {
           switch (input.action) {
@@ -461,9 +472,8 @@ export const plugin = {
         } catch (e) {
           ctx.log(`amem: ${input.action} failed: ${errorText(e)}`);
           return { ok: false, error: errorText(e) };
-        } finally { inboxCache.invalidate(input.action === "capacity_apply" || input.action === "project_forget"); }
-      },
-    };
+        }
+    }
   },
 };
 

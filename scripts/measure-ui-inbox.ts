@@ -29,9 +29,9 @@ function validate(value: InboxSnapshot, complete = true): void {
   check(value.items.length <= INBOX_MAX_ITEMS && Number.isSafeInteger(value.more) && value.more >= 0, "inbox item/more bound failed");
   check(Buffer.byteLength(JSON.stringify(value)) <= INBOX_MAX_BYTES, "inbox envelope exceeds 64 KiB");
 }
-export async function waitForComplete(snapshot: () => Promise<InboxSnapshot>, limitMs = 30000): Promise<InboxSnapshot> {
+export async function waitForComplete(snapshot: () => Promise<InboxSnapshot>, limitMs = 70000): Promise<InboxSnapshot> {
   const end = performance.now()+limitMs;
-  for (;;) { const value = await snapshot(); validate(value,false); if (value.complete) return value; if (performance.now()>=end) throw Error("inbox refresh never produced a complete result within 30 seconds"); await Bun.sleep(10); }
+  for (;;) { const value = await snapshot(); validate(value,false); if (value.complete) return value; if (performance.now()>=end) throw Error("inbox refresh never produced a complete result within 70 seconds including refresh cooldown"); await Bun.sleep(10); }
 }
 /** Valid original rows use core identities and one refresh, not twenty thousand append/reindex transactions.
  * Capture setup batches public append() calls in one private-DB transaction; normalization/index accounting stays core-owned. */
@@ -100,8 +100,8 @@ async function main() {
   try{
     const seedAt=performance.now(),fixture=seedInboxBenchmark(root,shape);report.seedMs=performance.now()-seedAt;report.counts={curated:fixture.curatedRows,candidates:fixture.candidateRows,captures:fixture.captureRows};
     process.env.AMEM_HOME=fixture.base;
-    let starts=0,active=0,maxActive=0;
-    cache=new InboxCache(fixture.base,{runner:(base,capacity)=>{starts++;active++;maxActive=Math.max(active,maxActive);const job=runInboxJob(base,capacity);return{...job,result:job.result.finally(()=>{active--;})};}});
+    let starts=0,active=0,maxActive=0;const startTimes:number[]=[];
+    cache=new InboxCache(fixture.base,{runner:(base,capacity)=>{starts++;startTimes.push(performance.now());active++;maxActive=Math.max(active,maxActive);const job=runInboxJob(base,capacity);return{...job,result:job.result.finally(()=>{active--;})};}});
     let last=performance.now(),maxLagMs=0,ticks=0;const control:number[]=[];
     timer=setInterval(()=>{const now=performance.now();maxLagMs=Math.max(maxLagMs,now-last-10);last=now;ticks++;},10);
     server=Bun.serve({port:0,hostname:"127.0.0.1",fetch:request=>request.headers.get("authorization")==="Bearer offline-fixture"?Response.json({ok:true}):new Response("unauthorized",{status:401})});
@@ -125,6 +125,8 @@ async function main() {
     const refreshed=await waitForComplete(()=>cache!.snapshot());validate(refreshed);report.invalidationTimeToCompleteMs=performance.now()-invalidatedAt;check(Number(starts)===2&&maxActive===1,"one source invalidation did not produce exactly one refresh");
     check(changedCandidateId.length===64&&refreshed.items.some(item=>item.id===changedCandidateId)===appended,"completed invalidation snapshot did not reflect the actual candidate change");
     report.invalidationFreshness={candidateId:changedCandidateId,present:appended,verified:true};
+    report.refreshCadence={minimumIntervalMs:30000,startTimesMs:startTimes,startGapMs:startTimes[1]!-startTimes[0]!};
+    check(startTimes[1]!-startTimes[0]!>=29998,"refresh started before minimum interval");
     await cache.close();cache=undefined;
     const openAt=performance.now();provider=await plugin.open({home:fixture.family,log:()=>{}});report.openMs=performance.now()-openAt;
     const publicSnapshot=async()=>await provider!.snapshot({panel:"inbox",after:0}) as unknown as InboxSnapshot;

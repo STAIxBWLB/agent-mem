@@ -21,5 +21,5 @@ process.once("message", (message: unknown) => {
   timer = setInterval(() => {}, 1000);
 });
 void Promise.all([processSignatureAsync(process.pid), processGroupIdAsync(process.pid)]).then(([signature, group]) => {
-  process.send?.({ type: "ready", pid: process.pid, signature, group });
+  process.send?.({ type: "ready", pid: process.pid, signature, group, workerHash: process.env.AMEM_UI_WORKER_HASH });
 });

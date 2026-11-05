@@ -141,12 +141,19 @@ function decodeCandidate(row: CandidateRow, unknownKind: () => void): Candidate 
 }
 const CANDIDATE_EXPIRED_SQL = "at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))";
 const CANDIDATE_PRIORITY_SQL = "CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC";
-export interface PendingCandidateReader { projects(): string[]; list(projects: readonly string[]): Candidate[] }
+export interface PendingCandidateReader { projects(): string[]; list(projects: readonly string[]): Candidate[]; nextExpiry(): number | null }
 /** Internal inbox read port. It neither creates/migrates a database nor prunes or stamps any row.
  * The port is valid only during the synchronous callback. No immutable fallback may hide current WAL frames. */
 export function withPendingCandidates<T>(memoryDir: string, run: (reader: PendingCandidateReader) => T): T {
   assertFormatFloor(memoryDir, "candidates");
-  const file = join(memoryDir, "candidates.db"), stat = lstatSync(file);
+  const file = join(memoryDir, "candidates.db"), stat = lstatSync(file, { throwIfNoEntry: false });
+  if (!stat) {
+    let closed = false;
+    const assertOpen = () => { if (closed) throw new Error("pending candidate reader is closed"); };
+    try { return run({ projects() { assertOpen(); return []; }, list(projects) {
+      assertOpen(); if (!Array.isArray(projects) || projects.some(project => !text(project, 400))) throw new Error("invalid candidate project scope"); return [];
+    }, nextExpiry() { assertOpen(); return null; } }); } finally { closed = true; }
+  }
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("pending candidates unavailable");
   const db = new Database(file, { readonly: true }); let closed = false;
   try {
@@ -156,6 +163,16 @@ export function withPendingCandidates<T>(memoryDir: string, run: (reader: Pendin
       retained AS (SELECT *, row_number() OVER (PARTITION BY project ORDER BY ${CANDIDATE_PRIORITY_SQL}, candidate_rowid DESC) AS retention_rank FROM live)`;
     const assertOpen = () => { if (closed) throw new Error("pending candidate reader is closed"); };
     return run({
+      nextExpiry() {
+        assertOpen(); if (!shown) return null;
+        const row = db.query(`${live(false)} SELECT min(expiry) AS expiry FROM (
+          SELECT max(at + ?, shown_at + ?) AS expiry FROM retained WHERE retention_rank <= ? AND status = 'pending'
+            AND shown_at IS NOT NULL AND kind IN (SELECT value FROM json_each(?))) WHERE expiry > ?`)
+          .get(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.ageMs,
+            CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.count, JSON.stringify(KINDS), now) as { expiry: number | null };
+        if (row.expiry !== null && (!Number.isFinite(row.expiry) || row.expiry <= now)) throw new Error("pending candidate expiry unavailable");
+        return row.expiry;
+      },
       projects() {
         assertOpen();
         const rows = db.query(`${live(false)} SELECT DISTINCT project FROM retained WHERE retention_rank <= ? AND status = 'pending' AND kind IN (SELECT value FROM json_each(?)) ORDER BY project`)

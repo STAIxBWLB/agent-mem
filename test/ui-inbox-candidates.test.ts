@@ -99,7 +99,7 @@ test("read-only pending classification supports legacy candidates without shown_
     db.query("INSERT INTO candidates VALUES (?,?,?,?,?,'pending',NULL)").run(id, value.project, value.kind, JSON.stringify(value), Date.now() - 90 * 86400_000);
   } finally { db.close(); }
   const before = bytes(dir);
-  withPendingCandidates(dir, reader => { expect(reader.projects()).toEqual(["legacy"]); expect(reader.list(["legacy"])[0]?.id).toBe(id); });
+  withPendingCandidates(dir, reader => { expect(reader.projects()).toEqual(["legacy"]); expect(reader.list(["legacy"])[0]?.id).toBe(id); expect(reader.nextExpiry()).toBeNull(); });
   expect(bytes(dir)).toEqual(before);
   const verify = new Database(file, { readonly: true }); try { expect(hasShownColumn(verify)).toBe(false); } finally { verify.close(); }
 });
@@ -127,8 +127,8 @@ test("reader stays scoped to its explicit home and rejects a symlinked database"
   expect(() => withPendingCandidates(third, reader => reader.projects())).toThrow();
 });
 
-test("missing/unsupported databases and format floors fail closed without creating or changing the sidecar", () => {
-  const missing = home(); expect(() => withPendingCandidates(missing, reader => reader.projects())).toThrow(); expect(existsSync(join(missing, "candidates.db"))).toBe(false);
+test("missing database is empty while unsupported databases and format floors fail closed without sidecar writes", () => {
+  const missing = home(); expect(withPendingCandidates(missing, reader => ({ projects: reader.projects(), rows: reader.list(["project"]), expiry: reader.nextExpiry() }))).toEqual({ projects: [], rows: [], expiry: null }); expect(existsSync(join(missing, "candidates.db"))).toBe(false);
   const unsupported = home(), db = new Database(join(unsupported, "candidates.db"), { create: true }); db.run("CREATE TABLE unrelated(value TEXT)"); db.close();
   const before = bytes(unsupported); expect(() => withPendingCandidates(unsupported, reader => reader.projects())).toThrow(); expect(bytes(unsupported)).toEqual(before);
   const fenced = home(), writer = new CandidateStore({ memoryDir: fenced }); writer.put(input("fenced", 1), "public"); writer.close();
@@ -146,4 +146,19 @@ test("readonly connection closes on callback failure and the borrowed port canno
   } finally { close.mockRestore(); }
   expect(() => retained!.list(["project"])).toThrow("closed");
   expect(withPendingCandidates(dir, reader => reader.list(["project"]))).toHaveLength(1);
+});
+
+
+test("read-only expiry reports only the earliest future shown pending age/grace boundary", () => {
+  const dir = home(), db = database(dir), now = Date.now(), day = 86400_000;
+  try {
+    insert(db, input("project", 1), now - 30 * day + 60000, "pending", now - 8 * day);
+    insert(db, input("project", 2), now - 40 * day, "pending", now - 7 * day + 120000);
+    insert(db, input("project", 3), now - 100 * day); // Unshown never supplies an expiry.
+    insert(db, input("project", 4), now - 40 * day, "pending", now - 8 * day); // Already expired.
+    insert(db, input("project", 5), now - 30 * day + 30000, "accepting", now - 8 * day);
+  } finally { db.close(); }
+  const before = bytes(dir);
+  withPendingCandidates(dir, reader => { expect(reader.nextExpiry()).toBe(now + 60000); expect(reader.list(["project"])).toHaveLength(3); });
+  expect(bytes(dir)).toEqual(before);
 });
