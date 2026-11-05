@@ -145,7 +145,8 @@ test("intrinsically local short notes and vault links are reported without publi
   const short = f.store.note({ ...inspectionNote("private short body not for a report", f.project), tier: "short" });
   const before = f.snapshot(), report = await inspectSyncPlacement(f.store, f.opts());
   expect(f.snapshot()).toEqual(before); expect(report.complete).toBe(true); if (!report.complete) throw Error("local fixture inspection incomplete");
-  for (const id of [link, short]) expect(report.rows.find(row => row.id === id)).toMatchObject({ sourcePlacement: "local", disposition: "held", reason: "source-local" });
+  expect(report.rows.find(row => row.id === short)).toMatchObject({ sourcePlacement: "local", disposition: "held", reason: "source-local" });
+  expect(report.intrinsicLocal.find(row => row.id === link)).toMatchObject({ sourcePlacement: "local", reason: "intrinsic-local" });
   expect(JSON.stringify(report)).not.toContain(path); expect(JSON.stringify(report)).not.toContain("private short body");
   expect((await syncMemory(f.store, f.opts())).ok).toBe(true); expect(f.reachableIds()).not.toContain(link); expect(f.reachableIds()).not.toContain(short);
 }, 20_000);
@@ -240,3 +241,10 @@ test("a raised reader floor gives an actionable data-free refusal without a fing
   expect(result).toMatchObject({ complete: false, reason: "reader-upgrade-required" }); expect("fingerprint" in result).toBe(false);
   if (!result.complete) expect(result.nextStep).toContain("compatible newer runtime"); expect(f.snapshot()).toEqual(before);
 });
+
+test("a torn existing publisher boundary is incomplete even before the first native prune", async () => {
+  const f = await fixture(); expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  writeFileSync(join(f.store.dir, "local", `publisher-boundary-${f.store.machine.id}.json`), "{unfinished", { mode: 0o600 });
+  const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
+  expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false); expect(f.snapshot()).toEqual(before);
+}, 20_000);

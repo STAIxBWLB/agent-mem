@@ -24,6 +24,7 @@ import type { PublicPruneLineage } from "./public-prune-witness.ts";
 import type { PlacementPublicationDecisionReason } from "./sync-placement-publication-plan.ts";
 import type { ShardSyncRealm, ShardSyncRow } from "./shard-sync-format.ts";
 import type { MemoryStore } from "./store.ts";
+import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
 
 export interface SyncPlacementInspectionOptions {
   screen?: RowScreen;
@@ -43,11 +44,18 @@ export interface SyncPlacementInspectionRow extends PlacementKey {
   holdReasons: PlacementHoldReason[];
   exposure: SyncPlacementExposure;
 }
+export interface SyncPlacementIntrinsicLocalRow extends PlacementKey {
+  sourcePlacement: "local";
+  reason: "intrinsic-local";
+  categories: SyncPolicyCategory[];
+  holdReasons: PlacementHoldReason[];
+  exposure: SyncPlacementExposure;
+}
 export type SyncPlacementInspectionIncompleteReason = "placement-not-active" | "binding-changed" | "input-unavailable" | "input-bound" | "input-changed"
   | "journal-unavailable" | "policy-unavailable" | "attestation-unavailable" | "evidence-unavailable" | "reader-upgrade-required";
 export type SyncPlacementInspection = {
-  complete: true; rows: SyncPlacementInspectionRow[]; fingerprint: string;
-  counts: { rows: number; eligible: number; policyLocal: number; personLocal: number; held: number; verifiedPublished: number; notObserved: number; unknown: number };
+  complete: true; rows: SyncPlacementInspectionRow[]; intrinsicLocal: SyncPlacementIntrinsicLocalRow[]; fingerprint: string;
+  counts: { selected: number; rows: number; intrinsicLocal: number; eligible: number; policyLocal: number; personLocal: number; held: number; verifiedPublished: number; notObserved: number; unknown: number };
 } | { complete: false; reason: SyncPlacementInspectionIncompleteReason; nextStep: string };
 
 const categories: readonly SyncPolicyCategory[] = ["secret", "personal-data", "deny-path", "private-or-invalid", "host"];
@@ -106,6 +114,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home, markers.profile, markers.shards);
     if (!active || active.profile.placementHead !== store.profile.placementHead) fail("binding-changed");
     const targets = opened.map(target => ({ store: target, realm: target.profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: target.profile.shardKey! }, generation: target.profile.generation! }));
+    const pendingChecks = targets.map(target => captureInspectionPendingPrunes(target.store.dir));
     const port: PlacementCapturePort = { attest: options.placementAttestation, ...(options.policyVersion ? { policyVersion: options.policyVersion } : {}) };
     const capture = captureSyncPlacementContext(home, port, targets.map(target => physical(target.realm)));
     captured = true;
@@ -149,7 +158,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       }
       const candidates = [...rows.values()].filter((row): row is PruneRow => row.op === "prune" && row.generation === target.generation);
       const boundary = join(target.store.dir, "local", `publisher-boundary-${target.store.machine.id}.json`);
-      const proof = candidates.length && lstatSync(boundary, { throwIfNoEntry: false }) ? inspectPublisherPruneLineages(target.store.profile, candidates) : new Map<string, PublicPruneLineage>();
+      const proof = lstatSync(boundary, { throwIfNoEntry: false }) ? inspectPublisherPruneLineages(target.store.profile, candidates) : new Map<string, PublicPruneLineage>();
       return { rows, proof };
     });
     const verified = verifiedPlacementPrunes(targets.map((target, index) => ({ realm: target.realm, generation: target.generation, rows: lineages[index]!.rows,
@@ -157,43 +166,55 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     const rowCategories = new Map<string, Set<SyncPolicyCategory>>();
     phase = "policy-unavailable"; const evaluate = outboundPolicyEvaluator(home, options.screen);
     phase = "input-unavailable";
+    const guardedEvaluate = (value: unknown): ReturnType<typeof evaluate> => {
+      check(); let verdict: ReturnType<typeof evaluate>;
+      try { verdict = evaluate(structuredClone(value) as Record<string, unknown>); } catch { return fail("policy-unavailable"); }
+      check();
+      if (!verdict.ok && value && typeof value === "object" && "id" in value && typeof value.id === "string") {
+        let known = rowCategories.get(value.id); if (!known) rowCategories.set(value.id, known = new Set()); known.add(verdict.category);
+      }
+      return verdict;
+    };
     const materialized = await materializePlacementRows({ capture, projection: retained.projection, generation: active.profile.generation, targets: plannedTargets,
-      old: histories.old, verifiedPrunes: verified, createdUnixSeconds: Math.floor(Date.now() / 1000), extraSources: [...capture.specialRows.values()],
-      evaluate: value => {
-        check(); let verdict: ReturnType<typeof evaluate>;
-        try { verdict = evaluate(structuredClone(value) as Record<string, unknown>); } catch { return fail("policy-unavailable"); }
-        check();
-        if (!verdict.ok && value && typeof value === "object" && "id" in value && typeof value.id === "string") {
-          let known = rowCategories.get(value.id); if (!known) rowCategories.set(value.id, known = new Set()); known.add(verdict.category);
-        }
-        return verdict;
-      },
+      old: histories.old, verifiedPrunes: verified, createdUnixSeconds: Math.floor(Date.now() / 1000), evaluate: guardedEvaluate,
       readTree: async (_index, head) => { if (!objects) fail("evidence-unavailable"); return objects.tree(head); },
       publisherLineages: (index, rows) => inspectPublisherPruneLineages(targets[index]!.store.profile, rows) });
+    const exposureFor = (key: PlacementKey): SyncPlacementExposure => {
+      const known = histories.published.get(placementKeyId(key)), attempts = retained.projection.get(key)?.attempts;
+      return known?.length ? { certainty: "verified-published", evidence: known } : { certainty: attempts?.length ? "unknown" : "not-observed" };
+    };
     const rows: SyncPlacementInspectionRow[] = materialized.decisions.map(decision => {
       const state = retained.projection.get(decision.key), holdReasons = state?.reasons ?? [], own = new Set<SyncPolicyCategory>(rowCategories.get(decision.key.id));
       for (const value of [decision.reason, ...holdReasons]) if (categories.includes(value as SyncPolicyCategory)) own.add(value as SyncPolicyCategory);
       const disposition: SyncPlacementDisposition = decision.eligible ? "eligible" : holdReasons.includes("person-local") ? "person-local"
         : decision.reason !== "source-local" && own.size ? "policy-local" : "held";
-      const known = histories.published.get(placementKeyId(decision.key));
-      const index = targets.findIndex(target => canonicalJSON(physical(target.realm)) === canonicalJSON(decision.key.realm));
-      const uncertain = !!state?.attempts.length || histories.uncertain.has(placementKeyId(decision.key)) || !!cached[index] && cached[index] !== histories.tips[index];
-      const exposure: SyncPlacementExposure = known?.length ? { certainty: "verified-published", evidence: known } : { certainty: uncertain ? "unknown" : "not-observed" };
       return { ...decision.key, sourcePlacement: decision.sourcePlacement, disposition, reason: decision.reason,
-        categories: [...own].sort(), holdReasons: [...holdReasons].sort(), exposure };
+        categories: [...own].sort(), holdReasons: [...holdReasons].sort(), exposure: exposureFor(decision.key) };
     });
+    const outboundKeys = new Set(rows.map(row => placementKeyId(row)));
+    const intrinsicLocal: SyncPlacementIntrinsicLocalRow[] = [];
+    for (const source of capture.specialRows.values()) if (!outboundKeys.has(placementKeyId(source.key))) {
+      if (source.sourcePlacement !== "local") fail("input-unavailable");
+      guardedEvaluate(source.row);
+      const holdReasons = retained.projection.get(source.key)?.reasons ?? [], own = new Set<SyncPolicyCategory>(rowCategories.get(source.key.id));
+      for (const reason of holdReasons) if (categories.includes(reason as SyncPolicyCategory)) own.add(reason as SyncPolicyCategory);
+      intrinsicLocal.push({ ...source.key, sourcePlacement: "local", reason: "intrinsic-local", categories: [...own].sort(), holdReasons: [...holdReasons].sort(), exposure: exposureFor(source.key) });
+    }
+    intrinsicLocal.sort((a, b) => placementKeyId(a).localeCompare(placementKeyId(b)));
     // The final recapture invokes host callbacks first; every remaining proof is passive filesystem/data validation.
-    phase = "input-changed"; capture.assertCurrent(); retained.assertCurrent(); for (const checkForeign of foreignChecks) checkForeign(); objects?.assertRetained();
+    phase = "input-changed"; capture.assertCurrent(); retained.assertCurrent(); for (const checkPending of pendingChecks) checkPending(); for (const checkForeign of foreignChecks) checkForeign(); objects?.assertRetained();
     if (cacheAbsent && lstatSync(cache, { throwIfNoEntry: false })) fail("input-changed");
     if (rootStamp !== undefined ? placementCacheRootStamp(home) !== rootStamp : lstatSync(cacheRoot, { throwIfNoEntry: false }) !== undefined) fail("input-changed");
     if (binding() !== beforeBinding) fail("binding-changed");
     assertFormatFloor(home, "sync");
-    const counts = { rows: rows.length, eligible: 0, policyLocal: 0, personLocal: 0, held: 0, verifiedPublished: 0, notObserved: 0, unknown: 0 };
+    const counts = { selected: rows.length + intrinsicLocal.length, rows: rows.length, intrinsicLocal: intrinsicLocal.length, eligible: 0, policyLocal: 0, personLocal: 0, held: 0, verifiedPublished: 0, notObserved: 0, unknown: 0 };
     for (const row of rows) {
       counts[row.disposition === "policy-local" ? "policyLocal" : row.disposition === "person-local" ? "personLocal" : row.disposition]++;
+    }
+    for (const row of [...rows, ...intrinsicLocal]) {
       counts[row.exposure.certainty === "verified-published" ? "verifiedPublished" : row.exposure.certainty === "not-observed" ? "notObserved" : "unknown"]++;
     }
-    return { complete: true, rows, counts, fingerprint: hashJSON(rows) };
+    return { complete: true, rows, intrinsicLocal, counts, fingerprint: hashJSON({ rows, intrinsicLocal }) };
   } catch (error) {
     let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {

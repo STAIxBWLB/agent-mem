@@ -19,7 +19,6 @@ export interface PlacementMaterializeTarget {
   realm: ShardSyncRealm; generation: string; remote?: string; local?: string;
   fetched: ReadonlySet<string>; localPrunes: ReadonlyMap<string, PruneRow>; pruned: ReadonlySet<string>;
 }
-export interface PlacementMaterializeSource { key: PlacementKey; row: unknown; sourcePlacement: "local" | "synced" }
 export interface PlacementMaterializeInput {
   capture: Pick<PlacementCapture, "rows">; projection: PlacementProjection; generation: string;
   targets: readonly PlacementMaterializeTarget[]; old: readonly (ShardHistory | undefined)[];
@@ -27,8 +26,6 @@ export interface PlacementMaterializeInput {
   readTree(index: number, head: string): Promise<string>;
   publisherLineages(index: number, rows: readonly PruneRow[]): ReadonlyMap<string, PublicPruneLineage>;
   createdUnixSeconds: number; frozen?: PlacementPublicationBundle;
-  /** Caller-validated special originals; the same compiler still validates exact keys and row syntax. */
-  extraSources?: readonly PlacementMaterializeSource[];
 }
 export interface PlacementMaterializeTargetResult { candidate: ShardHistory; objects: PlannedGitObject[]; commit?: string }
 export interface PlacementMaterializeResult {
@@ -60,8 +57,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     let sourceBytes=0;
     const admit=(row:unknown)=>{const bytes=Buffer.byteLength(canonicalJSON(row));if(sources.length>=SYNC_SCREEN_MAX_ROWS||sourceBytes+bytes>SYNC_SCREEN_MAX_BYTES)throw new SyncPlacementJournalError("bound");sourceBytes+=bytes;};
     const prunedByTarget = new Map(workTargets.map(target => [target, target.pruned]));
-    function* selectedSources(): IterableIterator<PlacementMaterializeSource> { yield* capture.rows.values(); yield* (input.extraSources ?? []); }
-    for (const source of selectedSources()) {
+    for (const source of capture.rows.values()) {
       const target = workTargets.find(target => sameRealm(physical(target), source.key.realm)); if (!target) refuse();
       const pruned = prunedByTarget.get(target)!.has(source.key.id) && !target.fetched.has(source.key.id);
       if (pruned) blocked.add(placementKeyId(source.key));

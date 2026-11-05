@@ -13,7 +13,7 @@ import { PUBLIC_PRUNE_REPLAY_MAX_BYTES } from "./public-prune-input-chain.ts";
 import { PUBLIC_PRUNE_GRAPH_MAX_BYTES } from "./public-prune-inputs.ts";
 import { ShardHistoryAuditor } from "./shard-sync-history.ts";
 import { SHARD_PACK_MAX_BYTES, shardSyncRef, type ShardSyncRealm } from "./shard-sync-format.ts";
-import type { PlacementKey, PlacementRealm } from "./sync-placement-journal-format.ts";
+import type { PlacementRealm } from "./sync-placement-journal-format.ts";
 import { placementKeyId } from "./sync-placement-journal-format.ts";
 import type { ShardHistory } from "./shard-sync-history.ts";
 import type { PlacementPublicationDecision, PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
@@ -59,24 +59,18 @@ export interface RetainedInspectionHistories {
   old: (ShardHistory | undefined)[];
   tips: (string | undefined)[];
   published: Map<string, InspectionExposureProof[]>;
-  uncertain: Set<string>;
 }
 const physicalRealm = (realm: ShardSyncRealm): PlacementRealm => realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: hash(realm.key) };
 
 /** Historical core acknowledgement plus exact immutable membership, never a current remote-head observation. */
 export async function inspectRetainedPublicationHistories(snapshot: InspectionJournal, targets: readonly InspectionTarget[], objects?: PlacementInspectionObjects): Promise<RetainedInspectionHistories> {
-  const result: RetainedInspectionHistories = { old: targets.map(() => undefined), tips: targets.map(() => undefined), published: new Map(), uncertain: new Set() };
+  const result: RetainedInspectionHistories = { old: targets.map(() => undefined), tips: targets.map(() => undefined), published: new Map() };
   const selected = new Map(targets.map((target, index) => [canonicalJSON(physicalRealm(target.realm)), index]));
   const publications = [...snapshot.publications.values()].sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence || a.bundle.root.seal.localeCompare(b.bundle.root.seal));
   for (const publication of publications) {
     const root = publication.bundle.root, decisions = publication.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]);
-    const decisionKeys = new Set(decisions.map(decision => placementKeyId(decision.key)));
+    const decisionByKey = new Map(decisions.map(decision => [placementKeyId(decision.key), decision]));
     const receipt = publication.facts.find(fact => fact.phase === "completed"), artifact = publication.facts.find(fact => fact.phase === "artifact-built");
-    const acknowledged = !!objects && publication.phase === "completed" && receipt?.phase === "completed" && receipt.outcome === "committed";
-    for (const decision of decisions) {
-      const target = root.targets.find(target => canonicalJSON(target.realm) === canonicalJSON(decision.key.realm));
-      if (!acknowledged && selected.has(canonicalJSON(decision.key.realm)) && target && (target.publish && decision.eligible || target.expectedRemoteHead !== null)) result.uncertain.add(placementKeyId(decision.key));
-    }
     if (!objects || publication.phase !== "completed" || receipt?.phase !== "completed" || receipt.outcome !== "committed") continue;
     if (artifact?.phase !== "artifact-built") unavailable();
     for (const [targetIndex, planned] of root.targets.entries()) {
@@ -84,7 +78,7 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
       const target = targets[index]!, tip = planned.commit ?? planned.expectedRemoteHead;
       if (!tip) continue;
       if (planned.refHash !== hash(shardSyncRef(target.realm))) unavailable();
-      const history = await objects.auditor(target.realm, target.generation).history(tip);
+      const auditor = objects.auditor(target.realm, target.generation), history = await auditor.history(tip);
       if (history.rows.size > SYNC_SCREEN_MAX_ROWS) bound();
       const membership = [...history.rows.values()].map(row => ({ id: row.id, rowHash: hashJSON(row) })).sort((a, b) => a.id.localeCompare(b.id));
       if (hashJSON(membership) !== planned.exportSetHash || hash(history.files.get("shard.json") ?? Buffer.alloc(0)) !== planned.descriptorHash
@@ -94,10 +88,25 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
         const body = objects.object(object.oid, object.type, object.type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES);
         if (body.length !== object.size || hash(body) !== object.sha256) unavailable();
       }
-      for (const row of membership) {
-        const key: PlacementKey = { realm: physicalRealm(target.realm), ...row }, id = placementKeyId(key);
-        if (!decisionKeys.has(id)) continue;
-        const proof = { remoteHash: root.remoteHash, refHash: planned.refHash, commit: tip };
+      const acknowledgedHistories = new Map<string, ShardHistory>([[tip, history]]);
+      for (const record of snapshot.journal.records) {
+        if (record.kind !== "publication-committed" || record.outcome.attemptHash !== root.seal
+          || record.sequence <= root.journal.sequence || record.sequence > root.journal.sequence + root.reservedRecords
+          || canonicalJSON(record.key.realm) !== canonicalJSON(planned.realm)) continue;
+        const id = placementKeyId(record.key), decision = decisionByKey.get(id), commit = record.outcome.commit;
+        if (!decision || record.sourcePlacement !== decision.sourcePlacement || record.outcome.remoteHash !== root.remoteHash || record.outcome.refHash !== planned.refHash
+          || !(commit === planned.expectedRemoteHead || decision.eligible && planned.publish && commit === planned.commit)
+          || record.requestId !== hashJSON({ attempt: root.seal, key: record.key, kind: record.kind, commit })
+          || record.effectHash !== hashJSON({ attempt: root.seal, context: root.contextHash, key: record.key, kind: record.kind, commit })
+          || record.outcome.proofHash !== hashJSON({ attempt: root.seal, key: record.key, commit, remote: root.remoteHash, ref: planned.refHash })) unavailable();
+        let atCommit = acknowledgedHistories.get(commit);
+        if (!atCommit) {
+          if (!await auditor.verifiedAncestor(commit, tip)) unavailable();
+          atCommit = await auditor.history(commit); acknowledgedHistories.set(commit, atCommit);
+        }
+        const row = atCommit.rows.get(record.key.id);
+        if (!row || hashJSON(row) !== record.key.rowHash) unavailable();
+        const proof = { remoteHash: root.remoteHash, refHash: planned.refHash, commit };
         const prior = result.published.get(id) ?? [];
         const previous = prior.findIndex(value => value.remoteHash === proof.remoteHash && value.refHash === proof.refHash);
         if (previous < 0) prior.push(proof); else prior[previous] = proof;

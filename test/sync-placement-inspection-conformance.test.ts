@@ -29,7 +29,13 @@ function matchesPlan(result: Complete, f: PlacementInspectionFixture, attempt = 
 }
 async function unchangedInspection(f: PlacementInspectionFixture, options = f.opts()) {
   const before = f.snapshot(), inspected = await inspectSyncPlacement(f.store, options);
-  expect(f.snapshot()).toEqual(before); return complete(inspected);
+  expect(f.snapshot()).toEqual(before);
+  const result = complete(inspected), capture = f.capture();
+  const selected = [...capture.rows.values(),...capture.specialRows.values()].map(source=>keyId(source.key)).sort();
+  const reported = [...result.rows,...result.intrinsicLocal].map(keyId).sort();
+  expect(reported).toEqual(selected); expect(new Set(reported).size).toBe(reported.length);
+  expect(result.fingerprint).toBe(hashJSON({rows:result.rows,intrinsicLocal:result.intrinsicLocal}));
+  return result;
 }
 
 test("public inspection matches the first actual sealed decisions and verified exposure without mutating sources or cache", async () => {
@@ -41,7 +47,7 @@ test("public inspection matches the first actual sealed decisions and verified e
     return { allowed,user,declined,goal,dependent };
   } });
   const before = await unchangedInspection(f), repeated = await unchangedInspection(f);
-  expect(repeated.fingerprint).toBe(before.fingerprint); expect(before.fingerprint).toBe(hashJSON(before.rows));
+  expect(repeated.fingerprint).toBe(before.fingerprint);
   expect(row(before,f.ids.allowed!).disposition).toBe("eligible"); expect(row(before,f.ids.declined!).disposition).toBe("policy-local");
   expect(row(before,f.ids.dependent!)).toMatchObject({ disposition:"held",reason:"related-local" });
   for (const value of before.rows) expect(value.exposure.certainty).toBe("not-observed");
@@ -107,8 +113,35 @@ test("new policy denial preserves verified historical exposure and the exact alr
   const after = await unchangedInspection(f), prior = row(after,f.ids.prior!);
   expect(prior).toMatchObject({disposition:"policy-local",reason:"journal-hold",holdReasons:["personal-data"]});
   expect(prior.exposure.certainty).toBe("verified-published");
-  if(prior.exposure.certainty==="verified-published")expect(prior.exposure.evidence).toEqual([{remoteHash,refHash:target.refHash,commit:head}]);
+  // A later receipt retaining this row is not a new per-row committed acknowledgement.
+  if(prior.exposure.certainty==="verified-published")expect(prior.exposure.evidence).toEqual([{remoteHash,refHash:target.refHash,commit:initialCommit}]);
   expect(JSON.stringify(after)).not.toContain("HISTORICAL_PUBLIC_CANARY");
+},20_000);
+
+test("genuine vault-link and local-prune originals are separate intrinsic-local metadata without changing outbound keys", async () => {
+  const f = await fixture({patterns:[],seed:(store,project)=>({
+    target:store.note(inspectionNote("ordinary long-lived vault-link target",project)),
+    expiring:store.note({...inspectionNote("local short original",project),tier:"short"}),
+  })});
+  const initial = await unchangedInspection(f), source = [...f.capture().rows.values()].find(value=>value.key.id===f.ids.target)!;
+  expect(initial.intrinsicLocal).toEqual([]);
+  // The ordinary short original already belongs to stage 3's outbound decision set, even though it stays local.
+  expect(row(initial,f.ids.expiring!).disposition).toBe("held");
+  const link = f.store.recordVaultLink(f.ids.target!,"notes/isolated-intrinsic.md",f.project,source.key.rowHash);
+  f.clock.now += 2000;
+  const auth = {project:f.project,actor:"person" as const,authorize:()=>true};
+  const plan = planPrune(f.store.prunePort(),{cutoff:new Date(f.clock.now).toISOString(),targets:[f.ids.expiring!]},auth);
+  expect(plan.rows).toHaveLength(1); expect(plan.rows[0]!.placement).toBe("local");
+  const prune = plan.rows[0]!.payload; expect(applyPrune(f.store.prunePort(),plan,auth).completed).toContain(prune.id);
+  const before = await unchangedInspection(f);
+  expect(before.rows.map(keyId).sort()).toEqual(initial.rows.map(keyId).sort());
+  expect(before.intrinsicLocal.map(value=>value.id).sort()).toEqual([link,prune.id].sort());
+  for(const value of before.intrinsicLocal)expect(value).toMatchObject({sourcePlacement:"local",reason:"intrinsic-local"});
+  expect((await syncMemory(f.store,f.opts())).ok).toBe(true); matchesPlan(before,f);
+  expect(f.reachableIds()).toEqual([f.ids.target!]);
+  const after = await unchangedInspection(f);
+  expect(after.intrinsicLocal.map(value=>value.id).sort()).toEqual([link,prune.id].sort());
+  for(const value of after.rows)expect([link,prune.id]).not.toContain(value.id);
 },20_000);
 
 test("a declined project descriptor with an independent user realm agrees with publication and leaks no empty project ref", async () => {
