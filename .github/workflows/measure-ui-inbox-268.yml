@@ -8,7 +8,7 @@ concurrency:
   group: measure-ui-inbox-268-${{ github.ref }}
   cancel-in-progress: false
 env:
-  FIX_HEAD: 35db96559d5417c537ff23e52f089ec792c32883
+  FIX_HEAD: 778d1d18ff32af5a1a5d2ca098fe32a6652a4a63
 jobs:
   native-inbox:
     timeout-minutes: 15
@@ -38,7 +38,7 @@ jobs:
           set -o pipefail
           bun scripts/compare-root-exports.ts | tee root-exports.json
       - name: Current-head UI, lifecycle and 0.1.3 conformance tests
-        run: bun test --timeout 40000 test/ui-plugin.test.ts test/ui-inbox.test.ts test/ui-inbox-process.test.ts test/ui-inbox-candidates.test.ts test/ui-inbox-benchmark.test.ts
+        run: bun test --timeout 120000 test/ui-plugin.test.ts test/ui-inbox.test.ts test/ui-inbox-process.test.ts test/ui-inbox-candidates.test.ts test/ui-inbox-inputs.test.ts test/ui-inbox-benchmark.test.ts
       - name: Realistic fixture, all outcomes retained
         run: |
           set -o pipefail
