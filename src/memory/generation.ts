@@ -1,3 +1,4 @@
+import { placementSelectorRefusal, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView, waitForPublicPruneWriter, PUBLIC_PRUNE_INTENT } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
@@ -51,23 +52,33 @@ export function readProfileJSON(path: string, limit = LOCAL_METADATA_MAX_BYTES):
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; return unavailable(); }
 }
 function keys(value: object, allowed: string[]): boolean { return Object.keys(value).every(key => allowed.includes(key)); }
+/** Pure legacy marker shape, shared with the stage1 placement preflight; no selector effects. */
+export function legacyProfileMarkerShape(value: unknown): value is ProfileSelector | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const selector = value as ProfileSelector;
+  if (selector.schema === "agent-mem.profile/v2") return Object.keys(selector).length === 5 && keys(selector, ["schema", "kind", "generation", "foreignPruneFormat", "pruneInputSetHash"])
+    && selector.kind === "generation" && validGeneration(selector.generation) && selector.generation.length === 32 && selector.foreignPruneFormat === "agent-mem.public-prune-witness/v1"
+    && typeof selector.pruneInputSetHash === "string" && selector.pruneInputSetHash.length === 64 && /^[a-f0-9]{64}$/.test(selector.pruneInputSetHash);
+  return selector.schema === "agent-mem.profile/v1" && keys(selector, ["schema", "kind", "generation"])
+    && ["shared-v1", "generation"].includes(selector.kind) && (selector.kind === "generation" ? validGeneration(selector.generation) : selector.generation === undefined);
+}
 function selectorSnapshot(memoryDir: string, deadline: number): { selector?: ProfileSelector; revision: string } {
+  const initialRefusal = placementSelectorRefusal(memoryDir);
+  if (initialRefusal) throw new SyncPlacementRuntimeError(initialRefusal);
   assertNoPublicPruneIntent(memoryDir, deadline);
+  // Legacy v2 readers still choose their snapshot after the existing writer wait, never its earlier preflight pair.
+  const refusal = placementSelectorRefusal(memoryDir);
+  if (refusal) throw new SyncPlacementRuntimeError(refusal);
   const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable();
+  if (!legacyProfileMarkerShape(value)) return unavailable();
   const selector = value as ProfileSelector;
   if (selector.schema === "agent-mem.profile/v2") {
-    if (Object.keys(selector).length !== 5 || !keys(selector, ["schema", "kind", "generation", "foreignPruneFormat", "pruneInputSetHash"])
-      || selector.kind !== "generation" || !validGeneration(selector.generation) || selector.generation.length !== 32
-      || selector.foreignPruneFormat !== "agent-mem.public-prune-witness/v1" || typeof selector.pruneInputSetHash !== "string"
-      || selector.pruneInputSetHash.length !== 64 || !/^[a-f0-9]+$/.test(selector.pruneInputSetHash)) return unavailable();
     const shard = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
     if (!shard || shard.schema !== "agent-mem.shards/v2" || shard.phase !== "active" || shard.generation !== selector.generation || shard.selectorRevision !== hashJSON(selector)) return unavailable();
     readPublicPruneView(memoryDir, selector.pruneInputSetHash, selector.generation, deadline);
-  } else if (selector.schema !== "agent-mem.profile/v1" || !keys(selector, ["schema", "kind", "generation"])
-    || !["shared-v1", "generation"].includes(selector.kind) || (selector.kind === "generation" ? !validGeneration(selector.generation) : selector.generation !== undefined)) return unavailable();
-  else if ((readProfileJSON(join(memoryDir, "shards.json")) as {schema?:unknown}|undefined)?.schema === "agent-mem.shards/v2") return unavailable();
+  } else if ((readProfileJSON(join(memoryDir, "shards.json")) as {schema?:unknown}|undefined)?.schema === "agent-mem.shards/v2") return unavailable();
   return { selector, revision: hashJSON(selector) };
 }
 
@@ -81,6 +92,7 @@ export function readSelector(memoryDir: string, absoluteDeadline?: number): { se
       const current = readProfileJSON(join(memoryDir, "profile.json"));
       if (result.revision === (current === undefined ? "absent" : hashJSON(current))) return result;
     } catch (error) {
+      if (error instanceof SyncPlacementRuntimeError) throw error;
       if (error instanceof Error && error.message === "public prune view unavailable") throw error; // A spent wait budget is never restarted.
       if (!lstatSync(join(memoryDir, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }) && !lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw error;
       waitForPublicPruneWriter(memoryDir, deadline);

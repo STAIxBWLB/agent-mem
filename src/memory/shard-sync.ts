@@ -1,3 +1,4 @@
+import { placementRuntimeRefusal } from "./sync-placement-guard.ts";
 import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineages } from "./prune-publisher-lineage.ts";
 import { verifyPublicPruneWitness, type PublicPruneWitnessV1 } from "./public-prune-witness.ts";
 import { readPublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
@@ -434,6 +435,8 @@ function mergePackOrigins(into: Map<string, HoldSource>, byRealm: Map<string, Ma
 
 /** Sync only borrowed canonical project/user targets. Internal error/phase observers are test-only, never CLI/SyncOptions ports. */
 export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void, testOnlyPhase?: (phase: SyncPhase) => void): Promise<SyncResult> {
+  const placementRefusal = placementRuntimeRefusal(store.profile.home);
+  if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   let pushed = false, releaseTransport: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
   const v2 = store.profile.foreignPruneFormat === "agent-mem.public-prune-witness/v1";

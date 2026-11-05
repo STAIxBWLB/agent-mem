@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
+import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "../src/memory/sync-placement-format.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -143,4 +146,38 @@ try { console.log(JSON.stringify({ ids: s.list({ project: ${JSON.stringify(f.pro
     expect(await drain(f)).toContain("claude:before floor");
     expect(readFileSync(join(f.base, "formats.json"), "utf8")).toBe("[]");
   });
+  test("sync placement v3 markers are refused by the previous reader before effects; a person-authored floor requests upgrade", () => {
+    const f = fixture(), mine = new MemoryStore({ memoryDir: f.base }); mine.close();
+    const profile = validatePlacementProfile({ schema: PLACEMENT_PROFILE_SCHEMA, kind: "generation", generation: "e".repeat(32),
+      foreignPruneFormat: "agent-mem.public-prune-witness/v1", pruneInputSetHash: "a".repeat(64), publicationFormat: PLACEMENT_FORMAT, placementHead: "b".repeat(64) });
+    const shards = validatePlacementShards({ schema: PLACEMENT_SHARDS_SCHEMA, generation: profile.generation, phase: "active", selectorRevision: hashJSON(profile),
+      sources: [], machine: { id: "c".repeat(16), label: "synthetic compatibility" }, publicationFormat: PLACEMENT_FORMAT, placementHead: profile.placementHead }, profile);
+    // Test-only person action: stage1 core code never writes or activates these markers.
+    writeFileSync(join(f.base, "profile.json"), canonicalJSON(profile) + "\n", { mode: 0o600 });
+    writeFileSync(join(f.base, "shards.json"), canonicalJSON(shards) + "\n", { mode: 0o600 });
+    const snapshot = (): Record<string, string> => {
+      const files: Record<string, string> = {};
+      const visit = (dir: string, prefix = "") => { for (const item of readdirSync(dir, { withFileTypes: true })) {
+        const relative = prefix + item.name, file = join(dir, item.name);
+        if (item.isDirectory()) visit(file, relative + "/");
+        else files[relative] = createHash("sha256").update(readFileSync(file)).digest("hex");
+      } };
+      visit(f.base); return files;
+    };
+    const before = snapshot();
+    const observed = JSON.parse(run(f, `const old = await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const generation = await import(${JSON.stringify(prev("src/memory/generation.ts"))});
+let effects=0;Bun.spawn=()=>{effects++;throw Error('unexpected child');};Bun.spawnSync=()=>{effects++;throw Error('unexpected child');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
+const refused=work=>{try{work();return false;}catch{return true;}};
+const memory=${JSON.stringify(f.base)};
+const result={selector:refused(()=>generation.readSelector(memory)),store:refused(()=>new old.MemoryStore({memoryDir:memory})),shard:refused(()=>old.openShardStore({memoryDir:memory,project:'placement-guard-project'})),effects};
+console.log(JSON.stringify(result));`));
+    expect(observed).toEqual({ selector: true, store: true, shard: true, effects: 0 }); expect(snapshot()).toEqual(before);
+    // A person may set an existing home-wide floor; implementation code must not create formats.json.
+    writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "99.0.0", since: "2026-11-05" }]), { mode: 0o600 });
+    const floored = snapshot();
+    expect(JSON.parse(run(f, `const {MemoryStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});let upgrade=false;try{new MemoryStore({memoryDir:${JSON.stringify(f.base)}});}catch(error){upgrade=String(error.message).includes('Upgrade amem');}console.log(JSON.stringify({upgrade}));`))).toEqual({ upgrade: true });
+    expect(() => new MemoryStore({ memoryDir: f.base })).toThrow("Upgrade amem"); expect(snapshot()).toEqual(floored);
+  });
+
 });

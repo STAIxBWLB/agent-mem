@@ -1,3 +1,5 @@
+import { PLACEMENT_DESCRIPTOR_SCHEMA, validatePlacementDescriptor } from "./sync-placement-format.ts";
+import { PLACEMENT_STAGE1_REFUSAL } from "./sync-placement-guard.ts";
 import { createHash } from "node:crypto";
 import { legacyEntries } from "./bridge.ts";
 import { canonicalJSON, validGeneration } from "./generation.ts";
@@ -50,6 +52,10 @@ function decodeMetadata(bytes: Uint8Array, label: string): Record<string, unknow
 }
 export function decodeShardDescriptor(bytes: Uint8Array, realm: ShardSyncRealm): "v1" | "v2" {
   const label = shardSyncLabel(realm), value = decodeMetadata(bytes, label);
+  if (value.schema === PLACEMENT_DESCRIPTOR_SCHEMA) {
+    try { validatePlacementDescriptor(value, realm); } catch { throw new ShardSyncFormatError(label, "invalid placement descriptor"); }
+    throw new ShardSyncFormatError(label, PLACEMENT_STAGE1_REFUSAL);
+  }
   const version = value.schema === SHARD_SYNC_SCHEMA ? "v1" : value.schema === SHARD_SYNC_V2_SCHEMA ? "v2" : undefined;
   if (!version || canonicalJSON(value) + "\n" !== shardSyncDescriptor(realm, version)) throw new ShardSyncFormatError(label, "descriptor realm or schema mismatch");
   return version;

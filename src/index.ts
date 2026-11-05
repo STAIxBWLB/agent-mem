@@ -52,3 +52,6 @@ export * from "./memory/evidence.ts";
 
 export * from "./memory/sync-policy-inspection.ts";
 export { syncOutboundContent } from "./memory/sync-screen.ts";
+
+export * from "./memory/sync-placement-format.ts";
+export * from "./memory/sync-placement-plan.ts";
