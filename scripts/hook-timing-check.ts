@@ -48,3 +48,38 @@ export function singleAttemptTiming(check: string, passed: boolean, values: Reco
     else throw new Error(message);
   }
 }
+
+
+export interface BudgetFailureEvidence {
+  telemetryValid: boolean; survivors: number; abandonedOwnedWorkers?: number;
+  unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
+}
+/** ponytail: only the four accepted #226 abandonment/timing classes (rss-unknown, not-durable,
+ * transcript-wall-max, owned-descendant-receipt) are exempted, only on exact hosted GitHub macOS markers;
+ * every other failure kind stays strict, with existing p95/stall advisories unchanged.
+ * Retirement: remove this exception only when a #226 redesign passes 20 strict uninstrumented hosted-macOS
+ * runs and the owner decides to retire it. */
+export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!stallAdvisory(env) || evidence.telemetryValid !== true || !Number.isSafeInteger(evidence.survivors) || evidence.survivors !== 0) return false;
+  for (const count of [evidence.abandonedOwnedWorkers, evidence.unavailableRssSources])
+    if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) return false;
+  if (evidence.receiptIncomplete !== undefined && typeof evidence.receiptIncomplete !== "boolean") return false;
+  if (evidence.wallMs !== undefined && (!Number.isFinite(evidence.wallMs) || evidence.wallMs < 0)) return false;
+  if (kind === "not-durable") return true;
+  if (kind === "transcript-wall-max") return evidence.wallMs !== undefined && evidence.wallMs > 300;
+  if (kind !== "rss-unknown" && kind !== "owned-descendant-receipt") return false;
+  const abandoned = Number.isSafeInteger(evidence.abandonedOwnedWorkers) && evidence.abandonedOwnedWorkers! > 0;
+  return abandoned && (kind === "owned-descendant-receipt" ? evidence.receiptIncomplete === true
+    : Number.isSafeInteger(evidence.unavailableRssSources) && evidence.unavailableRssSources! > 0);
+}
+
+/** Report an already classified exception without altering process.exitCode or any hard verdict. */
+export function reportBudgetAdvisory(kind: string, check: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!budgetFailureAdvisory(kind, evidence, env)) return false;
+  const record = { diagnostic: "hosted-macos-budget-advisory", kind, check, status: "warning", ...evidence };
+  console.log(JSON.stringify(record));
+  if (!env.GITHUB_STEP_SUMMARY) throw new Error("GitHub macOS budget step summary is unavailable");
+  appendFileSync(env.GITHUB_STEP_SUMMARY, `**${check}: warning (${kind})**\n\n\`${JSON.stringify(record)}\`\n\n`);
+  console.warn(`::warning title=Hook macOS runner budget::${check}: ${JSON.stringify(record)}`);
+  return true;
+}

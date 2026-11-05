@@ -1,4 +1,4 @@
-import { measuredHookRss } from "./hook-rss-check.ts";
+import { measuredBudgetHookRss } from "./hook-rss-check.ts";
 import { combineRssSources } from "../src/hook-resources.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
@@ -22,7 +22,7 @@ import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
-interface Sample extends ReturnType<typeof measuredHookRss> {
+interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   wallMs: number;
   /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
   metricWallMs: number;
@@ -141,12 +141,12 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   const retired = retirementReceipts.reduce((sum, row) => sum + row.captureDrops, 0);
   countedRetirements += retired;
   // Bun child rusage maxRSS is bytes; process.resourceUsage().maxRSS uses a different unit.
-  const rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576), { cliRssMB, recordedRssMB } = rss;
+  const rss = measuredBudgetHookRss(metric, result.resourceUsage.maxRSS / 1048576, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `hooks:${group}:${invocations}`), { cliRssMB, recordedRssMB } = rss;
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
   // #228: an over-limit sample is reported, never hidden, and the group verdict (nearest-rank p95 over its fixed count) decides.
   if (!(rss.rssMB < RSS_MB)) console.log(JSON.stringify({ diagnostic: "R2-sample-over-limit", event, group, invocation: invocations, wallMs: round(wallMs), rssMB: rss.rssMB, limitMB: RSS_MB, cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSources: rss.rssSources }));
   if (event === "SessionStart") {
-    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSourcesJson: JSON.stringify(rss.rssSources) });
+    const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSourcesJson: JSON.stringify(rss.rssSources), rssProvenanceKnown: rss.rssProvenanceKnown });
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
     if (result.stdout.length > 8192) throw new Error("SessionStart output exceeded 8 KiB");
     if (!result.stdout.length) {
@@ -172,7 +172,9 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
   for (let index = 0; index < count; index++) {
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>(name, stalledAttempts);
     const completed = await budgetSample(`${name}-${index + 1}`, run, attempt => { attempts.push(attempt); record(attempt); });
-    rows.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
+    const sample = keepAttemptWall(keepAttemptRss(completed, attempts), attempts);
+    const unknownAttempt = attempts.some(attempt => attempt.values?.rssProvenanceKnown === false || attempt.result?.rssProvenanceKnown === false);
+    rows.push({ ...sample, rssProvenanceKnown: sample.rssProvenanceKnown && !unknownAttempt, rssAdvisory: sample.rssAdvisory || unknownAttempt });
   }
   return rows;
 }
@@ -180,7 +182,7 @@ function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
   const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
     wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN), wallLimitMs: WALL_MS });
-  return { runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
+  return { rssCoverageComplete: samples.every(sample => sample.rssProvenanceKnown), rssProvenanceAdvisories: samples.filter(sample => !sample.rssProvenanceKnown).length, runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
 }
 try {
   runnerFingerprint();
