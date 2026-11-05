@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Document the accepted transcript-summary timing ceiling under contention/slow runners: capture can be deferred without losing its transcript source; limits, R1, fail-closed RSS, durability and the hosted-macOS advisory are unchanged (#226).
+
 - Add stage 1 closed placement-aware v3 format/activation-plan validation (#261): exact commitments, monotone upgrade checks, person/writer-attestation ports and fail-closed runtime guards. Validation is data-only (`activated: false`); no transport, journal effects or real-home activation are enabled.
 
 - Screen contentful `settle.target` and `goal_link.by` task keys in outbound sync and inspection for every profile (#263). Preserve validated ID/enum/UTC metadata exclusions and unknown content fields. Restore specific byte/row-bound, changed-input and unavailable-input sync refusal causes.
