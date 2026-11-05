@@ -1,16 +1,20 @@
-import { afterEach, expect, test } from "bun:test";
-import { canonicalJSON } from "../src/memory/generation.ts";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import type { SpawnSyncOptionsWithBufferEncoding, SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { planPrune, applyPrune } from "../src/memory/prune.ts";
 import { placementKeyId } from "../src/memory/sync-placement-journal-format.ts";
 import { memoryGitEnv } from "../src/memory/platform.ts";
+import * as platform from "../src/memory/platform.ts";
+import { PlacementInspectionObjects } from "../src/memory/sync-placement-inspection-evidence.ts";
 import { inspectSyncPlacement, MemoryStore, openShardStore, syncMemory, holdPlacementRow } from "../src/index.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
-import { mkdtempSync, writeFileSync, truncateSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, truncateSync, rmSync, renameSync, symlinkSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPlacementInspectionFixture, inspectionNote, inspectionFilesystemSnapshot, INSPECTION_PROJECT, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
+import { createPlacementInspectionFixture, inspectionNote, inspectionFilesystemSnapshot, inspectionGit, INSPECTION_PROJECT, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 
 const fixtures: PlacementInspectionFixture[] = [];
 const close: (() => void)[] = [];
@@ -80,6 +84,24 @@ test("missing and mismatched fresh attestations fail closed without a fingerprin
   expect(bad).toMatchObject({ complete: false, reason: "attestation-unavailable" }); expect("fingerprint" in bad).toBe(false); expect(f.snapshot()).toEqual(before);
 });
 
+test("a retained v2 handle cannot mislabel a rolled-back v3 fence as inactive", async () => {
+  const f = await fixture(), profileFile = join(f.home, "profile.json"), shardsFile = join(f.home, "shards.json"), fence = join(f.home, "sync-placement", "active.json"), saved = join(f.root, "saved-owned-fence.json");
+  const profileBytes = readFileSync(profileFile), shardBytes = readFileSync(shardsFile), profile = JSON.parse(profileBytes.toString()), shards = JSON.parse(shardBytes.toString());
+  const { publicationFormat: _pf, placementHead: _ph, ...profileBase } = profile, v2 = { ...profileBase, schema: "agent-mem.profile/v2" };
+  const { publicationFormat: _sf, placementHead: _sh, ...shardBase } = shards;
+  let old: MemoryStore | undefined;
+  try {
+    // Fixture-only ordering models a live v2 reader retained across later activation and marker rollback.
+    renameSync(fence, saved); writeFileSync(profileFile, canonicalJSON(v2) + "\n");
+    writeFileSync(shardsFile, canonicalJSON({ ...shardBase, schema: "agent-mem.shards/v2", selectorRevision: hashJSON(v2) }) + "\n");
+    old = openShardStore({ memoryDir: f.home, project: f.project, deferPromotions: true }); renameSync(saved, fence);
+    const before = f.snapshot(), report = await inspectSyncPlacement(old, f.opts());
+    expect(report).toMatchObject({ complete: false, reason: "binding-changed" }); expect("fingerprint" in report).toBe(false); expect(f.snapshot()).toEqual(before);
+  } finally {
+    old?.close(); if (existsSync(saved)) renameSync(saved, fence); writeFileSync(profileFile, profileBytes); writeFileSync(shardsFile, shardBytes);
+  }
+}, 20_000);
+
 for (const kind of ["bytes", "rows", "torn"] as const) test(`incomplete ${kind} source never returns a fingerprint or heals input`, async () => {
   const f = await fixture(), file = join(f.store.dir, "log", `${f.store.machine.id}.jsonl`);
   writeFileSync(file, kind === "rows" ? "{}\n".repeat(20001) : kind === "torn" ? "{unfinished" : "", { mode: 0o600 });
@@ -142,4 +164,40 @@ test("a journal write in the last host callback cannot pass the final passive pr
   } });
   expect(changed).toBe(true); expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
   expect(f.projection().states.find(state => state.key.id === source.key.id)?.reasons).toContain("person-local");
+}, 20_000);
+
+for (const populated of [false, true]) test(`transport-parent symlink is refused even with ${populated ? "unchanged populated" : "no"} object-cache leaf`, async () => {
+  const f = await fixture(); if (populated) expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  const root = join(f.home, "shard-sync-placement"), moved = join(f.root, "moved-private-cache");
+  if (populated) renameSync(root, moved); else mkdirSync(moved, { mode: 0o700 });
+  symlinkSync(moved, root); const before = f.snapshot(), report = await inspectSyncPlacement(f.store, f.opts());
+  expect(report.complete).toBe(false); expect("fingerprint" in report).toBe(false); expect(f.snapshot()).toEqual(before);
+  expect((await syncMemory(f.store, f.opts())).ok).toBe(false); expect(f.snapshot()).toEqual(before);
+}, 20_000);
+
+test("actual offline proof reads cannot inherit Git trace-file writes", async () => {
+  const f = await fixture(); expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  const previous = process.env.GIT_TRACE, trace = join(f.root, "owned-trace-control.log"); process.env.GIT_TRACE = trace;
+  try {
+    inspectionGit(f.remote, "rev-parse", "--is-bare-repository"); expect(existsSync(trace)).toBe(true); rmSync(trace);
+    const before = f.snapshot(), report = await inspectSyncPlacement(f.store, f.opts());
+    expect(report.complete).toBe(true); expect(existsSync(trace)).toBe(false); expect(f.snapshot()).toEqual(before);
+  } finally { if (previous === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = previous; }
+}, 20_000);
+
+test("synthetic object-reader port keeps graph overhead separate from the 8MiB physical-row limit", async () => {
+  const f = await fixture(); expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  const reader = new PlacementInspectionObjects(f.home, () => {}), real = platform.memoryGitSync, bodies = new Map<string, Buffer>();
+  // Valid raw Git blobs only, not a claimed publication/DAG. The actual source fixture remains tiny.
+  for (let index = 0; index < 150; index++) { const body = Buffer.from(`${index}:` + "metadata".repeat(7500)); bodies.set(createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex"), body); }
+  const read = spyOn(platform, "memoryGitSync").mockImplementation(((args: string[], options: SpawnSyncOptionsWithBufferEncoding | SpawnSyncOptionsWithStringEncoding) => {
+    const at = args.indexOf("cat-file"), body = at >= 0 ? bodies.get(args[at + 2]!) : undefined;
+    if (!body) return Reflect.apply(real, platform, [args, options]);
+    const stdout = args[at + 1] === "-t" ? Buffer.from("blob\n") : args[at + 1] === "-s" ? Buffer.from(String(body.length) + "\n") : body;
+    return { pid: 0, stdout, stderr: Buffer.alloc(0), output: [null, stdout, Buffer.alloc(0)], status: 0, signal: null };
+  }) as typeof platform.memoryGitSync);
+  try {
+    let bytes = 0; for (const [id, body] of bodies) { expect(reader.object(id, "blob", 1024 * 1024)).toEqual(body); bytes += body.length; }
+    expect(bytes).toBeGreaterThan(8 * 1024 * 1024); reader.assertCurrent();
+  } finally { read.mockRestore(); }
 }, 20_000);

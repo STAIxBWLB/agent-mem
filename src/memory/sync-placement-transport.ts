@@ -27,7 +27,7 @@ import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage
 import type { MemoryStore } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
-import { placementCacheConfigStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
+import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 
 export type PlacementSyncPhase = "before-plan-fsync" | "plan-fsynced" | "artifact-built" | "before-cas" | "cas-returned" | "before-ack" | "acknowledged" | "imported" | "before-receipt" | "receipt-written";
 type Phase = (phase: PlacementSyncPhase) => void | Promise<void>;
@@ -117,7 +117,7 @@ class PlacementTransport {
     }
     if (new Set(this.targets.map(target => shardSyncRef(target.realm))).size !== this.targets.length) refuse();
     if (this.targets.some(target => target.realm.scope === "project" && isLocalKey(target.realm.key)) && this.opts.remote === undefined) refuse();
-    if (existsSync(this.root)) directory(this.root);
+    if (existsSync(this.root)) placementCacheRootStamp(this.home);
     const existing = existsSync(this.root) ? await this.independent() : false;
     if (!existing && !this.opts.remote) refuse();
     this.url = this.opts.remote ?? await this.required(["remote", "get-url", "origin"]);

@@ -6,12 +6,13 @@ import { types } from "node:util";
 import { SegmentReadBudgetError } from "./bridge.ts";
 import { canonicalJSON, hashJSON, selectorRevision } from "./generation.ts";
 import { assertFormatFloor } from "./formats.ts";
-import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
+import { readPlacementRuntimeMarkers, placementSelectorRefusal } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { captureSyncPlacementContext, type PlacementCapturePort } from "./sync-placement-capture.ts";
 import { placementKeyId, SyncPlacementJournalError, type PlacementKey, type PlacementHoldReason } from "./sync-placement-journal-format.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
+import { placementCacheRootStamp } from "./sync-placement-cache.ts";
 import { captureInspectionJournal, inspectRetainedPublicationHistories, PlacementInspectionObjects, type InspectionExposureProof } from "./sync-placement-inspection-evidence.ts";
 import { outboundPolicyEvaluator, type RowScreen, type SyncPolicyCategory } from "./sync-screen.ts";
 import { explicitExpirySnapshot } from "./generation-index.ts";
@@ -52,14 +53,14 @@ export type SyncPlacementInspection = {
 const categories: readonly SyncPolicyCategory[] = ["secret", "personal-data", "deny-path", "private-or-invalid", "host"];
 const remedies: Record<SyncPlacementInspectionIncompleteReason, string> = {
   "placement-not-active": "Placement is not active; complete the person-reviewed shard/public-prune migrations and separately authorized placement activation before inspecting placement.",
-  "binding-changed": "Selected placement bindings changed; reopen the selected project/user handles and inspect again.",
+  "binding-changed": "Selected placement bindings changed; inspect the retained activation to restore matching markers when required, then reopen the selected project/user handles and inspect again.",
   "input-unavailable": "Selected source or placement-context inputs are unreadable or unsupported; verify the retained source metadata and compatible writer pins, then inspect again.",
   "input-bound": "Placement inspection exceeds its supported 8 MiB/20000-row or retained-evidence bounds; request a person-reviewed bounded epoch transition before inspecting again.",
   "input-changed": "Selected source or policy context changed during inspection; inspect again once the bindings and policy are stable.",
   "journal-unavailable": "The retained placement journal is incomplete or inconsistent; preserve it and resume its exact recorded request with a compatible runtime before inspecting again.",
   "policy-unavailable": "The policy callback/version or configured/default-deny epoch is unavailable or changed; restore a stable policy and policyVersion before inspecting again.",
   "attestation-unavailable": "Fresh placement writer-pin/quiescence attestation is missing or invalid; supply the matching placementAttestation callback and inspect again.",
-  "evidence-unavailable": "Retained publication evidence is unreadable or inconsistent; verify its exact history through a separately authorized sync before inspecting again.",
+  "evidence-unavailable": "Retained publication evidence is unreadable or inconsistent; check the private cache's ownership, permissions, links and exact objects, restore compatible retained evidence, then use a separately authorized sync to reverify before inspecting again.",
 };
 class Incomplete extends Error {
   constructor(readonly reason: SyncPlacementInspectionIncompleteReason) { super(remedies[reason]); }
@@ -96,7 +97,10 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       selector: selectorRevision(target.profile.home) })));
     if (opened.some(target => selectorRevision(target.profile.home) !== target.profile.selectorRevision)) fail("binding-changed");
     const beforeBinding = binding();
-    if (store.profile.publicationFormat !== PLACEMENT_FORMAT) return inactive(store);
+    if (store.profile.publicationFormat !== PLACEMENT_FORMAT) {
+      if (placementSelectorRefusal(home)) fail("binding-changed");
+      return inactive(store);
+    }
     if (!options.placementAttestation) fail("attestation-unavailable");
     if (!opened.length || opened.length > 2 || !opened.includes(store) || opened.some(target => target.profile.home !== home || !target.profile.sharded
       || !target.profile.generation || !target.profile.shardUser && target.profile.shardKey !== store.profile.shardKey)) fail("binding-changed");
@@ -112,7 +116,8 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       if (binding() !== beforeBinding) fail("binding-changed");
     };
     phase = "evidence-unavailable";
-    const cache = join(home, "shard-sync-placement", "objects.git"), cacheAbsent = !lstatSync(cache, { throwIfNoEntry: false });
+    const cacheRoot = join(home, "shard-sync-placement"), rootStamp = lstatSync(cacheRoot, { throwIfNoEntry: false }) ? placementCacheRootStamp(home) : undefined;
+    const cache = join(cacheRoot, "objects.git"), cacheAbsent = !lstatSync(cache, { throwIfNoEntry: false });
     const objects = cacheAbsent ? undefined : new PlacementInspectionObjects(home, check);
     const histories = await inspectRetainedPublicationHistories(retained, targets, objects);
     const cached = targets.map(target => objects?.ref(target.realm));
@@ -180,6 +185,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     // The final recapture invokes host callbacks first; every remaining proof is passive filesystem/data validation.
     phase = "input-changed"; capture.assertCurrent(); retained.assertCurrent(); for (const checkForeign of foreignChecks) checkForeign(); objects?.assertRetained();
     if (cacheAbsent && lstatSync(cache, { throwIfNoEntry: false })) fail("input-changed");
+    if (rootStamp !== undefined ? placementCacheRootStamp(home) !== rootStamp : lstatSync(cacheRoot, { throwIfNoEntry: false }) !== undefined) fail("input-changed");
     if (binding() !== beforeBinding) fail("binding-changed");
     const counts = { rows: rows.length, eligible: 0, policyLocal: 0, personLocal: 0, held: 0, verifiedPublished: 0, notObserved: 0, unknown: 0 };
     for (const row of rows) {

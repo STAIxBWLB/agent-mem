@@ -5,6 +5,11 @@ import { canonicalJSON } from "./generation.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 
 function fail(): never { throw new SyncPlacementJournalError("corrupt"); }
+export function placementCacheRootStamp(home: string): string {
+  const stat = lstatSync(join(home, "shard-sync-placement"), { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) fail();
+  return canonicalJSON([String(stat.dev), String(stat.ino), String(stat.uid), String(stat.mode)]);
+}
 export function placementCacheConfigStamp(cache: string): string {
   const stat = lstatSync(join(cache, "config"), { bigint: true });
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.uid !== BigInt(process.getuid?.() ?? -1)

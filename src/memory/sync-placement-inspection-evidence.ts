@@ -7,9 +7,10 @@ import { lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { memoryGitEnv, memoryGitSync } from "./platform.ts";
-import { placementCacheConfigStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
+import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { SYNC_SCREEN_MAX_BYTES, SYNC_SCREEN_MAX_ROWS } from "./sync-screen.ts";
 import { PUBLIC_PRUNE_REPLAY_MAX_BYTES } from "./public-prune-input-chain.ts";
+import { PUBLIC_PRUNE_GRAPH_MAX_BYTES } from "./public-prune-inputs.ts";
 import { ShardHistoryAuditor } from "./shard-sync-history.ts";
 import { SHARD_PACK_MAX_BYTES, shardSyncRef, type ShardSyncRealm } from "./shard-sync-format.ts";
 import type { PlacementKey, PlacementRealm } from "./sync-placement-journal-format.ts";
@@ -140,6 +141,7 @@ export class PlacementInspectionObjects {
   readonly remoteHash: string;
   private readonly home: string;
   private readonly stamp: string;
+  private readonly rootStamp: string;
   private readonly inventory: string;
   private readonly check: () => void;
   private bytes = 0;
@@ -150,6 +152,7 @@ export class PlacementInspectionObjects {
   private readonly auditors = new Map<string, ShardHistoryAuditor>();
   constructor(home: string, check: () => void) {
     this.home = home; this.cache = join(home, "shard-sync-placement", "objects.git"); this.check = check;
+    this.rootStamp = placementCacheRootStamp(home);
     this.inventory = cacheInventory(this.cache); this.stamp = placementCacheConfigStamp(this.cache);
     this.quick();
     const config = validatePlacementCacheConfig(this.text(["config", "--local", "--no-includes", "--null", "--list"]));
@@ -163,6 +166,7 @@ export class PlacementInspectionObjects {
     this.check(); this.cacheCheck();
   }
   private cacheCheck(): void {
+    if (placementCacheRootStamp(this.home) !== this.rootStamp) throw new SyncPlacementJournalError("changed");
     if (placementCacheConfigStamp(this.cache) !== this.stamp) throw new SyncPlacementJournalError("changed");
     for (const file of forbidden) if (lstatSync(join(this.cache, file), { throwIfNoEntry: false })) unavailable();
   }
@@ -193,7 +197,7 @@ export class PlacementInspectionObjects {
     if (this.objects.size >= SYNC_SCREEN_MAX_ROWS) bound();
     if (this.text(["cat-file", "-t", object]) !== type) unavailable();
     const size = Number(this.text(["cat-file", "-s", object]));
-    if (!Number.isSafeInteger(size) || size < 0 || size > maximum || this.bytes + size > SYNC_SCREEN_MAX_BYTES) bound();
+    if (!Number.isSafeInteger(size) || size < 0 || size > maximum || this.bytes + size > PUBLIC_PRUNE_GRAPH_MAX_BYTES) bound();
     const result = this.run(["cat-file", type, object], Math.max(1, maximum));
     if (result.code !== 0 || result.bytes.length !== size || createHash("sha1").update(`${type} ${size}\0`).update(result.bytes).digest("hex") !== object) unavailable();
     this.bytes += size; this.objects.set(object, { type, bytes: result.bytes }); return Buffer.from(result.bytes);
