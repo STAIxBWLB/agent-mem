@@ -20,7 +20,7 @@ import { shardSyncBinding } from "./sync-binding.ts";
 export type Visibility = "public" | "private" | "unknown";
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
-    lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean };
+    lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
 }
 

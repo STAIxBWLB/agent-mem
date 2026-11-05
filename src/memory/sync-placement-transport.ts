@@ -48,7 +48,7 @@ export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions 
 class PlacementTransport {
   readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly testOnlyError?: (error:unknown)=>void; readonly home: string; readonly root: string; readonly cache: string;
   readonly releases: (() => void)[] = []; readonly temporary: string[] = []; readonly refs: string[] = [];
-  targets: Target[] = []; homeMutation?: MutationHandle; epochHash = ""; journal!: PlacementJournalRead; capture?: PlacementCapture;
+  targets: Target[] = []; homeMutation?: MutationHandle; rootMutation?: MutationHandle; cacheIdentity?: {dev:number;ino:number}; epochHash = ""; journal!: PlacementJournalRead; capture?: PlacementCapture;
   machineId = ""; url = ""; revision = ""; accepted = false; factual = false; attempted = false; lastPolicyCheckUnixMs?: number; lastPolicyHash?: string; attemptHash?: string;
   applications?: ShardSyncApplications; current?: Materialized; recovered = false;
   constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void) { this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
@@ -60,6 +60,8 @@ class PlacementTransport {
     if (canonicalJSON(writers) !== canonicalJSON(this.journal.activation.writers)) refuse();
   }
   metadata(): void {
+    if(this.rootMutation)assertMutationHandle(this.rootMutation,this.root);
+    if(this.cacheIdentity){const stat=lstatSync(this.cache);if(stat.isSymbolicLink()||!stat.isDirectory()||stat.dev!==this.cacheIdentity.dev||stat.ino!==this.cacheIdentity.ino)refuse();}
     if (this.homeMutation) assertMutationHandle(this.homeMutation, this.home);
     for (const target of this.targets) if (target.mutation) assertMutationHandle(target.mutation, target.store.dir);
     const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
@@ -69,7 +71,9 @@ class PlacementTransport {
     this.metadata();
     if (this.factual) return;
     if (this.opts.signal?.aborted) refuse(); this.attest(); this.capture?.assertUnchanged();
+    if(this.capture){this.lastPolicyHash=this.capture.context.policyHash;this.lastPolicyCheckUnixMs=Date.now();}
     for (const target of this.targets) for (const check of target.selectorChecks ?? []) check();
+    this.metadata();
   };
   async call<T>(work: () => T | Promise<T>): Promise<T> { this.check(); const result = await work(); this.check(); return result; }
   args(args: string[]): string[] { return ["--no-replace-objects", "--git-dir", this.cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args]; }
@@ -78,10 +82,12 @@ class PlacementTransport {
   async observe(phase: PlacementSyncPhase): Promise<void> { await this.phase?.(phase); }
   storage(factual = false): PlacementStorageOptions { if (!this.homeMutation) refuse(); return { mutation: this.homeMutation, assertCurrent: factual ? () => this.metadata() : this.check, ...(this.attemptHash ? { publicationAttemptHash: this.attemptHash } : {}) }; }
   async independent(): Promise<boolean> {
-    if (!existsSync(this.cache)) return false; directory(this.cache);
+    if (!existsSync(this.cache)) return false; directory(this.cache); const initial=lstatSync(this.cache);
     const walk = (dir: string): void => { for (const name of readdirSync(dir)) { const file = join(dir, name), s = lstatSync(file); if (s.isSymbolicLink() || !s.isFile() && !s.isDirectory()) refuse(); if (s.isDirectory()) walk(file); } }; walk(this.cache);
     if (existsSync(join(this.cache, "objects", "info", "alternates")) || existsSync(join(this.cache, "shallow")) || existsSync(join(this.cache, "info", "grafts"))) refuse();
-    if (await this.required(["rev-parse", "--is-bare-repository"]) !== "true" || await this.required(["rev-parse", "--show-object-format"]) !== "sha1" || (await this.git(["config", "--get", "core.worktree"])).code !== 1) refuse(); return true;
+    if (await this.required(["rev-parse", "--is-bare-repository"]) !== "true" || await this.required(["rev-parse", "--show-object-format"]) !== "sha1" || (await this.git(["config", "--get", "core.worktree"])).code !== 1) refuse();
+    const final=lstatSync(this.cache); if(final.isSymbolicLink()||!final.isDirectory()||final.dev!==initial.dev||final.ino!==initial.ino)refuse();
+    this.cacheIdentity={dev:final.dev,ino:final.ino};return true;
   }
   async initialize(): Promise<void> {
     const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
@@ -105,7 +111,7 @@ class PlacementTransport {
     if (!this.url || this.url.length > 4096 || this.url.startsWith("-") || /[\r\n\0]/.test(this.url)) refuse();
     if (await this.call(() => (this.opts.visibility ?? remoteVisibility)(this.url)) !== "private") refuse();
     if (!existsSync(this.root)) mkdirSync(this.root, { mode: 0o700 });
-    const transport = acquireMutation(this.root); if (!transport) refuse(); this.releases.push(transport);
+    const transport = acquireMutation(this.root); if (!transport) refuse(); this.rootMutation=transport; this.releases.push(transport);
     const sync = generationSyncLock(this.root); if (!sync) refuse(); this.releases.push(sync);
     for (const dir of [...new Set([this.home, ...this.targets.map(target => target.store.dir)])].sort()) {
       const handle = acquireMutation(dir); if (!handle) refuse(); this.releases.push(handle); if (dir === this.home) this.homeMutation = handle;
@@ -270,7 +276,7 @@ class PlacementTransport {
         tree:publish?target.objects.find(object=>object.type==="tree"&&object.path==="")!.oid:target.remote?frozen?.root.targets[index]?.tree??null:null,commit:target.commit??null};
     });
     for(const [index,target]of this.targets.entries())if(!targets[index]!.publish&&target.remote)targets[index]!.tree=await this.required(["rev-parse",`${target.remote}^{tree}`]);
-    const objects:PlacementPublicationObject[]=this.targets.flatMap((target,targetIndex)=>target.objects.map(object=>({targetIndex,type:object.type,path:object.path,oid:object.oid,sha256:digest(object.bytes),size:object.bytes.length})));
+    const objects:PlacementPublicationObject[]=this.targets.flatMap((target,targetIndex)=>target.objects.map(object=>({targetIndex,type:object.type,path:object.path === "" ? null : object.path,oid:object.oid,sha256:digest(object.bytes),size:object.bytes.length})));
     const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:hashJSON(capture.context),markerHash:capture.markerHash,
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
@@ -337,6 +343,32 @@ class PlacementTransport {
     for(let index=read.sequence-root.journal.sequence;index<count;index++){
       const record=records[index];if(!record)refuse();appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));
     }
+  }
+  cacheStamp():string {
+    const hash=createHash("sha256");
+    const walk=(dir:string)=>{for(const name of readdirSync(dir).sort()){
+      const file=join(dir,name),stat=lstatSync(file,{bigint:true});
+      if(stat.isSymbolicLink()||stat.uid!==BigInt(process.getuid?.()??-1)||(!stat.isDirectory()&&(!stat.isFile()||stat.nlink!==1n)))refuse();
+      hash.update(canonicalJSON([file.slice(this.cache.length),String(stat.dev),String(stat.ino),String(stat.size),String(stat.mtimeNs),String(stat.ctimeNs),String(stat.mode)]));
+      if(stat.isDirectory())walk(file);
+    }};
+    walk(this.cache);return hash.digest("hex");
+  }
+  /** Bind installed bytes after all host callbacks, not merely the pure pre-install object plan.
+   * ponytail: the final private-cache/source check and Git's accepted push are separate transactions.
+   * Compatible writers honor the held fences; stronger same-user raw-writer isolation needs descriptor-bound immutable object access.
+   * Policy tightening cannot revoke an already in-flight accepted push; the result reports that ceiling. */
+  async installedObjectGuard(bundle:PlacementPublicationBundle):Promise<()=>void>{
+    const before=this.cacheStamp();
+    for(const chunk of bundle.chunks)if(chunk.kind==="objects")for(const item of chunk.items as PlacementPublicationObject[]){
+      const type=await this.required(["cat-file","-t",item.oid]);
+      const size=Number(await this.required(["cat-file","-s",item.oid]));
+      if(type!==item.type||size!==item.size)refuse();
+      const result=await this.call(()=>generationSyncGitBytes(this.root,this.args(["cat-file",item.type,item.oid]),this.opts.signal,undefined,item.size));
+      if(result.code!==0||result.out.length!==item.size||digest(result.out)!==item.sha256
+        ||createHash("sha1").update(`${item.type} ${item.size}\0`).update(result.out).digest("hex")!==item.oid)refuse();
+    }
+    return()=>{if(this.cacheStamp()!==before)refuse();};
   }
   async allPublic(bundle:PlacementPublicationBundle):Promise<boolean>{
     for(const [index,planned]of bundle.root.targets.entries())if(planned.publish){
@@ -410,7 +442,7 @@ class PlacementTransport {
   result(ok:boolean,outcome:"committed"|"unknown"|"not-needed",error?:string):SyncResult{
     return{ok,pushed:this.accepted&&(this.attempted||this.recovered&&!!this.current?.bundle.root.targets.some(target=>target.publish)),entries:this.current?.exported??0,...(error?{error}:{}),...(this.applications?{pruneApplication:{...this.applications.application}}:{}),
       placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,withheld:this.current?.withheld??0,exported:this.current?.exported??0,
-        ...(this.lastPolicyHash?{lastPolicyHash:this.lastPolicyHash}:{}),...(this.lastPolicyCheckUnixMs!==undefined?{lastPolicyCheckUnixMs:this.lastPolicyCheckUnixMs}:{}),
+        ...(this.lastPolicyHash?{lastPolicyHash:this.lastPolicyHash}:{}),...(this.lastPolicyCheckUnixMs!==undefined?{lastPolicyCheckUnixMs:this.lastPolicyCheckUnixMs,policyCheckSource:this.recovered?"durable-intent" as const:"live" as const}:{}),
         policyCeiling:"last-positive-check-before-in-flight-push",...(this.recovered?{recovered:true}:{})}};
   }
   async run():Promise<SyncResult>{
@@ -449,7 +481,9 @@ class PlacementTransport {
       this.check();this.lastPolicyCheckUnixMs=Date.now();this.lastPolicyHash=material.bundle.root.policyHash;
       if(!read.facts.some(fact=>fact.phase==="publication-intent"))recordPlacementPublicationPhase(this.home,this.epochHash,material.bundle.root.seal,"publication-intent",{artifactFactHash:artifact.seal,policyHash:material.bundle.root.policyHash,policyCheckUnixMs:this.lastPolicyCheckUnixMs},this.storage());
       await this.observe("before-cas");this.check();
-      for(const target of this.targets)for(const check of target.selectorChecks??[])check();
+      const installedGuard=await this.installedObjectGuard(material.bundle);
+      this.check();for(const target of this.targets)for(const check of target.selectorChecks??[])check();
+      installedGuard();
       this.lastPolicyCheckUnixMs=Date.now(); this.lastPolicyHash=material.bundle.root.policyHash;
       const participating=material.bundle.root.targets.map((target,index)=>({target,index})).filter(item=>item.target.publish);
       this.attempted=participating.length>0;
@@ -461,8 +495,11 @@ class PlacementTransport {
       try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
       return this.result(false,this.attemptHash?"unknown":"not-needed",this.attemptHash?"Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.":"Placement sync is unavailable; verify the active epoch, selected sources, policy, private remote and writer pins before retrying.");
     }finally{
-      for(const ref of this.refs)try{await generationSyncGit(this.root,this.args(["update-ref","--no-deref","-d",ref]),undefined);}catch{}
-      for(const file of this.temporary)try{rmSync(file,{force:true});}catch{}
+      let ownedCache=true;try{this.metadata();}catch{ownedCache=false;}
+      if(ownedCache){
+        for(const ref of this.refs)try{this.metadata();await generationSyncGit(this.root,this.args(["update-ref","--no-deref","-d",ref]),undefined);}catch{}
+        for(const file of this.temporary)try{this.metadata();rmSync(file,{force:true});}catch{}
+      }
       for(const release of this.releases.reverse())try{release();}catch{}
     }
   }

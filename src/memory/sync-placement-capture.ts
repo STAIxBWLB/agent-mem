@@ -230,6 +230,8 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
   // Reuse the closed stage-1 context validator, including writer/version/realm bounds.
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
+  // ponytail: fast rechecks rely on held mutation fences plus native inode/size/ctime identity for the already-hashed prefixes.
+  // A hostile same-user raw writer is outside that contract; descriptor-bound immutable source blocks are the upgrade path.
   const assertUnchanged = () => {
     try {
     // Host callbacks run first; the final filesystem proof never invokes caller code afterwards.
