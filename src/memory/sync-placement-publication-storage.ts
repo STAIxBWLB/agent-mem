@@ -5,7 +5,7 @@ import { withPlacementPublicationMetadata, readPlacementPublicationMetadata, typ
 import { validatePlacementPublicationBundle, createPlacementPublicationFact, publicationFileNames, publicationBytes,
   type PlacementPublicationBundle, type PlacementPublicationPhase, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
 
-const fail = (code: "invalid" | "pending" | "conflict" | "changed" = "invalid"): never => { throw new SyncPlacementJournalError(code); };
+function fail(code: "invalid" | "pending" | "conflict" | "changed" = "invalid"): never { throw new SyncPlacementJournalError(code); }
 const stem = (attempt: string) => `publication-${attempt}-`;
 const validHash = (value: string) => typeof value === "string" && value.length === 64 && /^[a-f0-9]+$/.test(value);
 /** No timestamp expiry or eviction: retained plans remain charged to the epoch's shared 256-object inventory. */

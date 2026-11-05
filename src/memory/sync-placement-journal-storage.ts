@@ -28,7 +28,7 @@ interface Chunk { name: string; size: number; hash: string }
 interface Intent { schema: "agent-mem.sync-placement-append-intent/v1"; epochHash: string; record: PlacementRecord; chunk: string; prefixBytes: number; prefixHash: string; lineHash: string }
 interface Snapshot extends PlacementJournalRead { chunks: Chunk[]; projection: PlacementProjection; intent?: Intent; intentPending: boolean; fencePending: boolean }
 const inflight = new WeakSet<MutationHandle>(), hex = (value: unknown, width = 64): value is string => typeof value === "string" && value.length === width && new RegExp(`^[a-f0-9]{${width}}$`).test(value);
-const fail = (code: SyncPlacementJournalErrorCode = "corrupt"): never => { throw new SyncPlacementJournalError(code); };
+function fail(code: SyncPlacementJournalErrorCode = "corrupt"): never { throw new SyncPlacementJournalError(code); }
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const line = (value: unknown) => Buffer.from(canonicalJSON(value) + "\n");
 const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;

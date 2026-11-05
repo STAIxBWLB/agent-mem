@@ -122,7 +122,7 @@ test("normal public-prune maintenance preserves v3 publication fields and admiss
     expect(next.publicationFormat).toBe(profile.publicationFormat); expect(next.placementHead).toBe(profile.placementHead);
     expect(store.get(f.id, PROJECT)?.text).toBe(f.note.text);
     expect(store.profile.pruneInputSetHash).toBe(result.viewHash);
-    for (const [name, file] of Object.entries(f.files)) expect(readFileSync(file, "utf8")).toBe(facts[name]);
+    for (const [name, file] of Object.entries(f.files)) { expect(facts[name]).toBeDefined(); expect(readFileSync(file, "utf8")).toBe(facts[name]!); }
     const added = store.note({ ...f.note, text: "synthetic after v3 maintenance" });
     expect(store.get(added, PROJECT)?.text).toBe("synthetic after v3 maintenance");
   } finally { store.close(); }

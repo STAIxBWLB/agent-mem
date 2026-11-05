@@ -113,8 +113,10 @@ export function rebindPublicPruneProfile(profile: BoundProfile): void {
   for (let attempt = 0; attempt < 6; attempt++) {
     const current = readSelector(profile.home), selector = current.selector;
     if (current.revision === profile.selectorRevision) return;
+    if (selector?.schema !== "agent-mem.profile/v2" && selector?.schema !== "agent-mem.profile/v3") return unavailable();
     if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.pruneInputSetHash
-      || (profile.publicationFormat ? selector?.schema !== "agent-mem.profile/v3" || selector.publicationFormat !== profile.publicationFormat || selector.placementHead !== profile.placementHead : selector?.schema !== "agent-mem.profile/v2") || selector.generation !== profile.generation || selector.foreignPruneFormat !== profile.foreignPruneFormat) return unavailable();
+      || (profile.publicationFormat ? selector.schema !== "agent-mem.profile/v3" || selector.publicationFormat !== profile.publicationFormat || selector.placementHead !== profile.placementHead : selector.schema !== "agent-mem.profile/v2")
+      || selector.generation !== profile.generation || selector.foreignPruneFormat !== profile.foreignPruneFormat) return unavailable();
     const previous = readPublicPruneView(profile.home, profile.pruneInputSetHash, profile.generation);
     const next = readPublicPruneView(profile.home, selector.pruneInputSetHash, profile.generation);
     if (!Object.keys(previous.realms).every(key => Object.hasOwn(next.realms, key))) return unavailable();
