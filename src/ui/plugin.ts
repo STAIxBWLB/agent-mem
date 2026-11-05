@@ -4,6 +4,9 @@
  * Review writes run the same library calls as `amem review accept|reject` and `review walk`'s edit, stamped as the person.
  */
 import { createHash } from "node:crypto";
+import { InboxCache } from "./inbox-cache.ts";
+import { candidateText, candidateTargets as targetsOf, visibleCandidate as visible } from "./inbox.ts";
+export { candidateText } from "./inbox.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryMcp } from "../mcp-memory.ts";
@@ -35,14 +38,9 @@ type ActionResult =
   | ({ ok: true; message?: string; undo?: { action: string } & Args } & Args)
   | { ok: false; error: string }
   | { ok: false; needsConfirm: true; preview: string[]; fingerprint: string; verb?: string; changes?: Change[]; warnings?: string[] };
-interface InboxItem {
-  id: string; group: "candidate" | "alert"; kind: string; title: string; detail?: string; project?: string; at: string;
-  chip?: { text: string; tone: "ok" | "warn" | "err" | "neutral" };
-  verbs: { id: string; label: string; primary?: boolean; reason?: "optional" | "required" }[];
-  link: { panel: string; params?: Record<string, string> };
-}
 interface Provider {
   assets: { js: string; css?: string };
+  close(): Promise<void>;
   snapshot(input: { after: number; panel: string } & Args): Promise<Args>;
   action(input: { action: string; confirmed?: true; fingerprint?: string } & Args): Promise<ActionResult>;
 }
@@ -60,25 +58,12 @@ const sha = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).diges
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e)).split("\n")[0]!;
 const oneLine = (text: string, max = 160) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat; };
 
-/** What a candidate proposes, as text. */
-export function candidateText(input: CandidateInput): string {
-  switch (input.kind) {
-    case "memory": return input.title ? `${input.title}: ${input.text}` : input.text;
-    case "fail": return `Approach: ${input.approach}\nSymptom: ${input.symptom}\nCause: ${input.cause}\nRetry when: ${input.retryWhen}`;
-    case "correction": return `${input.proposedText}\n\nReason: ${input.reason}`;
-    case "decay": return input.reason;
-    case "promotion": return `Promote mem:${input.target.id} to long-term for goal:${input.goalId}`;
-    case "consolidation": return `${input.action}: ${input.text}`;
-    case "model-answer": return input.text;
-  }
-}
 /** The text `review walk`'s edit opens for a memory or fail candidate. */
 function editText(input: CandidateInput): string | null {
   if (input.kind === "fail") return `Approach: ${input.approach}\nSymptom: ${input.symptom}\nCause: ${input.cause}\nEvidence: ${input.evidenceRefs.join(", ")}\nRetry when: ${input.retryWhen}\n`;
   if (input.kind !== "memory") return null;
   return input.noteKind === "fail" && !hasFailLabel(input.text) ? `Approach: ${input.text}\nSymptom: \nCause: \nEvidence: \nRetry when: \n` : input.text;
 }
-const targetsOf = (input: CandidateInput) => "targets" in input ? input.targets : "target" in input && input.target ? [input.target] : [];
 
 /** The CLI's curatedStore on an explicit home (src/cli.ts keeps its own copy; cli.ts is not a library module). */
 function openCurated(base: string, project: string, opts: StoreOptions, reconciled = true): MemoryStore {
@@ -177,16 +162,6 @@ export const plugin = {
       try { return await mcp.tools[tool](forward(tool, args)); } finally { mcp.close(); }
     }
 
-    /** The CLI's rule for agent-marked review, applied to the person here: the console shows only what passes the screen, targets included. */
-    const visible = (candidate: Candidate, project: string, store: MemoryStore | undefined, p: StandalonePolicy): boolean => {
-      if (!p.screenStandalone(candidate)) return false;
-      const input = candidate.input, targets = targetsOf(input);
-      if (!targets.length && input.kind !== "promotion") return true;
-      if (!store) return false;
-      if (targets.some(t => { const view = store.get(t.id, project); return !view || view.project !== project || !p.screenStandalone(view); })) return false;
-      if (input.kind === "promotion") { const goal = store.goalOf(input.goalId, project); if (!goal || !p.screenStandalone(goal)) return false; }
-      return true;
-    };
     const projectOf = new Map<string, string>();
     async function pending(project: string, detail: boolean) {
       if (!hasCandidates()) return { rows: [], hidden: 0 };
@@ -219,26 +194,7 @@ export const plugin = {
       if (!await policy().screen(report)) return { withheld: true as const };
       return { report, applyNeeded: report.current.capMb !== report.proposal.capMb || report.current.retentionDays !== report.proposal.retentionDays };
     }
-    // The shell keys snooze and oldest-first order on `at`: an alert keeps the time it was first seen.
-    const firstSeen = new Map<string, string>();
-    const since = (id: string) => { const at = firstSeen.get(id) ?? new Date().toISOString(); firstSeen.set(id, at); return at; };
-    async function inbox(): Promise<InboxItem[]> {
-      const items: InboxItem[] = [];
-      for (const project of projects()) {
-        for (const row of (await pending(project, false)).rows) items.push({
-          id: row.id, group: "candidate", kind: row.kind, title: oneLine(row.text, 120), detail: `${row.kind} candidate in ${project}`, project, at: row.createdAt,
-          verbs: [...row.acceptable ? [{ id: "accept", label: "Accept", primary: true }] : [], { id: "reject", label: "Reject", reason: "optional" as const }],
-          link: { panel: "review", params: { project, id: row.id } },
-        });
-      }
-      const cap = await capacity();
-      if (cap && "report" in cap && cap.applyNeeded) {
-        const { current, proposal } = cap.report;
-        items.push({ id: "capacity:proposal", group: "alert", kind: "capacity", title: `Capture capacity: ${current.capMb} MB / ${current.retentionDays} d, proposed ${proposal.capMb} MB / ${proposal.retentionDays} d`,
-          detail: proposal.reason, at: since("capacity:proposal"), chip: { text: "proposal", tone: "warn" }, verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } });
-      } else firstSeen.delete("capacity:proposal");
-      return items;
-    }
+    const inboxCache = new InboxCache(base, { log: ctx.log });
 
     function searchHit(hit: Args, project: string, q: string) {
       const view = hit.view as View | undefined;
@@ -441,9 +397,14 @@ export const plugin = {
 
     return {
       assets: { js: asset("./panel.js"), css: asset("./panel.css") },
+      close: () => inboxCache.close(),
       async snapshot(input) {
         const args = input as Args;
-        if (input.panel === "inbox") return { items: await inbox() };
+        if (input.panel === "inbox") {
+          const snapshot = await inboxCache.snapshot();
+          for (const item of snapshot.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
+          return { ...snapshot };
+        }
         const list = projects(), project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
@@ -500,7 +461,7 @@ export const plugin = {
         } catch (e) {
           ctx.log(`amem: ${input.action} failed: ${errorText(e)}`);
           return { ok: false, error: errorText(e) };
-        }
+        } finally { inboxCache.invalidate(input.action === "capacity_apply" || input.action === "project_forget"); }
       },
     };
   },
