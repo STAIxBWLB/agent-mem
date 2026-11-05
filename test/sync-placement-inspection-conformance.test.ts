@@ -15,7 +15,7 @@ afterEach(() => { for (const f of fixtures.splice(0).reverse()) f.close(); });
 async function fixture(options: InspectionFixtureOptions = {}) { const f = await createPlacementInspectionFixture(options); fixtures.push(f); return f; }
 type Complete = Extract<SyncPlacementInspection, { complete: true }>;
 function complete(value: SyncPlacementInspection): Complete {
-  expect(value.complete).toBe(true); if (!value.complete) throw Error("expected complete isolated placement inspection"); return value;
+  expect(value.complete, JSON.stringify(value)).toBe(true); if (!value.complete) throw Error("expected complete isolated placement inspection"); return value;
 }
 const keyId = (row: Pick<SyncPlacementInspectionRow, "realm" | "id" | "rowHash">) => canonicalJSON([row.realm,row.id,row.rowHash]);
 function row(result: Complete, id: string): SyncPlacementInspectionRow {

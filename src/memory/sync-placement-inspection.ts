@@ -77,6 +77,7 @@ class Incomplete extends Error {
 function fail(reason: SyncPlacementInspectionIncompleteReason): never { throw new Incomplete(reason); }
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 function physical(realm: ShardSyncRealm): PlacementKey["realm"] { return realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: digest(realm.key) }; }
+function keyId(key: PlacementKey): string { return placementKeyId({ realm: key.realm, id: key.id, rowHash: key.rowHash }); }
 function callbacks(input: SyncPlacementInspectionOptions): SyncPlacementInspectionOptions {
   if (!input || typeof input !== "object" || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) fail("policy-unavailable");
   const fields = Object.getOwnPropertyDescriptors(input);
@@ -191,7 +192,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       return { ...decision.key, sourcePlacement: decision.sourcePlacement, disposition, reason: decision.reason,
         categories: [...own].sort(), holdReasons: [...holdReasons].sort(), exposure: exposureFor(decision.key) };
     });
-    const outboundKeys = new Set(rows.map(row => placementKeyId(row)));
+    const outboundKeys = new Set(rows.map(keyId));
     const intrinsicLocal: SyncPlacementIntrinsicLocalRow[] = [];
     for (const source of capture.specialRows.values()) if (!outboundKeys.has(placementKeyId(source.key))) {
       if (source.sourcePlacement !== "local") fail("input-unavailable");
@@ -200,7 +201,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       for (const reason of holdReasons) if (categories.includes(reason as SyncPolicyCategory)) own.add(reason as SyncPolicyCategory);
       intrinsicLocal.push({ ...source.key, sourcePlacement: "local", reason: "intrinsic-local", categories: [...own].sort(), holdReasons: [...holdReasons].sort(), exposure: exposureFor(source.key) });
     }
-    intrinsicLocal.sort((a, b) => placementKeyId(a).localeCompare(placementKeyId(b)));
+    intrinsicLocal.sort((a, b) => keyId(a).localeCompare(keyId(b)));
     // The final recapture invokes host callbacks first; every remaining proof is passive filesystem/data validation.
     phase = "input-changed"; capture.assertCurrent(); retained.assertCurrent(); for (const checkPending of pendingChecks) checkPending(); for (const checkForeign of foreignChecks) checkForeign(); objects?.assertRetained();
     if (cacheAbsent && lstatSync(cache, { throwIfNoEntry: false })) fail("input-changed");
