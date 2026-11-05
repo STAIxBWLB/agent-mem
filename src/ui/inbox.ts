@@ -53,7 +53,8 @@ export function visibleCandidate(candidate: Candidate, project: string, store: M
   if (input.kind === "promotion") { const goal = store.goalOf(input.goalId, project); if (!goal || !policy.screenStandalone(goal)) return false; }
   return true;
 }
-export interface CapacityMemo { policy: string; until: number; item: InboxItem | null }
+export interface CapacityMemo { policy: string; until: number; item: InboxItem | null; captureConfig: string }
+export function inboxCaptureConfigVersion(base: string): string { return stamp(base, "capture-config.json") ?? "missing"; }
 export interface InboxComputation { items: InboxItem[]; more: number; policy: string; capacity: CapacityMemo }
 const order = (a: InboxItem, b: InboxItem) => Number(b.group === "alert") - Number(a.group === "alert") || b.at.localeCompare(a.at) || a.id.localeCompare(b.id);
 /** Only row-rendered fields cross the worker boundary; details stay in the item's panel. */
@@ -82,9 +83,10 @@ export function computeInbox(base: string, previous?: CapacityMemo): InboxComput
     }
   });
   let capacity = previous;
+  const captureConfig = inboxCaptureConfigVersion(base);
   // ponytail: resource advice is cached for at most five minutes. The Capacity panel/action still computes fresh
   // advice; incremental capture counters and bounded asynchronous native readings are the upgrade path.
-  if (!capacity || capacity.policy !== revision || Date.now() >= capacity.until) {
+  if (!capacity || capacity.policy !== revision || capacity.captureConfig !== captureConfig || Date.now() >= capacity.until) {
     let item: InboxItem | null = null;
     if (existsSync(base)) {
       const report = capacityReport({ memoryDir: base });
@@ -94,7 +96,7 @@ export function computeInbox(base: string, previous?: CapacityMemo): InboxComput
           verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } };
       }
     }
-    capacity = { policy: revision, until: Date.now() + CAPACITY_CACHE_MS, item };
+    capacity = { policy: revision, until: Date.now() + CAPACITY_CACHE_MS, item, captureConfig };
   }
   if (capacity.item) add(capacity.item);
   while (Buffer.byteLength(JSON.stringify({ items, more: count - items.length })) > INBOX_MAX_BYTES - 512 && items.length) items.pop();

@@ -8,11 +8,12 @@ import { inboxItemProblems, stableAtProblems } from "@staix/agent-console/confor
 import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
 import { DENY_SEGMENTS } from "../src/memory/platform.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { writeCaptureConfigFile } from "../src/memory/capture.ts";
 import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
 import { appendLifecycle } from "../src/memory/lifecycle.ts";
 import { plugin } from "../src/ui/plugin.ts";
 import { InboxCache, runInboxJob, type InboxRunner, type InboxJobResult, type InboxSnapshot } from "../src/ui/inbox-cache.ts";
-import { computeInbox, inboxSources, inboxSourceVersion, inboxPolicyVersion, CAPACITY_CACHE_MS, INBOX_MAX_BYTES, type InboxItem, type CapacityMemo } from "../src/ui/inbox.ts";
+import { computeInbox, inboxSources, inboxSourceVersion, inboxPolicyVersion, inboxCaptureConfigVersion, CAPACITY_CACHE_MS, INBOX_MAX_BYTES, type InboxItem, type CapacityMemo } from "../src/ui/inbox.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -20,7 +21,7 @@ function home() { const base = mkdtempSync(join(tmpdir(), "amem-inbox-")); clean
 const policy = (base: string) => inboxPolicyVersion(base);
 const row = (title = "ordinary inbox item"): InboxItem => ({ id: "fixture-item", group: "candidate", kind: "memory", title, at: "2026-11-01T00:00:00.000Z", verbs: [{ id: "reject", label: "Reject" }], link: { panel: "review", params: { project: "project", id: "fixture-item" } } });
 function result(base: string, items: InboxItem[] = [row()], more = 0): InboxJobResult {
-  const revision = policy(base); return { sources: inboxSources(base), computation: { items, more, policy: revision, capacity: { policy: revision, until: Date.now() + CAPACITY_CACHE_MS, item: null } } };
+  const revision = policy(base); return { sources: inboxSources(base), computation: { items, more, policy: revision, capacity: { policy: revision, captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: null } } };
 }
 function deferredRunner() {
   const jobs: { resolve(value: InboxJobResult): void; reject(error: Error): void; cancelled: number; capacity?: CapacityMemo }[] = [];
@@ -122,7 +123,7 @@ test("real read-only computation returns fifty compact newest/urgent rows and a 
   } finally { store.close(); }
   writeFileSync(join(base, "amem.config.json"), JSON.stringify({ piiPatterns: ["INBOX_PRIVATE_"] }));
   const alert: InboxItem = { id: "capacity:proposal", group: "alert", kind: "capacity", title: "Capacity needs review", at: "2000-01-01T00:00:00.000Z", verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } };
-  const computed = computeInbox(base, { policy: policy(base), until: Date.now() + CAPACITY_CACHE_MS, item: alert });
+  const computed = computeInbox(base, { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: alert });
   expect(computed.items).toHaveLength(50); expect(computed.more).toBe(21); expect(computed.items[0]!.id).toBe("capacity:proposal");
   expect(computed.items.slice(1).map(value => value.id)).toEqual([...ids].sort().slice(0, 49));
   for (const item of computed.items) { expect(inboxItemProblems(item)).toEqual([]); expect(item.title.length).toBeLessThanOrEqual(120); }
@@ -130,10 +131,21 @@ test("real read-only computation returns fifty compact newest/urgent rows and a 
   expect(Buffer.byteLength(JSON.stringify(computed.items))).toBeLessThanOrEqual(INBOX_MAX_BYTES); expect(JSON.stringify(computed)).not.toContain("INBOX_PRIVATE_");
 });
 
+test("a changed home capture config does not reuse old capacity advice inside its memo lifetime", () => {
+  const base = home(), item: InboxItem = { id: "capacity:proposal", group: "alert", kind: "capacity", title: "Old cached proposal", at: new Date().toISOString(),
+    verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } };
+  const memo: CapacityMemo = { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item };
+  expect(computeInbox(base, memo).items[0]!.title).toBe("Old cached proposal");
+  writeCaptureConfigFile(join(base, "capture-config.json"), { capMb: 2, retentionDays: 2 });
+  const current = computeInbox(base, memo);
+  expect(current.capacity.captureConfig).not.toBe(memo.captureConfig);
+  expect(current.items.some(value => value.title === "Old cached proposal")).toBe(false);
+}, 20_000);
+
 test("UTF-8 payload trimming preserves the visible overflow count under the full envelope bound", () => {
   const base = home(), project = "제".repeat(399), store = new CandidateStore({ memoryDir: base });
   try { for (let index = 0; index < 60; index++) store.put({ project, kind: "memory", text: `공개 ${index} ${"기록 ".repeat(80)}` }, "public"); } finally { store.close(); }
-  const value = computeInbox(base, { policy: policy(base), until: Date.now() + CAPACITY_CACHE_MS, item: null });
+  const value = computeInbox(base, { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: null });
   expect(value.items.length).toBeGreaterThan(0); expect(value.items.length).toBeLessThan(50);
   expect(value.more).toBe(60 - value.items.length);
   expect(Buffer.byteLength(JSON.stringify({ items: value.items, more: value.more, complete: true, refreshing: false }))).toBeLessThanOrEqual(INBOX_MAX_BYTES);
@@ -143,7 +155,7 @@ test("alias retarget and archive change the source version and current candidate
   const base = home(); for (const key of ["old-project", "canonical-a", "canonical-b"]) ensureShardDescriptor(base, key);
   const store = new CandidateStore({ memoryDir: base }); let id: string;
   try { id = store.put({ project: "old-project", kind: "memory", text: "alias pending item" }, "public"); } finally { store.close(); }
-  const memo = { policy: policy(base), until: Date.now() + CAPACITY_CACHE_MS, item: null };
+  const memo = { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: null };
   appendAlias(base, { alias: "old-project", key: "canonical-a", actor: "person", machine: "a".repeat(16) });
   const before = inboxSources(base), first = computeInbox(base, memo); expect(first.items.find(value => value.id === id!)?.link.params?.project).toBe("canonical-a");
   appendAlias(base, { alias: "old-project", key: "canonical-b", actor: "person", machine: "a".repeat(16) });

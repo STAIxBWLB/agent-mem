@@ -4,8 +4,8 @@ import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, fsyncSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryStore, entryId, type NoteEntry, type GoalEntry } from "../src/memory/store.ts";
-import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateInput } from "../src/memory/candidates.ts";
+import { MemoryStore, entryId, type NoteEntry, type GoalEntry, type OpEntry } from "../src/memory/store.ts";
+import { CandidateStore, candidateInputId, candidateTargetRevision, goalPromotionLinked, type CandidateInput } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { InboxCache, runInboxJob, type InboxSnapshot } from "../src/ui/inbox-cache.ts";
 import { INBOX_MAX_BYTES, INBOX_MAX_ITEMS } from "../src/ui/inbox.ts";
@@ -27,40 +27,58 @@ export async function waitForComplete(snapshot: () => Promise<InboxSnapshot>, li
 /** Valid original rows use core identities and one refresh, not twenty thousand append/reindex transactions.
  * Capture setup batches public append() calls in one private-DB transaction; normalization/index accounting stays core-owned. */
 export function seedInboxBenchmark(root: string, shape: Shape) {
+  check(Object.values(shape).every(value=>Number.isSafeInteger(value)&&value>0),"fixture dimensions must be positive safe integers");
+  const promotionCount=Math.floor((shape.candidates+18)/20);
+  check(shape.candidates<=500&&shape.curated>=2&&(promotionCount===0||shape.curated>20*(promotionCount-1)+1),"fixture curated rows do not cover distinct promotion target slots");
   const family=join(root,"family"), base=join(family,"memory"), now=Date.now(), memory=new MemoryStore({memoryDir:base,deferPromotions:true});
   const projects=Array.from({length:shape.projects},(_,index)=>`example.test/ui-inbox/project-${String(index).padStart(3,"0")}`);
-  const targets=new Map<string,{correction:string;promotion:string;goal:string}>(), log:string[]=[], local:string[]=[];
-  let authored=0;
+  const targets=new Map<string,{correction:string;promotions:string[];goal:string}>(), log:string[]=[], local:string[]=[];
+  let authored=0, actualCurated=0, actualCandidates=0, actualCaptures=0;
   try {
     for(const project of projects){
-      const ids:string[]=[];
+      const ids:string[]=[],promotions:string[]=[],task=`${project}#fixture@1000`;
       for(let index=0;index<shape.curated;index++){
-        const short=index===1,body:Omit<NoteEntry,"id">={schema:"agent-hub.memory/v1",op:"note",at:new Date(now-(authored++)*1000).toISOString(),machine:memory.machine.id,
-          project,scope:"project",tier:short?"short":"long",kind:"finding",peer:"person",source:"person",text:`근거 ${index}: ${"공개 문서와 public context. ".repeat(30)}`,about:[`path:src/public-${index}.ts`],...(short?{task:`${project}#fixture@1000`}:{})};
-        const row={...body,id:entryId(body)};ids.push(row.id);(short?local:log).push(JSON.stringify(row)+"\n");
+        const short=index%20===1,body:Omit<NoteEntry,"id">={schema:"agent-hub.memory/v1",op:"note",at:new Date(now-(authored++)*1000).toISOString(),machine:memory.machine.id,
+          project,scope:"project",tier:short?"short":"long",kind:"finding",peer:"person",source:"person",text:`근거 ${index}: ${"공개 문서와 public context. ".repeat(30)}`,about:[`path:src/public-${index}.ts`],...(short?{task}:{})};
+        const row={...body,id:entryId(body)};ids.push(row.id);if(short)promotions.push(row.id);(short?local:log).push(JSON.stringify(row)+"\n");
       }
       const goal:Omit<GoalEntry,"id">={schema:"agent-hub.memory/v1",op:"goal",at:new Date(now).toISOString(),machine:memory.machine.id,project,scope:"project",title:"공개 fixture goal",milestones:[],dependsOn:[],actor:"person"};
-      const row={...goal,id:entryId(goal)};log.push(JSON.stringify(row)+"\n");targets.set(project,{correction:ids[0]!,promotion:ids[1]!,goal:row.id});
+      const row={...goal,id:entryId(goal)};log.push(JSON.stringify(row)+"\n");
+      const link:Omit<OpEntry,"id">={schema:"agent-hub.memory/v1",op:"goal_link",at:new Date(now).toISOString(),machine:memory.machine.id,target:row.id,by:task,actor:"person"};
+      const done:Omit<OpEntry,"id">={...link,op:"goal_state",by:"done"};
+      for(const body of [link,done])log.push(JSON.stringify({...body,id:entryId(body)})+"\n");
+      targets.set(project,{correction:ids[0]!,promotions,goal:row.id});
     }
     for(const [folder,lines]of [["log",log],["local",local]] as const){const file=join(memory.dir,folder,`${memory.machine.id}.jsonl`);appendFileSync(file,lines.join(""),{mode:0o600});const fd=openSync(file,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}}
     memory.refresh();
+    actualCurated=((memory as unknown as {db:Database}).db.query("SELECT (SELECT count(*) FROM entries)+(SELECT count(*) FROM ops)+(SELECT count(*) FROM goals) AS n").get() as {n:number}).n;
+    check(actualCurated===authored+3*projects.length,"curated note/goal/link/state fixture counts disagree");
     const candidates=new CandidateStore({memoryDir:base});candidates.close();const db=new Database(join(base,"candidates.db"));
     try{const insert=db.query("INSERT INTO candidates(id,project,kind,payload,at,status) VALUES (?,?,?,?,?,'pending')");
       db.transaction(()=>{for(const [projectIndex,project]of projects.entries())for(let index=0;index<shape.candidates;index++){
-        const target=targets.get(project)!;
+        const target=targets.get(project)!,promotion=target.promotions[Math.floor(index/20)];
+        if(index%20===1){const view=promotion?memory.get(promotion,project):undefined,goal=memory.goalOf(target.goal,project);check(view?.tier==="short"&&goal?.state==="done"&&goalPromotionLinked(view,goal),"promotion fixture is not a linked short note under a done goal");}
         const input:CandidateInput=index%20===0?{project,kind:"correction",target:{id:target.correction,revision:candidateTargetRevision(memory.get(target.correction,project)!)},proposedText:`확인된 correction ${index}`,reason:"fixture evidence"}
-          :index%20===1?{project,kind:"promotion",target:{id:target.promotion,revision:candidateTargetRevision(memory.get(target.promotion,project)!)},goalId:target.goal}
+          :index%20===1?{project,kind:"promotion",target:{id:promotion!,revision:candidateTargetRevision(memory.get(promotion!,project)!)},goalId:target.goal}
           :index%5===0?{project,kind:"fail",approach:`fixture approach ${index}`,symptom:"bounded refresh",cause:"known fixture",evidenceRefs:["test:ui-inbox"],retryWhen:"source revision changes"}
           :{project,kind:"memory",title:`Inbox ${projectIndex}/${index}`,text:`공개 memory evidence ${index}: ${"public context 제주 ".repeat(60)}`};
         insert.run(candidateInputId(input),project,input.kind,JSON.stringify(input),now-(projectIndex*shape.candidates+index)*1000);
       }})();
+      const counts=db.query("SELECT count(*) AS n,count(DISTINCT id) AS distinctIds,sum(kind='promotion') AS promotions FROM candidates").get() as {n:number;distinctIds:number;promotions:number};
+      actualCandidates=counts.n;
+      check(counts.n===shape.projects*shape.candidates&&counts.distinctIds===counts.n&&counts.promotions===shape.projects*promotionCount,"candidate fixture count or promotion uniqueness disagrees");
     }finally{db.close();}
   }finally{memory.close();}
   for(const project of projects){
     const capture=new CaptureStore({memoryDir:base,project}), db=(capture as unknown as {db:Database}).db;
-    try{db.transaction(()=>{for(let index=0;index<shape.captures;index++)capture.append({project,agent:"fixture",event:"PostToolUse",at:new Date(now-index*1000).toISOString(),excerpt:`capture ${index} ${"public context 제주 ".repeat(70)}`});})();}finally{capture.close();}
+    try{
+      db.transaction(()=>{for(let index=0;index<shape.captures;index++){const appended=capture.append({project,agent:"fixture",event:"PostToolUse",at:new Date(now-index*1000).toISOString(),excerpt:`capture ${index} ${"public context 제주 ".repeat(70)}`});check(!("spooled" in appended),"capture fixture unexpectedly spooled instead of seeding rows");}})();
+      const count=(db.query("SELECT count(*) AS n FROM rows").get() as {n:number}).n;
+      check(count===shape.captures,"capture fixture shard count disagrees");actualCaptures+=count;
+    }finally{capture.close();}
   }
-  return{family,base,projects,curatedRows:authored+projects.length,candidateRows:shape.projects*shape.candidates,captureRows:shape.projects*shape.captures};
+  check(actualCaptures===shape.projects*shape.captures,"total capture fixture count disagrees");
+  return{family,base,projects,curatedRows:actualCurated,candidateRows:actualCandidates,captureRows:actualCaptures};
 }
 async function main() {
   const option=(key:string,fallback:number)=>{const raw=process.argv.find(arg=>arg.startsWith(`--${key}=`))?.split("=")[1],value=raw===undefined?fallback:Number(raw);check(Number.isSafeInteger(value)&&value>0,`invalid fixture ${key}`);return value;};
@@ -86,7 +104,10 @@ async function main() {
     for(let index=0;index<40;index++){const at=performance.now(),value=await cache.snapshot();validate(value);check(value.items.length===50&&value.more>0,"warm measurement was empty or incomplete");payloads.push(Buffer.byteLength(JSON.stringify(value)));warm.push(performance.now()-at);}
     report.warm=stats(warm);report.maxPayloadBytes=Math.max(...payloads);report.readyItems=complete.items.length;report.more=complete.more;report.singleFlight={starts,maxActive};report.eventLoop={ticks,maxLagMs,authenticatedControl:stats(control)};
     check(p95(warm)<1000&&maxLagMs<1000&&control.length>0&&p95(control)<1000,"inbox or independent event-loop response exceeded one second");
-    const writer=new CandidateStore({memoryDir:fixture.base});try{writer.put({project:fixture.projects[0]!,kind:"memory",text:"new source invalidation fixture"},"public");}finally{writer.close();}
+    const writer=new CandidateStore({memoryDir:fixture.base});try{
+      if(shape.candidates<500){writer.put({project:fixture.projects[0]!,kind:"memory",text:"new source invalidation fixture"},"public");report.invalidationMutation="append";}
+      else{const pending=writer.list({project:fixture.projects[0]!,status:"pending",limit:1})[0];check(pending,"fixture at capacity has no pending candidate");writer.reject(pending.id,{project:fixture.projects[0]!,actor:"person",verdict:"public"});report.invalidationMutation="reject-at-cap";}
+    }finally{writer.close();}
     const invalidatedAt=performance.now(),invalidated=await cache.snapshot();report.invalidationSnapshotMs=performance.now()-invalidatedAt;report.invalidationComplete=invalidated.complete;
     const refreshed=await waitForComplete(()=>cache!.snapshot());validate(refreshed);report.invalidationTimeToCompleteMs=performance.now()-invalidatedAt;check(Number(starts)===2&&maxActive===1,"one source invalidation did not produce exactly one refresh");
     await cache.close();cache=undefined;
