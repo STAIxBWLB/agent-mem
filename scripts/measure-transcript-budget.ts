@@ -1,6 +1,6 @@
 import { measuredBudgetHookRss } from "./hook-rss-check.ts";
 /** Every real hook call, including bounded resumptions, is an R2 sample. */
-import { Database } from "bun:sqlite";
+import { readTranscriptCursorOffset } from "./transcript-cursor-read.ts";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -121,8 +121,7 @@ async function measure() {
         const stopReason = metric.transcriptStopReason;
         let offset = 0, offsetSource: "cursor" | "uncreated" | "rollback_pending" = "uncreated";
         if (existsSync(file)) {
-          const db = new Database(file, { readonly: true });
-          try { offset = (db.query("SELECT offset FROM cursor").get() as { offset: number }).offset; offsetSource = "cursor"; }
+          try { offset = readTranscriptCursorOffset(file); offsetSource = "cursor"; }
           catch (error) {
             // #221: cursorDatabase creates the file before its one init commit; a hook killed at its deadline in
             // between leaves a schema-less file that the next call initializes. Uncreated, but only with a deadline stop.
@@ -134,7 +133,7 @@ async function measure() {
             // heal its hot journal here: the next measured hook owns the recovery cost.
             offset = previous; offsetSource = "rollback_pending";
             }
-          } finally { db.close(); }
+          }
         }
         let rss: ReturnType<typeof measuredBudgetHookRss>;
         try { rss = measuredBudgetHookRss(metric, result.resourceUsage.maxRSS / 1048576, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `transcript:${event}:${logicalRun}:${followUp}`); }
