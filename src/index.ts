@@ -55,3 +55,7 @@ export { syncOutboundContent } from "./memory/sync-screen.ts";
 
 export * from "./memory/sync-placement-format.ts";
 export * from "./memory/sync-placement-plan.ts";
+export * from "./memory/sync-placement-journal-format.ts";
+export * from "./memory/sync-placement-projection.ts";
+export * from "./memory/sync-placement-journal.ts";
+export type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";

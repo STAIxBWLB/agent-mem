@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Add the private bounded placement/publication journal and journal-only rebuild for #261 stage 2, with fresh source proofs and explicit policy-screened person release. Transport and activation remain disabled. Preserve legacy profile diagnostics on ordinary store opens.
+
 - Document the accepted transcript-summary timing ceiling under contention/slow runners: capture can be deferred without losing its transcript source; limits, R1, fail-closed RSS, durability and the hosted-macOS advisory are unchanged (#226).
 
 - Add stage 1 closed placement-aware v3 format/activation-plan validation (#261): exact commitments, monotone upgrade checks, person/writer-attestation ports and fail-closed runtime guards. Validation is data-only (`activated: false`); no transport, journal effects or real-home activation are enabled.

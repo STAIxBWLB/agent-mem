@@ -1,0 +1,248 @@
+{
+  "schema": "agent-mem.sync-placement-journal-fixture/v1",
+  "epoch": {
+    "schema": "agent-mem.sync-placement-epoch/v1",
+    "publicationFormat": "agent-mem.sync-placement/v1",
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "homeHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contextHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nonce": "dddddddddddddddddddddddddddddddd"
+  },
+  "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+  "records": [
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000001",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee01",
+      "kind": "hold",
+      "reason": "personal-data",
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 1,
+      "previousHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "seal": "6a78e8f4a00b1030f923ac30b455c2a60bfa671c9f87c448edc1f29109c61aaf"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000002",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee02",
+      "kind": "hold",
+      "reason": "person-local",
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 2,
+      "previousHash": "6a78e8f4a00b1030f923ac30b455c2a60bfa671c9f87c448edc1f29109c61aaf",
+      "seal": "14a36d9bff904eae8916c8492e8cd45e5e7cf0615e59cfc7afee7ec04d3e6d8f"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000003",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee03",
+      "kind": "publication-ambiguous",
+      "outcome": {
+        "attemptHash": "6666666666666666666666666666666666666666666666666666666666666666",
+        "remoteHash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "refHash": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 3,
+      "previousHash": "14a36d9bff904eae8916c8492e8cd45e5e7cf0615e59cfc7afee7ec04d3e6d8f",
+      "seal": "76ca9708d81a9e39fa2544a87421245dcd924c32d5db2516943ee7f38295213d"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000004",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee04",
+      "kind": "release",
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 4,
+      "previousHash": "76ca9708d81a9e39fa2544a87421245dcd924c32d5db2516943ee7f38295213d",
+      "seal": "f6bdca2641dc7d134aba66a42b18f8fecac02a4caa31de5292a6d0d891ee9762"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000005",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee05",
+      "kind": "hold",
+      "reason": "related-local",
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 5,
+      "previousHash": "f6bdca2641dc7d134aba66a42b18f8fecac02a4caa31de5292a6d0d891ee9762",
+      "seal": "c525f538c9500a6a50e93695546217dcd5a432052f07fd9294c319ef025405ad"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000006",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee06",
+      "kind": "publication-committed",
+      "outcome": {
+        "attemptHash": "6666666666666666666666666666666666666666666666666666666666666666",
+        "remoteHash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "refHash": "8888888888888888888888888888888888888888888888888888888888888888",
+        "commit": "9999999999999999999999999999999999999999",
+        "proofHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 6,
+      "previousHash": "c525f538c9500a6a50e93695546217dcd5a432052f07fd9294c319ef025405ad",
+      "seal": "4998f85d6d6914002116508965f128bf6c2776009d351fc30a41f4e82eedca71"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000007",
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee07",
+      "kind": "publication-ambiguous",
+      "outcome": {
+        "attemptHash": "6666666666666666666666666666666666666666666666666666666666666666",
+        "remoteHash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "refHash": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 7,
+      "previousHash": "4998f85d6d6914002116508965f128bf6c2776009d351fc30a41f4e82eedca71",
+      "seal": "375d8244fd9ff701f5f7ca371a5b6b9ed4b7c8cf21b9de1ca2b512455547a489"
+    },
+    {
+      "requestId": "0000000000000000000000000000000000000000000000000000000000000008",
+      "key": {
+        "realm": {
+          "scope": "project",
+          "keyHash": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "id": "44444444444444444444444444444444",
+        "rowHash": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "sourcePlacement": "local",
+      "effectHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee08",
+      "kind": "hold",
+      "reason": "secret",
+      "schema": "agent-mem.sync-placement-record/v1",
+      "epochHash": "142c2177bc52251466e09a3b12c284688f7729466916f37d840ec4c3f4dd5c24",
+      "sequence": 8,
+      "previousHash": "375d8244fd9ff701f5f7ca371a5b6b9ed4b7c8cf21b9de1ca2b512455547a489",
+      "seal": "b12a0898f21f32c13233184b8005a1ed17c7de5230619d7d9d3ed5ece5ba807d"
+    }
+  ],
+  "expectedAfterRelease": [
+    {
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "held": false,
+      "reasons": [],
+      "exposure": "unknown",
+      "attempts": [
+        {
+          "attemptHash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "remoteHash": "7777777777777777777777777777777777777777777777777777777777777777",
+          "refHash": "8888888888888888888888888888888888888888888888888888888888888888",
+          "status": "ambiguous"
+        }
+      ]
+    }
+  ],
+  "expectedStates": [
+    {
+      "key": {
+        "realm": {
+          "scope": "user"
+        },
+        "id": "11111111111111111111111111111111",
+        "rowHash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "sourcePlacement": "synced",
+      "held": true,
+      "reasons": [
+        "related-local"
+      ],
+      "exposure": "published",
+      "attempts": [
+        {
+          "attemptHash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "remoteHash": "7777777777777777777777777777777777777777777777777777777777777777",
+          "refHash": "8888888888888888888888888888888888888888888888888888888888888888",
+          "commit": "9999999999999999999999999999999999999999",
+          "proofHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "status": "committed"
+        }
+      ]
+    },
+    {
+      "key": {
+        "realm": {
+          "scope": "project",
+          "keyHash": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "id": "44444444444444444444444444444444",
+        "rowHash": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "sourcePlacement": "local",
+      "held": true,
+      "reasons": [
+        "secret"
+      ],
+      "exposure": "unknown",
+      "attempts": []
+    }
+  ],
+  "expectedHead": "b12a0898f21f32c13233184b8005a1ed17c7de5230619d7d9d3ed5ece5ba807d"
+}

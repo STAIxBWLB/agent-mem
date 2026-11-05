@@ -62,15 +62,24 @@ export function placementMarkerRefusal(profile: unknown, shards: unknown): strin
 /** Selector preflight only recognizes v3. Legacy malformed/split metadata must retain its existing reader/recovery path. */
 // This narrow probe is not a data/transport gate; effects must still use the full runtime guard.
 export function placementSelectorRefusal(home: string): string | undefined {
+  // A durable placement fence forbids falling back to raw legacy sync after marker rollback.
+  const fenced = placementFencePresent(home);
   let profile: unknown, shards: unknown;
   try { profile = readMarker(join(home, "profile.json")); } catch { /* The original selector reader reports this legacy failure. */ }
   try { shards = readMarker(join(home, "shards.json")); } catch { /* Ordinary migration still owns malformed split-state recovery. */ }
-  if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return undefined;
+  if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return fenced ? PLACEMENT_MARKER_REFUSAL : undefined;
   return placementMarkerRefusal(profile, shards);
+}
+function placementFencePresent(home: string): boolean {
+  const root = lstatSync(join(home, "sync-placement"), { throwIfNoEntry: false });
+  if (!root) return false;
+  if (root.isSymbolicLink() || !root.isDirectory() || root.uid !== process.getuid?.() || (root.mode & 0o077) !== 0) return true;
+  return lstatSync(join(home, "sync-placement", "active.json"), { throwIfNoEntry: false }) !== undefined;
 }
 /** Only fixed bounded marker reads; no selector rebind, data/index open, cache, lock or child/network call. */
 export function placementRuntimeRefusal(home: string): string | undefined {
-  try { const markers = readPlacementRuntimeMarkers(home); return placementMarkerRefusal(markers.profile, markers.shards); }
+  try { const fenced = placementFencePresent(home), markers = readPlacementRuntimeMarkers(home);
+    return placementMarkerRefusal(markers.profile, markers.shards) ?? (fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
   catch { return PLACEMENT_MARKER_REFUSAL; }
 }
 export function assertPlacementRuntime(home: string): void {

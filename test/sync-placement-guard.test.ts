@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
@@ -137,4 +137,28 @@ test("sync --if-due refuses v3 before cadence/cache shortcuts", async () => {
     await expect(runCli(["sync", "--if-due"], { cwd: memoryDir, env: {}, stdinTTY: true })).rejects.toThrow(PLACEMENT_STAGE1_REFUSAL);
     expect(tree(memoryDir)).toEqual(before);
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+});
+
+
+test("ordinary constructor preserves the legacy selector diagnostic for malformed non-v3 profiles (N1)", () => {
+  for (const value of ["not json", '{"schema":"agent-mem.profile/v1","kind":"invalid"}', '{"schema":"future"}']) {
+    const memoryDir = home(); writeFileSync(join(memoryDir, "profile.json"), value, { mode: 0o600 });
+    const before = tree(memoryDir);
+    let expected: string | undefined;
+    try { readSelector(memoryDir); } catch (error) { expected = (error as Error).message; }
+    expect(expected).toBeDefined(); expect(expected).not.toContain("sync placement");
+    expect(() => new MemoryStore({ memoryDir })).toThrow(expected!);
+    expect(tree(memoryDir)).toEqual(before);
+  }
+});
+
+test("a durable placement fence refuses marker rollback before raw legacy store effects", () => {
+  const memoryDir = home();
+  mkdirSync(join(memoryDir, "sync-placement"), { mode: 0o700 });
+  writeFileSync(join(memoryDir, "sync-placement", "active.json"), "invalid fence is also fail closed", { mode: 0o600 });
+  const before = tree(memoryDir);
+  expect(placementRuntimeRefusal(memoryDir)).toBe(PLACEMENT_MARKER_REFUSAL);
+  expect(() => new MemoryStore({ memoryDir })).toThrow(PLACEMENT_MARKER_REFUSAL);
+  expect(() => readSelector(memoryDir)).toThrow(PLACEMENT_MARKER_REFUSAL);
+  expect(tree(memoryDir)).toEqual(before);
 });

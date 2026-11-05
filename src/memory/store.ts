@@ -238,7 +238,7 @@ export class MemoryStore {
     const placementRefusal = placementSelectorRefusal(home);
     if (placementRefusal) throw new SyncPlacementRuntimeError(placementRefusal);
     if (!bootstrap && lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) throw new Error("memory home has a curated split; hosts must use openShardStore({ project }) or openShardStore({ user: true }); finish an incomplete split with amem migrate --shards --resume");
-    assertPlacementRuntime(home);
+    if (bootstrap) assertPlacementRuntime(home);
     this.profile = bootstrap?.profile ?? resolveProfile(home, opts.profile);
     if (bootstrap && (this.profile.kind !== "generation" || !this.profile.generation
       || (!this.profile.sharded && this.profile.dir !== generationDir(this.profile.home, this.profile.generation))
