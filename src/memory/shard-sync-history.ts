@@ -24,11 +24,12 @@ export interface ShardHistoryAuditorOptions {
    * Body bytes, without the Git object header; the auditor verifies each requested identity itself. */
   object?(oid: string, type: "commit" | "tree"): Promise<Buffer>;
 }
-export type ShardHistoryCause = "unavailable" | "blob" | "forbidden-entry";
+export type ShardHistoryCause = "unavailable" | "blob" | "forbidden-entry" | "public-prune-floor";
 const refusals: Record<ShardHistoryCause, string> = {
   unavailable: "Shard history is unavailable, inconsistent or unsupported; retain and inspect the complete selected history before continuing.",
   blob: "Shard history blob is unavailable or its identity, bound or complete newline is invalid; retain and inspect the selected history before continuing.",
   "forbidden-entry": "Shard history contains a forbidden historical tree entry; retain and inspect the selected history before continuing.",
+  "public-prune-floor": "Shard history requires the v2 public prune floor; activate compatible public-prune support before continuing.",
 };
 export class ShardHistoryError extends Error {
   readonly code: ShardHistoryCause;
@@ -154,7 +155,7 @@ export class ShardHistoryAuditor {
     }
     const descriptor = files.get("shard.json"); if (!descriptor) return fail();
     const version = this.#options.placement ? decodePlacementTransportDescriptor(descriptor, this.#options.realm) : decodeShardDescriptor(descriptor, this.#options.realm);
-    if (version !== "v1" && !this.#options.publicPrune) fail();
+    if (version !== "v1" && !this.#options.publicPrune) fail("public-prune-floor");
     for (const [path, bytes] of files) if (packPath(path)) {
       const object = objects.get(path)!; let pack = this.#decoded.get(object);
       if (!pack) { pack = decodeShardPack(path, bytes, this.#options.realm, this.#options.generation); this.#decoded.set(object, pack); }
