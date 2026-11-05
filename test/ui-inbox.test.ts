@@ -161,7 +161,7 @@ test("real read-only computation returns fifty compact newest/urgent rows and a 
   const alert: InboxItem = { id: "capacity:proposal", group: "alert", kind: "capacity", title: "Capacity needs review", at: "2000-01-01T00:00:00.000Z", verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } };
   const computed = computeInbox(base, { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: Date.now() + CAPACITY_CACHE_MS, item: alert });
   expect(computed.items).toHaveLength(50); expect(computed.more).toBe(22); expect(computed.items[0]!.id).toBe("capacity:proposal");
-  expect(computed.items.slice(1).map(value => value.id)).toEqual([...ids].sort().slice(0, 48));
+  expect(computed.items.filter(value => value.group === "candidate").map(value => value.id)).toEqual([...ids].sort().slice(0, 48));
   for (const item of computed.items) { expect(inboxItemProblems(item)).toEqual([]); expect(item.title.length).toBeLessThanOrEqual(120); }
   for (const item of computed.items.filter(value => value.group === "candidate")) expect(Object.keys(item).sort()).toEqual(["at", "group", "id", "kind", "link", "project", "title", "verbs"]);
   expect(Buffer.byteLength(JSON.stringify(computed.items))).toBeLessThanOrEqual(INBOX_MAX_BYTES); expect(JSON.stringify(computed)).not.toContain("INBOX_PRIVATE_");
@@ -292,6 +292,7 @@ test("closing a cooperative native fixture reaps its worker and owned descendant
 test("the actual thirty-second refresh deadline reaps a cooperative native fixture group", async () => {
   const started = performance.now(), f = await blockingJob(home()); cleanup.push(() => f.job.cancel());
   const outcome = await f.settled; expect("error" in outcome).toBe(true);
+  await f.job.cancel(); // A deadline failure is not itself a group-gone acknowledgement.
   expect(performance.now() - started).toBeGreaterThanOrEqual(29000); expect(performance.now() - started).toBeLessThan(34000);
   expect(gone(f.pids.pid)).toBe(true); expect(gone(f.pids.child)).toBe(true);
 }, 35000);

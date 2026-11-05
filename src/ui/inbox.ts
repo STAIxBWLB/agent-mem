@@ -131,7 +131,7 @@ export function boundedInboxRows(input: readonly InboxItem[], totalCount: number
   const at = previous?.at ?? new Date().toISOString();
   const make = () => {
     const more = totalCount - real.length;
-    const hint: InboxItem = { id: "inbox:more", group: "alert", kind: "status", title: `${more} more in Review`, at, verbs: [], link: { panel: "review" } };
+    const hint: InboxItem = { id: "inbox:more", group: "alert", kind: "overflow", title: `${more} more in Review`, at, verbs: [], link: { panel: "review" } };
     const capacity = real.filter(item => item.id === "capacity:proposal"), other = real.filter(item => item.id !== "capacity:proposal");
     return { items: [...capacity, ...(more ? [hint] : []), ...other], more };
   };
