@@ -134,7 +134,34 @@ export function processSignature(pid: number): string | undefined {
   } catch { return undefined; }
 }
 
+/** Nonblocking counterpart of the exact same pinned ps identity contract, for request-serving hosts. */
+function processFieldAsync(pid: number, fields: string): Promise<string | undefined> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return Promise.resolve(undefined);
+  return new Promise(resolve => {
+    try {
+      childProcess().execFile("ps", ["-p", String(pid), "-o", fields], { encoding: "utf8", timeout: 500, killSignal: "SIGKILL", maxBuffer: 16 * 1024,
+        env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, text) => resolve(error ? undefined : text.trim() || undefined));
+    } catch { resolve(undefined); }
+  });
+}
+export async function processSignatureAsync(pid: number): Promise<string | undefined> {
+  const text = await processFieldAsync(pid, "lstart=,comm=");
+  return text ? createHash("sha256").update(text).digest("hex") : undefined;
+}
+export async function processGroupIdAsync(pid: number): Promise<number | undefined> {
+  const text = await processFieldAsync(pid, "pgid=");
+  const group = text && /^[0-9]+$/.test(text) ? Number(text) : undefined;
+  return group !== undefined && Number.isSafeInteger(group) && group > 0 ? group : undefined;
+}
+
 export type Liveness = "live" | "gone" | "unknown";
+
+/** Observation only, never authority to signal an old group. Zombies/unreadable groups are not gone. */
+export function processGroupLiveness(group: unknown): Liveness {
+  if (typeof group !== "number" || !Number.isSafeInteger(group) || group <= 0) return "unknown";
+  try { process.kill(-group, 0); return "live"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown"; }
+}
 
 /**
  * #226: the one ownership check behind every recorded pid (hub manifest, registry claim, recovery runner, manager

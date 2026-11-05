@@ -27,9 +27,10 @@ import { withBriefSnapshot } from "../src/memory/doctor.ts";
 const typed: ConsolePlugin = plugin;
 
 const roots: string[] = [];
+const providers = new Set<Awaited<ReturnType<typeof plugin.open>>>();
 const oldAmem = process.env.AMEM_HOME;
 afterEach(() => { if (oldAmem === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = oldAmem; });
-afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterAll(async () => { for (const provider of providers) await provider.close(); providers.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 /** A family home ($AGENTHUB_HOME) with one project: two curated notes, a memory candidate and a fail candidate. */
 function fixture() {
@@ -47,7 +48,16 @@ function fixture() {
   candidates.close();
   return { root, family, base, project, noteId, memory, fail };
 }
-const open = (family: string) => plugin.open({ home: family, log: () => {} });
+const open = async (family: string) => { const provider = await plugin.open({ home: family, log: () => {} }); providers.add(provider); return provider; };
+async function readyInbox(provider: Awaited<ReturnType<typeof open>>) {
+  const until = Date.now() + 15_000;
+  while (Date.now() < until) {
+    const snapshot = await provider.snapshot({ after: 0, panel: "inbox" });
+    if (snapshot.complete === true) return snapshot;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw Error("fixture inbox did not complete");
+}
 /**
  * Every file below the home with its size and mtime: a write anywhere changes it. Two SQLite sidecars hold no data and are left out: `-shm`
  * (the read-lock index, touched by any open) and an empty `-wal`. A read-only reader of a WAL database recreates an empty `-wal` when the
@@ -105,7 +115,7 @@ test("only Recap snapshots compute the SessionStart brief", async () => {
   const f = fixture(), provider = await open(f.family), calls = spyOn(briefModule, "sessionStartBrief");
   try {
     for (const panel of [...plugin.manifest.panels.filter(panel => panel.id !== "recap").map(panel => panel.id), "inbox", "search"]) {
-      await provider.snapshot({ after: 0, panel, project: f.project, q: "console" });
+      if (panel === "inbox") await readyInbox(provider); else await provider.snapshot({ after: 0, panel, project: f.project, q: "console" });
     }
     expect(calls).not.toHaveBeenCalled();
     expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
@@ -244,14 +254,14 @@ test("console search returns exactly the amem_search set for the same query", as
 
 test("inbox items are the visible pending candidates, keyed by candidate id with a stable at", async () => {
   const f = fixture(), provider = await open(f.family);
-  const items = (await provider.snapshot({ after: 0, panel: "inbox" })).items as { id: string; group: string; verbs: { id: string }[]; link: { panel: string; params: Record<string, string> } }[];
+  const items = (await readyInbox(provider)).items as { id: string; group: string; verbs: { id: string }[]; link: { panel: string; params: Record<string, string> } }[];
   const candidates = items.filter(i => i.group === "candidate");
   expect(candidates.map(i => i.id).sort()).toEqual([f.memory, f.fail].sort());
   expect(candidates[0]!.verbs.map(v => v.id)).toEqual(["accept", "reject"]);
   expect(candidates[0]!.link).toEqual({ panel: "review", params: { project: f.project, id: candidates[0]!.id } });
   // An inbox verb carries only the item id; the provider finds the project.
   expect(await provider.action({ action: "reject", id: f.fail })).toMatchObject({ ok: true });
-});
+}, 20_000);
 
 test("amem setup console writes the manifest acon verifies, and undo removes it", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-console-setup-")); roots.push(root);

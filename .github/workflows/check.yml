@@ -28,6 +28,24 @@ jobs:
       - run: bun scripts/check-boundary.ts
       - run: bun test --timeout 20000
       - run: npm pack --dry-run
+      - name: Console inbox small fixture (timing report-only)
+        run: |
+          set -o pipefail
+          bun scripts/measure-ui-inbox.ts --projects=2 --candidates=40 --curated=50 --captures=20 --report-only-timing | tee ui-inbox-smoke.json
+      - name: Retain console inbox fixture evidence
+        if: always() && !cancelled()
+        run: |
+          {
+            echo '## Console inbox fixture evidence'
+            for inbox_result in ui-inbox-smoke.json; do
+              if [ -f "$inbox_result" ]; then
+                echo "### $inbox_result"
+                echo '```json'
+                cat "$inbox_result"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
       - run: bun scripts/measure-hooks-budget.ts
         if: always() && !cancelled()
       - name: Compare main Stop and SessionEnd RSS on the same runner
