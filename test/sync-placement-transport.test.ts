@@ -451,6 +451,7 @@ async function pendingNativePruneFixture(mode: "valid" | "invalid-tail" | "missi
   return { ...f, receiver, row, plan, line, prefix, segment, pending };
 }
 
+// This local-Git recovery round trip exceeds 20 s on hosted macOS; keep its allowance test-local.
 test("ordinary v3 sync resumes an actual owned PARTIAL native prune claim from exact fetched proof, preserving the original once", async () => {
   const f = await pendingNativePruneFixture("valid");
   expect(() => f.receiver.capture()).toThrow(); // A raw partial tail alone is never a general capture admission port.
@@ -465,7 +466,7 @@ test("ordinary v3 sync resumes an actual owned PARTIAL native prune claim from e
   const physical = authoredBytes(f.receiver.home), plans = f.receiver.plans();
   expect((await syncMemory(f.receiver.store, f.receiver.opts(f.remote))).ok).toBe(true);
   expect(authoredBytes(f.receiver.home)).toEqual(physical); expect(f.receiver.plans()).toEqual(plans);
-}, 20_000);
+}, 60_000);
 
 for (const mode of ["invalid-tail", "missing-fetched"] as const) test("v3 pending prune " + mode + " refuses before publication or source repair", async () => {
   const f = await pendingNativePruneFixture(mode), before = authoredBytes(f.receiver.home), claim = readFileSync(f.pending), plans = f.receiver.plans();

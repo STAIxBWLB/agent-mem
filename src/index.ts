@@ -63,6 +63,7 @@ export * from "./memory/consolidation-model.ts";
 export * from "./memory/evidence.ts";
 
 export * from "./memory/sync-policy-inspection.ts";
+export * from "./memory/sync-placement-inspection.ts";
 export { syncOutboundContent } from "./memory/sync-screen.ts";
 
 export * from "./memory/sync-placement-format.ts";

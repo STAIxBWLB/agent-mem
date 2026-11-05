@@ -4,17 +4,17 @@ import { types } from "node:util";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, generationDescriptor, hashJSON, validateVaultLinkRow, type BoundProfile } from "./generation.ts";
+import { canonicalJSON, generationDescriptor, hashJSON, validateVaultLinkRow, type BoundProfile, type VaultLinkRow } from "./generation.ts";
 import { validatePlacementBaseV2, validatePlacementProfile, validatePlacementShards, PLACEMENT_PROFILE_SCHEMA } from "./sync-placement-format.ts";
 import { planSyncPlacementActivation, type SyncPlacementActivationContext, type SyncPlacementWriterAttestation } from "./sync-placement-plan.ts";
 import { readPublicPruneViewForActivation, PUBLIC_PRUNE_INTENT } from "./public-prune-view.ts";
 import { realPath, DENY_NAMES, DENY_SEGMENTS } from "./platform.ts";
 import { loadAmemConfig } from "./config.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
-import { SegmentReader, checkedEntry, completeLines } from "./bridge.ts";
+import { SegmentReader, SegmentReadBudgetError, checkedEntry, completeLines } from "./bridge.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import { coalesceGenerationSource } from "./generation-index.ts";
-import { validatePruneRow, type PruneSourceRow } from "./prune.ts";
+import { validatePruneRow, type PruneSourceRow, type PruneRow } from "./prune.ts";
 import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
 import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
 import type { Entry } from "./store.ts";
@@ -28,9 +28,13 @@ export interface PlacementCapturePort {
 /** Internal actual-transport proof, admitted only after the native pending plan and fetched original were validated. */
 export interface PlacementPendingSource { realm: PlacementRealm; pathHash: string; offset: number; prefixHash: string; line: string }
 export interface PlacementSourceRow { key: PlacementKey; row: Entry; sourcePlacement: "local" | "synced"; intrinsicLocal: boolean }
+export interface PlacementSpecialSourceRow { key: PlacementKey; row: PruneRow | VaultLinkRow; sourcePlacement: "local" | "synced"; intrinsicLocal: boolean }
 export interface PlacementCapture {
   home: string; context: SyncPlacementActivationContext; activeHead?: string;
   markerHash: string; fingerprint: string; directories: string[]; prefixes: PlacementPublicationSource[]; rows: Map<string, PlacementSourceRow>;
+  /** Diagnostic inventory only; these rows never enter the ordinary transport/capture row map implicitly. */
+  specialRows: Map<string, PlacementSpecialSourceRow>;
+  sourceRowsByRealm: Map<string, readonly PruneSourceRow[]>;
   assertCurrent(): void;
   /** Under live writer fences, inode/ctime/size checks protect the already-hashed prefixes across callbacks without reparsing rows. */
   assertUnchanged(): void;
@@ -107,7 +111,8 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
   // An in-flight migration/prune is never accepted as a stable placement source.
   for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) if (lstatSync(join(home, name), { throwIfNoEntry: false })) fail();
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
-  const rows = new Map<string, PlacementSourceRow>(), directories = [home], prefixes: PlacementPublicationSource[] = [];
+  const rows = new Map<string, PlacementSourceRow>(), specialRows = new Map<string, PlacementSpecialSourceRow>(), sourceRowsByRealm = new Map<string, readonly PruneSourceRow[]>();
+  const directories = [home], prefixes: PlacementPublicationSource[] = [];
   const realms: SyncPlacementActivationContext["realms"][number][] = [];
   const listing = (dir: string, optional = false): string[] => {
     const s = lstatSync(dir, { throwIfNoEntry: false });
@@ -155,6 +160,12 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
       }
     }
     const presence = new Map<string, PruneSourceRow>();
+    const special = new Map<string, PlacementSpecialSourceRow>();
+    const retainSpecial = (row: PruneRow | VaultLinkRow, local: boolean) => {
+      const key = { realm: identity, id: row.id, rowHash: hashJSON(row) }, prior = special.get(row.id);
+      if (prior && (prior.key.rowHash !== key.rowHash || prior.sourcePlacement !== (local ? "local" : "synced"))) fail();
+      special.set(row.id, { key, row, sourcePlacement: local ? "local" : "synced", intrinsicLocal: row.op === "vault_link" });
+    };
     for (const segment of segments) {
       const file = join(segment.source === "generation" ? dir : segment.source === "legacy-main" ? profile.legacyMainHome! : profile.legacyHome!, segment.path);
       const fileStat = lstatSync(file);
@@ -190,17 +201,24 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
         if (segment.source === "generation" && parsed?.op === "prune") {
           const row = validatePruneRow(parsed, profile.generation, segment.local ? "local" : "synced");
           if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
+          retainSpecial(row, segment.local);
           continue;
         }
         if (segment.source === "generation" && parsed?.op === "vault_link") {
           const row = validateVaultLinkRow(parsed, profile.generation, segment.local ? "local" : "synced");
           if (segment.path !== `local/${row.machine}.jsonl`) fail();
+          retainSpecial(row, true);
           continue;
         }
         const entry = checkedEntry(parsed);
         presence.set(entry.id, coalesceGenerationSource(presence.get(entry.id), entry, segment));
       }
     }
+    for (const source of special.values()) {
+      if (presence.has(source.key.id)) fail();
+      specialRows.set(placementKeyId(source.key), source);
+    }
+    sourceRowsByRealm.set(canonicalJSON(identity), [...presence.values()]);
     for (const source of presence.values()) {
       const key = { realm: identity, id: source.row.id, rowHash: hashJSON(source.row) };
       rows.set(placementKeyId(key), { key, row: source.row, sourcePlacement: source.placement,
@@ -245,7 +263,7 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
     for(const check of sourceChecks)check();
     } catch { fail(); }
   };
-  return { home, context, assertUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, fingerprint: hashJSON({ context, markerHash }), directories: directories.sort(), prefixes, rows };
+  return { home, context, assertUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, fingerprint: hashJSON({ context, markerHash }), directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
 }
 export function captureSyncPlacementContext(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pendingInput: readonly PlacementPendingSource[] = []): PlacementCapture {
   try {
@@ -264,5 +282,11 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     });
     const before = capture(home, port, selection, pending);
     return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
-  } catch (error) { if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SyncPlacementJournalError) throw error; return fail(); }
+  } catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      if (error instanceof SyncPlacementJournalError) throw error;
+      if (error instanceof SegmentReadBudgetError) return fail("bound");
+    }
+    return fail();
+  }
 }

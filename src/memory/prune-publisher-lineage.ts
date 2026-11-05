@@ -8,6 +8,7 @@ import { realPath } from "./platform.ts";
 import { validatePruneRow, type PruneRow } from "./prune.ts";
 import type { PublicPruneLineage } from "./public-prune-witness.ts";
 import { resolveShardProfile } from "./shard.ts";
+import { SYNC_SCREEN_MAX_BYTES, SYNC_SCREEN_MAX_ROWS } from "./sync-screen.ts";
 
 export interface PublisherBoundaryV1 {
   schema: "agent-mem.prune-publisher-boundary/v1";
@@ -28,8 +29,7 @@ function bytes(file: string, limit: number, links = 1): Buffer {
     const value = readFileSync(fd); guard(value.length === before.size && same(opened, fstatSync(fd)) && same(opened, lstatSync(file))); return value;
   } finally { closeSync(fd); }
 }
-function context(profile: BoundProfile, mutation: MutationHandle): { machine: string; sealHash: string; log: string; file: string; local: string } {
-  assertMutationHandle(mutation, profile.dir);
+function publisherContext(profile: BoundProfile): { machine: string; sealHash: string; log: string; file: string; local: string } {
   guard(profile.kind === "generation" && profile.sharded && profile.foreignPruneFormat === "agent-mem.public-prune-witness/v1");
   const current = resolveShardProfile(profile.home, profile.shardUser ? { user: true } : { project: profile.shardKey });
   guard(current.generation === profile.generation && current.foreignPruneFormat === profile.foreignPruneFormat
@@ -44,13 +44,18 @@ function context(profile: BoundProfile, mutation: MutationHandle): { machine: st
   const machine = rootMachine.id, local = join(profile.dir, "local");
   return { machine, sealHash, local, file: join(local, `publisher-boundary-${machine}.json`), log: join(profile.dir, "log", `${machine}.jsonl`) };
 }
+function context(profile: BoundProfile, mutation: MutationHandle): ReturnType<typeof publisherContext> {
+  assertMutationHandle(mutation, profile.dir); return publisherContext(profile);
+}
+interface InspectionLimits { maxBytes: number; maxRows: number }
+const INSPECTION_LIMITS: InspectionLimits = { maxBytes: SYNC_SCREEN_MAX_BYTES, maxRows: SYNC_SCREEN_MAX_ROWS };
 /** Streaming complete prefix and bounded line scan; no lifetime byte/row omission. */
-function inspect(log: string, end?: number, rows?: ReadonlyMap<string, { row: PruneRow; canonical: string }>): { end: number; hash: string; found: Set<string> } {
+function inspect(log: string, end?: number, rows?: ReadonlyMap<string, { row: PruneRow; canonical: string }>, limits?: InspectionLimits): { end: number; hash: string; found: Set<string> } {
   const before = lstatSync(log, { throwIfNoEntry: false });
   if (!before) { guard(end === undefined || end === 0); return { end: 0, hash: createHash("sha256").digest("hex"), found: new Set() }; }
-  owned(before); const bound = end ?? before.size; guard(Number.isSafeInteger(bound) && bound >= 0 && bound <= before.size);
+  owned(before); if (limits) guard(before.size <= limits.maxBytes); const bound = end ?? before.size; guard(Number.isSafeInteger(bound) && bound >= 0 && bound <= before.size);
   const fd = openSync(log, constants.O_RDONLY | constants.O_NOFOLLOW), digest = createHash("sha256"), chunk = Buffer.alloc(65536);
-  let position = 0, lineStart = 0, line: number[] = [], last = -1, boundaryNewline = bound === 0;
+  let position = 0, lineStart = 0, line: number[] = [], last = -1, boundaryNewline = bound === 0, physicalRows = 0;
   const found = new Set<string>(), older = new Set<string>();
   try {
     guard(same(before, fstatSync(fd)));
@@ -59,6 +64,7 @@ function inspect(log: string, end?: number, rows?: ReadonlyMap<string, { row: Pr
       if (position < bound) digest.update(chunk.subarray(0, Math.min(count, bound - position)));
       for (let i = 0; i < count; i++) {
         const byte = chunk[i]!; last = byte;
+        if (limits && byte === 10) guard(++physicalRows <= limits.maxRows);
         if (position + i + 1 === bound) boundaryNewline = byte === 10;
         if (rows) {
           if (byte === 10) {
@@ -99,11 +105,14 @@ function recover(file: string, local: string): void {
   guard(candidates.length === 1); const temp = candidates[0]!; owned(lstatSync(temp), false, 2);
   guard(same(final, lstatSync(file)) && same(final, lstatSync(temp))); unlinkSync(temp); fsyncDirectory(local);
 }
-export function assertPublisherBoundary(profile: BoundProfile, mutation: MutationHandle): PublisherBoundaryV1 {
-  const ctx = context(profile, mutation); recover(ctx.file, ctx.local);
+function boundaryValue(profile: BoundProfile, ctx: ReturnType<typeof publisherContext>, limits?: InspectionLimits): PublisherBoundaryV1 {
   const value = decode(bytes(ctx.file, 4096));
   guard(value.generation === profile.generation && value.machine === ctx.machine && value.sealHash === ctx.sealHash);
-  guard(inspect(ctx.log, value.end).hash === value.prefixSha256); assertMutationHandle(mutation, profile.dir); return value;
+  guard(inspect(ctx.log, value.end, undefined, limits).hash === value.prefixSha256); return value;
+}
+export function assertPublisherBoundary(profile: BoundProfile, mutation: MutationHandle): PublisherBoundaryV1 {
+  const ctx = context(profile, mutation); recover(ctx.file, ctx.local);
+  const value = boundaryValue(profile, ctx); assertMutationHandle(mutation, profile.dir); return value;
 }
 /** Explicit sync-only admission: existing complete own log is a conservative migration upper bound. */
 export function ensurePublisherBoundary(profile: BoundProfile, mutation: MutationHandle): PublisherBoundaryV1 {
@@ -117,15 +126,23 @@ export function ensurePublisherBoundary(profile: BoundProfile, mutation: Mutatio
   linkSync(temp, ctx.file); fsyncDirectory(ctx.local); unlinkSync(temp); fsyncDirectory(ctx.local);
   return assertPublisherBoundary(profile, mutation);
 }
-/** Verify one candidate set with one complete JSONL parse, independent of the candidate count. */
-export function publisherPruneLineages(profile: BoundProfile, mutation: MutationHandle, rows: readonly PruneRow[]): Map<string, PublicPruneLineage> {
-  const boundary = assertPublisherBoundary(profile, mutation), candidates = new Map<string, { row: PruneRow; canonical: string }>();
+function lineageCandidates(boundary: PublisherBoundaryV1, rows: readonly PruneRow[], limits?: InspectionLimits): Map<string, { row: PruneRow; canonical: string }> {
+  if (limits) guard(rows.length <= limits.maxRows);
+  const candidates = new Map<string, { row: PruneRow; canonical: string }>(); let total = 0;
   for (const row of rows) {
+    // Read-only inputs are already core-captured canonical rows. Count even ignored/duplicate candidates.
+    const captured = limits ? canonicalJSON(row) : undefined;
+    if (limits) { total += Buffer.byteLength(captured!) + 1; guard(total <= limits.maxBytes); }
     if (row.machine !== boundary.machine || row.generation !== boundary.generation || row.placement !== "synced") continue;
     validatePruneRow(row, boundary.generation, "synced");
-    const canonical = canonicalJSON(row), previous = candidates.get(row.id);
+    const canonical = captured ?? canonicalJSON(row), previous = candidates.get(row.id);
     guard(!previous || previous.canonical === canonical); candidates.set(row.id, { row, canonical });
   }
+  return candidates;
+}
+/** Verify one candidate set with one complete JSONL parse, independent of the candidate count. */
+export function publisherPruneLineages(profile: BoundProfile, mutation: MutationHandle, rows: readonly PruneRow[]): Map<string, PublicPruneLineage> {
+  const boundary = assertPublisherBoundary(profile, mutation), candidates = lineageCandidates(boundary, rows);
   const result = new Map<string, PublicPruneLineage>();
   if (!candidates.size) return result;
   const ctx = context(profile, mutation), proof = inspect(ctx.log, boundary.end, candidates);
@@ -136,4 +153,25 @@ export function publisherPruneLineages(profile: BoundProfile, mutation: Mutation
 /** Compatibility entry point; batch callers avoid rescanning once per original. */
 export function publisherPruneLineage(profile: BoundProfile, mutation: MutationHandle, row: PruneRow): PublicPruneLineage | undefined {
   return publisherPruneLineages(profile, mutation, [row]).get(row.id);
+}
+
+/** Read-only inspection of already captured originals. It never creates/repairs a boundary or takes a writer fence.
+ * ponytail: inspection refuses own source/candidate sets above 8 MiB or 20000 physical rows; a reviewed chunked
+ * read-only proof interface is required for larger inputs. The fenced publisher's streaming limits stay unchanged. */
+export function inspectPublisherPruneLineages(profile: BoundProfile, rows: readonly PruneRow[]): Map<string, PublicPruneLineage> {
+  try {
+    const ctx = publisherContext(profile), before = lstatSync(ctx.log, { throwIfNoEntry: false });
+    if (before) { owned(before); guard(before.size <= INSPECTION_LIMITS.maxBytes); }
+    // This complete streaming preflight counts all physical lines BEFORE any source JSON parsing or candidate collection.
+    const boundary = boundaryValue(profile, ctx, INSPECTION_LIMITS), candidates = lineageCandidates(boundary, rows, INSPECTION_LIMITS);
+    const result = new Map<string, PublicPruneLineage>();
+    if (candidates.size) {
+      const proof = inspect(ctx.log, boundary.end, candidates, INSPECTION_LIMITS); guard(proof.hash === boundary.prefixSha256);
+      for (const id of proof.found) result.set(id, { kind: "post-seal", seal: boundary.sealHash, end: boundary.end });
+    }
+    const after = publisherContext(profile); guard(canonicalJSON(after) === canonicalJSON(ctx));
+    guard(canonicalJSON(boundaryValue(profile, after, INSPECTION_LIMITS)) === canonicalJSON(boundary));
+    const final = lstatSync(ctx.log, { throwIfNoEntry: false }); guard(before ? final && same(before, final) : !final);
+    return result;
+  } catch { return fail(); }
 }

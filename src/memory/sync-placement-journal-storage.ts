@@ -410,8 +410,16 @@ function metadataIO(p: Paths, opts?: PlacementStorageOptions, required: readonly
     check: () => { if (opts) current(p, opts, required); else inventory(p); },
   };
 }
+/** A read-only metadata snapshot can be rechecked after asynchronous object verification. No writer fence or recovery is acquired. */
+export function capturePlacementPublicationMetadata<T>(home: string, epochHash: string, work: (io: PlacementPublicationMetadataIO) => T): { value: T; assertCurrent(): void } {
+  return protectedIO(() => {
+    const p = paths(home, epochHash), before = inventory(p).token, value = work(metadataIO(p));
+    const assertCurrent = () => protectedIO(() => { if (inventory(p).token !== before) fail("changed"); });
+    assertCurrent(); return { value, assertCurrent };
+  });
+}
 export function readPlacementPublicationMetadata<T>(home: string, epochHash: string, work: (io: PlacementPublicationMetadataIO) => T): T {
-  return protectedIO(() => { const p = paths(home, epochHash), before = inventory(p).token, result = work(metadataIO(p)); if (inventory(p).token !== before) fail("changed"); return result; });
+  return capturePlacementPublicationMetadata(home, epochHash, work).value;
 }
 function assertPublicationActive(p: Paths): void {
   const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);

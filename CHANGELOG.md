@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Add bounded IDs-only `inspectSyncPlacement` for activated v3 homes (#261 stage 4): source placement, unchanged outbound decisions, separate intrinsic-local metadata, safe categories and event/receipt/history-verified exposure. Reuse the publication planner and journal projection; the complete-set fingerprint covers both lists and incomplete inputs have none. Inspection performs no mutation, recovery or network operation. Activation and release remain separate.
+
 - Use unique owned private hook-spool temporaries so a killed write cannot block the next deterministic publication. Bound stale private cleanup to four entries per maintenance call after one hour, outside SessionStart; published names, bytes and formats stay unchanged. Refs #226.
 
 - Add #261 stage 3 placement-filtered shard publication: sealed bounded plans, operation-aware dependency holds, exact multi-ref publication, truthful exposure recovery and monotone v3 prune-view maintenance. Keep original payloads and all limits, and preserve v1/v2 behavior. Real-home activation and release remain separate.

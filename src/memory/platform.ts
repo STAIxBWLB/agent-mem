@@ -1,7 +1,7 @@
 // Single-source platform helpers. Hub, local and Pi modules re-export these functions unchanged.
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
+import type { SpawnSyncOptions, SpawnSyncOptionsWithBufferEncoding, SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 let processes: typeof import("node:child_process") | undefined;
@@ -91,8 +91,14 @@ export const memoryGitArgv = (args: string[], opts: { credentials?: boolean } = 
   ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
 
 /** The caller's env plus the no-prompt switch; existing keys (childEnv, GIT_OPTIONAL_LOCKS=0) pass through. */
-export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { repositoryIsolation?: boolean } = {}): NodeJS.ProcessEnv {
+export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { repositoryIsolation?: boolean; readOnlyDiagnostic?: boolean } = {}): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (options.readOnlyDiagnostic) {
+    // Fixed diagnostic commands must not inherit tracing/test/config switches that can write or lazily fetch.
+    // This is an environment projection, not permission to execute arbitrary Git commands.
+    for (const key of Object.keys(result)) if (key.startsWith("GIT_")) delete result[key];
+    Object.assign(result, { GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
+  }
   if (options.repositoryIsolation) {
     for (const key of Object.keys(result)) if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key)) delete result[key];
     result.GIT_NO_REPLACE_OBJECTS = "1";
@@ -101,7 +107,9 @@ export function memoryGitEnv(env: NodeJS.ProcessEnv = process.env, options: { re
 }
 
 /** spawnSync form of the same call: the env option is merged with memoryGitEnv, everything else passes through. */
-export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> {
+export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string>;
+export function memoryGitSync(args: string[], options: SpawnSyncOptionsWithBufferEncoding): SpawnSyncReturns<Buffer>;
+export function memoryGitSync(args: string[], options: SpawnSyncOptions): SpawnSyncReturns<string | Buffer> {
   const argv = memoryGitArgv(args);
   const timeout = gitTimeoutContext?.getStore();
   return childProcess().spawnSync(argv[0]!, argv.slice(1), { ...(timeout !== undefined ? { timeout, killSignal: "SIGKILL" as const } : {}), ...options, env: memoryGitEnv(options.env ?? process.env) });
