@@ -74,6 +74,8 @@ export function inspectionFilesystemSnapshot(root: string): Record<string, unkno
 export interface InspectionFixtureOptions {
   project?: string; generation?: string; patterns?: string[];
   seed?(store: MemoryStore, project: string): Record<string, string>;
+  /** Test-only observation of the prepared v2 home before fixture marker installation. */
+  prepared?(home: string, result: { activated: false; epochHash: string }): void;
 }
 export async function createPlacementInspectionFixture(options: InspectionFixtureOptions = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-placement-inspection-"))), home = join(root, "memory"), project = options.project ?? INSPECTION_PROJECT;
@@ -100,7 +102,8 @@ export async function createPlacementInspectionFixture(options: InspectionFixtur
       attest: () => ({ writers: [{ writerId: "1".repeat(64), version: "0.22.0", pin: "2".repeat(64), publicationFormat: PLACEMENT_FORMAT, compatible: true }], legacySyncQuiesced: true }),
       policyVersion: () => policyEpoch, authorize: () => true,
     };
-    const preview = planPlacementJournal(home, port), { epochHash } = preparePlacementJournal(home, preview, port);
+    const preview = planPlacementJournal(home, port), prepared = preparePlacementJournal(home, preview, port), { epochHash } = prepared;
+    options.prepared?.(home, prepared);
     const oldShards = JSON.parse(readFileSync(join(home, "shards.json"), "utf8")), profile = preview.plan.targetProfile;
     // Fixture-only stand-in for the separately person-authorized activation writer.
     writeFileSync(join(home, "profile.json"), json(profile), { mode: 0o600 });
