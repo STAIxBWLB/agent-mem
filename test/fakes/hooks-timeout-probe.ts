@@ -23,6 +23,7 @@ export function timeoutDescendantReceipt(text: string, expected: number) {
 }
 /** An incomplete receipt needs an independent fresh group census, including orphaned descendants. */
 export function timeoutOwnedGroupsGone(table: string, groups: readonly number[]): boolean {
+  check(groups.length > 0 && groups.every(pid => Number.isSafeInteger(pid) && pid > 0) && new Set(groups).size === groups.length, "R1 owned group identity unavailable");
   const rows = table.split("\n").filter(line => line.trim());
   check(rows.length > 0, "R1 process table unavailable");
   let gone = true;
@@ -73,7 +74,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     check(!f.rows().some(row => row.excerpt === payload.prompt), "blocked command unexpectedly committed capture");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
     const cliRssMB = result.resourceUsage.maxRSS / 1048576;
-    check(metric && Number.isFinite(metric.rssMB) && metric.rssMB! > 0 && Number.isFinite(cliRssMB) && cliRssMB > 0, "timeout metrics unavailable");
+    check(metric && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0 && Number.isFinite(metric.rssMB) && metric.rssMB! > 0 && Number.isFinite(cliRssMB) && cliRssMB > 0, "timeout metrics unavailable");
     let descendantReceiptAdvisory = false;
     if (!receipt.complete) {
       check(!functional && receipt.incomplete && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0

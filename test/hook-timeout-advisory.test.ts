@@ -27,3 +27,9 @@ test("unknown or malformed process census stays strict", () => {
   for (const table of ["", " \n", "1", "1 2 extra", "-1 2", "1 -1", "9007199254740992 1", "1 9007199254740992"])
     expect(() => timeoutOwnedGroupsGone(table, [42])).toThrow("R1 process table unavailable");
 });
+
+
+test("invalid owned group identities cannot prove an incomplete receipt safe", () => {
+  for (const groups of [[], [0], [-1], [Number.NaN], [1, 1]])
+    expect(() => timeoutOwnedGroupsGone("2 2\n", groups)).toThrow("R1 owned group identity unavailable");
+});
