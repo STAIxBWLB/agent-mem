@@ -207,6 +207,8 @@ export class PlacementInspectionObjects {
     if (result.code !== 0 || !oid(value)) unavailable(); return value;
   }
   object(object: string, type: "commit" | "tree" | "blob", maximum: number): Buffer {
+    // ponytail: a diagnostic retains at most 20000 object identities within the existing 80MiB graph bound.
+    // Larger retained histories need a reviewed immutable digest inventory; physical row-pack limits stay separate.
     if (!oid(object)) unavailable();
     const prior = this.objects.get(object); if (prior) { if (prior.type !== type || prior.bytes.length > maximum) unavailable(); return Buffer.from(prior.bytes); }
     if (this.objects.size >= SYNC_SCREEN_MAX_ROWS) bound();
