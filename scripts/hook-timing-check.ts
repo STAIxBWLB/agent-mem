@@ -54,7 +54,11 @@ export interface BudgetFailureEvidence {
   telemetryValid: boolean; survivors: number; abandonedOwnedWorkers?: number;
   unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
 }
-/** Hosted-runner exception only: all other budget failures retain their original strict verdict. */
+/** ponytail: only the four accepted #226 abandonment/timing classes (rss-unknown, not-durable,
+ * transcript-wall-max, owned-descendant-receipt) are exempted, only on exact hosted GitHub macOS markers;
+ * every other failure kind stays strict, with existing p95/stall advisories unchanged.
+ * Retirement: remove this exception only when a #226 redesign passes 20 strict uninstrumented hosted-macOS
+ * runs and the owner decides to retire it. */
 export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!stallAdvisory(env) || evidence.telemetryValid !== true || !Number.isSafeInteger(evidence.survivors) || evidence.survivors !== 0) return false;
   for (const count of [evidence.abandonedOwnedWorkers, evidence.unavailableRssSources])
