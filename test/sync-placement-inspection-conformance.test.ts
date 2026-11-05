@@ -78,6 +78,37 @@ test("loosening policy cannot release a sticky hold and a fresh allowed row forc
   expect((await syncMemory(f.store,f.opts())).ok).toBe(true); expect(f.publications()).toHaveLength(plans.size+1);
   const added = f.publications().find(value=>!plans.has(value.bundle.root.seal))!;
   matchesPlan(before,f,added); expect(f.reachableIds()).not.toContain(f.ids.declined!); expect(f.reachableIds()).toContain(fresh);
+  const after = await unchangedInspection(f);
+  expect(row(after,f.ids.declined!)).toMatchObject({disposition:"policy-local",reason:"journal-hold",exposure:{certainty:"not-observed"}});
+  expect(row(after,fresh).exposure.certainty).toBe("verified-published");
+},20_000);
+
+test("new policy denial preserves verified historical exposure and the exact already-public body", async () => {
+  const text = "HISTORICAL_PUBLIC_CANARY, originally permitted immutable evidence";
+  const f = await fixture({patterns:[],seed:(store,project)=>({prior:store.note(inspectionNote(text,project))})});
+  expect((await syncMemory(f.store,f.opts())).ok).toBe(true);
+  const first = f.publications()[0]!, target = first.bundle.root.targets.find(value=>value.realm.scope==="project")!;
+  const initialCommit = target.commit!, remoteHash = createHash("sha256").update(f.remote).digest("hex");
+  const files = inspectionGit(f.remote,"ls-tree","-r","--name-only",initialCommit).split("\n");
+  const pack = files.find(file=>file.startsWith("rows/")&&inspectionGit(f.remote,"show",`${initialCommit}:${file}`).includes(text));
+  expect(pack).toBeDefined(); if (!pack) throw Error("expected original public fixture pack");
+  const originalBytes = inspectionGit(f.remote,"show",`${initialCommit}:${pack}`);
+  f.policy(["HISTORICAL_PUBLIC_CANARY"]); f.changePolicyEpoch("tightened-after-publication");
+  const fresh = f.store.note(inspectionNote("independent permitted row forces a new publication",f.project));
+  const before = await unchangedInspection(f), plans = new Set(f.publications().map(value=>value.bundle.root.seal));
+  expect(row(before,f.ids.prior!)).toMatchObject({disposition:"policy-local",reason:"personal-data",categories:["personal-data"]});
+  expect(row(before,f.ids.prior!).exposure).toEqual({certainty:"verified-published",evidence:[{remoteHash,refHash:target.refHash,commit:initialCommit}]});
+  expect((await syncMemory(f.store,f.opts())).ok).toBe(true);
+  expect(f.publications()).toHaveLength(plans.size+1);
+  const added = f.publications().find(value=>!plans.has(value.bundle.root.seal))!; matchesPlan(before,f,added);
+  expect(f.reachableIds()).toContain(f.ids.prior!); expect(f.reachableIds()).toContain(fresh);
+  const head = inspectionGit(f.remote,"rev-parse",shardSyncRef({scope:"project",key:f.project}));
+  expect(head).not.toBe(initialCommit); expect(inspectionGit(f.remote,"show",`${head}:${pack}`)).toBe(originalBytes);
+  const after = await unchangedInspection(f), prior = row(after,f.ids.prior!);
+  expect(prior).toMatchObject({disposition:"policy-local",reason:"journal-hold",holdReasons:["personal-data"]});
+  expect(prior.exposure.certainty).toBe("verified-published");
+  if(prior.exposure.certainty==="verified-published")expect(prior.exposure.evidence).toEqual([{remoteHash,refHash:target.refHash,commit:head}]);
+  expect(JSON.stringify(after)).not.toContain("HISTORICAL_PUBLIC_CANARY");
 },20_000);
 
 test("a declined project descriptor with an independent user realm agrees with publication and leaks no empty project ref", async () => {

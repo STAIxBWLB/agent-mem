@@ -42,6 +42,10 @@ export function captureInspectionJournal(home: string, epochHash: string): Inspe
       if (frontier(publication.bundle.root.journal.sequence) !== publication.bundle.root.journal.headHash) throw new SyncPlacementJournalError("corrupt");
       const receipt = publication.facts.find(fact => fact.phase === "completed");
       if (receipt?.phase === "completed" && frontier(receipt.journal.sequence) !== receipt.journal.headHash) throw new SyncPlacementJournalError("corrupt");
+      const root = publication.bundle.root, artifact = publication.facts.find(fact => fact.phase === "artifact-built");
+      if (artifact?.phase === "artifact-built" && artifact.exportHash !== hashJSON(root.targets.map(target => target.exportSetHash))) throw new SyncPlacementJournalError("corrupt");
+      if (receipt?.phase === "completed" && receipt.outcomeHash !== (receipt.outcome === "committed"
+        ? hashJSON({ attempt: root.seal, commits: root.targets.map(target => target.commit) }) : hashJSON({ attempt: root.seal, outcome: "unknown" }))) throw new SyncPlacementJournalError("corrupt");
       publications.set(attempt, publication);
     }
     return { journal, projection: rebuildPlacementProjection(journal.epoch, journal.records), publications };
@@ -66,14 +70,15 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
   const publications = [...snapshot.publications.values()].sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence || a.bundle.root.seal.localeCompare(b.bundle.root.seal));
   for (const publication of publications) {
     const root = publication.bundle.root, decisions = publication.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]);
+    const decisionKeys = new Set(decisions.map(decision => placementKeyId(decision.key)));
     const receipt = publication.facts.find(fact => fact.phase === "completed"), artifact = publication.facts.find(fact => fact.phase === "artifact-built");
+    const acknowledged = !!objects && publication.phase === "completed" && receipt?.phase === "completed" && receipt.outcome === "committed";
     for (const decision of decisions) {
       const target = root.targets.find(target => canonicalJSON(target.realm) === canonicalJSON(decision.key.realm));
-      if (selected.has(canonicalJSON(decision.key.realm)) && target && (target.publish && decision.eligible || target.expectedRemoteHead !== null)) result.uncertain.add(placementKeyId(decision.key));
+      if (!acknowledged && selected.has(canonicalJSON(decision.key.realm)) && target && (target.publish && decision.eligible || target.expectedRemoteHead !== null)) result.uncertain.add(placementKeyId(decision.key));
     }
     if (!objects || publication.phase !== "completed" || receipt?.phase !== "completed" || receipt.outcome !== "committed") continue;
-    if (receipt.outcomeHash !== hashJSON({ attempt: root.seal, commits: root.targets.map(target => target.commit) })
-      || artifact?.phase !== "artifact-built" || artifact.exportHash !== hashJSON(root.targets.map(target => target.exportSetHash))) unavailable();
+    if (artifact?.phase !== "artifact-built") unavailable();
     for (const [targetIndex, planned] of root.targets.entries()) {
       const index = selected.get(canonicalJSON(planned.realm)); if (index === undefined) continue;
       const target = targets[index]!, tip = planned.commit ?? planned.expectedRemoteHead;
@@ -91,9 +96,11 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
       }
       for (const row of membership) {
         const key: PlacementKey = { realm: physicalRealm(target.realm), ...row }, id = placementKeyId(key);
+        if (!decisionKeys.has(id)) continue;
         const proof = { remoteHash: root.remoteHash, refHash: planned.refHash, commit: tip };
         const prior = result.published.get(id) ?? [];
-        if (!prior.some(value => canonicalJSON(value) === canonicalJSON(proof))) prior.push(proof);
+        const previous = prior.findIndex(value => value.remoteHash === proof.remoteHash && value.refHash === proof.refHash);
+        if (previous < 0) prior.push(proof); else prior[previous] = proof;
         result.published.set(id, prior);
       }
       // Only the retained selected origin supplies publication dependencies. A receipt from another remote
@@ -110,6 +117,15 @@ function bound(): never { throw new SyncPlacementJournalError("bound"); }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const oid = (value: string) => /^[a-f0-9]{40}$/.test(value);
 const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];
+function readCommand(args: readonly string[]): boolean {
+  const ref = (value: string | undefined) => !!value && /^refs\/heads\/amem\/(?:u|p\/[a-f0-9]{16})$/.test(value);
+  if (args[0] === "config") return args.join("\0") === "config\0--local\0--no-includes\0--null\0--list";
+  if (args[0] === "cat-file") return args.length === 3 && ["-t", "-s", "blob", "commit", "tree"].includes(args[1] ?? "") && oid(args[2] ?? "");
+  if (args[0] === "rev-list") return args.length === 5 && args.slice(0, 4).join("\0") === "rev-list\0--topo-order\0--reverse\0--parents" && oid(args[4] ?? "");
+  if (args[0] === "symbolic-ref") return args.length === 3 && args[1] === "--quiet" && ref(args[2]);
+  return args[0] === "rev-parse" && (args.length === 2 && ["--is-bare-repository", "--show-object-format"].includes(args[1] ?? "")
+    || args.length === 4 && args[1] === "--verify" && args[2] === "--quiet" && ref(args[3]));
+}
 
 /** Bind the complete private cache inventory, not a mutable ref as evidence of a remote acknowledgement.
  * ponytail: diagnostic cache metadata shares the 20000-entry/8MiB ceiling and the existing 256MiB replay-disk
@@ -149,7 +165,6 @@ export class PlacementInspectionObjects {
   private sourceBytes = 0;
   private readonly sourcePacks = new Set<string>();
   private readonly objects = new Map<string, { type: string; bytes: Buffer }>();
-  private readonly auditors = new Map<string, ShardHistoryAuditor>();
   constructor(home: string, check: () => void) {
     this.home = home; this.cache = join(home, "shard-sync-placement", "objects.git"); this.check = check;
     this.rootStamp = placementCacheRootStamp(home);
@@ -172,7 +187,7 @@ export class PlacementInspectionObjects {
   }
   private run(args: string[], maximum: number): { code: number; bytes: Buffer } {
     this.quick();
-    if (!["config", "rev-parse", "rev-list", "symbolic-ref", "cat-file"].includes(args[0] ?? "")) unavailable();
+    if (!readCommand(args)) unavailable();
     const env = memoryGitEnv(process.env, { repositoryIsolation: true, readOnlyDiagnostic: true });
     const result = memoryGitSync(["--no-replace-objects", "--git-dir", this.cache, "-c", "protocol.allow=never", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...args],
       { encoding: "buffer", cwd: this.home, env, timeout: 10000, killSignal: "SIGKILL", maxBuffer: maximum });
@@ -180,7 +195,7 @@ export class PlacementInspectionObjects {
     if (result.error) { if ((result.error as NodeJS.ErrnoException).code === "ENOBUFS") bound(); unavailable(); }
     return { code: result.status ?? -1, bytes: result.stdout };
   }
-  text(args: string[]): string {
+  private text(args: string[]): string {
     const result = this.run(args, SYNC_SCREEN_MAX_BYTES); if (result.code !== 0) unavailable();
     return new TextDecoder("utf-8", { fatal: true }).decode(result.bytes).trim();
   }
@@ -203,9 +218,8 @@ export class PlacementInspectionObjects {
     this.bytes += size; this.objects.set(object, { type, bytes: result.bytes }); return Buffer.from(result.bytes);
   }
   auditor(realm: ShardSyncRealm, generation: string): ShardHistoryAuditor {
-    const key = canonicalJSON([realm, generation]); let auditor = this.auditors.get(key);
-    if (!auditor) {
-      auditor = new ShardHistoryAuditor({ realm, generation, placement: true, publicPrune: true, git: async args => this.text(args),
+    // The byte cache is shared and bounded. Do not retain a full decoded body map for every historical receipt.
+    return new ShardHistoryAuditor({ realm, generation, placement: true, publicPrune: true, git: async args => this.text(args),
         object: async (id, type) => this.object(id, type, type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES),
         blob: async (id, path) => {
           const bytes = this.object(id, "blob", path === "shard.json" || path.startsWith("prune-witnesses/") ? 65536 : SHARD_PACK_MAX_BYTES);
@@ -217,9 +231,6 @@ export class PlacementInspectionObjects {
           }
           return bytes;
         } });
-      this.auditors.set(key, auditor);
-    }
-    return auditor;
   }
   tree(commit: string): string {
     const body = this.object(commit, "commit", 65536), first = body.subarray(0, body.indexOf(10)).toString("ascii");

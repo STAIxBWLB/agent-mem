@@ -7,7 +7,7 @@ import { placementKeyId } from "../src/memory/sync-placement-journal-format.ts";
 import { memoryGitEnv } from "../src/memory/platform.ts";
 import * as platform from "../src/memory/platform.ts";
 import { PlacementInspectionObjects } from "../src/memory/sync-placement-inspection-evidence.ts";
-import { inspectSyncPlacement, MemoryStore, openShardStore, syncMemory, holdPlacementRow } from "../src/index.ts";
+import { inspectSyncPlacement, MemoryStore, openShardStore, syncMemory, holdPlacementRow, recordPlacementPublication } from "../src/index.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
@@ -201,3 +201,25 @@ test("synthetic object-reader port keeps graph overhead separate from the 8MiB p
     expect(bytes).toBeGreaterThan(8 * 1024 * 1024); reader.assertCurrent();
   } finally { read.mockRestore(); }
 }, 20_000);
+
+test("missing cache cannot turn an inconsistent completed receipt into a complete unknown report", async () => {
+  const f = await fixture(); expect((await syncMemory(f.store, f.opts())).ok).toBe(true);
+  const publication = f.publications()[0]!, receipt = publication.facts.find(fact => fact.phase === "completed")!;
+  const { seal: _seal, ...body } = { ...receipt, outcomeHash: "0".repeat(64) };
+  const file = join(f.home, "sync-placement", "epochs", f.epochHash, `publication-${publication.bundle.root.seal}-receipt.json`);
+  writeFileSync(file, canonicalJSON({ ...body, seal: hashJSON(body) }) + "\n");
+  rmSync(join(f.home, "shard-sync-placement", "objects.git"), { recursive: true });
+  const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
+  expect(result).toMatchObject({ complete: false, reason: "journal-unavailable" }); expect("fingerprint" in result).toBe(false); expect(f.snapshot()).toEqual(before);
+}, 20_000);
+
+test("a journal published flag without independently retained publication proof stays unknown", async () => {
+  const f = await fixture(), source = [...f.capture().rows.values()].find(row => row.key.id === f.ids.project)!;
+  // The stage-2 host verifier is a synthetic external receipt here, not a stage-3 Git acknowledgement.
+  recordPlacementPublication(f.home, { epochHash: f.epochHash, expectedHead: f.projection().headHash, requestId: "b".repeat(64), key: source.key }, f.port,
+    { attemptHash: "c".repeat(64), remoteHash: "d".repeat(64), refHash: "e".repeat(64), commit: "f".repeat(40), proofHash: "1".repeat(64) }, () => true);
+  expect(f.projection().states.find(state => state.key.id === source.key.id)?.exposure).toBe("published");
+  const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
+  expect(f.snapshot()).toEqual(before); expect(result.complete).toBe(true); if (!result.complete) throw Error("external receipt fixture incomplete");
+  expect(result.rows.find(row => row.id === source.key.id)?.exposure).toEqual({ certainty: "unknown" }); expect(result.counts.verifiedPublished).toBe(0);
+});

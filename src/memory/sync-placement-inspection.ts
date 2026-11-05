@@ -6,7 +6,7 @@ import { types } from "node:util";
 import { SegmentReadBudgetError } from "./bridge.ts";
 import { canonicalJSON, hashJSON, selectorRevision } from "./generation.ts";
 import { assertFormatFloor } from "./formats.ts";
-import { readPlacementRuntimeMarkers, placementSelectorRefusal } from "./sync-placement-guard.ts";
+import { readPlacementRuntimeMarkers, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { captureSyncPlacementContext, type PlacementCapturePort } from "./sync-placement-capture.ts";
@@ -54,9 +54,9 @@ const categories: readonly SyncPolicyCategory[] = ["secret", "personal-data", "d
 const remedies: Record<SyncPlacementInspectionIncompleteReason, string> = {
   "placement-not-active": "Placement is not active; complete the person-reviewed shard/public-prune migrations and separately authorized placement activation before inspecting placement.",
   "binding-changed": "Selected placement bindings changed; inspect the retained activation to restore matching markers when required, then reopen the selected project/user handles and inspect again.",
-  "input-unavailable": "Selected source or placement-context inputs are unreadable or unsupported; verify the retained source metadata and compatible writer pins, then inspect again.",
+  "input-unavailable": "Selected source or placement-context inputs are unreadable, incomplete or unsupported; inspect retained source metadata and any recorded partial request, verify compatible writer pins, then inspect again.",
   "input-bound": "Placement inspection exceeds its supported 8 MiB/20000-row or retained-evidence bounds; request a person-reviewed bounded epoch transition before inspecting again.",
-  "input-changed": "Selected source or policy context changed during inspection; inspect again once the bindings and policy are stable.",
+  "input-changed": "The selected placement inspection context changed; wait for stable source, journal and policy bindings, then inspect again.",
   "journal-unavailable": "The retained placement journal is incomplete or inconsistent; preserve it and resume its exact recorded request with a compatible runtime before inspecting again.",
   "policy-unavailable": "The policy callback/version or configured/default-deny epoch is unavailable or changed; restore a stable policy and policyVersion before inspecting again.",
   "attestation-unavailable": "Fresh placement writer-pin/quiescence attestation is missing or invalid; supply the matching placementAttestation callback and inspect again.",
@@ -89,6 +89,7 @@ function inactive(store: MemoryStore): Extract<SyncPlacementInspection, { comple
 
 export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacementInspectionOptions = {}): Promise<SyncPlacementInspection> {
   let phase: SyncPlacementInspectionIncompleteReason = "input-unavailable";
+  let captured = false;
   try {
     const options = callbacks(input), home = store.profile.home;
     assertFormatFloor(home, "sync");
@@ -97,10 +98,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
       selector: selectorRevision(target.profile.home) })));
     if (opened.some(target => selectorRevision(target.profile.home) !== target.profile.selectorRevision)) fail("binding-changed");
     const beforeBinding = binding();
-    if (store.profile.publicationFormat !== PLACEMENT_FORMAT) {
-      if (placementSelectorRefusal(home)) fail("binding-changed");
-      return inactive(store);
-    }
+    if (store.profile.publicationFormat !== PLACEMENT_FORMAT) return inactive(store);
     if (!options.placementAttestation) fail("attestation-unavailable");
     if (!opened.length || opened.length > 2 || !opened.includes(store) || opened.some(target => target.profile.home !== home || !target.profile.sharded
       || !target.profile.generation || !target.profile.shardUser && target.profile.shardKey !== store.profile.shardKey)) fail("binding-changed");
@@ -109,6 +107,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     const targets = opened.map(target => ({ store: target, realm: target.profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: target.profile.shardKey! }, generation: target.profile.generation! }));
     const port: PlacementCapturePort = { attest: options.placementAttestation, ...(options.policyVersion ? { policyVersion: options.policyVersion } : {}) };
     const capture = captureSyncPlacementContext(home, port, targets.map(target => physical(target.realm)));
+    captured = true;
     if (capture.activeHead !== active.profile.placementHead || canonicalJSON(capture.context.writers) !== canonicalJSON(active.activation.writers)) fail("attestation-unavailable");
     phase = "journal-unavailable"; const retained = captureInspectionJournal(home, active.profile.placementHead);
     const check = () => {
@@ -197,10 +196,11 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof Incomplete) reason = error.reason;
+      else if (error instanceof SyncPlacementRuntimeError) reason = "binding-changed";
       else if (error instanceof SegmentReadBudgetError) reason = "input-bound";
       else if (error instanceof SyncPlacementJournalError) {
         if (error.code === "bound") reason = "input-bound";
-        else if (error.code === "changed") reason = "input-changed";
+        else if (error.code === "changed") reason = captured ? "input-changed" : "input-unavailable";
       }
     }
     return { complete: false, reason, nextStep: remedies[reason] };
