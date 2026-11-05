@@ -1,11 +1,12 @@
 /** Bounded selected-path acquisition only. Transport admission and receiving binding stay with the caller. */
 import { createHash } from "node:crypto";
 import { PUBLIC_PRUNE_GRAPH_MAX_BYTES, PUBLIC_PRUNE_GRAPH_MAX_OBJECTS, PUBLIC_PRUNE_INPUT_MAX_BYTES, PublicPruneInputError, type PublicPruneObject } from "./public-prune-inputs.ts";
-import { decodeShardDescriptor, decodeShardManifest, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { decodePlacementTransportDescriptor, decodeShardManifest, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
 import { PUBLIC_PRUNE_MAX_PACKS, PUBLIC_PRUNE_MAX_WITNESSES, verifyPublicPruneWitness } from "./public-prune-witness.ts";
 
 type ObjectType = "commit" | "tree" | "blob";
 export interface PublicPruneGitGraphOptions {
+  publicationFormat?: "agent-mem.sync-placement/v1";
   commit: string; manifestPath: string; manifestBlob: string; realm: ShardSyncRealm;
   readObject: (oid: string) => Promise<{ type: ObjectType; body: Uint8Array }>;
 }
@@ -13,7 +14,7 @@ const hex = (v: unknown, n: number): v is string => typeof v === "string" && v.l
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 function guard(ok: unknown, resource = false): asserts ok { if (!ok) throw new PublicPruneInputError(resource ? "resource" : "unavailable"); }
 interface TreeEntry { mode: "40000" | "100644"; oid: string }
-function parseTree(body: Buffer): Map<string, TreeEntry> {
+export function parsePublicPruneGitTree(body: Buffer): Map<string, TreeEntry> {
   const entries = new Map<string, TreeEntry>();
   for (let offset = 0; offset < body.length;) {
     const space = body.indexOf(32, offset); guard(space > offset);
@@ -59,12 +60,13 @@ export async function collectPublicPruneGitGraph(options: PublicPruneGitGraphOpt
       let oid = root;
       for (let i = 0; i < parts.length; i++) {
         let entries = trees.get(oid);
-        if (!entries) { entries = parseTree((await get(oid, "tree")).body); trees.set(oid, entries); }
+        if (!entries) { entries = parsePublicPruneGitTree((await get(oid, "tree")).body); trees.set(oid, entries); }
         const entry = entries.get(parts[i]!); guard(entry && entry.mode === (i === parts.length - 1 ? "100644" : "40000")); oid = entry.oid;
       }
       const value = await get(oid, "blob"); return { oid, body: value.body };
     };
-    guard(decodeShardDescriptor((await path("shard.json")).body, realm) === "v2");
+    const version = decodePlacementTransportDescriptor((await path("shard.json")).body, realm);
+    guard(version === "v2" || version === "v3" && options.publicationFormat === "agent-mem.sync-placement/v1");
     const manifest = await path(manifestPath); guard(manifest.oid === manifestBlob);
     const raw = decodeShardManifest(manifestPath, manifest.body);
     guard(object(raw) && object(raw.pruneOccurrence) && Array.isArray(raw.witnesses));

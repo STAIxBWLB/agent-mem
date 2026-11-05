@@ -75,7 +75,7 @@ function validatePublic(bytes: string, generation: string, path: string, checkPr
 
 /** Separate generation repository, fixed refs and a one-way legacy cache; failures are bounded result receipts. */
 export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
-  const placementRefusal = placementRuntimeRefusal(store.profile.home);
+  const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   let pushed = false, releaseMutation: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const result = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });

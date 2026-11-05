@@ -1,3 +1,4 @@
+import { validatePlacementProfile, type PlacementProfile } from "./sync-placement-format.ts";
 import { placementSelectorRefusal, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView, waitForPublicPruneWriter, PUBLIC_PRUNE_INTENT } from "./public-prune-view.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -24,12 +25,15 @@ export interface BoundProfile {
   /** Public legacy witnesses stay distinct from same-machine private bridge input. */
   legacyMainHome?: string;
   sharded?: boolean;
+  publicationFormat?: "agent-mem.sync-placement/v1";
+  placementHead?: string;
   shardKey?: string;
   shardUser?: boolean;
 }
 export type ProfileInput = "shared-v1" | { generation: string };
 export type ProfileSelector = { schema: "agent-mem.profile/v1"; kind: "shared-v1" | "generation"; generation?: string }
-  | { schema: "agent-mem.profile/v2"; kind: "generation"; generation: string; foreignPruneFormat: "agent-mem.public-prune-witness/v1"; pruneInputSetHash: string };
+  | { schema: "agent-mem.profile/v2"; kind: "generation"; generation: string; foreignPruneFormat: "agent-mem.public-prune-witness/v1"; pruneInputSetHash: string }
+  | PlacementProfile;
 export interface GenerationDescriptor { schema: "agent-mem.generation/v1"; generation: string; legacySchema: "agent-hub.memory/v1" }
 export interface GenerationSeal { schema: "agent-mem.generation-seal/v1"; generation: string; descriptorHash: string; sourceDigest: string }
 export const PROFILE_LOCK_TIMEOUT_MS = 3000;
@@ -72,11 +76,11 @@ function selectorSnapshot(memoryDir: string, deadline: number): { selector?: Pro
   if (refusal) throw new SyncPlacementRuntimeError(refusal);
   const value = readProfileJSON(join(memoryDir, "profile.json"));
   if (value === undefined) return { revision: "absent" };
-  if (!legacyProfileMarkerShape(value)) return unavailable();
-  const selector = value as ProfileSelector;
-  if (selector.schema === "agent-mem.profile/v2") {
+  const selector: ProfileSelector = (value as {schema?:unknown})?.schema === "agent-mem.profile/v3"
+    ? validatePlacementProfile(value) : legacyProfileMarkerShape(value) ? value! : unavailable();
+  if (selector.schema === "agent-mem.profile/v2" || selector.schema === "agent-mem.profile/v3") {
     const shard = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
-    if (!shard || shard.schema !== "agent-mem.shards/v2" || shard.phase !== "active" || shard.generation !== selector.generation || shard.selectorRevision !== hashJSON(selector)) return unavailable();
+    if (!shard || shard.schema !== (selector.schema === "agent-mem.profile/v3" ? "agent-mem.shards/v3" : "agent-mem.shards/v2") || shard.phase !== "active" || shard.generation !== selector.generation || shard.selectorRevision !== hashJSON(selector)) return unavailable();
     readPublicPruneView(memoryDir, selector.pruneInputSetHash, selector.generation, deadline);
   } else if ((readProfileJSON(join(memoryDir, "shards.json")) as {schema?:unknown}|undefined)?.schema === "agent-mem.shards/v2") return unavailable();
   return { selector, revision: hashJSON(selector) };
@@ -109,8 +113,10 @@ export function rebindPublicPruneProfile(profile: BoundProfile): void {
   for (let attempt = 0; attempt < 6; attempt++) {
     const current = readSelector(profile.home), selector = current.selector;
     if (current.revision === profile.selectorRevision) return;
+    if (selector?.schema !== "agent-mem.profile/v2" && selector?.schema !== "agent-mem.profile/v3") return unavailable();
     if (!profile.sharded || profile.kind !== "generation" || !profile.generation || !profile.pruneInputSetHash
-      || selector?.schema !== "agent-mem.profile/v2" || selector.generation !== profile.generation || selector.foreignPruneFormat !== profile.foreignPruneFormat) return unavailable();
+      || (profile.publicationFormat ? selector.schema !== "agent-mem.profile/v3" || selector.publicationFormat !== profile.publicationFormat || selector.placementHead !== profile.placementHead : selector.schema !== "agent-mem.profile/v2")
+      || selector.generation !== profile.generation || selector.foreignPruneFormat !== profile.foreignPruneFormat) return unavailable();
     const previous = readPublicPruneView(profile.home, profile.pruneInputSetHash, profile.generation);
     const next = readPublicPruneView(profile.home, selector.pruneInputSetHash, profile.generation);
     if (!Object.keys(previous.realms).every(key => Object.hasOwn(next.realms, key))) return unavailable();
@@ -155,9 +161,9 @@ export function validateGeneration(memoryDir: string, generation: string): strin
 export function resolveProfile(memoryDir: string, explicit?: ProfileInput): BoundProfile {
   const home = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), selected = readSelector(home);
   if (explicit !== undefined && explicit !== "shared-v1" && (!explicit || typeof explicit !== "object" || !keys(explicit, ["generation"]) || !validGeneration(explicit.generation))) return unavailable();
-  if (selected.selector?.schema === "agent-mem.profile/v2" && explicit !== undefined) return unavailable();
+  if ((selected.selector?.schema === "agent-mem.profile/v2" || selected.selector?.schema === "agent-mem.profile/v3") && explicit !== undefined) return unavailable();
   const generation = explicit === "shared-v1" ? undefined : explicit?.generation ?? (selected.selector?.kind === "generation" ? selected.selector.generation : undefined);
-  return generation ? { kind: "generation", home, dir: validateGeneration(home, generation), generation, selectorRevision: selected.revision, ...(selected.selector?.schema === "agent-mem.profile/v2" ? { foreignPruneFormat: selected.selector.foreignPruneFormat, pruneInputSetHash: selected.selector.pruneInputSetHash } : {}) }
+  return generation ? { kind: "generation", home, dir: validateGeneration(home, generation), generation, selectorRevision: selected.revision, ...((selected.selector?.schema === "agent-mem.profile/v2" || selected.selector?.schema === "agent-mem.profile/v3") ? { foreignPruneFormat: selected.selector.foreignPruneFormat, pruneInputSetHash: selected.selector.pruneInputSetHash, ...(selected.selector.schema === "agent-mem.profile/v3" ? { publicationFormat: selected.selector.publicationFormat, placementHead: selected.selector.placementHead } : {}) } : {}) }
     : { kind: "shared-v1", home, dir: home, selectorRevision: selected.revision };
 }
 

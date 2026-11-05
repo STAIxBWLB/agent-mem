@@ -1,12 +1,13 @@
+import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { types } from "node:util";
-/** Stage1 only: recognized placement selectors never authorize an existing runtime or transport. */
+/** Closed activation metadata admits v3 readers; publication still requires full journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
-import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape } from "./generation.ts";
+import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
 import { legacyShardMarkerShape } from "./shard.ts";
 import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 
-export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 is recognized but not enabled in this stage1 build; keep the current v1/v2 profile active and use a placement-enabled release only after person-authorized activation";
+export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
 export const PLACEMENT_MARKER_REFUSAL = "sync placement metadata is invalid or unsupported; person inspection and a compatible reader are required before continuing";
 export class SyncPlacementRuntimeError extends Error {
   readonly code: "sync_placement_not_enabled" | "sync_placement_unavailable";
@@ -68,7 +69,9 @@ export function placementSelectorRefusal(home: string): string | undefined {
   try { profile = readMarker(join(home, "profile.json")); } catch { /* The original selector reader reports this legacy failure. */ }
   try { shards = readMarker(join(home, "shards.json")); } catch { /* Ordinary migration still owns malformed split-state recovery. */ }
   if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return fenced ? PLACEMENT_MARKER_REFUSAL : undefined;
-  return placementMarkerRefusal(profile, shards);
+  const refusal = placementMarkerRefusal(profile, shards);
+  if (refusal !== PLACEMENT_STAGE1_REFUSAL) return refusal;
+  try { return readActivePlacementBinding(home, profile, shards) ? undefined : refusal; } catch { return PLACEMENT_MARKER_REFUSAL; }
 }
 function placementFencePresent(home: string): boolean {
   const root = lstatSync(join(home, "sync-placement"), { throwIfNoEntry: false });
@@ -76,10 +79,18 @@ function placementFencePresent(home: string): boolean {
   if (root.isSymbolicLink() || !root.isDirectory() || root.uid !== process.getuid?.() || (root.mode & 0o077) !== 0) return true;
   return lstatSync(join(home, "sync-placement", "active.json"), { throwIfNoEntry: false }) !== undefined;
 }
-/** Only fixed bounded marker reads; no selector rebind, data/index open, cache, lock or child/network call. */
-export function placementRuntimeRefusal(home: string): string | undefined {
+/** Bounded activation/view metadata only; no data/index open, cache mutation, lock or child/network call.
+ * The v3 publication coordinator separately proves the complete journal, selected sources and policy. */
+export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
   try { const fenced = placementFencePresent(home), markers = readPlacementRuntimeMarkers(home);
-    return placementMarkerRefusal(markers.profile, markers.shards) ?? (fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
+    const refusal = placementMarkerRefusal(markers.profile, markers.shards);
+    if (refusal === PLACEMENT_STAGE1_REFUSAL) {
+      const active=readActivePlacementBinding(home,markers.profile,markers.shards);
+      if(!active)return refusal;
+      if(bound && (bound.kind!=="generation"||bound.sharded!==true||bound.generation!==active.profile.generation||bound.publicationFormat!==active.profile.publicationFormat||bound.placementHead!==active.profile.placementHead)) return PLACEMENT_MARKER_REFUSAL;
+      return undefined;
+    }
+    return refusal ?? (fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
   catch { return PLACEMENT_MARKER_REFUSAL; }
 }
 export function assertPlacementRuntime(home: string): void {

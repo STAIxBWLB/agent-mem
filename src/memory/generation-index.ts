@@ -109,7 +109,7 @@ export class GenerationIndex {
       if (!readOnly) rebindPublicPruneProfile(this.profile);
       const value = readProfileJSON(join(this.profile.home, "shards.json")) as { schema?: unknown; phase?: unknown; generation?: unknown; selectorRevision?: unknown } | undefined;
       if (selectorRevision(this.profile.home) !== this.profile.selectorRevision) { if (this.profile.foreignPruneFormat) continue; return fail(); }
-      if (!value || value.schema !== (this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
+      if (!value || value.schema !== (this.profile.publicationFormat ? "agent-mem.shards/v3" : this.profile.foreignPruneFormat ? SHARDED_V2_SCHEMA : SHARDED_SCHEMA) || value.phase !== "active" || value.generation !== this.profile.generation || value.selectorRevision !== this.profile.selectorRevision) return fail();
       return hashJSON(value);
     }
     return fail();
@@ -197,7 +197,7 @@ export class GenerationIndex {
       return;
     }
     if (!this.foreignCache || this.foreignCache.set !== set) this.foreignCache = { set, load: createPublicPruneReplayCache({ dir: profile.dir,
-      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set }) };
+      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set, ...(profile.publicationFormat ? {publicationFormat:profile.publicationFormat} : {}) }) };
     const proof = this.foreignCache.load();
     if (validateRows || this.foreignStamp !== set) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
       const expected = proof.rowHashes.get(item.id); if (expected && hashJSON(JSON.parse(item.line)) !== expected) return fail();

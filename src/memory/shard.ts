@@ -1,3 +1,5 @@
+import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { assertPlacementRuntime, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
@@ -85,7 +87,7 @@ export function captureShardDir(base: string, key: string, machine: string): str
 export const SHARDED_SCHEMA = "agent-mem.shards/v1";
 export const SHARDED_V2_SCHEMA = "agent-mem.shards/v2";
 export const SHARDED_V2_FIELDS = ["schema", "generation", "phase", "selectorRevision", "sourceGeneration", "sources", "machine", "legacyCommit", "deadLeasesRemoved"] as const;
-export interface ShardedSelection { schema: typeof SHARDED_SCHEMA | typeof SHARDED_V2_SCHEMA; generation: string; phase: "active"; selectorRevision: string }
+export interface ShardedSelection { schema: typeof SHARDED_SCHEMA | typeof SHARDED_V2_SCHEMA | "agent-mem.shards/v3"; generation: string; phase: "active"; selectorRevision: string }
 
 export function userShardDir(base: string): string {
   return join(base, "user");
@@ -103,12 +105,16 @@ export function legacyShardMarkerShape(value: unknown): boolean {
 }
 function shardJournal(memoryDir: string): ShardedJournal {
   const value = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
+  if (value?.schema === "agent-mem.shards/v3") {
+    const profile = validatePlacementProfile(readProfileJSON(join(memoryDir, "profile.json")));
+    return validatePlacementShards(value, profile) as unknown as ShardedJournal;
+  }
   if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
   if (value.schema === SHARDED_V2_SCHEMA && Object.keys(value).some(key => !(SHARDED_V2_FIELDS as readonly string[]).includes(key))) throw new Error("unsupported curated shard view");
   return value as ShardedJournal;
 }
 function compatibleShardAdvance(before: ShardedJournal, after: ShardedJournal): boolean {
-  if (before.schema !== SHARDED_V2_SCHEMA || after.schema !== SHARDED_V2_SCHEMA) return false;
+  if (![SHARDED_V2_SCHEMA, "agent-mem.shards/v3"].includes(before.schema) || after.schema !== before.schema) return false;
   const { selectorRevision: _old, ...old } = before, { selectorRevision: _next, ...next } = after;
   return canonicalJSON(old) === canonicalJSON(next);
 }
@@ -132,8 +138,8 @@ function shardSnapshot(memoryDir: string, deadline: number) {
       if (!compatibleShardAdvance(journal, current)) throw new Error("curated shard selector changed");
       journal = current; continue;
     }
-    if ((journal.schema === SHARDED_V2_SCHEMA) !== (selector.selector?.schema === "agent-mem.profile/v2")) throw new Error("curated shard selector changed");
-    if (journal.schema === SHARDED_V2_SCHEMA && (selector.revision !== journal.selectorRevision || selector.selector?.generation !== journal.generation)) continue;
+    if ((journal.schema === SHARDED_V2_SCHEMA || journal.schema === "agent-mem.shards/v3") !== (selector.selector?.schema === "agent-mem.profile/v2" || selector.selector?.schema === "agent-mem.profile/v3")) throw new Error("curated shard selector changed");
+    if ((journal.schema === SHARDED_V2_SCHEMA || journal.schema === "agent-mem.shards/v3") && (selector.revision !== journal.selectorRevision || selector.selector?.generation !== journal.generation)) continue;
     return { journal, selector };
   }
   throw new Error("curated shard selector changed");
@@ -148,6 +154,13 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
  */
 export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }): void {
   assertPlacementRuntime(memoryDir);
+  const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
+  if (selector?.schema === "agent-mem.profile/v3") {
+    const active = readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
+    const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
+    if (!active || !active.activation.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
+      throw new Error("sync placement realm is outside the activated inventory; review its activation before opening it");
+  }
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   const check = (path: string, directory: boolean) => {
     try {
@@ -182,10 +195,10 @@ export function resolveShardProfile(memoryDir: string, opts: { project?: string;
   const final = shardSnapshot(memoryDir, deadline), selector = final.selector;
   if (canonicalJSON(final.journal) !== canonicalJSON(initial.journal) && !compatibleShardAdvance(initial.journal, final.journal)
     || selector.revision !== final.journal.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
-  if (selector.selector?.schema === "agent-mem.profile/v2") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation, deadline);
+  if (selector.selector?.schema === "agent-mem.profile/v2" || selector.selector?.schema === "agent-mem.profile/v3") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation, deadline);
   const legacyMainHome = join(dir, "legacy-main");
   const hasLegacyMain = existsSync(legacyMainHome) || sources.sources.some(source => !!source && typeof source === "object" && "source" in source && source.source === "legacy-main");
   return { kind: "generation", home: memoryDir, dir, generation, selectorRevision: selector.revision,
-    ...(selector.selector?.schema === "agent-mem.profile/v2" ? { foreignPruneFormat: selector.selector.foreignPruneFormat, pruneInputSetHash: selector.selector.pruneInputSetHash } : {}),
+    ...((selector.selector?.schema === "agent-mem.profile/v2" || selector.selector?.schema === "agent-mem.profile/v3") ? { foreignPruneFormat: selector.selector.foreignPruneFormat, pruneInputSetHash: selector.selector.pruneInputSetHash, ...(selector.selector.schema === "agent-mem.profile/v3" ? { publicationFormat: selector.selector.publicationFormat, placementHead: selector.selector.placementHead } : {}) } : {}),
     legacyHome: join(dir, "legacy"), ...(hasLegacyMain ? { legacyMainHome } : {}), sharded: true, ...(opts.user === true ? { shardUser: true } : { shardKey: opts.project! }) };
 }
