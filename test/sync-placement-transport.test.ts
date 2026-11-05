@@ -496,7 +496,7 @@ test("source-local already-public row keeps its frozen hold when policy drifts a
     expect(store.importNote(input as NoteInput, at, { machine, expectedId: id }).id).toBe(id);
     // Before migration, model an existing valid legacy-local long original, preserving its exact ID/payload.
     // The original has positive public occurrence evidence in the independent sender's real Git history.
-    renameSync(join(store.dir, "log", `${machine}.jsonl`), join(store.dir, "local", `${machine}.jsonl`));
+    renameSync(join(store.dir, "log", `${store.machine.id}.jsonl`), join(store.dir, "local", `${store.machine.id}.jsonl`));
     return { row: id };
   } });
   expect([...receiver.capture().rows.values()].find(value => value.key.id === original.id)?.sourcePlacement).toBe("local");
