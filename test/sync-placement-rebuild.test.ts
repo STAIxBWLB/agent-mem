@@ -16,7 +16,7 @@ const event = (at: number): PlacementEvent => {
   return validatePlacementEvent(value);
 };
 const key = () => event(0).key;
-function rejected(work: () => unknown, code?: string): void {
+function rejected(work: () => unknown, code?: SyncPlacementJournalError["code"]): void {
   expect(work).toThrow(SyncPlacementJournalError);
   try { work(); } catch (error) { if (code) expect((error as SyncPlacementJournalError).code).toBe(code); expect((error as Error).message).not.toContain("private-canary"); }
 }
