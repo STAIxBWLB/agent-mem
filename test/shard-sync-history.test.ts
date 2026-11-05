@@ -195,3 +195,30 @@ test("safe history refusals never read caller messages, proxy traps or accessor 
   const unknown = Object.defineProperty(new ShardHistoryError(), "code", { value: "private-canary" });
   expect(shardHistoryRefusal(unknown)).toBe(fallback); expect(calls).toBe(0);
 });
+
+
+test("verified ancestry uses captured hash-verified parents even if mutable cached tip bytes later invent a private parent", async () => {
+  const f = strongFixture();
+  const addCommit = (parents: string[], message: string) => {
+    const body = Buffer.from(`tree ${f.graph.rootTree.oid}\n${parents.map(parent => `parent ${parent}\n`).join("")}author Fixture <fixture@sync.invalid> 0 +0000\ncommitter Fixture <fixture@sync.invalid> 0 +0000\n\n${message}\n`);
+    const raw = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]), id = createHash("sha1").update(raw).digest("hex");
+    f.objects.set(id, raw); return id;
+  };
+  const privateCommit = addCommit([f.parent], "Unaccepted private candidate"), tip = addCommit([f.parent], "Actual public child");
+  const auditor = new ShardHistoryAuditor({ ...f.options, git: async () => `${f.parent}\n${tip} ${f.parent}` });
+  await auditor.history(tip);
+  const original = Buffer.from(f.objects.get(tip)!);
+  const forgedBody = Buffer.from(`tree ${f.graph.rootTree.oid}\nparent ${privateCommit}\nauthor Fixture <fixture@sync.invalid> 0 +0000\ncommitter Fixture <fixture@sync.invalid> 0 +0000\n\nForged mutable cache\n`);
+  f.objects.set(tip, Buffer.concat([Buffer.from(`commit ${forgedBody.length}\0`), forgedBody]));
+  expect(await auditor.verifiedAncestor(privateCommit, tip)).toBe(false);
+  expect(await auditor.verifiedAncestor(f.parent, tip)).toBe(true);
+  expect(await auditor.verifiedAncestor(tip, tip)).toBe(true);
+  f.objects.set(tip, original);
+  expect(await auditor.verifiedAncestor(privateCommit, tip)).toBe(false);
+  expect(await auditor.verifiedAncestor(f.parent, tip)).toBe(true);
+});
+
+test("verified ancestry refuses the legacy trusted-Git abstraction without a strong raw-object port", async () => {
+  const f = fixture(); f.add(C(1), [], tree("v3", []));
+  await expect(new ShardHistoryAuditor(f.options).verifiedAncestor(C(1), C(1))).rejects.toThrow(ShardHistoryError);
+});

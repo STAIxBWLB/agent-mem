@@ -17,7 +17,7 @@ import { compilePlacementGitObjects, type PlannedGitObject } from "./sync-placem
 import { PLACEMENT_DESCRIPTOR_SCHEMA, PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { createPlacementRecord, placementKeyId, SyncPlacementJournalError, type PlacementEvent, type PlacementKey, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, appendPlacementEvent, ensurePlacementPublicationDurability, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, publicationBytes, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject, type PlacementPublicationTarget } from "./sync-placement-publication-plan.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
@@ -178,7 +178,7 @@ class PlacementTransport {
       const incoming = `refs/amem/placement-incoming/${randomBytes(16).toString("hex")}`; this.refs.push(incoming);
       await this.required(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "origin", `${ref}:${incoming}`]);
       const tip = await this.required(["rev-parse", "--verify", incoming]); if (!oid(tip) || tip !== fields[0]) refuse();
-      if (target.local) { const ancestry = await this.git(["merge-base", "--is-ancestor", target.local, tip]); if (ancestry.code !== 0 && !(ancestry.code === 1 && this.journal.publicationReservation)) refuse(); }
+      if (target.local && !await target.auditor.verifiedAncestor(target.local, tip) && !this.journal.publicationReservation) refuse();
       target.remote = tip; target.remoteHistory = await target.auditor.history(tip);
       target.rows = new Map(target.remoteHistory.rows); target.fetched = new Set(target.remoteHistory.rows.keys()); target.origins = new Map(target.remoteHistory.origins);
       target.manifests = new Map(target.remoteHistory.manifests); target.eligible = new Set([...target.manifests.values()].filter(item => item.eligible).map(item => item.row.id));
@@ -205,7 +205,7 @@ class PlacementTransport {
     const applications = new ShardSyncApplications({ home: this.home, root: this.root, url: this.url, targets: this.targets, homeMutation: this.homeMutation,
       getRevision: () => this.revision, setRevision: revision => { this.revision = revision; }, check: this.check,
       history: (tip, target) => (target as Target).auditor.history(tip), candidateHistory: async target => (target as Target).candidate ?? (target as Target).remoteHistory ?? emptyHistory(),
-      assertAncestor: async (a,b) => { await this.required(["merge-base", "--is-ancestor", a,b]); },
+      assertAncestor: async (a,b,target) => { if (!await (target as Target).auditor.verifiedAncestor(a,b)) refuse(); },
       readObject: async object => {
         const type = await this.required(["cat-file", "-t", object]); if (type !== "commit" && type !== "tree" && type !== "blob") refuse();
         const limit = type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES, size = Number(await this.required(["cat-file", "-s", object]));
@@ -278,7 +278,11 @@ class PlacementTransport {
       decisions = compilePlacementDependencies({ generation: this.journal.epoch.generation, selectedRealms: this.targets.map(physical), rows:sources, publicEndpoints:endpoints,
         verifiedPrunes:sources.filter(source => verified.has(placementKeyId(source.key))).map(source => source.key) }).map(decision => {
           const source = sourceMap.get(placementKeyId(decision.key))!;
-          return { ...decision, sourcePlacement:source.sourcePlacement, reason: blocked.has(placementKeyId(decision.key)) && !projection.get(decision.key)?.held ? "related-local" : decision.reason ?? null };
+          const index=this.targets.findIndex(target=>sameRealm(physical(target),decision.key.realm));
+          const original=old[index]?.rows.get(decision.key.id), published=!!original&&hashJSON(original)===decision.key.rowHash;
+          const reason=blocked.has(placementKeyId(decision.key)) && !projection.get(decision.key)?.held ? "related-local" : decision.reason ?? null;
+          return { ...decision, sourcePlacement:source.sourcePlacement, reason,
+            hold:!decision.eligible&&(reason!=="source-local"||published)&&!projection.get(decision.key)?.held };
         });
       let rejected = false;
       for (const [index,target] of this.targets.entries()) {
@@ -328,7 +332,7 @@ class PlacementTransport {
     const objects:PlacementPublicationObject[]=this.targets.flatMap((target,targetIndex)=>target.objects.map(object=>({targetIndex,type:object.type,path:object.path === "" ? null : object.path,oid:object.oid,sha256:digest(object.bytes),size:object.bytes.length})));
     const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:hashJSON(capture.context),markerHash:capture.markerHash,
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
-      journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
+      journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     let bundle=planPlacementPublication(body,{sources:capture.prefixes,decisions,objects});
     let scheduled=this.events(bundle,projection,old);
     let head=body.journal.headHash;
@@ -360,7 +364,7 @@ class PlacementTransport {
       const state=projection.get(decision.key);
       const index=root.targets.findIndex(target=>sameRealm(target.realm,decision.key.realm)),target=root.targets[index];if(!target)refuse();
       const original=old[index]?.rows.get(decision.key.id),published=original&&hashJSON(original)===decision.key.rowHash;
-      if(!decision.eligible&&(decision.reason!=="source-local"||published)&&!state?.held)holds.push(make(decision,"hold"));
+      if(decision.hold)holds.push(make(decision,"hold"));
       if(published&&state?.exposure!=="published"&&target.expectedRemoteHead)known.push(make(decision,"publication-committed",target.expectedRemoteHead));
       if(decision.eligible&&target.publish&&!published){
         ambiguous.push(make(decision,"publication-ambiguous"));committed.push(make(decision,"publication-committed",target.commit!));
@@ -386,8 +390,11 @@ class PlacementTransport {
     if(consumed<0||consumed>root.reservedRecords)refuse();
     for(let index=0;index<Math.min(consumed,records.length);index++)
       if(canonicalJSON(read.records[root.journal.sequence+index])!==canonicalJSON(records[index]))refuse();
-    if(read.pending&&consumed>0&&consumed<=records.length){
-      const record=records[consumed-1]!;appendPlacementEvent(this.home,this.epochHash,events[consumed-1]!,record.previousHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
+    if(read.pending){
+      const sequence=read.pendingRecordSequence??read.sequence+1, index=sequence-root.journal.sequence-1;
+      const record=records[index];
+      if(!record||index>=count||read.pendingRecord&&canonicalJSON(read.pendingRecord)!==canonicalJSON(record))refuse();
+      appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
     }
     for(let index=read.sequence-root.journal.sequence;index<count;index++){
       const record=records[index];if(!record)refuse();appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));
@@ -422,8 +429,7 @@ class PlacementTransport {
   async allPublic(bundle:PlacementPublicationBundle):Promise<boolean>{
     for(const [index,planned]of bundle.root.targets.entries())if(planned.publish){
       const target=this.targets[index];if(!target||!target.remote||!planned.commit)return false;
-      const result=await this.git(["merge-base","--is-ancestor",planned.commit,target.remote]);if(result.code!==0)return false;
-      await target.auditor.history(target.remote);
+      if(!await target.auditor.verifiedAncestor(planned.commit,target.remote))return false;
     }
     return true;
   }
@@ -431,7 +437,21 @@ class PlacementTransport {
     this.factual=true;this.recovered=true;const root=read.bundle.root;this.attemptHash=root.seal;
     const projection=rebuildPlacementProjection(this.journal.epoch,this.journal.records.slice(0,root.journal.sequence));
     const holds=this.events(read.bundle,projection,[]).events.filter(event=>event.kind==="hold");
-    this.appendThrough(read.bundle,holds,holds.length,true);
+    const before=readPlacementJournal(this.home,this.epochHash);
+    if(before.pending){
+      const old=await this.frozenOld(read.bundle),schedule=this.events(read.bundle,projection,old);
+      const sequence=before.pendingRecordSequence??before.sequence+1;
+      this.appendThrough(read.bundle,schedule.events,Math.max(holds.length,sequence-root.journal.sequence),true);
+    }else this.appendThrough(read.bundle,holds,holds.length,true);
+    if(read.pendingPhase==="artifact-built"){
+      const guard=await this.installedObjectGuard(read.bundle);guard();
+      recordPlacementPublicationPhase(this.home,this.epochHash,root.seal,"artifact-built",{exportHash:hashJSON(root.targets.map(target=>target.exportSetHash))},this.storage(true));
+    }
+    if(read.pendingPhase==="publication-intent"){
+      const artifact=read.facts.find(fact=>fact.phase==="artifact-built");if(!artifact)refuse();
+      recordPlacementPublicationPhase(this.home,this.epochHash,root.seal,"publication-intent",{artifactFactHash:artifact.seal,policyHash:root.policyHash,policyCheckUnixMs:root.policySnapshotUnixMs},this.storage(true));
+    }
+    read=readPlacementPublication(this.home,this.epochHash,root.seal);
     const journal=readPlacementJournal(this.home,this.epochHash),intent=read.facts.find(fact=>fact.phase==="publication-intent");
     await this.observe("before-receipt");
     recordPlacementPublicationPhase(this.home,this.epochHash,root.seal,"completed",{intentFactHash:intent?.seal??null,journal:{sequence:journal.sequence,headHash:journal.headHash},
@@ -446,7 +466,8 @@ class PlacementTransport {
       try{let at=0;while(at<object.bytes.length){const n=writeSync(fd,object.bytes,at,object.bytes.length-at,at);if(n<=0)refuse();at+=n;}fsyncSync(fd);}finally{closeSync(fd);}
       const written=await this.required(["hash-object","-w","-t",object.type,"--no-filters","--",file]);if(written!==object.oid)refuse();
     }
-    recordPlacementPublicationPhase(this.home,this.epochHash,bundle.root.seal,"artifact-built",{exportHash:hashJSON(bundle.root.targets.map(target=>target.exportSetHash))},this.storage());
+    const saved=readPlacementPublication(this.home,this.epochHash,bundle.root.seal);
+    if(!saved.facts.some(fact=>fact.phase==="artifact-built"))recordPlacementPublicationPhase(this.home,this.epochHash,bundle.root.seal,"artifact-built",{exportHash:hashJSON(bundle.root.targets.map(target=>target.exportSetHash))},this.storage());
     await this.observe("artifact-built");this.check();
   }
   async finish(material:Materialized,recovery=false):Promise<SyncResult>{
@@ -507,7 +528,8 @@ class PlacementTransport {
       await this.initialize();
       const reservation=this.journal.publicationReservation,retained=reservation?readPlacementPublication(this.home,this.epochHash,reservation.attemptHash):undefined;
       if(retained){
-        this.attemptHash=retained.bundle.root.seal;if(retained.pending)refuse();
+        this.attemptHash=retained.bundle.root.seal;if(retained.pending&&!retained.pendingPhase)refuse();
+        ensurePlacementPublicationDurability(this.home,this.epochHash,this.storage(true));
         const lastIntent=retained.facts.find(fact=>fact.phase==="publication-intent");if(lastIntent?.phase==="publication-intent"){this.lastPolicyHash=lastIntent.policyHash;this.lastPolicyCheckUnixMs=lastIntent.policyCheckUnixMs;this.policyCheckSource="durable-intent";}
         if(retained.bundle.root.remoteHash!==digest(this.url))return await this.terminalUnknown(retained);
         if(retained.facts.some(fact=>fact.phase==="publication-intent")&&await this.allPublic(retained.bundle)){
@@ -536,7 +558,8 @@ class PlacementTransport {
       let read=readPlacementPublication(this.home,this.epochHash,material.bundle.root.seal);
       const artifact=read.facts.find(fact=>fact.phase==="artifact-built");if(!artifact)refuse();
       this.check();this.lastPolicyCheckUnixMs=Date.now();this.lastPolicyHash=material.bundle.root.policyHash;this.policyCheckSource="live";
-      if(!read.facts.some(fact=>fact.phase==="publication-intent"))recordPlacementPublicationPhase(this.home,this.epochHash,material.bundle.root.seal,"publication-intent",{artifactFactHash:artifact.seal,policyHash:material.bundle.root.policyHash,policyCheckUnixMs:this.lastPolicyCheckUnixMs},this.storage());
+      if(!read.facts.some(fact=>fact.phase==="publication-intent"))recordPlacementPublicationPhase(this.home,this.epochHash,material.bundle.root.seal,"publication-intent",{artifactFactHash:artifact.seal,policyHash:material.bundle.root.policyHash,policyCheckUnixMs:material.bundle.root.policySnapshotUnixMs},this.storage());
+      ensurePlacementPublicationDurability(this.home,this.epochHash,this.storage());
       await this.observe("before-cas");this.check();
       const installedGuard=await this.installedObjectGuard(material.bundle);
       this.check();for(const target of this.targets)for(const check of target.selectorChecks??[])check();

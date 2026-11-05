@@ -189,6 +189,21 @@ export class ShardHistoryAuditor {
       this.#manifestOrigins.set(path, first); current.manifests.set(path, { ...manifest, ...first });
     }
   }
+  /** Ancestry of the immutable hash-verified commit graph, never a second Git interpretation of mutable cache bytes.
+   * The caller still proves this tip is the selected actual remote head. Legacy trusted-Git ports are insufficient. */
+  async verifiedAncestor(ancestor: string, tip: string): Promise<boolean> {
+    if (!this.#options.object || !oid(ancestor) || !oid(tip)) return fail();
+    await this.history(tip);
+    const pending = [tip], seen = new Set<string>();
+    while (pending.length) {
+      const commit = pending.pop()!; if (seen.has(commit)) continue; seen.add(commit);
+      const parents = this.#parents.get(commit);
+      if (!this.#audited.has(commit) || !parents) return fail();
+      if (commit === ancestor) return true;
+      for (const parent of parents) pending.push(parent);
+    }
+    return false;
+  }
   /** Only requested tips retain full row maps. Parent trees are reconstructed with decoded immutable blobs. */
   async history(tip: string): Promise<ShardHistory> {
     if (!oid(tip) || this.#running) return fail(); this.#running = true;

@@ -66,6 +66,7 @@ export function recordPlacementPublicationPhase(home: string, epochHash: string,
   withPlacementPublicationMetadata(home, epochHash, opts, names, io => {
     const before = io.publication(attemptHash), journal = io.journal();
     const saved = before.facts.find(value => value.phase === phase);
+    if (before.pending && before.pendingPhase !== phase) fail("pending");
     if (before.phase === "completed") {
       if (!saved || canonicalJSON(saved) !== canonicalJSON(fact)) fail("conflict");
       io.complete(file, publicationBytes(fact), "publication-fact-written", "publication-fact-fsync"); io.check(); return;
@@ -74,7 +75,7 @@ export function recordPlacementPublicationPhase(home: string, epochHash: string,
       : phase === "publication-intent" ? before.facts.find(value => value.phase === "artifact-built") : undefined;
     if ((saved?.previousHash ?? durablePrior?.seal ?? read.bundle.root.seal) !== previous) fail("changed");
     if (phase === "artifact-built" && before.phase !== "prepared" && !saved || phase === "publication-intent" && !durablePrior) fail("pending");
-    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== read.bundle.root.policyHash)) fail("conflict");
+    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== read.bundle.root.policyHash || fact.policyCheckUnixMs !== read.bundle.root.policySnapshotUnixMs)) fail("conflict");
     if (fact.phase === "completed") {
       const intent = before.facts.find(value => value.phase === "publication-intent");
       if (journal.pending || fact.intentFactHash !== (intent?.seal ?? null) || fact.journal.sequence !== journal.sequence || fact.journal.headHash !== journal.headHash

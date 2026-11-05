@@ -18,10 +18,10 @@ import { PlacementProjection } from "./sync-placement-projection.ts";
 export type PlacementStoragePhase = "epoch-written" | "epoch-fsync" | "activation-written" | "activation-fsync" | "fence-written" | "fence-fsync"
   | "intent-written" | "intent-fsync" | "chunk-written" | "chunk-fsync" | "intent-cleared"
   | "publication-slot-written" | "publication-slot-fsync" | "publication-chunk-written" | "publication-chunk-fsync"
-  | "publication-root-written" | "publication-root-fsync" | "publication-fact-written" | "publication-fact-fsync";
+  | "publication-root-written" | "publication-root-fsync" | "publication-fact-written" | "publication-fact-fsync" | "publication-durability-file-fsync" | "publication-durability-dir-fsync";
 export interface PlacementStorageOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: PlacementStoragePhase): void; publicationAttemptHash?: string }
 export interface PlacementJournalRead {
-  epoch: PlacementEpoch; activation: SyncPlacementActivationPlan; records: PlacementRecord[]; headHash: string; sequence: number; objects: number; pending: boolean; publicationReservation?: { attemptHash: string; reservedRecords: number; consumedRecords: number };
+  epoch: PlacementEpoch; activation: SyncPlacementActivationPlan; records: PlacementRecord[]; headHash: string; sequence: number; objects: number; pending: boolean; pendingRecordSequence?: number; pendingRecord?: PlacementRecord; publicationReservation?: { attemptHash: string; reservedRecords: number; consumedRecords: number };
 }
 interface Paths { home: string; root: string; epochs: string; dir: string; hash: string }
 interface Chunk { name: string; size: number; hash: string }
@@ -152,7 +152,7 @@ function snapshot(p: Paths): Snapshot {
   if ((records.length > 0 || pendingBytes !== undefined) && (!activeFence || fencePending || activeFence.epochHash !== p.hash
     || activeFence.homeHash !== epoch.homeHash || activeFence.generation !== epoch.generation)) fail();
   if (inventory(p).token !== before.token) fail("changed");
-  return { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { intent: pending } : {}) };
+  return { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}) };
 }
 export function readPlacementJournal(home: string, epochHash: string): PlacementJournalRead {
   return protectedIO(() => {
@@ -175,11 +175,12 @@ function current(p: Paths, opts: PlacementStorageOptions, required: readonly str
   const found = inventory(p), names = new Set([...found.files.keys(), ...required, ...reservedPublicationJournalNames(p)]);
   if (names.size + 1 > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
 }
-function writer<T>(home: string, epochHash: string, opts: PlacementStorageOptions, work: (p: Paths) => T): T {
+function writer<T>(home: string, epochHash: string, opts: PlacementStorageOptions, work: (p: Paths) => T, incompleteAttempt?: string, preflight?: readonly string[] | ((p: Paths) => readonly string[])): T {
   return protectedIO(() => {
     const p = paths(home, epochHash); current(p, opts);
+    if (preflight) current(p, opts, typeof preflight === "function" ? preflight(p) : preflight);
     if (inflight.has(opts.mutation)) return fail("busy"); inflight.add(opts.mutation);
-    try { return work(p); } finally { inflight.delete(opts.mutation); }
+    try { reestablishPublicationDurability(p, opts, incompleteAttempt); const result = work(p); reestablishPublicationDurability(p, opts, incompleteAttempt); return result; } finally { inflight.delete(opts.mutation); }
   });
 }
 function syncDirectory(p: Paths, opts: PlacementStorageOptions, dir: string, required: readonly string[]): void {
@@ -295,14 +296,14 @@ export function appendPlacementEvent(home: string, epochHash: string, value: Pla
     unlinkSync(join(p.dir, "append-intent.json")); syncDirectory(p, opts, p.dir, []); opts.phase?.("intent-cleared");
     current(p, opts); const done = snapshot(p); if (done.pending || done.headHash !== record.seal) fail("changed");
     return { record, already: false };
-  });
+  }, undefined, p => placementAppendRequired(p, event, expectedHead, opts));
 }
 
 const publicationPattern = /^publication-([a-f0-9]{64})-(?:root|chunk-\d{5}|artifact|intent|receipt)\.json$/;
 function publicationName(name: string): boolean { const m = publicationPattern.exec(name); return !!m && m[0] === name; }
 export interface PlacementPublicationStored {
   bundle: PlacementPublicationBundle; phase: "prepared" | "artifact-built" | "publication-intent" | "completed";
-  facts: PlacementPublicationFact[]; pending: boolean;
+  facts: PlacementPublicationFact[]; pending: boolean; pendingPhase?: PlacementPublicationFact["phase"];
 }
 function publicationRead(p: Paths, attemptHash: string): PlacementPublicationStored {
   const stem = `publication-${attemptHash}-`, root = decode(readOwned(join(p.dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
@@ -312,22 +313,22 @@ function publicationRead(p: Paths, attemptHash: string): PlacementPublicationSto
   const bundle = validatePlacementPublicationBundle({ root, chunks });
   const allowed = new Set(publicationFileNames(root));
   for (const name of inventory(p).files.keys()) if (name.startsWith(stem) && !allowed.has(name)) fail("corrupt");
-  const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false;
+  const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false; let pendingPhase: PlacementPublicationFact["phase"] | undefined;
   for (const [index, suffix] of ["artifact", "intent", "receipt"].entries()) {
     const bytes = readOwned(join(p.dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
     if (bytes === undefined) fail("corrupt"); // Every future phase slot was reserved before root acknowledgement.
     if (!bytes.length) { absent = true; continue; }
-    if (absent && suffix !== "receipt") fail("corrupt");
-    if (bytes.at(-1) !== 10) { pending = true; absent = true; continue; }
+    if (absent && (suffix !== "receipt" || pendingPhase)) fail("corrupt");
+    if (bytes.at(-1) !== 10) { pending = true; pendingPhase = (["artifact-built", "publication-intent", "completed"] as const)[index]; absent = true; continue; }
     const fact = decode(bytes, validatePlacementPublicationFact), previous = facts.at(-1)?.seal ?? root.seal;
     if (fact.attemptHash !== attemptHash || fact.previousHash !== previous || fact.phase !== (["artifact-built", "publication-intent", "completed"] as const)[index]) fail("corrupt");
     const intentFact = facts.find(fact => fact.phase === "publication-intent");
-    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== root.policyHash)
+    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== root.policyHash || fact.policyCheckUnixMs !== root.policySnapshotUnixMs)
       || fact.phase === "completed" && (fact.intentFactHash !== (intentFact?.seal ?? null) || fact.journal.sequence < root.journal.sequence || fact.journal.sequence > root.journal.sequence + root.reservedRecords
         || fact.outcome === "committed" && (!intentFact || fact.journal.sequence !== root.journal.sequence + root.reservedRecords))) fail("corrupt");
     facts.push(fact); phase = fact.phase;
   }
-  return { bundle, phase, facts, pending };
+  return { bundle, phase, facts, pending, ...(pendingPhase ? { pendingPhase } : {}) };
 }
 function publicationRoots(p: Paths): string[] {
   const names = [...inventory(p).files.keys()].filter(publicationName), roots = names.filter(n => n.endsWith("-root.json"));
@@ -422,5 +423,83 @@ function assertPublicationActive(p: Paths): void {
 export function withPlacementPublicationMetadata<T>(home: string, epochHash: string, opts: PlacementStorageOptions, required: readonly string[], work: (io: PlacementPublicationMetadataIO) => T): T {
   if (required.some(name => !publicationName(name) && !/^records-\d{5}\.jsonl$/.test(name) && name !== "append-intent.json")) fail("invalid");
   const p = paths(home, epochHash), guarded = { ...opts, assertCurrent() { opts.assertCurrent(); assertPublicationActive(p); } };
-  return writer(home, epochHash, guarded, p => { current(p, guarded, required); return work(metadataIO(p, guarded, required)); });
+  const attempts = new Set(required.filter(publicationName).map(name => name.slice(12, 76)));
+  if (attempts.size > 1) fail("invalid");
+  return writer(home, epochHash, guarded, p => { current(p, guarded, required); return work(metadataIO(p, guarded, required)); }, [...attempts][0], required);
+}
+
+
+/** A fingerprint is useful only while this exact kernel-backed mutation handle remains live. */
+const publicationDurability = new WeakMap<MutationHandle, Map<string, string>>();
+function publicationGroupToken(p: Paths, hash: string): string {
+  const found = inventory(p), dir = state(p.dir, true)!;
+  return canonicalJSON({ dir: [String(dir.dev), String(dir.ino)], files: [...found.files].filter(([name]) => name.startsWith(`publication-${hash}-`))
+    .map(([name, s]) => [name, String(s.dev), String(s.ino), String(s.size), String(s.mtimeNs), String(s.ctimeNs), String(s.mode)]) });
+}
+function reestablishPublicationDurability(p: Paths, opts: PlacementStorageOptions, incompleteAttempt?: string): void {
+  const groups = new Set([...inventory(p).files.keys()].filter(publicationName).map(name => name.slice(12, 76)));
+  if (!groups.size) return;
+  let cache = publicationDurability.get(opts.mutation);
+  if (!cache) { cache = new Map(); publicationDurability.set(opts.mutation, cache); }
+  for (const hash of groups) {
+    const token = publicationGroupToken(p, hash); if (cache.get(hash) === token) continue;
+    let read: PlacementPublicationStored;
+    try { read = publicationRead(p, hash); }
+    catch (error) {
+      // Only an exact preparer may finish its own unacknowledged root/chunk prefixes. Ordinary journal
+      // writers and explicit durability recovery refuse them, never treating them as a free reservation.
+      if (hash === incompleteAttempt && knownError(error) && error.code === "pending") { cache.delete(hash); continue; }
+      throw error;
+    }
+    const partial = read.pendingPhase ? `publication-${hash}-${read.pendingPhase === "artifact-built" ? "artifact" : read.pendingPhase === "publication-intent" ? "intent" : "receipt"}.json` : undefined;
+    for (const name of publicationFileNames(read.bundle.root)) {
+      if (name === partial) continue; // A known incomplete fact has no acknowledgement until exact prefix completion.
+      current(p, opts); const file = join(p.dir, name), before = state(file)!;
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const opened = fstatSync(fd, { bigint: true }); owned(opened);
+        if (!same(opened, before) || !same(opened, state(file)!)) fail("changed");
+        current(p, opts); if (!same(opened, fstatSync(fd, { bigint: true })) || !same(opened, state(file)!)) fail("changed");
+        fsyncSync(fd);
+        if (!same(opened, state(file)!)) fail("changed"); opts.phase?.("publication-durability-file-fsync");
+      } finally { closeSync(fd); }
+    }
+    syncDirectory(p, opts, p.dir, []); opts.phase?.("publication-durability-dir-fsync"); current(p, opts);
+    if (publicationGroupToken(p, hash) !== token) fail("changed"); cache.set(hash, token);
+  }
+}
+/** Fresh-owner barrier before transport effects or use of a terminal receipt to free journal capacity.
+ * Complete canonical bytes left by a dead owner are not a substitute for this fsync acknowledgement. */
+export function ensurePlacementPublicationDurability(home: string, epochHash: string, opts: PlacementStorageOptions): void {
+  protectedIO(() => {
+    const p = paths(home, epochHash), guarded = { ...opts, assertCurrent() { opts.assertCurrent(); assertPublicationActive(p); } };
+    writer(home, epochHash, guarded, () => undefined);
+  });
+}
+
+function placementAppendRequired(p: Paths, event: PlacementEvent, expectedHead: string, opts: PlacementStorageOptions): string[] {
+  const read = snapshot(p); checkPublicationAppend(p, read, event, opts);
+  if (read.intent) {
+    const pending = read.intent; checkPublicationRecord(p, pending.record, opts);
+    if (pending.record.previousHash !== expectedHead || !sameEvent(pending.record, event)) fail("pending");
+    if (read.projection.headHash !== pending.record.seal) read.projection.apply(pending.record);
+    return ["append-intent.json", pending.chunk];
+  }
+  const existing = read.projection.request(event.requestId);
+  if (existing) {
+    if (!sameEvent(existing, event) || existing.previousHash !== expectedHead || read.headHash !== existing.seal) fail("conflict");
+    return [];
+  }
+  if (read.headHash !== expectedHead) fail("conflict");
+  const record = createPlacementRecord(p.hash, read.sequence + 1, expectedHead, event), bytes = line(record);
+  checkPublicationRecord(p, record, opts); read.projection.apply(record);
+  if (bytes.length > PLACEMENT_JOURNAL_CHUNK_MAX_BYTES) fail("bound");
+  const prior = read.chunks.at(-1), reuse = prior !== undefined && prior.size + bytes.length <= PLACEMENT_JOURNAL_CHUNK_MAX_BYTES;
+  const chunk = reuse ? prior.name : `records-${String(read.chunks.length).padStart(5, "0")}.jsonl`;
+  const transaction: Intent = { schema: "agent-mem.sync-placement-append-intent/v1", epochHash: p.hash, record, chunk, prefixBytes: reuse ? prior.size : 0,
+    prefixHash: reuse ? prior.hash : digest(Buffer.alloc(0)), lineHash: digest(bytes) };
+  const expected = line(transaction), saved = readOwned(join(p.dir, "append-intent.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+  if (expected.length > PLACEMENT_JOURNAL_ROOT_MAX_BYTES) fail("bound");
+  if (saved && (saved.length > expected.length || !expected.subarray(0, saved.length).equals(saved))) fail("conflict");
+  return ["append-intent.json", chunk];
 }

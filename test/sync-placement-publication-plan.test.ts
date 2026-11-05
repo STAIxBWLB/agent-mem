@@ -7,9 +7,9 @@ import { acquireMutation } from "../src/memory/mutation.ts";
 import { PLACEMENT_FORMAT, validatePlacementProfile } from "../src/memory/sync-placement-format.ts";
 import { planSyncPlacementActivation, type SyncPlacementActivationContext } from "../src/memory/sync-placement-plan.ts";
 import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, createPlacementRecord, SyncPlacementJournalError, type PlacementEpoch, type PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
-import { preparePlacementEpoch, ensurePlacementFence, readPlacementJournal, appendPlacementEvent, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
+import { preparePlacementEpoch, ensurePlacementFence, ensurePlacementPublicationDurability, readPlacementJournal, appendPlacementEvent, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
 import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
-import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase } from "../src/memory/sync-placement-publication-storage.ts";
+import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationFactInput } from "../src/memory/sync-placement-publication-storage.ts";
 
 const h = (x: string) => hashJSON(x), key = { realm: { scope: "user" as const }, id: "d".repeat(32), rowHash: h("row") };
 const cleanup: (() => void)[] = [];
@@ -35,10 +35,10 @@ function fixture(reserved = 1) {
   const recordSizes: number[] = []; let head = epochHash;
   for (let i = 0; i < reserved; i++) { const record = createPlacementRecord(epochHash, i + 1, head, event(i + 1)); recordSizes.push(publicationBytes(record).length); head = record.seal; }
   const input = { epochHash, generation, homeHash: context.homeHash, contextHash: hashJSON(context), markerHash: h("markers"), sourceHash: context.sourceHash, aliasesHash: context.aliasesHash,
-    policyHash: context.policyHash, remoteHash: h("remote"), journal: { sequence: 0, headHash: epochHash }, reservedRecords: reserved, reservedRecordBytes: recordSizes, createdUnixSeconds: 123456,
+    policyHash: context.policyHash, remoteHash: h("remote"), journal: { sequence: 0, headHash: epochHash }, reservedRecords: reserved, reservedRecordBytes: recordSizes, createdUnixSeconds: 123456, policySnapshotUnixMs: 123456000,
     targets: [{ realm: key.realm, publish: true, refHash: h("ref"), expectedRemoteHead: null, expectedCacheHead: null, descriptorHash: h("descriptor"), exportSetHash: h("export"), tree: "1".repeat(40), commit: "2".repeat(40) }] };
   const items = { sources: [{ realm: key.realm, source: "generation" as const, pathHash: h("path"), dev: "1", ino: "2", byteLength: 4, hash: h("prefix"), mtimeNs: "3", ctimeNs: "4" }],
-    decisions: [{ key, eligible: false, sourcePlacement: "synced" as const, reason: "person-local" as const, dependencies: [] }],
+    decisions: [{ key, eligible: false, hold: true, sourcePlacement: "synced" as const, reason: "person-local" as const, dependencies: [] }],
     objects: [{ targetIndex: 0, type: "blob" as const, path: "shard.json", oid: "3".repeat(40), sha256: h("descriptor"), size: 100 }] };
   const bundle = planPlacementPublication(input, items), dir = join(home, "sync-placement", "epochs", epochHash);
   return { home, epochHash, bundle, opts, dir, input, items };
@@ -217,4 +217,94 @@ test("object metadata keeps exact pack/tree and wire/commit bounds before any pa
   expect(check("tree",null,1048576).items).toHaveLength(1);expect(()=>check("tree",null,1048577)).toThrow();
   expect(check("commit",null,65536).items).toHaveLength(1);expect(()=>check("commit",null,65537)).toThrow();
   expect(()=>check("blob","rows",100)).toThrow();expect(()=>check("tree","shard.json",100)).toThrow();
+});
+
+
+function freshOwner(f: ReturnType<typeof fixture>, phase?: PlacementStorageOptions["phase"]): PlacementStorageOptions {
+  f.opts.mutation(); const mutation = acquireMutation(f.home); if (!mutation) throw Error("replacement fixture owner unavailable"); cleanup.push(mutation);
+  return { mutation, assertCurrent: f.opts.assertCurrent, ...(phase ? { phase } : {}) };
+}
+
+test("hold schedule and frozen policy timestamp are exact sealed fields", () => {
+  const f = fixture(0), noHold = planPlacementPublication(f.input, { ...f.items, decisions: [{ ...f.items.decisions[0]!, hold: false }] });
+  expect(noHold.root.seal).not.toBe(f.bundle.root.seal);
+  expect(() => planPlacementPublication(f.input, { ...f.items, decisions: [{ ...f.items.decisions[0]!, eligible: true, reason: null, hold: true }] })).toThrow();
+  expect(planPlacementPublication({ ...f.input, policySnapshotUnixMs: f.input.policySnapshotUnixMs + 1 }, f.items).root.seal).not.toBe(f.bundle.root.seal);
+  preparePlacementPublication(f.home, f.bundle, f.opts); const built = artifact(f), before = state(f.dir);
+  expect(() => recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "publication-intent", { artifactFactHash: built.seal, policyHash: f.input.policyHash, policyCheckUnixMs: f.input.policySnapshotUnixMs + 1 }, f.opts)).toThrow();
+  expect(state(f.dir)).toEqual(before);
+});
+
+for (const mode of ["intent-only", "partial", "full"] as const) test("validated pending second journal record identifies the exact admitted request: " + mode, () => {
+  const f = fixture(2); preparePlacementPublication(f.home, f.bundle, f.opts);
+  const opts = { ...f.opts, publicationAttemptHash: f.bundle.root.seal }, first = appendPlacementEvent(f.home, f.epochHash, event(1), f.epochHash, opts);
+  let fired = false;
+  expect(() => appendPlacementEvent(f.home, f.epochHash, event(2), first.record.seal, { ...opts, phase(at) {
+    if (!fired && at === (mode === "intent-only" ? "intent-fsync" : "chunk-written")) { fired = true; throw Error("interrupted second admitted record"); }
+  } })).toThrow(); expect(fired).toBe(true);
+  const intent = JSON.parse(readFileSync(join(f.dir, "append-intent.json"), "utf8")) as { chunk: string; prefixBytes: number };
+  if (mode === "partial") {
+    const file = join(f.dir, intent.chunk), bytes = readFileSync(file); writeFileSync(file, bytes.subarray(0, intent.prefixBytes + 23), { mode: 0o600 });
+  }
+  const pending = readPlacementJournal(f.home, f.epochHash), expected = createPlacementRecord(f.epochHash, 2, first.record.seal, event(2));
+  expect(pending).toMatchObject({ pending: true, sequence: mode === "full" ? 2 : 1, pendingRecordSequence: 2, pendingRecord: expected });
+  pending.pendingRecord!.requestId = h("detached mutation"); expect(readPlacementJournal(f.home, f.epochHash).pendingRecord).toEqual(expected);
+  appendPlacementEvent(f.home, f.epochHash, event(2), first.record.seal, opts);
+  const completed = readPlacementJournal(f.home, f.epochHash); expect(completed).toMatchObject({ pending: false, sequence: 2 });
+  expect(completed.pendingRecord).toBeUndefined(); expect(completed.pendingRecordSequence).toBeUndefined();
+  expect(completed.records.filter(record => record.requestId === event(2).requestId)).toEqual([expected]);
+});
+
+test("fresh owner re-fsyncs complete plan bytes left before root fsync and caches only its live handle", () => {
+  const f = fixture(0); let crashed = false;
+  expect(() => preparePlacementPublication(f.home, f.bundle, { ...f.opts, phase(at) { if (at === "publication-root-written") { crashed = true; throw Error("root full bytes before fsync"); } } })).toThrow();
+  expect(crashed).toBe(true); expect(readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal).pending).toBe(false);
+  const phases: PlacementStoragePhase[] = [], opts = freshOwner(f, phase => phases.push(phase)), before = state(f.dir);
+  ensurePlacementPublicationDurability(f.home, f.epochHash, opts);
+  expect(phases.filter(phase => phase === "publication-durability-file-fsync")).toHaveLength(publicationFileNames(f.bundle.root).length);
+  expect(phases.filter(phase => phase === "publication-durability-dir-fsync")).toHaveLength(1); expect(state(f.dir)).toEqual(before);
+  phases.length = 0; ensurePlacementPublicationDurability(f.home, f.epochHash, opts); expect(phases).toEqual([]);
+  opts.mutation(); const newer = acquireMutation(f.home); if (!newer) throw Error("new fixture owner unavailable"); cleanup.push(newer);
+  ensurePlacementPublicationDurability(f.home, f.epochHash, { ...opts, mutation: newer }); expect(phases).toContain("publication-durability-file-fsync");
+});
+
+test("ordinary journal writer durably confirms a complete-looking terminal receipt before releasing its reservation", () => {
+  const f = fixture(0); preparePlacementPublication(f.home, f.bundle, f.opts); const sent = intent(f);
+  expect(() => recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "completed", { intentFactHash: sent.seal, journal: f.input.journal, outcomeHash: h("terminal before fsync"), outcome: "unknown" },
+    { ...f.opts, phase(at) { if (at === "publication-fact-written") throw Error("full receipt bytes before fsync"); } })).toThrow();
+  expect(readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal).phase).toBe("completed");
+  const phases: PlacementStoragePhase[] = [], opts = freshOwner(f, phase => phases.push(phase));
+  appendPlacementEvent(f.home, f.epochHash, event(1), f.epochHash, opts);
+  const durableAt = phases.indexOf("publication-durability-dir-fsync"), appendAt = phases.indexOf("intent-written");
+  expect(durableAt).toBeGreaterThanOrEqual(0); expect(appendAt).toBeGreaterThan(durableAt);
+  expect(readPlacementJournal(f.home, f.epochHash)).toMatchObject({ pending: false, sequence: 1 });
+});
+
+for (const phase of ["artifact-built", "publication-intent", "completed"] as const) test("known partial phase is labeled, preserved by durability barrier and completed exactly: " + phase, () => {
+  const f = fixture(0); preparePlacementPublication(f.home, f.bundle, f.opts);
+  let fact: PlacementPublicationFactInput, suffix: string;
+  if (phase === "artifact-built") { artifact(f); fact = { exportHash: h("artifacts") }; suffix = "artifact"; }
+  else if (phase === "publication-intent") {
+    const sent = intent(f); fact = { artifactFactHash: sent.previousHash, policyHash: f.input.policyHash, policyCheckUnixMs: f.input.policySnapshotUnixMs }; suffix = "intent";
+  } else {
+    const sent = intent(f); fact = { intentFactHash: sent.seal, journal: f.input.journal, outcomeHash: h("exact terminal"), outcome: "unknown" }; suffix = "receipt";
+    recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, phase, fact, f.opts);
+  }
+  const file = join(f.dir, `publication-${f.bundle.root.seal}-${suffix}.json`), bytes = readFileSync(file), prefix = bytes.subarray(0, Math.floor(bytes.length / 2));
+  writeFileSync(file, prefix, { mode: 0o600 });
+  const read = readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal); expect(read).toMatchObject({ pending: true, pendingPhase: phase });
+  const phases: PlacementStoragePhase[] = [], opts = freshOwner(f, at => phases.push(at));
+  ensurePlacementPublicationDurability(f.home, f.epochHash, opts); expect(readFileSync(file)).toEqual(prefix);
+  recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, phase, fact, opts);
+  expect(readFileSync(file)).toEqual(bytes); expect(phases).toContain("publication-fact-fsync");
+  const done = readPlacementPublication(f.home, f.epochHash, f.bundle.root.seal); expect(done.pending).toBe(false); expect(done.pendingPhase).toBeUndefined();
+});
+
+
+test("known future journal reservation refuses before durability fsync even with older completed plans", () => {
+  const f = fixture(0); preparePlacementPublication(f.home, f.bundle, f.opts);
+  recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "completed", { intentFactHash: null, journal: f.input.journal, outcomeHash: h("prior terminal"), outcome: "unknown" }, f.opts);
+  const huge = planPlacementPublication({ ...f.input, createdUnixSeconds: f.input.createdUnixSeconds + 1, reservedRecords: 20000, reservedRecordBytes: Array(20000).fill(2048) }, f.items);
+  const phases: PlacementStoragePhase[] = [], opts = freshOwner(f, phase => phases.push(phase)), before = state(f.dir);
+  expect(code(() => preparePlacementPublication(f.home, huge, opts))).toBe("bound"); expect(phases).toEqual([]); expect(state(f.dir)).toEqual(before);
 });

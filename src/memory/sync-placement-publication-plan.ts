@@ -15,7 +15,7 @@ export interface PlacementPublicationSource {
   dev: string; ino: string; byteLength: number; hash: string; mtimeNs: string; ctimeNs: string;
 }
 export type PlacementPublicationDecisionReason = PlacementHoldReason | "journal-hold" | "source-local" | "unsupported-reference" | "unverified-prune" | null;
-export interface PlacementPublicationDecision { key: PlacementKey; sourcePlacement: "local" | "synced"; eligible: boolean; reason: PlacementPublicationDecisionReason; dependencies: PlacementKey[] }
+export interface PlacementPublicationDecision { key: PlacementKey; sourcePlacement: "local" | "synced"; eligible: boolean; hold: boolean; reason: PlacementPublicationDecisionReason; dependencies: PlacementKey[] }
 export interface PlacementPublicationObject { targetIndex: number; type: "blob" | "tree" | "commit"; path: string | null; oid: string; sha256: string; size: number }
 export interface PlacementPublicationTarget {
   realm: PlacementRealm; publish: boolean; refHash: string; expectedRemoteHead: string | null; expectedCacheHead: string | null;
@@ -26,7 +26,7 @@ export interface PlacementPublicationChunk { schema: typeof PLACEMENT_PUBLICATIO
 export interface PlacementPublicationRoot {
   schema: typeof PLACEMENT_PUBLICATION_PLAN_SCHEMA; epochHash: string; generation: string; homeHash: string; contextHash: string;
   markerHash: string; sourceHash: string; aliasesHash: string; policyHash: string; remoteHash: string;
-  journal: { sequence: number; headHash: string }; reservedRecords: number; reservedRecordBytes: number[]; createdUnixSeconds: number;
+  journal: { sequence: number; headHash: string }; reservedRecords: number; reservedRecordBytes: number[]; createdUnixSeconds: number; policySnapshotUnixMs: number;
   targets: PlacementPublicationTarget[]; chunks: { kind: PlacementPublicationChunkKind; index: number; hash: string; count: number; bytes: number }[]; seal: string;
 }
 export interface PlacementPublicationBundle { root: PlacementPublicationRoot; chunks: PlacementPublicationChunk[] }
@@ -72,11 +72,11 @@ function item(kind: PlacementPublicationChunkKind, input: unknown): PlacementPub
     return { realm: realm(v.realm), source: v.source as PlacementPublicationSource["source"], pathHash: v.pathHash, dev: v.dev as string, ino: v.ino as string, byteLength: v.byteLength, hash: v.hash, mtimeNs: v.mtimeNs as string, ctimeNs: v.ctimeNs as string };
   }
   if (kind === "decisions") {
-    const v = object(input, ["key", "sourcePlacement", "eligible", "reason", "dependencies"]);
-    if (!["local", "synced"].includes(v.sourcePlacement as string) || typeof v.eligible !== "boolean" || !reasons.includes(v.reason as PlacementPublicationDecisionReason) || v.eligible !== (v.reason === null)) return fail();
+    const v = object(input, ["key", "sourcePlacement", "eligible", "hold", "reason", "dependencies"]);
+    if (!["local", "synced"].includes(v.sourcePlacement as string) || typeof v.eligible !== "boolean" || typeof v.hold !== "boolean" || v.eligible && v.hold || !reasons.includes(v.reason as PlacementPublicationDecisionReason) || v.eligible !== (v.reason === null)) return fail();
     const dependencies = array(v.dependencies, PLACEMENT_JOURNAL_MAX_RECORDS).map(validatePlacementKey);
     if (new Set(dependencies.map(placementKeyId)).size !== dependencies.length) return fail();
-    return bounded({ key: validatePlacementKey(v.key), sourcePlacement: v.sourcePlacement as "local" | "synced", eligible: v.eligible, reason: v.reason as PlacementPublicationDecisionReason, dependencies }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES - 256);
+    return bounded({ key: validatePlacementKey(v.key), sourcePlacement: v.sourcePlacement as "local" | "synced", eligible: v.eligible, hold: v.hold as boolean, reason: v.reason as PlacementPublicationDecisionReason, dependencies }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES - 256);
   }
   const v = object(input, ["targetIndex", "type", "path", "oid", "sha256", "size"]);
   const path = typeof v.path === "string" && !/[\r\n]/.test(v.path) ? v.path : undefined;
@@ -98,10 +98,10 @@ export function validatePlacementPublicationChunk(input: unknown): PlacementPubl
   return bounded({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: v.kind as PlacementPublicationChunkKind, index: v.index, items }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
 }
 function normalizedRoot(input: unknown, checkSeal = true): PlacementPublicationRoot {
-  const keys = ["schema", "epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "targets", "chunks", "seal"];
+  const keys = ["schema", "epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "policySnapshotUnixMs", "targets", "chunks", "seal"];
   const v = object(input, keys);
   if (v.schema !== PLACEMENT_PUBLICATION_PLAN_SCHEMA || !hex(v.generation, 32) || ![v.epochHash, v.homeHash, v.contextHash, v.markerHash, v.sourceHash, v.aliasesHash, v.policyHash, v.remoteHash, v.seal].every(x => hex(x))
-    || !number(v.reservedRecords, PLACEMENT_JOURNAL_MAX_RECORDS) || !number(v.createdUnixSeconds)) return fail();
+    || !number(v.reservedRecords, PLACEMENT_JOURNAL_MAX_RECORDS) || !number(v.createdUnixSeconds) || !number(v.policySnapshotUnixMs)) return fail();
   const reservedRecordBytes = array(v.reservedRecordBytes, PLACEMENT_JOURNAL_MAX_RECORDS);
   if (reservedRecordBytes.length !== v.reservedRecords || reservedRecordBytes.some(x => !number(x, PLACEMENT_PUBLICATION_RECORD_MAX_BYTES) || x < 1)) return fail();
   const journal = frontier(v.journal); if (journal.sequence + v.reservedRecords > PLACEMENT_JOURNAL_MAX_RECORDS) return fail("bound");
@@ -158,7 +158,7 @@ export function planPlacementPublication(input: Omit<PlacementPublicationRoot, "
     }
     flush();
   }
-  const body = { ...object(input, ["epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "targets"]), schema: PLACEMENT_PUBLICATION_PLAN_SCHEMA,
+  const body = { ...object(input, ["epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "policySnapshotUnixMs", "targets"]), schema: PLACEMENT_PUBLICATION_PLAN_SCHEMA,
     chunks: chunks.map(c => ({ kind: c.kind, index: c.index, hash: publicationHash(publicationBytes(c)), count: c.items.length, bytes: publicationBytes(c).length })) };
   const { seal: _seal, ...safeBody } = normalizedRoot({ ...body, seal: "0".repeat(64) }, false);
   return validatePlacementPublicationBundle({ root: { ...safeBody, seal: hashJSON(safeBody) }, chunks });
