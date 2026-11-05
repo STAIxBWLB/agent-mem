@@ -1,6 +1,6 @@
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { types } from "node:util";
-/** Stage1 only: recognized placement selectors never authorize an existing runtime or transport. */
+/** Closed activation metadata admits v3 readers; publication still requires full journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
@@ -79,7 +79,8 @@ function placementFencePresent(home: string): boolean {
   if (root.isSymbolicLink() || !root.isDirectory() || root.uid !== process.getuid?.() || (root.mode & 0o077) !== 0) return true;
   return lstatSync(join(home, "sync-placement", "active.json"), { throwIfNoEntry: false }) !== undefined;
 }
-/** Only fixed bounded marker reads; no selector rebind, data/index open, cache, lock or child/network call. */
+/** Bounded activation/view metadata only; no data/index open, cache mutation, lock or child/network call.
+ * The v3 publication coordinator separately proves the complete journal, selected sources and policy. */
 export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
   try { const fenced = placementFencePresent(home), markers = readPlacementRuntimeMarkers(home);
     const refusal = placementMarkerRefusal(markers.profile, markers.shards);

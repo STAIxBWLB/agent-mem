@@ -14,7 +14,7 @@ const hex = (v: unknown, n: number): v is string => typeof v === "string" && v.l
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 function guard(ok: unknown, resource = false): asserts ok { if (!ok) throw new PublicPruneInputError(resource ? "resource" : "unavailable"); }
 interface TreeEntry { mode: "40000" | "100644"; oid: string }
-function parseTree(body: Buffer): Map<string, TreeEntry> {
+export function parsePublicPruneGitTree(body: Buffer): Map<string, TreeEntry> {
   const entries = new Map<string, TreeEntry>();
   for (let offset = 0; offset < body.length;) {
     const space = body.indexOf(32, offset); guard(space > offset);
@@ -60,7 +60,7 @@ export async function collectPublicPruneGitGraph(options: PublicPruneGitGraphOpt
       let oid = root;
       for (let i = 0; i < parts.length; i++) {
         let entries = trees.get(oid);
-        if (!entries) { entries = parseTree((await get(oid, "tree")).body); trees.set(oid, entries); }
+        if (!entries) { entries = parsePublicPruneGitTree((await get(oid, "tree")).body); trees.set(oid, entries); }
         const entry = entries.get(parts[i]!); guard(entry && entry.mode === (i === parts.length - 1 ? "100644" : "40000")); oid = entry.oid;
       }
       const value = await get(oid, "blob"); return { oid, body: value.body };

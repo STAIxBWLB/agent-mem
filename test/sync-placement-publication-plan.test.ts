@@ -8,7 +8,7 @@ import { PLACEMENT_FORMAT, validatePlacementProfile } from "../src/memory/sync-p
 import { planSyncPlacementActivation, type SyncPlacementActivationContext } from "../src/memory/sync-placement-plan.ts";
 import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, createPlacementRecord, SyncPlacementJournalError, type PlacementEpoch, type PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
 import { preparePlacementEpoch, ensurePlacementFence, readPlacementJournal, appendPlacementEvent, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
-import { planPlacementPublication, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
+import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase } from "../src/memory/sync-placement-publication-storage.ts";
 
 const h = (x: string) => hashJSON(x), key = { realm: { scope: "user" as const }, id: "d".repeat(32), rowHash: h("row") };
@@ -203,4 +203,18 @@ test("artifact-built plan can terminate unknown only against its exact durable a
   expect(read.facts).toHaveLength(2); expect(read.facts[1]).toMatchObject({ phase: "completed", previousHash: built.seal, intentFactHash: null, outcome: "unknown" });
   expect(readFileSync(join(f.dir, `publication-${f.bundle.root.seal}-intent.json`)).length).toBe(0);
   expect(() => recordPlacementPublicationPhase(f.home, f.epochHash, f.bundle.root.seal, "publication-intent", { artifactFactHash: built.seal, policyHash: f.input.policyHash, policyCheckUnixMs: 1 }, f.opts)).toThrow();
+});
+
+
+test("object metadata keeps exact pack/tree and wire/commit bounds before any payload allocation", () => {
+  const base={targetIndex:0,oid:"a".repeat(40),sha256:h("metadata-bound")};
+  const check=(type:"blob"|"tree"|"commit",path:string|null,size:number)=>validatePlacementPublicationChunk({schema:PLACEMENT_PUBLICATION_CHUNK_SCHEMA,kind:"objects",index:0,items:[{...base,type,path,size}]});
+  for(const path of ["shard.json",`prune-witnesses/${h("manifest")}.json`]) {
+    expect(check("blob",path,65536).items).toHaveLength(1); expect(()=>check("blob",path,65537)).toThrow();
+  }
+  const pack=`rows/${h("machine")}/${h("rows")}.jsonl`;
+  expect(check("blob",pack,1048576).items).toHaveLength(1);expect(()=>check("blob",pack,1048577)).toThrow();
+  expect(check("tree",null,1048576).items).toHaveLength(1);expect(()=>check("tree",null,1048577)).toThrow();
+  expect(check("commit",null,65536).items).toHaveLength(1);expect(()=>check("commit",null,65537)).toThrow();
+  expect(()=>check("blob","rows",100)).toThrow();expect(()=>check("tree","shard.json",100)).toThrow();
 });

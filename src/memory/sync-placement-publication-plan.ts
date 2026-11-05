@@ -79,9 +79,16 @@ function item(kind: PlacementPublicationChunkKind, input: unknown): PlacementPub
     return bounded({ key: validatePlacementKey(v.key), sourcePlacement: v.sourcePlacement as "local" | "synced", eligible: v.eligible, reason: v.reason as PlacementPublicationDecisionReason, dependencies }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES - 256);
   }
   const v = object(input, ["targetIndex", "type", "path", "oid", "sha256", "size"]);
-  const protocolPath = typeof v.path === "string" && !/[\r\n]/.test(v.path) && (v.path === "shard.json" || v.path === "rows" || v.path === "prune-witnesses" || /^rows\/[a-f0-9]{64}(?:\/[a-f0-9]{64}\.jsonl)?$/.test(v.path) || /^prune-witnesses\/[a-f0-9]{64}\.json$/.test(v.path));
-  if (!number(v.targetIndex, 1) || !["blob", "tree", "commit"].includes(v.type as string) || v.path !== null && !protocolPath || !hex(v.oid, 40) || !hex(v.sha256) || !number(v.size, 8 * 1024 * 1024)
-    || v.type === "commit" && v.path !== null || v.type === "blob" && v.path === null) return fail();
+  const path = typeof v.path === "string" && !/[\r\n]/.test(v.path) ? v.path : undefined;
+  const pack = path !== undefined && /^rows\/[a-f0-9]{64}\/[a-f0-9]{64}\.jsonl$/.test(path);
+  const manifest = path !== undefined && /^prune-witnesses\/[a-f0-9]{64}\.json$/.test(path);
+  const blobPath = path === "shard.json" || pack || manifest;
+  const treePath = v.path === null || path === "rows" || path === "prune-witnesses" || path !== undefined && /^rows\/[a-f0-9]{64}$/.test(path);
+  const maximum = v.type === "commit" || v.type === "blob" && !pack ? 65536 : 1048576;
+  if (!number(v.targetIndex, 1) || !["blob", "tree", "commit"].includes(v.type as string) || !hex(v.oid, 40) || !hex(v.sha256)
+    || v.type === "commit" && v.path !== null || v.type === "blob" && !blobPath || v.type === "tree" && !treePath) return fail();
+  if(!number(v.size,maximum))return fail("bound");
+  if(v.type!=="tree"&&v.size===0)return fail();
   return { targetIndex: v.targetIndex, type: v.type as PlacementPublicationObject["type"], path: v.path as string | null, oid: v.oid, sha256: v.sha256, size: v.size };
 }
 export function validatePlacementPublicationChunk(input: unknown): PlacementPublicationChunk {

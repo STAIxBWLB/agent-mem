@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Add #261 stage 3 placement-filtered shard publication: sealed bounded plans, operation-aware dependency holds, exact multi-ref publication, truthful exposure recovery and monotone v3 prune-view maintenance. Keep original payloads and all limits, and preserve v1/v2 behavior. Real-home activation and release remain separate.
+
 - Add the private bounded placement/publication journal and journal-only rebuild for #261 stage 2, with fresh source proofs and explicit policy-screened person release. Transport and activation remain disabled. Preserve legacy profile diagnostics on ordinary store opens.
 
 - Document the accepted transcript-summary timing ceiling under contention/slow runners: capture can be deferred without losing its transcript source; limits, R1, fail-closed RSS, durability and the hosted-macOS advisory are unchanged (#226).

@@ -113,3 +113,58 @@ test("v1 manifests, missing proof packs and disappeared v2 manifests remain refu
   retained.f.add(C(2), [C(1)], without);
   await expect(new ShardHistoryAuditor(retained.f.options).history(C(2))).rejects.toThrow();
 });
+
+function strongFixture() {
+  const graph = publicPruneGraph(), objects = new Map(graph.input.objects.map(value => [value.oid, Buffer.from(value.bytes)]));
+  const parent = graph.commit.oid;
+  const body = (object: string, type: "commit" | "tree" | "blob") => {
+    const raw = objects.get(object); if (!raw) throw Error("missing isolated raw object");
+    const end = raw.indexOf(0); if (!raw.subarray(0, end).toString().startsWith(type + " ")) throw Error("isolated raw object type mismatch");
+    return Buffer.from(raw.subarray(end + 1));
+  };
+  const files = new Map<string, Buffer>();
+  for (const [path, object] of graph.paths) {
+    const raw = objects.get(object); if (!raw || !raw.subarray(0, raw.indexOf(0)).toString().startsWith("blob ")) continue;
+    files.set(path, body(object, "blob"));
+  }
+  const options: ShardHistoryAuditorOptions = { realm: graph.manifest.realm, generation: G, placement: true, publicPrune: true,
+    git: async args => { if (args[0] !== "rev-list") throw Error("strong audit must not trust ls-tree"); return parent; },
+    blob: async object => body(object, "blob"), object: async (object, type) => body(object, type) };
+  return { graph, objects, files, parent, body, options };
+}
+
+test("strong raw-object audit verifies an actual content-addressed commit/tree graph without trusting ls-tree", async () => {
+  const f = strongFixture(), history = await new ShardHistoryAuditor(f.options).history(f.parent);
+  expect(history.rows.has(f.graph.note.id)).toBe(true); expect(history.manifests.size).toBe(1);
+  expect([...history.manifests.values()][0]?.eligible).toBe(true);
+});
+
+for (const target of ["commit", "root-tree", "nested-tree"] as const)
+  test(`strong audit refuses corrupt cached ${target} bytes under an unchanged published object identity`, async () => {
+    const f = strongFixture();
+    const nested = [...f.graph.paths].find(([path, object]) => path.startsWith("rows/") && f.objects.get(object)?.subarray(0, 5).toString() === "tree ")?.[1];
+    expect(nested).toBeDefined();
+    const corrupt = target === "commit" ? f.parent : target === "root-tree" ? f.graph.rootTree.oid : nested!;
+    await expect(new ShardHistoryAuditor({ ...f.options, object: async (object, type) => {
+      const bytes = f.body(object, type); return object === corrupt ? Buffer.concat([bytes, Buffer.from("private-canary")]) : bytes;
+    } }).history(f.parent)).rejects.toThrow(ShardHistoryError);
+  });
+
+test("strong audit checks exact parent headers against rev-list even when a forged DAG still lists both commits", async () => {
+  const f = strongFixture();
+  const body = Buffer.from(`tree ${f.graph.rootTree.oid}\nparent ${f.parent}\nauthor Fixture <fixture@sync.invalid> 0 +0000\ncommitter Fixture <fixture@sync.invalid> 0 +0000\n\nSynthetic child\n`);
+  const header = Buffer.from(`commit ${body.length}\0`), raw = Buffer.concat([header, body]);
+  const child = createHash("sha1").update(raw).digest("hex"); f.objects.set(child, raw);
+  const correct = { ...f.options, git: async () => `${f.parent}\n${child} ${f.parent}` };
+  const history = await new ShardHistoryAuditor(correct).history(child);
+  expect(history.rows.has(f.graph.note.id)).toBe(true);
+  await expect(new ShardHistoryAuditor({ ...correct, git: async () => `${f.parent}\n${child}` }).history(child)).rejects.toThrow(ShardHistoryError);
+});
+
+test("raw commit messages remain opaque bytes while only tree and parent headers define history", async () => {
+  const f = strongFixture();
+  const message = Buffer.from([255, 254, 0, 10]);
+  const body = Buffer.concat([Buffer.from(`tree ${f.graph.rootTree.oid}\nauthor Fixture <fixture@sync.invalid> 0 +0000\ncommitter Fixture <fixture@sync.invalid> 0 +0000\n\n`), message]);
+  const raw = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]), commit = createHash("sha1").update(raw).digest("hex"); f.objects.set(commit, raw);
+  expect((await new ShardHistoryAuditor({ ...f.options, git: async () => commit }).history(commit)).rows.has(f.graph.note.id)).toBe(true);
+});

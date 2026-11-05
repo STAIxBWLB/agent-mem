@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalJSON, validGeneration } from "./generation.ts";
 import { validatePruneRow, type PruneRow } from "./prune.ts";
 import { verifyPublicPruneWitness } from "./public-prune-witness.ts";
+import { parsePublicPruneGitTree } from "./shard-sync-graph.ts";
 import { decodeShardDescriptor, decodePlacementTransportDescriptor, decodeShardPack, decodeShardManifest, isShardManifestPath,
   shardSyncRef, SHARD_PACK_MAX_BYTES, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
 
@@ -18,6 +19,9 @@ export interface ShardHistoryAuditorOptions {
   git(args: string[]): Promise<string>;
   /** Caller acquisition bounds and validates objects. Audit also retains identity/newline/bound checks. */
   blob(oid: string, path: string): Promise<Buffer>;
+  /** Required by placement publication. Omitting this retains only the legacy trusted-Git abstraction.
+   * Body bytes, without the Git object header; the auditor verifies each requested identity itself. */
+  object?(oid: string, type: "commit" | "tree"): Promise<Buffer>;
 }
 export class ShardHistoryError extends Error {
   constructor() { super("Shard history is unavailable, inconsistent or unsupported; retain and inspect the complete selected history before continuing."); this.name = "ShardHistoryError"; }
@@ -42,6 +46,7 @@ export class ShardHistoryAuditor {
   readonly #decoded = new Map<string, ShardSyncRow[]>();
   readonly #origins = new Map<string, ShardHistoryOrigin>();
   readonly #manifestOrigins = new Map<string, { commit: string; blob: string }>();
+  readonly #parents = new Map<string, string[]>();
   #running = false;
   constructor(options: ShardHistoryAuditorOptions) {
     this.#ref = shardSyncRef(options.realm);
@@ -60,8 +65,57 @@ export class ShardHistoryAuditor {
     }
     if (bytes.length > maximum) fail(); return bytes;
   }
-  async #tree(commit: string): Promise<ShardHistory> {
-    const entries = (await this.#options.git(["ls-tree", "-r", "-z", commit])).split("\0").filter(Boolean);
+  async #object(object: string, type: "commit" | "tree"): Promise<Buffer> {
+    if (!this.#options.object || !oid(object)) return fail();
+    const body = await this.#options.object(object, type);
+    if (!(body instanceof Uint8Array) || body.length > (type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES)) return fail();
+    const bytes = Buffer.from(body);
+    if (createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex") !== object) return fail();
+    return bytes;
+  }
+  async #commit(commit: string, expected?: readonly string[]): Promise<string> {
+    const bytes = await this.#object(commit, "commit"), end = bytes.indexOf(10), headerEnd = bytes.indexOf(Buffer.from("\n\n"));
+    if (end !== 45 || headerEnd < end || !bytes.subarray(0, 5).equals(Buffer.from("tree "))) return fail();
+    const rootBytes = bytes.subarray(5, end), tree = rootBytes.toString("ascii");
+    if (!oid(tree) || !rootBytes.equals(Buffer.from(tree))) return fail();
+    const parents: string[] = [];
+    let at = end + 1;
+    while (at < headerEnd) {
+      const next = bytes.indexOf(10, at); if (next < at || next > headerEnd) return fail();
+      const line = bytes.subarray(at, next); at = next + 1;
+      if (line.subarray(0, 7).equals(Buffer.from("parent "))) {
+        const parentBytes = line.subarray(7), parent = parentBytes.toString("ascii");
+        if (!oid(parent) || !parentBytes.equals(Buffer.from(parent))) return fail(); parents.push(parent);
+      } else if (line.subarray(0, 5).equals(Buffer.from("tree "))) return fail();
+    }
+    const known = expected ?? this.#parents.get(commit);
+    if (known && canonicalJSON(parents) !== canonicalJSON(known)) return fail();
+    if (expected) this.#parents.set(commit, parents);
+    return tree;
+  }
+  async #treeEntries(root: string): Promise<string[]> {
+    // Raw trees are scoped to this one snapshot; retaining a full tree map for every historical commit is quadratic.
+    const parsed = new Map<string, ReturnType<typeof parsePublicPruneGitTree>>(), entries: string[] = [];
+    const walk = async (object: string, prefix: string): Promise<void> => {
+      let tree = parsed.get(object);
+      if (!tree) { tree = parsePublicPruneGitTree(await this.#object(object, "tree")); parsed.set(object, tree); }
+      for (const [name, entry] of tree) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if (entry.mode === "40000") {
+          const allowed = !prefix ? name === "rows" || name === "prune-witnesses"
+            : prefix === "rows" && name.length === 64 && /^[a-f0-9]+$/.test(name);
+          if (!allowed) return fail(); await walk(entry.oid, path);
+        } else {
+          if (path !== "shard.json" && !packPath(path) && !isShardManifestPath(path)) return fail();
+          entries.push(`100644 blob ${entry.oid}\t${path}`);
+        }
+      }
+    };
+    await walk(root, ""); return entries;
+  }
+  async #tree(commit: string, verifiedRoot?: string): Promise<ShardHistory> {
+    const entries = this.#options.object ? await this.#treeEntries(verifiedRoot ?? await this.#commit(commit))
+      : (await this.#options.git(["ls-tree", "-r", "-z", commit])).split("\0").filter(Boolean);
     const rows = new Map<string, ShardSyncRow>(), files = new Map<string, Buffer>(), origins = new Map<string, ShardHistoryOrigin>();
     const objects = new Map<string, string>(), manifests = new Map<string, ShardHistoryManifest>();
     for (const entry of entries) {
@@ -120,8 +174,9 @@ export class ShardHistoryAuditor {
       for (const line of lines) {
         const [commit, ...parents] = line.split(" ");
         if (!oid(commit) || parents.some(parent => !oid(parent)) || seen.has(commit)) return fail(); seen.add(commit);
-        if (this.#audited.has(commit)) { if (commit === tip) latest = await this.#tree(commit); continue; }
-        const current = await this.#tree(commit);
+        const verifiedRoot = this.#options.object ? await this.#commit(commit, parents) : undefined;
+        if (this.#audited.has(commit)) { if (commit === tip) latest = await this.#tree(commit, verifiedRoot); continue; }
+        const current = await this.#tree(commit, verifiedRoot);
         for (const parent of parents) {
           if (!this.#audited.has(parent) || !seen.has(parent)) return fail();
           const previous = this.#histories.get(parent) ?? await this.#tree(parent);
