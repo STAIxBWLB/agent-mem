@@ -95,7 +95,7 @@ export const runInboxJob: InboxRunner = (base, capacity) => {
   return { result, observeCleanup: observe, async cancel() {
     if (observe() === "gone") { fail(Error("inbox worker cancelled")); return; }
     terminate(); let timer: ReturnType<typeof setTimeout> | undefined;
-    try { await Promise.race([ended, new Promise<never>((resolve, reject) => { timer = setTimeout(() => {
+    try { await Promise.race([ended, new Promise<void>((resolve, reject) => { timer = setTimeout(() => {
       if (observe() === "gone") { fail(Error("inbox worker cancelled")); resolve(); }
       else { const error = new InboxCleanupError(child.pid); endedReject(error); fail(error); reject(error); }
     }, REAP_MS + 1000); })]); fail(Error("inbox worker cancelled")); }

@@ -95,7 +95,7 @@ test("actual PRODUCT worker retains its verified idle leader on TERM before GO, 
     const value = await Promise.race([ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error("product worker did not become ready")), 3000); })]);
     if (timer) clearTimeout(timer); timer = undefined;
     expect(value.type).toBe("ready"); expect(value.pid).toBe(child.pid!); expect(value.group).toBe(child.pid!);
-    expect(value.signature).toMatch(/^[a-f0-9]{64}$/); expect(value.workerHash).toBe(INBOX_WORKER_HASH);
+    expect(value.signature).toMatch(/^[a-f0-9]{64}$/); expect(INBOX_WORKER_HASH).toBe(value.workerHash);
     expect(await platform.processSignatureAsync(child.pid!)).toBe(value.signature); verified = true;
     expect(child.exitCode).toBeNull(); process.kill(-child.pid!, "SIGTERM"); await Bun.sleep(150);
     expect(exited).toBe(false); expect(child.exitCode).toBeNull(); expect(child.signalCode).toBeNull();
