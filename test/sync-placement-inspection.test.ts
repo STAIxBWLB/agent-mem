@@ -232,3 +232,11 @@ test("a borrowed user target inspects and publishes only that selected realm", a
   expect((await syncMemory(user, f.opts())).ok).toBe(true); expect(f.reachableIds()).toEqual([f.ids.user!]);
   // The user target is borrowed; only the owning fixture closes its handles.
 }, 20_000);
+
+test("a raised reader floor gives an actionable data-free refusal without a fingerprint", async () => {
+  const f = await fixture();
+  writeFileSync(join(f.home, "formats.json"), JSON.stringify([{ surface: "sync", minReader: "99.0.0", since: "2026-11-05" }]), { mode: 0o600 });
+  const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
+  expect(result).toMatchObject({ complete: false, reason: "reader-upgrade-required" }); expect("fingerprint" in result).toBe(false);
+  if (!result.complete) expect(result.nextStep).toContain("compatible newer runtime"); expect(f.snapshot()).toEqual(before);
+});

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { types } from "node:util";
 import { SegmentReadBudgetError } from "./bridge.ts";
 import { canonicalJSON, hashJSON, selectorRevision } from "./generation.ts";
-import { assertFormatFloor } from "./formats.ts";
+import { assertFormatFloor, FormatFloorError } from "./formats.ts";
 import { readPlacementRuntimeMarkers, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
@@ -44,7 +44,7 @@ export interface SyncPlacementInspectionRow extends PlacementKey {
   exposure: SyncPlacementExposure;
 }
 export type SyncPlacementInspectionIncompleteReason = "placement-not-active" | "binding-changed" | "input-unavailable" | "input-bound" | "input-changed"
-  | "journal-unavailable" | "policy-unavailable" | "attestation-unavailable" | "evidence-unavailable";
+  | "journal-unavailable" | "policy-unavailable" | "attestation-unavailable" | "evidence-unavailable" | "reader-upgrade-required";
 export type SyncPlacementInspection = {
   complete: true; rows: SyncPlacementInspectionRow[]; fingerprint: string;
   counts: { rows: number; eligible: number; policyLocal: number; personLocal: number; held: number; verifiedPublished: number; notObserved: number; unknown: number };
@@ -61,6 +61,7 @@ const remedies: Record<SyncPlacementInspectionIncompleteReason, string> = {
   "policy-unavailable": "The policy callback/version or configured/default-deny epoch is unavailable or changed; restore a stable policy and policyVersion before inspecting again.",
   "attestation-unavailable": "Fresh placement writer-pin/quiescence attestation is missing or invalid; supply the matching placementAttestation callback and inspect again.",
   "evidence-unavailable": "Retained publication evidence is unreadable or inconsistent; check the private cache's ownership, permissions, links and exact objects, restore compatible retained evidence, then use a separately authorized sync to reverify before inspecting again.",
+  "reader-upgrade-required": "The configured sync format floor refuses the loaded reader; install a compatible newer runtime, reopen the selected handles and inspect again.",
 };
 class Incomplete extends Error {
   constructor(readonly reason: SyncPlacementInspectionIncompleteReason) { super(remedies[reason]); }
@@ -186,6 +187,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     if (cacheAbsent && lstatSync(cache, { throwIfNoEntry: false })) fail("input-changed");
     if (rootStamp !== undefined ? placementCacheRootStamp(home) !== rootStamp : lstatSync(cacheRoot, { throwIfNoEntry: false }) !== undefined) fail("input-changed");
     if (binding() !== beforeBinding) fail("binding-changed");
+    assertFormatFloor(home, "sync");
     const counts = { rows: rows.length, eligible: 0, policyLocal: 0, personLocal: 0, held: 0, verifiedPublished: 0, notObserved: 0, unknown: 0 };
     for (const row of rows) {
       counts[row.disposition === "policy-local" ? "policyLocal" : row.disposition === "person-local" ? "personLocal" : row.disposition]++;
@@ -196,6 +198,10 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof Incomplete) reason = error.reason;
+      else if (error instanceof FormatFloorError) {
+        if (error.code === "format_floor") reason = "reader-upgrade-required";
+        else return { complete: false, reason: "input-unavailable", nextStep: "The sync reader-floor declaration is unreadable or unsupported; inspect and restore the person-approved declaration with a compatible runtime, then inspect again." };
+      }
       else if (error instanceof SyncPlacementRuntimeError) reason = "binding-changed";
       else if (error instanceof SegmentReadBudgetError) reason = "input-bound";
       else if (error instanceof SyncPlacementJournalError) {
