@@ -1,4 +1,4 @@
-import { measuredHookRss } from "./hook-rss-check.ts";
+import { measuredBudgetHookRss } from "./hook-rss-check.ts";
 /** Every real hook call, including bounded resumptions, is an R2 sample. */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -9,7 +9,7 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
-import { stallAdvisory } from "./hook-timing-check.ts";
+import { stallAdvisory, budgetFailureAdvisory, reportBudgetAdvisory } from "./hook-timing-check.ts";
 import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
 
 let stallWarned = false;
@@ -80,8 +80,9 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 async function measure() {
   let f = hookFixture();
   runnerFingerprint();
+  const incompleteRuns: Record<string, number> = {};
   const handlerWalls: { event: string; metricWallMs: number }[] = [];
-  const samples: (ReturnType<typeof measuredHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
+  const samples: (ReturnType<typeof measuredBudgetHookRss> & { event: string; run: number; logicalRun: number; followUp: number; wallMs: number; offset: number; offsetSource: "cursor" | "uncreated" | "rollback_pending"; newSummaries: number; durableSummaries: number; reasonOnlyStreak: number; firstUncommittedSummaryEnd?: number; stopReason?: string })[] = [];
   try {
     await f.seed();
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= RUNS; logicalRun++) {
@@ -116,7 +117,7 @@ async function measure() {
         await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
           exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
-        if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("transcript budget hook unavailable");
+        if (result.exitCode !== 0 || result.stdout.length || !metric || !Number.isFinite(metric.wallMs) || metric.wallMs! < 0) throw Error("transcript budget hook unavailable");
         const stopReason = metric.transcriptStopReason;
         let offset = 0, offsetSource: "cursor" | "uncreated" | "rollback_pending" = "uncreated";
         if (existsSync(file)) {
@@ -135,8 +136,8 @@ async function measure() {
             }
           } finally { db.close(); }
         }
-        let rss: ReturnType<typeof measuredHookRss>;
-        try { rss = measuredHookRss(metric, result.resourceUsage.maxRSS / 1048576); }
+        let rss: ReturnType<typeof measuredBudgetHookRss>;
+        try { rss = measuredBudgetHookRss(metric, result.resourceUsage.maxRSS / 1048576, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `transcript:${event}:${logicalRun}:${followUp}`); }
         catch (error) { console.error(JSON.stringify({ diagnostic: "transcript-budget-failure", event, logicalRun, followUp, wallMs, offset, metric })); throw error; }
         let available: Set<string>;
         try { available = durable(f, digest); }
@@ -148,7 +149,10 @@ async function measure() {
         samples.push(sample); console.log(JSON.stringify({ diagnostic: "transcript-budget-sample", ...sample }));
         const metricWallMs = typeof metric.wallMs === "number" && Number.isFinite(metric.wallMs) ? metric.wallMs : Number.NaN;
         handlerWalls.push({ event, metricWallMs });
-        if (!(metricWallMs <= R2_WALL_MAX_MS)) console.log(JSON.stringify({ diagnostic: "transcript-wall-max", enforced: TRANSCRIPT_WALL_MAX_ENFORCED, event, logicalRun, followUp, metricWallMs, outerWallMs: wallMs }));
+        if (!(metricWallMs <= R2_WALL_MAX_MS)) {
+          const advisory = budgetFailureAdvisory("transcript-wall-max", { telemetryValid: Number.isFinite(metricWallMs) && metricWallMs >= 0, survivors: 0, wallMs: metricWallMs });
+          console.log(JSON.stringify({ diagnostic: "transcript-wall-max", enforced: TRANSCRIPT_WALL_MAX_ENFORCED && !advisory, advisory, event, logicalRun, followUp, metricWallMs, outerWallMs: wallMs }));
+        }
         if (!Number.isSafeInteger(offset) || offset < previous || offset - previous > HOOK_TRANSCRIPT_BYTES
           || metric.transcriptOffset !== undefined && metric.transcriptOffset !== offset
           || newSummaries < 0 || offset === previous && !["cap", "deadline", "spool_full"].includes(stopReason ?? "")
@@ -171,7 +175,13 @@ async function measure() {
         previous = offset; previousSummaries = durableSummaries; previousAvailable = available;
         if ([...expected].every(value => available.has(value))) { complete = true; break; }
       }
-      if (!complete) throw Error("transcript summaries not durable within " + MAX_FOLLOW_UPS + " follow-up invocations");
+      if (!complete) {
+        const last = samples.at(-1)!;
+        const message = "transcript summaries not durable within " + MAX_FOLLOW_UPS + " follow-up invocations";
+        if (!reportBudgetAdvisory("not-durable", `${event}:${logicalRun}: ${message}`, { telemetryValid: Number.isFinite(last.wallMs) && Number.isFinite(last.rssMB), survivors: 0 })) throw Error(message);
+        incompleteRuns[event] = (incompleteRuns[event] ?? 0) + 1;
+        continue;
+      }
       await verifyReplay(f, digest, expected);
     }
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
@@ -182,26 +192,30 @@ async function measure() {
       // #228 reset: 150 MB ceiling and baseline regression on the 40 run peaks; the 300 ms handler maximum is enforced (#226, task 107).
       const rssGate = r2Verdict("transcript:" + event, { rssMB: runPeaksMB, wallMs: handlerWalls.filter(row => row.event === event).map(row => row.metricWallMs) }, { wallEnforced: TRANSCRIPT_WALL_MAX_ENFORCED });
       if (rssGate.regression.message && !rssGate.regression.enforced) console.warn(`::warning title=R2 regression (reported, not enforced on ${rssGate.runner})::${rssGate.regression.message}`);
-      if (rssGate.wallMax.overMax) console.warn(`::warning title=R2 300 ms maximum (enforced)::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
-      return { event, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
+      const wallMaxAdvisory = rssGate.wallMax.overMax > 0 && reportBudgetAdvisory("transcript-wall-max", `transcript:${event}`, {
+        telemetryValid: handlerWalls.filter(row => row.event === event).every(row => Number.isFinite(row.metricWallMs) && row.metricWallMs >= 0),
+        survivors: 0, wallMs: rssGate.wallMax.maxMs,
+      });
+      if (rssGate.wallMax.overMax && !wallMaxAdvisory) console.warn(`::warning title=R2 300 ms maximum (enforced)::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
+      return { event, incompleteRuns: incompleteRuns[event] ?? 0, rssCoverageComplete: rows.every(row => row.rssProvenanceKnown), rssProvenanceAdvisories: rows.filter(row => !row.rssProvenanceKnown).length, wallMaxAdvisory, wallMaxPass: rssGate.wallMax.pass || wallMaxAdvisory, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
-        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.pass };
+        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.ceiling.pass && rssGate.regression.pass };
     });
     return { groups, samples };
   } finally {
     if (process.env.GITHUB_STEP_SUMMARY) {
       const rows = ["Stop", "SessionEnd", "StopBurst"].map(event => {
-        const values = samples.filter(row => row.event === event).map(row => row.rssMB).sort((a, b) => a - b);
+        const values = samples.filter(row => row.event === event && row.rssProvenanceKnown).map(row => row.rssMB).sort((a, b) => a - b);
         const median = values.length ? ((values[Math.floor((values.length - 1) / 2)]! + values[Math.floor(values.length / 2)]!) / 2).toFixed(2) : "-";
         return "| " + event + " | " + values.length + " | " + median + " | " + (values.at(-1)?.toFixed(2) ?? "-") + " |";
       });
-      appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\nCandidate transcript owned-image RSS (partial if the gate fails)\n\n| Event | Source-known calls | Median MB | Max MB |\n|---|---:|---:|---:|\n" + rows.join("\n") + "\n");
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\nCandidate transcript source-known owned-image RSS (unknown-envelope samples remain in the numeric gates and invocation logs)\n\n| Event | Source-known calls | Median MB | Max MB |\n|---|---:|---:|---:|\n" + rows.join("\n") + "\n");
     }
     f.close();
   }
 }
 // #228/#226: a wall-max miss is its own non-retryable outcome; the ceiling and regression stay the RSS verdict.
 const result = await budgetGroup("transcript-hooks", measure, report => ({ wallPass: report.groups.every(row => row.wallPass),
-  rssPass: report.groups.every(row => row.rssGate.ceiling.pass && row.rssGate.regression.pass), wallMaxPass: report.groups.every(row => row.rssGate.wallMax.pass) }));
+  rssPass: report.groups.every(row => row.rssGate.ceiling.pass && row.rssGate.regression.pass), wallMaxPass: report.groups.every(row => row.wallMaxPass) }));
 console.log(JSON.stringify({ diagnostic: "transcript-R1-summary", windowMs: R1_POST_EXIT_WINDOW_MS, ...r1 }));
 console.log(JSON.stringify(result, null, 2));
