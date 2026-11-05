@@ -7,6 +7,7 @@ import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 import { captureInspectionPendingPrunes } from "../src/memory/sync-placement-inspection-pending.ts";
 import { validatePrunePlan } from "../src/memory/prune.ts";
+import { realPath } from "../src/memory/platform.ts";
 import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
 
 const cleanup: (() => void)[] = [];
@@ -79,16 +80,17 @@ for (const change of ["pending", "saved-body", "replace-directory", "mode"] as c
 
 for (const bound of ["rows", "bytes"] as const) test("streaming namespace scan enforces metadata " + bound + " bound before collecting beyond it", () => {
   const f = fixture(true), file = join(f.dir, "saved.json"); writeFileSync(file, "{}\n", { mode: 0o600 });
+  const resolvedDir = realPath(f.dir);
   const actualOpen = fs.opendirSync, actualStat = fs.lstatSync, stat = lstatSync(file, { bigint: true });
   let emitted = 0, childStats = 0, closed = false;
   const name = bound === "rows" ? "saved.json" : "s".repeat(1024);
   // Synthetic iterator/metadata only: no twenty-thousand-file fixture or large physical directory is created.
   const open = spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof actualOpen>) => {
-    if (args[0] !== f.dir) return Reflect.apply(actualOpen, fs, args);
+    if (args[0] !== resolvedDir) return Reflect.apply(actualOpen, fs, args);
     return { readSync() { emitted++; return { name }; }, closeSync() { closed = true; } } as unknown as fs.Dir;
   }) as typeof actualOpen);
   const stats = spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof actualStat>) => {
-    if (typeof args[0] === "string" && args[0].startsWith(f.dir + "/")) { childStats++; return stat; }
+    if (typeof args[0] === "string" && args[0].startsWith(resolvedDir + "/")) { childStats++; return stat; }
     return Reflect.apply(actualStat, fs, args);
   }) as typeof actualStat);
   try {
