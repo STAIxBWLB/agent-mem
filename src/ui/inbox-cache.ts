@@ -20,11 +20,13 @@ export const runInboxJob: InboxRunner = (base, capacity) => {
   let fail!: (error: Error) => void, succeed!: (value: InboxJobResult) => void, exitedResolve!: () => void;
   const ended = new Promise<void>(resolve => { exitedResolve = resolve; });
   const result = new Promise<InboxJobResult>((resolve, reject) => { succeed = resolve; fail = reject; });
-  const kill = () => {
+  const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     if (exited || child.exitCode !== null || child.signalCode !== null) return;
-    try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    try { if (child.pid) process.kill(-child.pid, signal); } catch { child.kill(signal); }
   };
-  const deadline = setTimeout(kill, WORK_MS); deadline.unref();
+  let force: ReturnType<typeof setTimeout> | undefined;
+  const terminate = () => { kill("SIGTERM"); if (!force) { force = setTimeout(() => kill(), 250); force.unref(); } };
+  const deadline = setTimeout(terminate, WORK_MS); deadline.unref();
   child.on("message", (value: unknown) => {
     try {
     const message = value as { type?: unknown; pid?: unknown; signature?: unknown; computation?: InboxComputation; sources?: InboxSources };
@@ -37,11 +39,11 @@ export const runInboxJob: InboxRunner = (base, capacity) => {
   });
   child.once("error", () => { kill(); fail(Error("inbox worker unavailable")); });
   child.once("close", code => {
-    exited = true; clearTimeout(deadline); exitedResolve();
+    exited = true; clearTimeout(deadline); if (force) clearTimeout(force); exitedResolve();
     if (code === 0 && payload) succeed(payload); else fail(Error(changed ? "inbox sources changed" : "inbox worker unavailable"));
   });
   return { result, async cancel() {
-    kill(); let timer: ReturnType<typeof setTimeout> | undefined;
+    terminate(); let timer: ReturnType<typeof setTimeout> | undefined;
     try { await Promise.race([ended, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error("inbox worker cleanup unavailable")), REAP_MS); })]); }
     finally { if (timer) clearTimeout(timer); }
   } };
