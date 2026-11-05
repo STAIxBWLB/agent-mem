@@ -209,7 +209,8 @@ console.log(JSON.stringify({results,effects,admitted}));`)) as {results:{operati
       {operation:"read",refused:true},{operation:"write",refused:true},{operation:"sync",refused:true},
     ]);
     expect(observed.effects).toBe(0); expect(observed.admitted).toBe(0);
-    for (const value of observed.results) expect(value.message).toContain("inspect the local profile before continuing");
+    // Published N-1 shard admission is safe but has no actionable v3 upgrade remedy without a person floor.
+    for (const value of observed.results) expect(value.message).toBe("no active curated shard migration");
     expect(active.snapshot()).toEqual(before);
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe(""); expect(active.reachableIds()).toEqual([]);
     // A known old release cannot gain new diagnostics retroactively. The documented existing person-authored
@@ -229,7 +230,8 @@ console.log(JSON.stringify({results,effects,admitted}));`)) as {results:{operati
     const generation=createHash("sha256").update(f.root).digest("hex").slice(0,32);
     expect((await migrateShards({memoryDir:f.base,generation,mode:"apply",authorizedPerson:true,tty:true})).active).toBe(true);
     if(version==="v2")await activatePublicPruneView({memoryDir:f.base,mode:"apply",authorizedPerson:true,tty:true});
-    const remote=createInspectionRemote(f.root,"ordinary-n1.git"),markers=["profile.json","shards.json"].map(name=>readFileSync(join(f.base,name),"utf8"));
+    const markerBytes=()=>["profile.json","shards.json"].map(name=>existsSync(join(f.base,name))?readFileSync(join(f.base,name),"utf8"):null);
+    const remote=createInspectionRemote(f.root,"ordinary-n1.git"),markers=markerBytes();
     const observed=JSON.parse(run(f,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
 const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
 const store=openShardStore({memoryDir:${JSON.stringify(f.base)},project:${JSON.stringify(f.project)},deferPromotions:true});
@@ -241,7 +243,7 @@ console.log(JSON.stringify({read,written,ok:synced.ok}));
 }finally{store.close();}`)) as {read:string[];written:string;ok:boolean};
     expect(observed.read).toContain(initial!); expect(observed.ok).toBe(true);
     expect(reachableInspectionRowIds(remote)).toEqual([initial!,observed.written].sort());
-    expect(["profile.json","shards.json"].map(name=>readFileSync(join(f.base,name),"utf8"))).toEqual(markers);
+    expect(markerBytes()).toEqual(markers);
     expect(existsSync(join(f.base,"sync-placement"))).toBe(false);
     const current=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
     try{expect(current.list({project:f.project}).map(value=>value.id).sort()).toEqual([initial!,observed.written].sort());}finally{current.close();}
