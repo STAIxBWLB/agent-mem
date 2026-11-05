@@ -332,7 +332,7 @@ class PlacementTransport {
     const objects:PlacementPublicationObject[]=this.targets.flatMap((target,targetIndex)=>target.objects.map(object=>({targetIndex,type:object.type,path:object.path === "" ? null : object.path,oid:object.oid,sha256:digest(object.bytes),size:object.bytes.length})));
     const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:hashJSON(capture.context),markerHash:capture.markerHash,
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
-      journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
+      journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     let bundle=planPlacementPublication(body,{sources:capture.prefixes,decisions,objects});
     let scheduled=this.events(bundle,projection,old);
     let head=body.journal.headHash;
@@ -441,6 +441,7 @@ class PlacementTransport {
     if(before.pending){
       const old=await this.frozenOld(read.bundle),schedule=this.events(read.bundle,projection,old);
       const sequence=before.pendingRecordSequence??before.sequence+1;
+      if(!before.pendingRecord&&schedule.events[sequence-root.journal.sequence-1]?.kind!=="hold")refuse();
       this.appendThrough(read.bundle,schedule.events,Math.max(holds.length,sequence-root.journal.sequence),true);
     }else this.appendThrough(read.bundle,holds,holds.length,true);
     if(read.pendingPhase==="artifact-built"){

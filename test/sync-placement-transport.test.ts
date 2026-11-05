@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { inflateSync, deflateSync } from "node:zlib";
@@ -13,6 +13,8 @@ import { captureSyncPlacementContext } from "../src/memory/sync-placement-captur
 import { planPlacementJournal, preparePlacementJournal, readPlacementProjection, type PlacementJournalPort } from "../src/memory/sync-placement-journal.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { ensurePlacementFence } from "../src/memory/sync-placement-journal-storage.ts";
+import * as journalStorage from "../src/memory/sync-placement-journal-storage.ts";
+import * as publicationStorage from "../src/memory/sync-placement-publication-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
@@ -400,4 +402,118 @@ for (const mode of ["invalid-tail", "missing-fetched"] as const) test("v3 pendin
   const result = await syncMemory(f.receiver.store, f.receiver.opts(f.remote)); expect(result).toMatchObject({ ok: false, pushed: false });
   expect(authoredBytes(f.receiver.home)).toEqual(before); expect(readFileSync(f.pending)).toEqual(claim); expect(f.receiver.plans()).toEqual(plans);
   expect(git(f.remote, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(heads);
+});
+
+/** Isolated crash-prefix construction only. Production recovery must complete the prefix itself; tests never heal it. */
+function persistCrashPrefix(file: string, bytes: Uint8Array): void {
+  writeFileSync(file, bytes, { mode: 0o600 }); const fd = openSync(file, "r+");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function retainedPublication(f: Awaited<ReturnType<typeof fixture>>) {
+  const names = f.plans(); expect(names).toHaveLength(1);
+  const root = JSON.parse(readFileSync(join(f.home, "sync-placement", "epochs", f.epochHash, names[0]!), "utf8")) as { seal: string };
+  return publicationStorage.readPlacementPublication(f.home, f.epochHash, root.seal);
+}
+
+for (const kind of ["hold", "publication-ambiguous", "publication-committed"] as const)
+  test(`ordinary coordinator resumes a torn SECOND ${kind} journal append after an already durable prefix`, async () => {
+    const remote = bare(), f = await fixture({ seed(store) {
+      return { a: store.note(note("later journal allowed a")), b: store.note(note("later journal allowed b")), c: store.note(note("later journal allowed c")),
+        deniedA: store.note(note("NEVER_PUBLIC_LATER_A")), deniedB: store.note(note("NEVER_PUBLIC_LATER_B")), deniedC: store.note(note("NEVER_PUBLIC_LATER_C")) };
+    } });
+    const physicalBefore = authoredBytes(f.home), realAppend = journalStorage.appendPlacementEvent;
+    let matching = 0, fired = false;
+    const fault = spyOn(journalStorage, "appendPlacementEvent").mockImplementation((home, epochHash, event, expectedHead, options) => {
+      const selected = home === f.home && event.kind === kind && ++matching === 2;
+      return realAppend(home, epochHash, event, expectedHead, { ...options, phase(stage) {
+        options.phase?.(stage);
+        if (!selected || fired || stage !== "intent-fsync") return;
+        const dir = join(home, "sync-placement", "epochs", epochHash);
+        const intent = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { chunk: string; prefixBytes: number; record: unknown };
+        const chunk = join(dir, intent.chunk), before = existsSync(chunk) ? readFileSync(chunk) : Buffer.alloc(0), line = Buffer.from(json(intent.record));
+        expect(before.length).toBe(intent.prefixBytes);
+        persistCrashPrefix(chunk, Buffer.concat([before, line.subarray(0, 23)])); fired = true;
+        throw Error("synthetic second journal append crash");
+      } });
+    });
+    let interrupted: Awaited<ReturnType<typeof syncPlacementMemory>> | undefined;
+    try { interrupted = await syncPlacementMemory(f.store, f.opts(remote)); } finally { fault.mockRestore(); }
+    expect(fired).toBe(true); expect(interrupted?.ok).toBe(false);
+    const pending = journalStorage.readPlacementJournal(f.home, f.epochHash), before = retainedPublication(f);
+    expect(pending.pending).toBe(true); expect(pending.pendingRecordSequence).toBeGreaterThan(1);
+    expect(pending.pendingRecord?.kind).toBe(kind); expect(pending.sequence).toBe(pending.pendingRecordSequence! - 1);
+    expect(pending.publicationReservation?.consumedRecords).toBeGreaterThan(0);
+    if (kind !== "publication-committed") expect(refs(remote)).toEqual([]);
+    const plans = f.plans(), resumed = await syncMemory(f.store, f.opts(remote));
+    expect(resumed.ok).toBe(true); expect(f.plans()).toEqual(plans);
+    const done = retainedPublication(f), journal = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(done.phase).toBe("completed"); expect(done.pending).toBe(false); expect(journal.pending).toBe(false);
+    expect(done.bundle.root.seal).toBe(before.bundle.root.seal); expect(done.consumedRecords).toBe(done.reservedRecords);
+    expect(new Set(journal.records.map(record => record.requestId)).size).toBe(journal.records.length);
+    for (const id of [f.ids.a!, f.ids.b!, f.ids.c!]) expect(held(f, id)?.exposure).toBe("published");
+    for (const id of [f.ids.deniedA!, f.ids.deniedB!, f.ids.deniedC!]) expect(held(f, id)?.held).toBe(true);
+    assertWitnessCopies(physicalBefore, authoredBytes(f.home), remote);
+    assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_LATER_A", "NEVER_PUBLIC_LATER_B", "NEVER_PUBLIC_LATER_C"]);
+    const after = authoredBytes(f.home); expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true);
+    expect(authoredBytes(f.home)).toEqual(after); expect(f.plans()).toEqual(plans);
+  });
+
+for (const phase of ["artifact-built", "publication-intent", "completed"] as const)
+  test(`ordinary coordinator completes a known partial ${phase} fact from its frozen payload without resealing`, async () => {
+    const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("partial publication fact original")), denied: store.note(note("NEVER_PUBLIC_PARTIAL_FACT")) }) });
+    const physicalBefore = authoredBytes(f.home), realPhase = publicationStorage.recordPlacementPublicationPhase; let fired = false;
+    const fault = spyOn(publicationStorage, "recordPlacementPublicationPhase").mockImplementation((home, epochHash, attemptHash, current, input, options) =>
+      realPhase(home, epochHash, attemptHash, current, input, { ...options, phase(stage) {
+        options.phase?.(stage);
+        if (home !== f.home || current !== phase || fired || stage !== "publication-fact-written") return;
+        const suffix = phase === "artifact-built" ? "artifact" : phase === "publication-intent" ? "intent" : "receipt";
+        const file = join(home, "sync-placement", "epochs", epochHash, `publication-${attemptHash}-${suffix}.json`), bytes = readFileSync(file);
+        persistCrashPrefix(file, bytes.subarray(0, 29)); fired = true; throw Error("synthetic partial publication fact crash");
+      } }));
+    let interrupted: Awaited<ReturnType<typeof syncPlacementMemory>> | undefined;
+    try { interrupted = await syncPlacementMemory(f.store, f.opts(remote)); } finally { fault.mockRestore(); }
+    expect(fired).toBe(true); expect(interrupted?.ok).toBe(false);
+    const partial = retainedPublication(f); expect(partial.pending).toBe(true); expect(partial.pendingPhase).toBe(phase);
+    const plans = f.plans(), root = partial.bundle.root;
+    expect(root.policySnapshotUnixMs).toBeGreaterThan(0);
+    const resumed = await syncMemory(f.store, f.opts(remote)); expect(resumed.ok).toBe(true);
+    const complete = retainedPublication(f); expect(complete.pending).toBe(false); expect(complete.phase).toBe("completed");
+    expect(complete.bundle).toEqual(partial.bundle); expect(f.plans()).toEqual(plans);
+    const intent = complete.facts.find(fact => fact.phase === "publication-intent");
+    expect(intent?.phase === "publication-intent" ? intent.policyCheckUnixMs : undefined).toBe(root.policySnapshotUnixMs);
+    expect(held(f, f.ids.allowed!)?.exposure).toBe("published"); expect(held(f, f.ids.denied!)?.held).toBe(true);
+    assertWitnessCopies(physicalBefore, authoredBytes(f.home), remote); assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_PARTIAL_FACT"]);
+    expect((await syncMemory(f.store, f.opts(remote))).ok).toBe(true); expect(f.plans()).toEqual(plans);
+  });
+
+test("source-local already-public row keeps its frozen hold when policy drifts after plan fsync", async () => {
+  const remote = bare(), source = await fixture({ patterns: [], seed: store => ({ row: store.note(note("ALREADY_PUBLIC_SOURCE_LOCAL")) }) });
+  expect((await syncMemory(source.store, source.opts(remote))).ok).toBe(true);
+  const original = [...source.capture().rows.values()].find(value => value.key.id === source.ids.row!)!.row;
+  if (original.op !== "note") throw Error("synthetic original is not a note");
+  const receiver = await fixture({ patterns: ["ALREADY_PUBLIC_SOURCE_LOCAL"], seed(store) {
+    const { schema: _schema, id, at, machine, ...input } = original;
+    expect(store.importNote(input as NoteInput, at, { machine, expectedId: id }).id).toBe(id);
+    // Before migration, model an existing valid legacy-local long original, preserving its exact ID/payload.
+    // The original has positive public occurrence evidence in the independent sender's real Git history.
+    renameSync(join(store.dir, "log", `${machine}.jsonl`), join(store.dir, "local", `${machine}.jsonl`));
+    return { row: id };
+  } });
+  expect([...receiver.capture().rows.values()].find(value => value.key.id === original.id)?.sourcePlacement).toBe("local");
+  const physicalBefore = authoredBytes(receiver.home), remoteHead = git(remote, "rev-parse", PROJECT_REF); let fired = false;
+  const interrupted = await syncPlacementMemory(receiver.store, receiver.opts(remote), phase => {
+    if (!fired && phase === "plan-fsynced") { fired = true; throw Error("synthetic source-local frozen hold crash"); }
+  });
+  expect(fired).toBe(true); expect(interrupted?.ok).toBe(false);
+  const frozen = retainedPublication(receiver), decision = frozen.bundle.chunks.filter(chunk => chunk.kind === "decisions")
+    .flatMap(chunk => chunk.items as { key: { id: string }; sourcePlacement: string; hold: boolean }[]).find(value => value.key.id === original.id);
+  expect(decision).toMatchObject({ sourcePlacement: "local", hold: true });
+  receiver.policy([]); receiver.changePolicyEpoch();
+  const stale = await syncMemory(receiver.store, receiver.opts(remote));
+  expect(stale).toMatchObject({ ok: false, placementPublication: { outcome: "unknown", recovered: true } });
+  expect(held(receiver, original.id)?.held).toBe(true); expect(retainedPublication(receiver).phase).toBe("completed");
+  expect(receiver.plans()).toHaveLength(1); expect(authoredBytes(receiver.home)).toEqual(physicalBefore); expect(git(remote, "rev-parse", PROJECT_REF)).toBe(remoteHead);
+  expect((await syncMemory(receiver.store, receiver.opts(remote))).ok).toBe(true);
+  expect(held(receiver, original.id)).toMatchObject({ held: true, exposure: "published" });
+  expect(git(remote, "rev-parse", PROJECT_REF)).toBe(remoteHead);
 });
