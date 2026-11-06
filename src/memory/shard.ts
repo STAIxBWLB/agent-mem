@@ -8,6 +8,7 @@ import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, write
 import { join } from "node:path";
 import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, PROFILE_LOCK_TIMEOUT_MS, type BoundProfile, type GenerationSeal } from "./generation.ts";
 import { SHARD_SCHEMA, resolveAlias } from "./aliases.ts";
+import { profileLockRecoveryError, safeProfileLockMessage } from "./profile-lock-diagnostic.ts";
 
 /**
  * #15 T1: the per-project shard layout under the user home. One shard per project key at `projects/<key-hash>/`;
@@ -126,6 +127,7 @@ function shardSnapshot(memoryDir: string, deadline: number) {
     let selector: ReturnType<typeof readSelector>;
     try { selector = readSelector(memoryDir, deadline); }
     catch (error) {
+      if(safeProfileLockMessage(error))throw error;
       if (error instanceof SyncPlacementRuntimeError) throw error;
       // The writer's spent wait budget or unavailable proof is never restarted here.
       if (error instanceof Error && error.message === "public prune view unavailable") throw error;
@@ -145,8 +147,10 @@ function shardSnapshot(memoryDir: string, deadline: number) {
   throw new Error("curated shard selector changed");
 }
 export function readShardedSelection(memoryDir: string): ShardedSelection {
+  try {
   const { journal } = shardSnapshot(memoryDir, Date.now() + PROFILE_LOCK_TIMEOUT_MS);
   return { schema: journal.schema, generation: journal.generation, phase: "active", selectorRevision: journal.selectorRevision };
+  }catch(error){if(safeProfileLockMessage(error))throw error;throw profileLockRecoveryError(memoryDir)??error;}
 }
 
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.

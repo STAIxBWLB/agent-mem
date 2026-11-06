@@ -4,6 +4,7 @@ import { readProfileJSON, writeProfileJSON } from "./generation.ts";
 import { readerAdmissionDatabase } from "./mutation.ts";
 import { processLiveness, processSignature } from "./platform.ts";
 import { waitForPublicPruneWriter } from "./public-prune-view.ts";
+import { profileLockRecoveryError, safeProfileLockMessage } from "./profile-lock-diagnostic.ts";
 
 const READER_LEASE_SCHEMA = "agent-mem.reader-lease/v1";
 const RENEW_MS = 25_000;
@@ -52,8 +53,8 @@ function admitReader(memoryDir: string): void {
   // Even a malformed or stale marker refuses admission; only the profile-lock owner may reclaim it.
   try {
     waitForPublicPruneWriter(memoryDir);
-    if (lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume");
-  } catch { throw new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume"); }
+    if (lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw profileLockRecoveryError(memoryDir) ?? new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume");
+  } catch (error) { if(safeProfileLockMessage(error))throw error;throw profileLockRecoveryError(memoryDir) ?? new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume"); }
 }
 
 /** One lease per process/home/namespace, reference-counted across handles.
