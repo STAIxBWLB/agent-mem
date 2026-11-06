@@ -743,6 +743,8 @@ Real-home activation, its marker writer, exact compatible host pins, the require
 
 ## Person-run initial sync placement activation (#281)
 
+This section describes the unreleased activation tooling; the published 0.21.0 package contains the placement protocol but not this command.
+
 `amem migrate --sync-placement --dry-run|--apply|--resume [--writer-root <absolute-install-root>] [--json]` selects one physical memory home through the usual `memoryHome()` resolution. It covers every curated project realm and the user realm in that home, not just the cwd project. It is person-only in every mode: agent-marked sessions refuse before home or policy access, while help remains data-free. Agent markers remain honest-session attribution rather than authentication against malicious same-user code. No new stdin-TTY requirement or generic migration restriction is added. The transition is forward-only with no deactivate or marker rollback. Combining it with `--shards`, `--public-prune-view`, `--generation` or `--deactivate` refuses.
 
 Before apply, complete the existing person-reviewed `amem migrate --shards --dry-run` / `--apply` and `amem migrate --public-prune-view --dry-run` / `--apply` transitions. Missing prerequisites name the command rather than running it. The person must have appended a `home` floor at 0.21.0 or later to the existing `formats.json` array; a floor above this reader refuses with its upgrade action. Core never creates or edits that file. Close cooperating legacy and shard reader handles. Apply holds the profile/admission lock, refuses live or unknown readers, and holds the existing sync locks and sorted home/realm mutation fences. It scans no process table and kills no host. The existing unannounced raw-writer ceiling still applies.

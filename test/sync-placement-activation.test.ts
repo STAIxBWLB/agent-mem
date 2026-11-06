@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
@@ -88,4 +88,23 @@ test("live reader and person refusal never publish an activation intent",async()
   const options=f.options("apply");options.authorize=()=>false;
   await expect(activateSyncPlacement(options)).rejects.toThrow("authorization");
   expect(existsSync(join(f.base,"sync-placement-activation.json"))).toBe(false);
+},60_000);
+
+test("a mapped root changing after the sealed intent refuses before CAS without hiding unknown exposure",async()=>{
+  const f=await fixture(),extra=join(f.root,"late-changing writer");
+  for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
+  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});
+  writeFileSync(join(extra,"src","index.ts"),"// measured install\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
+  const options=f.options("apply");options.writerRoots=[ownRoot,extra];await activateSyncPlacement(options);
+  const remote=createInspectionRemote(f.root),store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
+  try{
+    const writers=activePlacementWriterContext(f.base,ownRoot);let calls=0,changed=false;
+    const {syncPlacementMemory}=await import("../src/memory/sync-placement-transport.ts");
+    const result=await syncPlacementMemory(store,{remote,visibility:async()=>"private",placementAttestation:()=>{calls++;return writers.attest();}},stage=>{
+      if(stage==="before-cas"){changed=true;writeFileSync(join(extra,"src","index.ts"),"// changed before publication\n",{mode:0o644});}
+    });
+    expect(changed).toBe(true);expect(calls).toBeGreaterThan(1);expect(result).toMatchObject({ok:false,pushed:false,placementPublication:{outcome:"unknown"}});
+    expect(writers.lastRefusal?.category).toBe("declared writer");expect(reachableInspectionRowIds(remote)).toEqual([]);
+    expect(store.get(f.declined,f.project)?.text).toBe("NEVER_PUBLIC_ACTIVATION_BODY");
+  }finally{store.close();}
 },60_000);

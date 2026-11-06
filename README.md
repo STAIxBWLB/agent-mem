@@ -557,7 +557,9 @@ The follow-up bound is a benchmark parameter, not a production retry loop. Backl
 Search gives these events the existing 1.25 conversation weight and session grouping. The brief selects up to two newest screened main-session Recap/Compact rows first, then fills from the existing chronological rows, under the same record, byte and token caps. With no summaries the output is unchanged. See [verification evidence](docs/bench/transcript-summaries-201.md).
 
 
-## Initial sync placement activation
+## Initial sync placement activation (unreleased)
+
+This command is not included in the published 0.21.0 package; it describes the unreleased implementation in this checkout.
 
 A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
 
