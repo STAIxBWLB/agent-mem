@@ -32,10 +32,11 @@ export class PlacementWriterContextError extends Error {
 function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
   if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementWriterContextError) {
     const fields=Object.getOwnPropertyDescriptors(error),root=fields.category,cause=fields.causeClass,detail=fields.detail;
-    if (root && "value" in root && ["running CLI","setup receipt","declared writer","active locator","home floor"].includes(root.value)
-      && cause && "value" in cause && ["missing","changed","unavailable"].includes(cause.value)) {
+    const category:unknown=root&&"value"in root?root.value:undefined,causeClass:unknown=cause&&"value"in cause?cause.value:undefined;
+    if (typeof category==="string" && ["running CLI","setup receipt","declared writer","active locator","home floor"].includes(category)
+      && typeof causeClass==="string" && ["missing","changed","unavailable"].includes(causeClass)) {
       const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
-      return new PlacementWriterContextError(root.value,cause.value,phase,ownDetail);
+      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail);
     }
   }
   return new PlacementWriterContextError(category,"unavailable",phase);
