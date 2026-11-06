@@ -35,11 +35,31 @@ jobs:
         run: |
           set -o pipefail
           bun test --timeout 20000 test/hook-transcript-worker.test.ts 2>&1 | tee reap-before-worker.log
-      - name: Fixed serial 200-worker group-SIGKILL probe after measurement workload
+      - name: Representative 200-worker idle series (lower bound only)
         if: always() && !cancelled()
         run: |
           set -o pipefail
-          bun scripts/probe-hook-reap.ts | tee reap-probe.jsonl
+          bun scripts/probe-hook-reap.ts --series=idle | tee reap-probe-idle.jsonl
+      - name: Representative 200-worker series concurrent with hooks budget
+        if: always() && !cancelled()
+        run: |
+          set +e
+          set -o pipefail
+          (
+            bun -e 'console.log(JSON.stringify({phase:"load-start",epochMs:Date.now()}))' > reap-load-window.jsonl
+            bun scripts/measure-hooks-budget.ts > reap-contended-hooks.log 2>&1
+            load_status=$?
+            bun -e 'console.log(JSON.stringify({phase:"load-end",epochMs:Date.now()}))' >> reap-load-window.jsonl
+            exit "$load_status"
+          ) &
+          load_pid=$!
+          bun scripts/probe-hook-reap.ts --series=contended | tee reap-probe-contended.jsonl
+          probe_status=${PIPESTATUS[0]}
+          # Wait for the finite owned workload even when the probe fails; never leave an idle load process.
+          wait "$load_pid"
+          load_status=$?
+          echo "probe_status=$probe_status load_status=$load_status"
+          if [ "$probe_status" -ne 0 ] || [ "$load_status" -ne 0 ]; then exit 1; fi
       - name: Retain every outcome and raw latency
         if: always() && !cancelled()
         uses: actions/upload-artifact@v7
@@ -47,5 +67,7 @@ jobs:
           name: hook-reap-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             reap-before-*.log
-            reap-probe.jsonl
+            reap-contended-hooks.log
+            reap-load-window.jsonl
+            reap-probe-*.jsonl
           retention-days: 14
