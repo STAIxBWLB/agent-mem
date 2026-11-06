@@ -41,6 +41,10 @@ test("native receipts share the parent's clock but do not invent a worker window
   expect(diagnostic).toMatchObject({expectedOwnedChildren:3,observedOwnedChildren:1,workerExitedWindow:{present:false}});
   expect(diagnostic.children[0]).toMatchObject({kind:"native",reaped:true,relativeToWorkerExitedWindowMs:{exitPromise:null}});
 });
+test("a reap receipt identifies its child even when the spawn observer missed it",()=>{
+  const diagnostic=hookProcessDiagnostic({...input([row("reap-start",100,{boundMs:10}),row("reap-end",111,{reaped:0})]),workers:[]});
+  expect(diagnostic).toMatchObject({observedOwnedChildren:0,lifecycleChildren:1});expect(diagnostic.children[0]).toMatchObject({pid:20,kind:"worker",spawnMs:null,reaped:false,receiptComplete:false});
+});
 test("failure metadata projects no argv, source body, path or unexpected properties",()=>{
   const value=input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("rss-finish",102)]);
   Object.assign(value,{text:"PRIVATE_CANARY",path:"PRIVATE_CANARY"});Object.assign(value.workers[0]!,{text:"PRIVATE_CANARY"});Object.assign(value.lifecycle[0]!,{path:"PRIVATE_CANARY"});

@@ -28,7 +28,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
     const owned=input.workers.find(row=>row.pid===pid), receipts=rows.filter(row=>row.childPid===pid);
     const find=(phase:HookLifecycleReceipt["phase"])=>receipts.find(row=>row.phase===phase);
     const spawn=find("spawn"),exit=find("exit"),kill=find("kill-request"),reapStart=find("reap-start"),reapEnd=find("reap-end"),output=find("output-end"),rss=find("rss-finish");
-    return {pid,kind:owned?.kind??spawn?.kind??null,detached:owned?.detached??null,
+    return {pid,kind:owned?.kind??receipts[0]?.kind??null,detached:owned?.detached??null,
       spawnMs:time(spawn),exitPromiseMs:time(exit),killRequestMs:time(kill),reapStartMs:time(reapStart),reapEndMs:time(reapEnd),outputEndMs:time(output),
       reaped:reapEnd?.reaped===1?true:reapEnd?.reaped===0?false:null,outputLate:output?.late===1?true:output?.late===0?false:null,
       outputAvailable:output?.outputAvailable===1?true:output?.outputAvailable===0?false:null,
@@ -38,7 +38,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
       receiptComplete:!!spawn&&!!exit&&!!reapEnd};
   });
   return {diagnostic:"hook-child-reap/v1",instrumented:true,event:input.event,variant:input.variant??null,run:input.run,logicalRun:input.logicalRun,parentPid:input.parentPid,
-    expectedOwnedChildren:input.expectedOwnedChildren,expectation:input.expectation,observedOwnedChildren:input.workers.length,
+    expectedOwnedChildren:input.expectedOwnedChildren,expectation:input.expectation,observedOwnedChildren:input.workers.length,lifecycleChildren:ids.length,
     expectedWorkerChildren:input.expectedWorkerChildren??null,
     spawnAttempts:rows.filter(row=>row.phase==="spawn-attempt").length,spawnFailures:rows.filter(row=>row.phase==="spawn-failed").length,
     abandonedChildren:abandoned,metricPresent:!!input.metric,rssCoverage:HOOK_RSS_COVERAGE,rssScope:input.metric?.rssScope==="owned-images"?"owned-images":null,
