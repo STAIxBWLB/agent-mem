@@ -50,7 +50,7 @@ export async function runHookWorkerPairs(directory:string){
   writeFileSync(join(out,"manifest.json"),JSON.stringify(manifest,null,2)+"\n",{flag:"wx",mode:0o600});console.log(JSON.stringify(manifest));
   const results:{pair:number;arm:PairArm;workload:string;work:Awaited<ReturnType<typeof logged>>;load:Awaited<ReturnType<typeof logged>>;
     loadComplete:boolean;metrics:ReturnType<ReturnType<typeof createPairMetrics>["summarize"]>;newPMisses:ReturnType<typeof attributedWorkerMisses>}[]=[];
-  const started=performance.now();let completedPairs=0,stopReason="cap reached",unsafe=false;
+  const started=performance.now();let completedPairs=0,stopReason="collecting",unsafe=false;
   const newPMisses=()=>results.flatMap(row=>row.arm==="P"?row.newPMisses.map(miss=>({...miss,pair:row.pair,workload:row.workload})):[]);
   const save=()=>{const misses=newPMisses();const report={...manifest,results,completedPairs,newPMisses:misses,cumulativePMisses:1+misses.length,
     targetMet:1+misses.length>=3,stopReason,unsafe,originalScriptsPassed:results.length>0&&results.every(row=>row.work.exit===0),wallMs:performance.now()-started};
@@ -90,6 +90,7 @@ export async function runHookWorkerPairs(directory:string){
     completedPairs++;save();
     if(1+newPMisses().length>=manifest.targetCumulativePMisses){stopReason="target reached after complete pair";break;}
   }
+  if(stopReason==="collecting")stopReason=completedPairs===ORDER.length?"four-pair cap reached":"schedule incomplete";
   const report=save();console.log(JSON.stringify({diagnostic:"hook-worker-pairs-result/v1",head:manifest.head,completedPairs,cumulativePMisses:report.cumulativePMisses,
     targetMet:report.targetMet,stopReason,unsafe,originalScriptsPassed:report.originalScriptsPassed}));
   if(!report.targetMet||unsafe||!report.originalScriptsPassed){
