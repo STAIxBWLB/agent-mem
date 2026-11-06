@@ -743,7 +743,7 @@ Real-home activation, its marker writer, exact compatible host pins, the require
 
 ## Person-run initial sync placement activation (#281)
 
-This section describes the unreleased activation tooling; the published 0.21.0 package contains the placement protocol but not this command.
+This activation tooling ships from 0.22.0; 0.21.0 contains the placement protocol but not this command.
 
 `amem migrate --sync-placement --dry-run|--apply|--resume|--abandon [--writer-root <absolute-install-root>] [--json]` selects one physical memory home through the usual `memoryHome()` resolution. It covers every curated project realm and the user realm in that home, not just the cwd project. It is person-only in every mode: agent-marked sessions refuse before home or policy access, while help remains data-free. Agent markers remain honest-session attribution rather than authentication against malicious same-user code. No new stdin-TTY requirement or generic migration restriction is added. The transition is forward-only with no deactivate or marker rollback. Person `--abandon` is limited to a retained initial attempt whose two marker files still contain their exact original v2 bytes; any v3 marker forbids abandonment. Combining it with `--shards`, `--public-prune-view`, `--generation` or `--deactivate` refuses.
 
@@ -766,7 +766,7 @@ An amem install upgrade changes its version or runtime pin. Drift fails closed w
 
 ## Same-epoch writer inventory renewal (#282)
 
-The unreleased 0.22.0 package prepares person-only renewal through the existing `amem migrate --sync-placement --dry-run|--apply|--resume|--abandon [--writer-root <absolute-root>] [--json]` surface. Every candidate install must be 0.22.0 or later, and the person must append a `home` floor at 0.22.0 before the first renewal and before any old reader opens the home. Core never writes `formats.json`. The floor is recommended at activation on a 0.22 install. Genuine 0.21 readers and pre-renewal main refuse the floor before effects; an unknown epoch member alone only proves old journal/publication refusal, not universal store refusal. Unrenewed profiles retain their previous behavior.
+0.22.0 provides person-only renewal through the existing `amem migrate --sync-placement --dry-run|--apply|--resume|--abandon [--writer-root <absolute-root>] [--json]` surface. Every candidate install must be 0.22.0 or later, and the person must append a `home` floor at 0.22.0 before the first renewal and before any old reader opens the home. Core never writes `formats.json`. The floor is recommended at activation on a 0.22 install. Genuine 0.21 readers and pre-renewal main refuse the floor before effects; an unknown epoch member alone only proves old journal/publication refusal, not universal store refusal. Unrenewed profiles retain their previous behavior.
 
 Apply requires the complete explicit candidate inventory, including the running CLI and authoritative setup-receipt roots. It uses the unchanged core pin algorithm, re-measures at every authority/effect boundary and holds the same profile, reader, home/realm mutation and sync fences. Initial activation, locator, epoch, active fence, every old journal record/hold and historical receipt remain immutable. Retired initial roots need not remain reachable. There is no host renewal API, automatic pin update, process scan or extra sync option. Person dry-run lists only inventory metadata, headroom and safe causes, takes no write-producing lock and defers quiescence to apply.
 

@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.22.0 (unreleased). Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.22.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Quick start
 
@@ -557,9 +557,9 @@ The follow-up bound is a benchmark parameter, not a production retry loop. Backl
 Search gives these events the existing 1.25 conversation weight and session grouping. The brief selects up to two newest screened main-session Recap/Compact rows first, then fills from the existing chronological rows, under the same record, byte and token caps. With no summaries the output is unchanged. See [verification evidence](docs/bench/transcript-summaries-201.md).
 
 
-## Initial sync placement activation (unreleased)
+## Initial sync placement activation
 
-This command is not included in the published 0.21.0 package; it describes the unreleased implementation in this checkout.
+Available from 0.22.0. 0.21.0 contains the placement protocol but not this command.
 
 A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
 
