@@ -8,15 +8,15 @@ import {
   WRITER_COMMIT_LOG, WRITER_RENEWAL_INTENT_FILE, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA,
   SharedWriterRevisionError, writerRevisionFile, writerHistoryFileLimit, writerInventoryGenesis,
   createWriterRevision, validateWriterRevision, writerRevisionWriters, createWriterCommit, validateWriterCommit,
-  createWriterRenewalIntent, validateWriterRenewalIntent, type WriterRevisionBody, type WriterRevision,
+  createWriterRenewalIntent, validateWriterRenewalIntent, type WriterRevisionBody, type WriterRenewalIntentBody, type SharedWriterRevisionErrorCode,
 } from "../src/memory/sync-placement-writer-revision-format.ts";
 
 const H=(n:number)=>n.toString(16).padStart(64,"0"),EMPTY=createHash("sha256").update("").digest("hex");
 function root(value="/fixture/install",version="0.22.0"){return {root:value,writerId:syncPlacementWriterId(value),version,pin:H(5)};}
 function body():WriterRevisionBody{return {schema:WRITER_REVISION_SCHEMA,epochHash:H(1),generation:"2".repeat(32),homeHash:H(3),activationHash:H(4),initialLocatorHash:H(6),
   sequence:1,previousHash:writerInventoryGenesis(H(1),H(4)),journal:{sequence:0,headHash:H(1)},roots:[root()],requestId:H(7)};}
-function renewal(revision=createWriterRevision(body())){return {schema:WRITER_RENEWAL_INTENT_SCHEMA,home:"/fixture/memory",revision,commit:createWriterCommit(revision),previousLogBytes:0,previousLogHash:EMPTY};}
-function refused(work:()=>unknown,code?:string){let failure:unknown;try{work();}catch(error){failure=error;}expect(failure).toBeInstanceOf(SharedWriterRevisionError);
+function renewal(revision=createWriterRevision(body())):WriterRenewalIntentBody{return {schema:WRITER_RENEWAL_INTENT_SCHEMA,home:"/fixture/memory",revision,commit:createWriterCommit(revision),previousLogBytes:0,previousLogHash:EMPTY};}
+function refused(work:()=>unknown,code?:SharedWriterRevisionErrorCode){let failure:unknown;try{work();}catch(error){failure=error;}expect(failure).toBeInstanceOf(SharedWriterRevisionError);
   const error=failure as SharedWriterRevisionError;if(code)expect(error.code).toBe(code);expect(error.message).not.toContain("PRIVATE_CODEC_CANARY");return error;}
 
 test("revision, commit and intent are detached closed canonical data with independently bound seals",()=>{

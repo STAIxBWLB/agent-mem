@@ -98,7 +98,7 @@ function revision(input:unknown,sealed:boolean):WriterRevision {
 export function createWriterRevision(body:WriterRevisionBody):WriterRevision {return safe(()=>revision(body,false));}
 export function validateWriterRevision(value:unknown):WriterRevision {return safe(()=>revision(value,true));}
 export function writerRevisionWriters(input:WriterRevision):SyncPlacementWriterAttestation[]{
-  return validateWriterRevision(input).roots.map(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+  return validateWriterRevision(input).roots.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
 }
 function commit(input:unknown,sealed:boolean):WriterCommit {
   const v=object(input,["schema","epochHash","sequence","previousHash","revisionHash",...(sealed?["seal"]:[])]);if(v.schema!==WRITER_COMMIT_SCHEMA)fail();

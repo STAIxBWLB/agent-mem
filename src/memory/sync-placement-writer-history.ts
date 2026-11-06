@@ -14,7 +14,7 @@ import {
 } from "./sync-placement-writer-revision-format.ts";
 
 export interface WriterHistoryBinding { epochHash: string; activationHash: string; homeHash: string; generation: string; initialLocatorHash?: string }
-export type WriterHistoryPhase = "intent-written" | "intent-fsync" | "revision-written" | "revision-fsync" | "commit-written" | "commit-fsync" | "intent-cleared";
+export type WriterHistoryPhase = "intent-written" | "intent-fsync" | "revision-written" | "revision-fsync" | "commit-started" | "commit-written" | "commit-fsync" | "intent-cleared";
 export interface WriterHistoryOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: WriterHistoryPhase): void }
 export interface WriterHistoryRead {
   current?: WriterRevision; commits: WriterCommit[]; anchors: { sequence: number; headHash: string }[];
@@ -174,14 +174,14 @@ function syncDir(p:Paths,dir:string,opts:WriterHistoryOptions):void {
   proof(p,opts);const stat=checkedDir(dir),fd=openSync(dir,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
   try{if(identity(fstatSync(fd,{bigint:true}))!==identity(stat))fail("changed");proof(p,opts);fsyncSync(fd);}finally{closeSync(fd);}proof(p,opts);
 }
-function complete(p:Paths,file:string,full:Buffer,max:number,opts:WriterHistoryOptions,written:WriterHistoryPhase,synced:WriterHistoryPhase):void {
+function complete(p:Paths,file:string,full:Buffer,max:number,opts:WriterHistoryOptions,written:WriterHistoryPhase,synced:WriterHistoryPhase,commitStart?:number):void {
   if(full.length>max)fail("bound");proof(p,opts);const prior=read(file,max);if(prior&&(prior.bytes.length>full.length||!prior.bytes.equals(full.subarray(0,prior.bytes.length))))fail();
   let installed:BigIntStats;
   const fd=openSync(file,constants.O_WRONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(prior?0:constants.O_CREAT|constants.O_EXCL),0o600);
   try{
     const opened=fstatSync(fd,{bigint:true});owned(opened);if(prior?stamp(opened)!==stamp(prior.stat):opened.size!==0n)fail("changed");
     let observed=opened;proof(p,opts);let at=prior?.bytes.length??0;
-    while(at<full.length){proof(p,opts);if(stamp(fstatSync(fd,{bigint:true}))!==stamp(observed)||stamp(lstatSync(file,{bigint:true}))!==stamp(observed))fail("changed");const n=writeSync(fd,full,at,full.length-at,at);if(n<=0)fail();at+=n;observed=fstatSync(fd,{bigint:true});}
+    while(at<full.length){proof(p,opts);if(stamp(fstatSync(fd,{bigint:true}))!==stamp(observed)||stamp(lstatSync(file,{bigint:true}))!==stamp(observed))fail("changed");const firstCommitByte=at===commitStart;const n=writeSync(fd,full,at,firstCommitByte?1:full.length-at,at);if(n<=0)fail();at+=n;observed=fstatSync(fd,{bigint:true});if(firstCommitByte)opts.phase?.("commit-started");}
     opts.phase?.(written);proof(p,opts);const after=fstatSync(fd,{bigint:true});if(stamp(after)!==stamp(observed)||after.size!==BigInt(full.length)||stamp(lstatSync(file,{bigint:true}))!==stamp(after))fail("changed");fsyncSync(fd);installed=fstatSync(fd,{bigint:true});opts.phase?.(synced);
     if(stamp(lstatSync(file,{bigint:true}))!==stamp(installed))fail("changed");
   }finally{closeSync(fd);}syncDir(p,dirname(file),opts);proof(p,opts);if(stamp(lstatSync(file,{bigint:true}))!==stamp(installed!))fail("changed");
@@ -211,7 +211,7 @@ export function appendWriterCommit(home:string,value:WriterRenewalIntent,opts:Wr
     publishIntent(read.paths,intent,opts);
     complete(read.paths,join(read.paths.epoch,writerRevisionFile(intent.revision.sequence)),encode(intent.revision),WRITER_REVISION_MAX_BYTES,opts,"revision-written","revision-fsync");
     const prefix=read.log.subarray(0,intent.previousLogBytes),full=Buffer.concat([prefix,encode(intent.commit)]);
-    complete(read.paths,read.paths.log,full,WRITER_COMMIT_MAX_BYTES,opts,"commit-written","commit-fsync");snapshot(home,intentBinding(intent),true).result.assertCurrent();});
+    complete(read.paths,read.paths.log,full,WRITER_COMMIT_MAX_BYTES,opts,"commit-written","commit-fsync",intent.previousLogBytes);snapshot(home,intentBinding(intent),true).result.assertCurrent();});
 }
 export function clearWriterRenewalIntent(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
   safe(()=>{const intent=validateWriterRenewalIntent(value),p=paths(home,intentBinding(intent));proof(p,opts);

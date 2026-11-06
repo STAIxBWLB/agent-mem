@@ -116,7 +116,7 @@ test("forged or released home mutation handles cannot write metadata",()=>{
   f.mutation();const released=tree(f.home);expect(()=>writeWriterRenewalIntent(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);expect(tree(f.home)).toEqual(released);
 });
 
-for(const phase of ["intent-written","intent-fsync","revision-written","revision-fsync","commit-written","commit-fsync"]as const)test("new owner reasserts exact durability after "+phase,()=>{
+for(const phase of ["intent-written","intent-fsync","revision-written","revision-fsync","commit-started","commit-written","commit-fsync"]as const)test("new owner reasserts exact durability after "+phase,()=>{
   const f=fixture(),intent=f.intent();let failed=false;
   const opts:WriterHistoryOptions={...f.opts,phase(current){if(!failed&&current===phase){failed=true;throw Error("isolated phase interruption");}}};
   const run=()=>{writeWriterRenewalIntent(f.home,intent,opts);writeWriterRevision(f.home,intent,opts);appendWriterCommit(f.home,intent,opts);};
@@ -152,4 +152,14 @@ test("abandon is idempotent after intent unlink acknowledgement loss",()=>{
   let stopped=false;expect(()=>abandonWriterRenewal(f.home,intent,{...f.opts,phase(phase){if(phase==="intent-cleared"){stopped=true;throw Error("isolated unlink acknowledgement loss");}}})).toThrow(SharedWriterRevisionError);
   expect(stopped).toBe(true);expect(fs.existsSync(f.pending)).toBe(false);
   abandonWriterRenewal(f.home,intent,f.opts);expect(readWriterHistory(f.home,f.binding).sequence).toBe(0);
+});
+
+
+test("the first commit byte makes abandon irreversible and exact metadata-only recovery completes the same intent",()=>{
+  const f=fixture(),intent=f.intent();writeWriterRenewalIntent(f.home,intent,f.opts);writeWriterRevision(f.home,intent,f.opts);
+  expect(()=>appendWriterCommit(f.home,intent,{...f.opts,phase(phase){if(phase==="commit-started")throw Error("isolated first-byte interruption");}})).toThrow(SharedWriterRevisionError);
+  expect(fs.readFileSync(f.log)).toEqual(encode(intent.commit).subarray(0,1));
+  const pending=readWriterHistory(f.home,f.binding,{allowPending:true});expect(pending.sequence).toBe(0);expect(pending.appendStarted).toBe(true);expect(pending.pending).toEqual(intent);
+  const before=tree(f.home);expect(()=>abandonWriterRenewal(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);expect(tree(f.home)).toEqual(before);
+  appendWriterCommit(f.home,intent,f.opts);clearWriterRenewalIntent(f.home,intent,f.opts);expect(fs.readFileSync(f.log)).toEqual(encode(intent.commit));expect(readWriterHistory(f.home,f.binding).headHash).toBe(intent.commit.seal);
 });
