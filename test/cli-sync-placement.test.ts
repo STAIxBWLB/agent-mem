@@ -13,8 +13,16 @@ afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
 const cli=fileURLToPath(new URL("../src/cli.ts",import.meta.url));
 function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false){
   const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
-  const source=`import {runCli} from ${JSON.stringify(cli)};try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env,visibility:async()=>"private"});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
+  const source=`import {runCli} from ${JSON.stringify(cli)};try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
   return Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+}
+/** Native visibility still runs. Only this fake-home command environment maps GitHub transport to local Git. */
+function localCliRemote(f:ReturnType<typeof hookFixture>){
+  const remote=createInspectionRemote(f.root),url="https://github.com/amem-fixture/sync-placement.git",bin=join(f.root,"fixture-bin");mkdirSync(bin,{mode:0o700});
+  const git=Bun.which("git");if(!git)throw Error("fixture needs its native git binary");
+  writeFileSync(join(bin,"gh"),'#!/usr/bin/env bun\nif(process.argv[2]!=="repo"||process.argv[3]!=="view")process.exit(2);console.log("PRIVATE");\n',{mode:0o700});
+  const script=`#!/usr/bin/env bun\nconst args=process.argv.slice(2);const transport=args.some(x=>["fetch","push","ls-remote"].includes(x));const extra=transport?["-c",${JSON.stringify("remote.origin.url="+remote)},"-c",${JSON.stringify("remote.origin.pushurl="+remote)}]:[];const mapped=transport?args.map(x=>x===${JSON.stringify(url)}?${JSON.stringify(remote)}:x):args;const p=Bun.spawnSync([${JSON.stringify(git)},...extra,...mapped],{stdout:"inherit",stderr:"inherit",stdin:"ignore",timeout:50000});process.exit(p.exitCode);\n`;
+  writeFileSync(join(bin,"git"),script,{mode:0o700});f.env.PATH=bin+":"+f.env.PATH;return{remote,url};
 }
 function success(result:ReturnType<typeof run>){expect(result.exitCode,result.stderr.toString()).toBe(0);return JSON.parse(result.stdout.toString()) as Record<string,unknown>;}
 
@@ -47,8 +55,8 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   expect(preview).toMatchObject({active:false,forwardOnly:true,source:{declined:1}});expect(JSON.stringify(preview)).not.toContain("NEVER_PUBLIC_ACTIVATION_BODY");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
   expect(success(run(f,[...args,"--apply"])).active).toBe(true);
   const rootmap=JSON.parse(readFileSync(join(f.base,"sync-placement-writer-roots.json"),"utf8"));expect(rootmap.roots).toHaveLength(2);
-  const remote=createInspectionRemote(f.root),sent=success(run(f,["sync","--remote",remote,"--json"]));
-  expect(sent.ok).toBe(true);expect(sent.placementPublication).toMatchObject({exported:1,withheld:1});expect(reachableInspectionRowIds(remote)).toEqual([f.allowed]);
+  const {remote,url}=localCliRemote(f),sent=success(run(f,["sync","--remote",url,"--json"]));
+  expect(sent.ok,JSON.stringify(sent)).toBe(true);expect(sent.placementPublication).toMatchObject({exported:1,withheld:1});expect(reachableInspectionRowIds(remote)).toEqual([f.allowed]);
   const cadence=success(run(f,["sync","--if-due","--force","--json"]));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});
