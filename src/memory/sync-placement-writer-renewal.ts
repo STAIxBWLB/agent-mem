@@ -15,8 +15,8 @@ import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appen
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
 import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
-import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
-import { previewSyncPlacementSources } from "./sync-placement-capture.ts";
+import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
+import { previewSyncPlacementSources, previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
 import { validatePrunePlan } from "./prune.ts";
 import { initialPlacementWriterContext, previewActivePlacementWriters } from "../sync-placement-writer-context.ts";
@@ -54,9 +54,9 @@ function directories(home:string,a:ActivePlacementBinding):string[]{
   for(const dir of out)checked(dir);
   return[...new Set(out)].sort();
 }
-function pendingSources(home:string):()=>void{
+function pendingSources(home:string,owner?:PlacementActivationOwner):()=>void{
   try{
-    const source=previewSyncPlacementSources(home),checks=source.directories.map(captureInspectionPendingPrunes);
+    const source=owner?previewOwnedSyncPlacementSources(home,owner):previewSyncPlacementSources(home),checks=source.directories.map(captureInspectionPendingPrunes);
     for(const dir of source.directories){
       const history=join(dir,"prune-plans","selector-history");if(!lstatSync(history,{throwIfNoEntry:false}))continue;
       const seen=new Set<string>();
@@ -120,9 +120,9 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   if(!history.pending&&options.mode==="abandon")throw new WriterRenewalError("changed");
   if(!history.pending&&options.mode==="apply"&&!options.writerRoots.length)throw new WriterRenewalError("candidate");
   // No new intent is written before every pre-existing recovery obligation has been rejected.
-  const admitsInventory=options.mode==="apply"||options.mode==="resume"&&history.pending&&!history.appendStarted;
-  const sourceCheck=admitsInventory?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
+  let sourceCheck=options.mode==="apply"?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
   return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
+    if(options.mode==="resume"&&history.pending&&!history.appendStarted){journalClear(home,b.epochHash);sourceCheck=pendingSources(home,owner);}
     let intent=history.pending;
     const cleanupOnly=!intent&&options.mode==="resume"&&!!history.current;
     if(cleanupOnly){

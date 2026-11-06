@@ -19,7 +19,7 @@ import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
 import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
-import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
+import { activationSourceMarkers, assertPlacementActivationOwner, type PlacementActivationOwner, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
@@ -66,7 +66,7 @@ function ownedDirectory(dir: string): BigIntStats {
 }
 /** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
  * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
-function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof): PlacementSourcePreview {
+function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): PlacementSourcePreview {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
     if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
@@ -75,6 +75,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     if (!selection.length || new Set(selection.map(realm => canonicalJSON(realm))).size !== selection.length) fail();
   }
   const home = realPath(homeInput), root = ownedDirectory(home);
+  if(sourceOwner)assertPlacementActivationOwner(sourceOwner,home);
   let metadataObjects = 0, metadataBytes = 0;
   const facts: unknown[] = [], sourceChecks: (() => void)[] = [];
   const pendingByPath = new Map(pending.map(item => [canonicalJSON(item.realm)+":"+item.pathHash,item]));
@@ -133,6 +134,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   // An in-flight migration/prune is never accepted as a stable placement source.
   for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) {
     if (name === "profile.lock" && ownerProof) continue; // The module-private proof validated this exact live owner and sealed intent.
+    if(name==="profile.lock"&&sourceOwner){assertPlacementActivationOwner(sourceOwner,home);continue;}
     if (lstatSync(join(home,name),{throwIfNoEntry:false})) fail();
   }
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
@@ -279,6 +281,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
       const now = ownedDirectory(home); if (now.dev !== root.dev || now.ino !== root.ino) fail();
       for (const check of sourceChecks) check();
       if (ownerProof) activationSourceMarkers(ownerProof,home,actualMarkers);
+      if(sourceOwner)assertPlacementActivationOwner(sourceOwner,home);
     } catch { fail(); }
   };
   return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
@@ -286,7 +289,14 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
 }
 /** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
 export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
-  try { assertPlacementRuntime(home); const preview = sourcePreview(home); preview.assertSourcesUnchanged(); return preview; }
+  return previewSources(home);
+}
+/** Internal renewal inventory under the exact live home/profile/mutation owner; no marker virtualization. */
+export function previewOwnedSyncPlacementSources(home:string,owner:PlacementActivationOwner):PlacementSourcePreview {
+  assertPlacementActivationOwner(owner,home);return previewSources(home,owner);
+}
+function previewSources(home:string,owner?:PlacementActivationOwner):PlacementSourcePreview {
+  try { assertPlacementRuntime(home); const preview = sourcePreview(home,undefined,[],undefined,undefined,owner); preview.assertSourcesUnchanged(); return preview; }
   catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;

@@ -16,7 +16,9 @@ import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.
 import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { appendPlacementEvent } from "../src/memory/sync-placement-journal-storage.ts";
-import { captureSyncPlacementContext, placementCaptureContextHash } from "../src/memory/sync-placement-capture.ts";
+import { captureSyncPlacementContext, placementCaptureContextHash, previewSyncPlacementSources, previewOwnedSyncPlacementSources } from "../src/memory/sync-placement-capture.ts";
+import { withPlacementActivationFences } from "../src/memory/sync-placement-activation-locks.ts";
+import type { PlacementActivationOwner } from "../src/memory/sync-placement-activation-proof.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
@@ -86,6 +88,18 @@ test("a precommit renewal can be abandoned after pin drift and retried explicitl
   writeFileSync(join(next,"src","index.ts"),"// moved again\n",{mode:0o644});await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow();
   expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({active:true,abandoned:true,sequence:0});
   const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:1});
+},60_000);
+
+test("renewal source preview requires the exact live owner and preserves ordinary lock refusal",async()=>{
+  const f=await fixture(),other=await fixture();
+  expect(()=>previewOwnedSyncPlacementSources(f.base,{} as PlacementActivationOwner)).toThrow();
+  let retired:PlacementActivationOwner|undefined;
+  await withPlacementActivationFences(f.base,[],async(_mutation,owner)=>{
+    retired=owner;expect(()=>previewSyncPlacementSources(f.base)).toThrow();
+    expect(previewOwnedSyncPlacementSources(f.base,owner).activeHead).toBe(f.epoch);
+    expect(()=>previewOwnedSyncPlacementSources(other.base,owner)).toThrow();
+  });
+  expect(()=>previewOwnedSyncPlacementSources(f.base,retired!)).toThrow();
 },60_000);
 
 test("precommit resume refuses a source-recovery intent introduced after interruption",async()=>{
