@@ -27,6 +27,8 @@ export interface PlacementActivationOptions {
   memoryDir: string; mode: "dry-run"|"apply"|"resume"; writerRoots: readonly string[]; ownRoot: string;
   authorize(binding: Readonly<{seal:string;generation:string;homeHash:string}>): boolean;
   checkpoint?(stage: PlacementActivationStage): void|Promise<void>;
+  /** Internal fault-test observer, never supplied by CLI options. */
+  testOnlyFailure?(error: unknown): void;
 }
 export class PlacementActivationError extends Error {
   constructor(readonly causeClass: "readers"|"busy"|"changed"|"metadata"|"authorization"|"pending"|"bound") {
@@ -136,6 +138,7 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     await options.checkpoint?.("after-profile");check();
     ensurePlacementFence(home,epochHash,{mutation,assertCurrent:check});await options.checkpoint?.("after-fence");metadataCheck();return finish();
   });}catch(error){
+    try{options.testOnlyFailure?.(error);}catch{/* observers never affect production outcomes */}
     if(error&&typeof error==="object"&&!types.isProxy(error)){
       if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError)throw error;
       if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError){
