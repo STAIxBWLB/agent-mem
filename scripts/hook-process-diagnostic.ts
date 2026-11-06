@@ -1,5 +1,6 @@
 import type { HookLifecycleReceipt, HookProcessEvidence, HookWorkerProcess } from "../test/fakes/hooks-process-observer.ts";
 import type { MetricSample } from "../src/memory/metrics.ts";
+import { HOOK_RSS_COVERAGE } from "../src/hook-resources.ts";
 
 interface HookDiagnosticInput {
   event: "SessionStart" | "PreToolUse" | "Stop" | "SessionEnd";
@@ -38,7 +39,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
     expectedOwnedChildren:input.expectedOwnedChildren,expectation:input.expectation,observedOwnedChildren:input.workers.length,
     expectedWorkerChildren:input.expectedWorkerChildren??null,
     spawnAttempts:rows.filter(row=>row.phase==="spawn-attempt").length,spawnFailures:rows.filter(row=>row.phase==="spawn-failed").length,
-    abandonedChildren:numeric(input.metric?.abandonedChildren),metricPresent:!!input.metric,
+    abandonedChildren:numeric(input.metric?.abandonedChildren),metricPresent:!!input.metric,rssCoverage:HOOK_RSS_COVERAGE,rssScope:input.metric?.rssScope==="owned-images"?"owned-images":null,
     workerExitedWindow:{boundMs:10,startMs:time(window),observedBoundMs:numeric(window?.boundMs),present:!!window},
     rssSources:sources?{vmhwm:numeric(sources.vmhwm),vmpeakBound:numeric(sources.vmpeakBound),platformRusage:numeric(sources.platformRusage),rawFallback:numeric(sources.rawFallback),unavailable:numeric(sources.unavailable)}:null,
     cliRawRssMB:numeric(input.cliRawRssMB),productionRssMB:numeric(input.metric?.rssMB),rawRssMB:numeric(input.metric?.rawRssMB),wallMs:numeric(input.metric?.wallMs),

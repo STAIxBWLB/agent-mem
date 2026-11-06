@@ -14,7 +14,7 @@ const revision = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdou
 if (revision.exitCode !== 0) throw Error("baseline is not a Git checkout");
 const groups = [];
 for (const event of ["Stop", "SessionEnd"]) {
-  const f = hookFixture(), samples = [],observer=hookProcessObserver(f.root,false,resolve(root));
+  const f = hookFixture(), samples = [],observer=hookProcessObserver(f.root,false,resolve(root),true);
   try {
     await f.seed();
     for (let run = 1; run <= 20; run++) {

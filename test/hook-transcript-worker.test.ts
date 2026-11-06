@@ -111,7 +111,7 @@ test("a final hook reaps blocked directly owned metadata before writing known RS
 
 for (const platform of ["linux", "darwin-codepath"] as const) for (const event of ["Stop", "SessionEnd"] as const) test("a slow synchronous capture statement remains killable with known child provenance: " + platform + " " + event, async () => {
   const f = hookFixture(), preload = join(f.root, "slow-store.ts"), entered = join(f.root, "slow-store-entered"), transcript = join(f.root, "slow-transcript.jsonl");
-  const observer=hookProcessObserver(f.root);
+  const observer=hookProcessObserver(f.root,false,undefined,true);
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "summary before slow store" }) + "\n");
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';

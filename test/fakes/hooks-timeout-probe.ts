@@ -40,7 +40,7 @@ export function timeoutOwnedGroupsGone(table: string, groups: readonly number[])
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
 export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
-  const observer = hookProcessObserver(f.root, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
+  const observer = hookProcessObserver(f.root, true, undefined, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
   let nativePids: number[] = [], groups: number[] = [];
   try {
     const start = performance.now();
