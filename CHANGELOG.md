@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.22.1
+
+- Handle optional `Bun.TOML.stringify` results explicitly: retain the validated inline fallback and refuse unsupported appended tables before returning configuration. Add a strict host source-typecheck regression pinned to Bun types 1.4.2, including the published 0.22.0 failure control (#297). Defined serialization results are unchanged.
+
 ## 0.22.0
 
 - Add person-only, home-wide `amem migrate --sync-placement --dry-run|--apply|--resume|--abandon` (#281). A person declares every local amem install that writes the home with repeatable `--writer-root`; the running CLI and every applied setup-receipt root are mandatory, and each install is measured afresh (package version and runtime-file pin) at every authority and sync boundary. Activation is crash-safe, forward-only, and leaves an immutable root locator so plain and cadence `amem sync` need no extra flags. An interrupted activation can be abandoned only while both markers still hold their original v2 bytes. Agent-marked sessions are refused before any home access. Activation never runs a migration, changes policy or writes `formats.json`.
