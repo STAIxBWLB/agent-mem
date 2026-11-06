@@ -1,4 +1,3 @@
-import { syncPlacementMemory } from "./sync-placement-transport.ts";
 import { ShardSyncApplications, ShardSyncApplicationError } from "./shard-sync-applications.ts";
 import { ShardHistoryAuditor, ShardHistoryError, shardHistoryRefusal } from "./shard-sync-history.ts";
 import { validatePlacementProfile, type PlacementProfile } from "./sync-placement-format.ts";
@@ -446,7 +445,7 @@ async function prepareHolds(targets: readonly Target[], root: string, url: strin
 export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void, testOnlyPhase?: (phase: SyncPhase) => void): Promise<SyncResult> {
   const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
-  if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return syncPlacementMemory(store, opts);
+  if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return (await import("./sync-placement-transport.ts")).syncPlacementMemory(store, opts);
   let pushed = false, releaseTransport: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const releases: (() => void)[] = [], transient: string[] = [], temporary: string[] = [];
   const v2 = store.profile.foreignPruneFormat === "agent-mem.public-prune-witness/v1";

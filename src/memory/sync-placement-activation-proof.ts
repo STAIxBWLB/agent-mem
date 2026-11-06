@@ -38,9 +38,10 @@ export function createPlacementActivationOwner(homeInput: string, mutation: Muta
     owners.set(token,{home,mutation,root,lock:lock.text,lockStamp:lock.stamp}); return token;
   } catch { return fail(); }
 }
-export function assertPlacementActivationOwner(token: PlacementActivationOwner): void {
+export function assertPlacementActivationOwner(token: PlacementActivationOwner, home?: string): void {
   try {
     const owner = owners.get(token); if (!owner) fail(); assertMutationHandle(owner.mutation,owner.home);
+    if(home!==undefined&&realPath(home)!==owner.home)fail();
     const root = lstatSync(owner.home,{bigint:true}), lock = lockBytes(owner.home);
     if (!root.isDirectory() || root.isSymbolicLink() || root.dev !== owner.root.dev || root.ino !== owner.root.ino || root.uid !== owner.root.uid || (root.mode & 0o077n) !== 0n
       || lock.text !== owner.lock || lock.stamp !== owner.lockStamp) fail();

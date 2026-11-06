@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.21.0. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.22.0 (unreleased). Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Quick start
 
@@ -564,7 +564,7 @@ This command is not included in the published 0.21.0 package; it describes the u
 A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
 
 1. Preview and complete the existing shard and public-prune migrations with `amem migrate --shards --dry-run` and `amem migrate --public-prune-view --dry-run` (then their separately reviewed `--apply` steps).
-2. Have the person append the existing `home` floor at 0.21.0 or later in `formats.json`, preserving prior records, and close cooperating memory reader handles.
+2. On a 0.22 installation, have the person append the existing `home` floor at 0.22.0 in `formats.json`, preserving prior records, and close cooperating memory reader handles. This is recommended at activation and required before the first writer renewal, so old 0.21 readers refuse before opening a renewable home.
 3. Declare every local amem installation that writes this home, including an agent-hub library installation even if setup has no receipt for it. The CLI and current setup-receipt roots are mandatory members.
 
 ```sh
@@ -578,4 +578,6 @@ amem migrate --sync-placement --abandon --json
 
 Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. Initial writer errors name the root category and cause, with upgrade/setup instructions. If a pre-marker interruption retained an intent and its inputs changed, person `--abandon` removes only its owned initial metadata so a fresh preview/apply can follow. It cannot remove a v3 marker, active fence or journal history. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
 
-Restore pinned installs if they become unavailable or change. An already-active home's dry-run reports the diff, but apply cannot renew it; writer renewal is a separate follow-up (#282). Do not edit activation files, downgrade markers or start a new epoch to bypass a hold. See the [activation and recovery contract](docs/contracts.md#person-run-initial-sync-placement-activation-281) for bounds, source/policy drift, old readers and the publication ceiling.
+On an active home, the same dry-run/apply commands explicitly renew the writer inventory on its existing epoch (#282). Declare the complete new 0.22.0-or-later roots after updating host pins and managed setup receipts. Ordinary and cadence sync then locate the new inventory and measure it afresh; original activation data, holds and prior receipts are unchanged. Pending publication or source-recovery work must first be finished with the inventoried install, for example after `dot ai rollback amem` or restoring the host's previous pin.
+
+An interrupted renewal resumes only its exact intent. Before commit append starts, person `--abandon` can discard its unpublished metadata; after the first commit-log byte, only forward resume is supported. Unpublished intent staging requires explicit `--abandon`, then a fresh dry-run; it is never cleaned automatically. Compatible ordinary reads remain available while renewal is pending. Never edit activation files, downgrade markers or start another epoch to discard a hold. See the [renewal contract](docs/contracts.md#same-epoch-writer-inventory-renewal-282). Real-home renewal and release remain separately authorized person operations.

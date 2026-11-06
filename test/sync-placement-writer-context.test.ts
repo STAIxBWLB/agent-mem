@@ -44,7 +44,7 @@ test("initial callback drift retains its root category and initial remedy",()=>{
 
 test("active diagnostics keep restore-or-renew and locator recovery never invents a backup",()=>{
   for(const category of ["running CLI","setup receipt","declared writer"] as PlacementWriterRootCategory[]){
-    const error=new PlacementWriterContextError(category,"changed");expect(error.message).toContain("restore the inventoried install");expect(error.message).toContain("an amem release that supports renewal");
+    const error=new PlacementWriterContextError(category,"changed");expect(error.message).toContain("restore the inventoried install");expect(error.message).toContain("amem migrate --sync-placement --dry-run");
   }
   const locator=new PlacementWriterContextError("active locator","unavailable");
   expect(locator.message).toContain("inspect sync-placement-writer-roots.json");expect(locator.message).toContain("compatible recovery release");expect(locator.message).not.toContain("backup");

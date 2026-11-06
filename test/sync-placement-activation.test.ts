@@ -36,9 +36,9 @@ test("initial placement dry-run is authority-free and byte/mtime read-only; appl
   }finally{store.close();}
 },60_000);
 
-test("already-active apply refuses renewal without changing the epoch or evidence",async()=>{
+test("already-active apply requires the renewal floor without changing the epoch or evidence",async()=>{
   const f=await fixture();await activateSyncPlacement(f.options("apply"));const before=inspectionFilesystemSnapshot(f.base);
-  await expect(activateSyncPlacement(f.options("apply"))).rejects.toThrow("an amem release that supports renewal");
+  await expect(activateSyncPlacement(f.options("apply"))).rejects.toThrow("0.22.0");
   expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
 });
 

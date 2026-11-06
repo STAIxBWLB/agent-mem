@@ -9,18 +9,20 @@ import { PLACEMENT_PROFILE_SCHEMA, validatePlacementBaseV2, type PlacementBaseV2
 
 export const PLACEMENT_ACTIVATION_MIN_READER = "0.21.0";
 const preview = "amem migrate --sync-placement --dry-run";
-export function requirePlacementHomeFloor(home: string): string {
+function requireHomeFloor(home: string,minReader:string): string {
   assertFormatFloor(home, "curated"); assertFormatFloor(home, "sync");
-  const floors = readFormatFloors(home), minimum = [0, 21, 0];
+  const floors = readFormatFloors(home), minimum = minReader.split(".").map(Number);
   const adequate = floors?.some(row => {
     if (row.surface !== "home" || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(row.minReader)) return false;
     const parts = row.minReader.split(".").map(Number);
     for (let i = 0; i < 3; i++) if (parts[i] !== minimum[i]) return parts[i]! > minimum[i]!;
     return true;
   });
-  if (!adequate) throw Error(`Sync placement requires a person-authored home floor of ${PLACEMENT_ACTIVATION_MIN_READER} or later in formats.json; have the person append that record, then rerun ${preview}.`);
+  if (!adequate) throw Error(`Sync placement requires a person-authored home floor of ${minReader} or later in formats.json; have the person append that record, then rerun ${preview}.`);
   return hashJSON(floors);
 }
+export function requirePlacementHomeFloor(home:string):string{return requireHomeFloor(home,PLACEMENT_ACTIVATION_MIN_READER);}
+export function requireWriterRenewalHomeFloor(home:string):string{return requireHomeFloor(home,"0.22.0");}
 export interface PlacementActivationPrerequisites { home: string; floorHash: string; base?: PlacementBaseV2; active?: ActivePlacementBinding }
 export function requirePlacementActivationPrerequisites(input: string): PlacementActivationPrerequisites {
   let home: string;

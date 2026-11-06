@@ -19,7 +19,9 @@ import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
 import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
-import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
+import { activationSourceMarkers, assertPlacementActivationOwner, type PlacementActivationOwner, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
+import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -37,10 +39,12 @@ export interface PlacementCapture {
   /** Diagnostic inventory only; these rows never enter the ordinary transport/capture row map implicitly. */
   specialRows: Map<string, PlacementSpecialSourceRow>;
   sourceRowsByRealm: Map<string, readonly PruneSourceRow[]>;
+  writerInventory?:EffectiveSyncPlacementWriters;
   assertCurrent(): void;
   /** Under live writer fences, inode/ctime/size checks protect the already-hashed prefixes across callbacks without reparsing rows. */
   assertUnchanged(): void;
 }
+export function placementCaptureContextHash(capture:Pick<PlacementCapture,"context"|"writerInventory">):string{return writerBoundPlacementContextHash(capture.context,capture.writerInventory);}
 export interface PlacementActivationMarkerSnapshot {
   profileText: string; shardsText: string; profileStamp: [string,string,string,string,string]; shardsStamp: [string,string,string,string,string];
 }
@@ -62,7 +66,7 @@ function ownedDirectory(dir: string): BigIntStats {
 }
 /** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
  * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
-function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof): PlacementSourcePreview {
+function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): PlacementSourcePreview {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
     if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
@@ -71,6 +75,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     if (!selection.length || new Set(selection.map(realm => canonicalJSON(realm))).size !== selection.length) fail();
   }
   const home = realPath(homeInput), root = ownedDirectory(home);
+  if(sourceOwner)assertPlacementActivationOwner(sourceOwner,home);
   let metadataObjects = 0, metadataBytes = 0;
   const facts: unknown[] = [], sourceChecks: (() => void)[] = [];
   const pendingByPath = new Map(pending.map(item => [canonicalJSON(item.realm)+":"+item.pathHash,item]));
@@ -129,6 +134,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   // An in-flight migration/prune is never accepted as a stable placement source.
   for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) {
     if (name === "profile.lock" && ownerProof) continue; // The module-private proof validated this exact live owner and sealed intent.
+    if(name==="profile.lock"&&sourceOwner){assertPlacementActivationOwner(sourceOwner,home);continue;}
     if (lstatSync(join(home,name),{throwIfNoEntry:false})) fail();
   }
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
@@ -275,6 +281,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
       const now = ownedDirectory(home); if (now.dev !== root.dev || now.ino !== root.ino) fail();
       for (const check of sourceChecks) check();
       if (ownerProof) activationSourceMarkers(ownerProof,home,actualMarkers);
+      if(sourceOwner)assertPlacementActivationOwner(sourceOwner,home);
     } catch { fail(); }
   };
   return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
@@ -282,7 +289,14 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
 }
 /** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
 export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
-  try { assertPlacementRuntime(home); const preview = sourcePreview(home); preview.assertSourcesUnchanged(); return preview; }
+  return previewSources(home);
+}
+/** Internal renewal inventory under the exact live home/profile/mutation owner; no marker virtualization. */
+export function previewOwnedSyncPlacementSources(home:string,owner:PlacementActivationOwner):PlacementSourcePreview {
+  assertPlacementActivationOwner(owner,home);return previewSources(home,owner);
+}
+function previewSources(home:string,owner?:PlacementActivationOwner):PlacementSourcePreview {
+  try { assertPlacementRuntime(home); const preview = sourcePreview(home,undefined,[],undefined,undefined,owner); preview.assertSourcesUnchanged(); return preview; }
   catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
@@ -299,17 +313,21 @@ function capture(home: string, port: PlacementCapturePort, selected?: readonly P
   const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
+  const writerInventory=source.activeHead&&writerInventoryEvidence(source.home,source.activeHead)?readEffectiveSyncPlacementWriters(source.home):undefined;
+  if(writerInventory&&canonicalJSON(context.writers)!==canonicalJSON(writerInventory.writers))fail();
   const assertUnchanged = () => {
     try {
       const currentAttestation = memoryPolicySnapshot(port.attest()), currentVersion = port.policyVersion?.();
       if (!currentAttestation) fail();
       const checked = planSyncPlacementActivation({ ...context, writers: currentAttestation.writers, legacySyncQuiesced: currentAttestation.legacySyncQuiesced }, "0".repeat(64));
       if (canonicalJSON(checked.writers) !== canonicalJSON(context.writers) || currentVersion !== policyVersion) fail();
+      writerInventory?.assertCurrent();
+      if(source.activeHead&&!writerInventory&&writerInventoryEvidence(source.home,source.activeHead))fail();
       source.assertSourcesUnchanged();
     } catch { fail(); }
   };
   return { home: source.home, context, assertUnchanged, ...(source.activeHead ? { activeHead: source.activeHead } : {}),
-    markerHash: source.markerHash, fingerprint: hashJSON({ context, markerHash: source.markerHash }), directories: source.directories,
+    ...(writerInventory?{writerInventory}:{}),markerHash: source.markerHash, fingerprint: hashJSON({ context, markerHash: source.markerHash,...(writerInventory?.revisionSequence?{writerRevisionHash:writerInventory.revisionHash}:{}) }), directories: source.directories,
     prefixes: source.prefixes, rows: source.rows, specialRows: source.specialRows, sourceRowsByRealm: source.sourceRowsByRealm };
 }
 
@@ -332,6 +350,7 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
+      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
       if (error instanceof SyncPlacementJournalError) throw error;
       if (error instanceof SegmentReadBudgetError) return fail("bound");
     }

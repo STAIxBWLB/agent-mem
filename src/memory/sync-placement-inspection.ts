@@ -25,6 +25,7 @@ import type { PlacementPublicationDecisionReason } from "./sync-placement-public
 import type { ShardSyncRealm, ShardSyncRow } from "./shard-sync-format.ts";
 import type { MemoryStore } from "./store.ts";
 import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 export interface SyncPlacementInspectionOptions {
   screen?: RowScreen;
@@ -119,7 +120,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     const port: PlacementCapturePort = { attest: options.placementAttestation, ...(options.policyVersion ? { policyVersion: options.policyVersion } : {}) };
     const capture = captureSyncPlacementContext(home, port, targets.map(target => physical(target.realm)));
     captured = true;
-    if (capture.activeHead !== active.profile.placementHead || canonicalJSON(capture.context.writers) !== canonicalJSON(active.activation.writers)) fail("attestation-unavailable");
+    if (capture.activeHead !== active.profile.placementHead || canonicalJSON(capture.context.writers) !== canonicalJSON(capture.writerInventory?.writers??active.activation.writers)) fail("attestation-unavailable");
     phase = "journal-unavailable"; const retained = captureInspectionJournal(home, active.profile.placementHead);
     const check = () => {
       if (binding() !== beforeBinding) fail("binding-changed"); retained.assertCurrent(); capture.assertUnchanged();
@@ -219,6 +220,9 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
   } catch (error) {
     let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {
+      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
+        if(code==="staging"||code==="pending")return{complete:false,reason:"journal-unavailable",nextStep:new SharedWriterRevisionError(code).message};
+      }
       if (error instanceof Incomplete) reason = error.reason;
       else if (error instanceof FormatFloorError) {
         if (error.code === "format_floor") reason = "reader-upgrade-required";
