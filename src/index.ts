@@ -72,3 +72,5 @@ export * from "./memory/sync-placement-journal-format.ts";
 export * from "./memory/sync-placement-projection.ts";
 export * from "./memory/sync-placement-journal.ts";
 export type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
+export { measureSyncPlacementWriters, SyncPlacementWriterError } from "./memory/sync-placement-writers.ts";
+export type { MeasuredSyncPlacementWriterRoot, SyncPlacementWriterMeasurement, SyncPlacementWriterErrorCode } from "./memory/sync-placement-writers.ts";
