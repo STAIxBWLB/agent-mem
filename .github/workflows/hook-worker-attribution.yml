@@ -14,6 +14,11 @@ on:
       - scripts/measure-transcript-budget.ts
       - scripts/measure-hook-baseline.ts
       - scripts/run-hook-worker-attribution.ts
+      - scripts/run-hook-worker-pairs.ts
+      - scripts/hook-pair-metrics.ts
+      - scripts/hook-phase-durations.ts
+      - test/hook-pair-metrics.test.ts
+      - test/hook-phase-durations.test.ts
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,12 +34,12 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
-      - name: Real worker phases and parent timer lag (bounded three-attempt batch)
-        run: bun scripts/run-hook-worker-attribution.ts "$RUNNER_TEMP/hook-worker-attribution"
+      - name: Counterbalanced C/P with identical finite contention (cap four complete pairs)
+        run: bun scripts/run-hook-worker-pairs.ts "$RUNNER_TEMP/hook-worker-pairs"
       - name: Retain every attempt, strict failure and raw numeric receipt
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hook-worker-attribution-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/hook-worker-attribution/
+          name: hook-worker-pairs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hook-worker-pairs/
           retention-days: 14

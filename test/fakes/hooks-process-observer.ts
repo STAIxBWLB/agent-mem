@@ -74,14 +74,16 @@ if(stallWorker&&process.argv[1]===worker){
   return { preload, worker, nativePidFile, entered, phaseEnabled,
     preserveBeforeClose(fixture:{close:()=>void}){
       const directory=process.env.AMEM_TEST_PHASE_ARTIFACTS;
-      if(!phaseEnabled||!phases||!directory)return;
+      if(!lifecycleEnabled||!directory)return;
       mkdirSync(directory,{recursive:true,mode:0o700});
       const destination=mkdtempSync(join(directory,"fixture-")),close=fixture.close.bind(fixture);
       let preserved=false;
       fixture.close=()=>{
         if(!preserved){
           // Fixed numeric receipt files only; never copy the fake memory store or its row payloads.
-          for(const [source,name]of [[phases.file,"worker-phases.jsonl"],[lifecycle,"parent-lifecycle.jsonl"],[evidence,"admission.jsonl"]] as const)if(existsSync(source)){
+          const files:[string,string][]=[[lifecycle,"parent-lifecycle.jsonl"],[evidence,"admission.jsonl"]];
+          if(phases)files.unshift([phases.file,"worker-phases.jsonl"]);
+          for(const [source,name]of files)if(existsSync(source)){
             const stat=lstatSync(source);
             if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.uid!==process.getuid?.()||stat.mode&0o077||stat.size>8*1024*1024)
               throw Error("Raw phase diagnostic receipt is unsafe or exceeds8MiB; retain the fixture and inspect the owned observer");

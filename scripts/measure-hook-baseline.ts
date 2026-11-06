@@ -14,6 +14,8 @@ const revision = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdou
 if (revision.exitCode !== 0) throw Error("baseline is not a Git checkout");
 const groups = [];
 const phaseDiagnostics=process.argv.includes("--phase-diagnostics");
+const parentDiagnostics=process.argv.includes("--parent-diagnostics"),diagnosticAccounting=phaseDiagnostics||parentDiagnostics;
+if(phaseDiagnostics&&parentDiagnostics)throw Error("Diagnostic modes conflict; choose parent-only control or full worker phases");
 for (const event of ["Stop", "SessionEnd"]) {
   const f = hookFixture(), samples = [],observer=hookProcessObserver(f.root,false,resolve(root),true,phaseDiagnostics);
   observer.preserveBeforeClose(f);
@@ -32,10 +34,11 @@ for (const event of ["Stop", "SessionEnd"]) {
         stdin: Buffer.from(JSON.stringify({ cwd: f.cwd, hook_event_name: event, session_id: "baseline-" + run, transcript_path: transcript })),
         stdout: "pipe", stderr: "pipe", timeout: 3000 });
       const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
-      if(phaseDiagnostics){const trace=observer.workerPhaseReport(result.pid);
-        console.log(JSON.stringify(hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
+      if(diagnosticAccounting){const trace=observer.workerPhaseReport(result.pid);
+        console.log(JSON.stringify({...hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
           expectedOwnedChildren:null,expectation:"observed-spawn-attempts",workers:observer.read().slice(beforeWorkers),evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),metric,
-          cliRawRssMB:result.resourceUsage.maxRSS/1048576,phaseInstrumentation:true,workerPhases:trace.rows,phaseTracePartial:trace.partialTail})));
+          cliRawRssMB:result.resourceUsage.maxRSS/1048576,phaseInstrumentation:phaseDiagnostics,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}),outerWallMs:wallMs,
+          outerStartedAtMs:performance.timeOrigin+started,outerFinishedAtMs:performance.timeOrigin+started+wallMs}));
       }
       if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("main comparison hook unavailable");
       let rss:ReturnType<typeof measuredHookRss>;

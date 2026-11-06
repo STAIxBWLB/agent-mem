@@ -61,6 +61,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
       receiptComplete:!!spawn&&!!exit&&!!reapEnd};
   });
   return {diagnostic:"hook-child-reap/v1",instrumented:true,event:input.event,variant:input.variant??null,run:input.run,logicalRun:input.logicalRun,parentPid:input.parentPid,
+    epochOriginMs:numeric(origin),
     expectedOwnedChildren:input.expectedOwnedChildren,expectation:input.expectation,observedOwnedChildren:input.workers.length,lifecycleChildren:ids.length,
     expectedWorkerChildren:input.expectedWorkerChildren??null,
     spawnAttempts:rows.filter(row=>row.phase==="spawn-attempt").length,spawnFailures:rows.filter(row=>row.phase==="spawn-failed").length,

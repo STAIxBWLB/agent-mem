@@ -113,6 +113,14 @@ test("the ordinary workload retains the exact pre-diagnostic preload template",(
   expect(current).toBe(original);
   const f=hookFixture();try{const observer=hookProcessObserver(f.root);expect(readFileSync(observer.preload,"utf8")).not.toContain("__hookChildLife");}finally{f.close();}
 });
+test("the C parent-only control installs neither worker preload nor timer proxy",()=>{
+  const f=hookFixture();try{
+    const observer=hookProcessObserver(f.root,false,undefined,true,false),source=readFileSync(observer.preload,"utf8");
+    expect(source).toContain("__hookChildLife");expect(source).not.toContain("amem.test.worker.phases");
+    expect(source).not.toContain("new Proxy(originalSetTimeout");expect(source).not.toContain("BUN_OPTIONS:");
+    expect(source).toContain("original(argv,options)");expect(observer.workerPhases()).toEqual([]);
+  }finally{f.close();}
+});
 test("the real preload records spawn, native and worker exit/reap receipts without changing hook assertions",async()=>{
   const f=hookFixture(),alias=join(f.root,"source-root-alias");symlinkSync(resolve(import.meta.dir,".."),alias);
   const observer=hookProcessObserver(f.root,false,alias,true);

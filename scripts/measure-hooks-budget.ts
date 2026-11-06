@@ -24,6 +24,8 @@ const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
 const phaseDiagnostics = process.argv.includes("--phase-diagnostics");
+const parentDiagnostics = process.argv.includes("--parent-diagnostics"), diagnosticAccounting = phaseDiagnostics || parentDiagnostics;
+if(phaseDiagnostics&&parentDiagnostics)throw Error("Diagnostic modes conflict; choose parent-only control or full worker phases");
 interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   wallMs: number;
   /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
@@ -32,7 +34,7 @@ interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
 async function measureHooks() {
-const f = hookFixture(), observer = hookProcessObserver(f.root,false,undefined,phaseDiagnostics,phaseDiagnostics);
+const f = hookFixture(), observer = hookProcessObserver(f.root,false,undefined,diagnosticAccounting,phaseDiagnostics);
 observer.preserveBeforeClose(f);
 let phaseLogicalRun = 0;
 const stalledAttempts = new Map<string, number>();
@@ -88,6 +90,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     : Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
   if (jcode && result.stdout.length) throw new Error("jcode observer hook wrote stdout");
   const wallMs = performance.now() - start;
+  let invocationDeferred:boolean|undefined;
   try {
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
@@ -97,6 +100,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   const pending = deferralPendingEligible(workers) && (jcode ? pendingInvocation("PostToolUseFailure", invocationExcerpt("PostToolUse", input.tool_response), "jcode") : pendingInvocation(event, invocationExcerpt(event, input.tool_response)));
   try {
     const observation = verifyHookProcessObservation(event, workers, evidence, pending);
+    invocationDeferred=observation.deferred;
     if (observation.deferred) {
       deferredWorkers[group]++;
       if (group === "plain") verifyPlainHookDeferrals(deferredWorkers.plain, RUNS.plain);
@@ -172,12 +176,13 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
   return { wallMs, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
   } finally {
-    if(phaseDiagnostics){
+    if(diagnosticAccounting){
       const trace=observer.workerPhaseReport(result.pid),last=readMetrics(f.base).filter(row=>row.kind==="hook"&&row.wallMs!==undefined).at(-1);
       console.log(JSON.stringify({...hookProcessDiagnostic({event,run:invocations,logicalRun:phaseLogicalRun,parentPid:result.pid,variant:"phase-hooks",
         expectedOwnedChildren:null,expectation:"observed-spawn-attempts",workers:observer.read().slice(beforeWorkers),evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),
         metric:JSON.stringify(last)===JSON.stringify(before)?undefined:last,cliRawRssMB:result.resourceUsage.maxRSS/1048576,
-        phaseInstrumentation:true,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}),workload:group}));
+        phaseInstrumentation:phaseDiagnostics,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}),workload:group,outerWallMs:wallMs,
+        outerStartedAtMs:performance.timeOrigin+start,outerFinishedAtMs:performance.timeOrigin+start+wallMs,deferred:invocationDeferred??null}));
     }
   }
 }
