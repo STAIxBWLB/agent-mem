@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { processSignature, realPath } from "./platform.ts";
-import { memoryPolicySnapshot } from "./policy.ts";
 import type { PlacementActivationMarkerSnapshot } from "./sync-placement-capture.ts";
-import { readPlacementActivationIntent, placementActivationFinalMarkers, type PlacementActivationIntent } from "./sync-placement-activation-storage.ts";
+import { readPlacementActivationIntent, validatePlacementActivationIntent, placementActivationFinalMarkers, type PlacementActivationIntent } from "./sync-placement-activation-storage.ts";
 
 declare const ownerBrand: unique symbol, captureBrand: unique symbol;
 export interface PlacementActivationOwner { readonly [ownerBrand]: true }
@@ -51,7 +50,7 @@ export function assertPlacementActivationOwner(token: PlacementActivationOwner):
 export function createPlacementActivationCaptureProof(owner: PlacementActivationOwner, input: PlacementActivationIntent): PlacementActivationCaptureProof {
   assertPlacementActivationOwner(owner);
   const state = owners.get(owner)!;
-  const intent = memoryPolicySnapshot(input), actual = readPlacementActivationIntent(state.home);
+  const intent = validatePlacementActivationIntent(input), actual = readPlacementActivationIntent(state.home);
   if (!intent || !actual || canonicalJSON(intent) !== canonicalJSON(actual)
     || actual.home !== state.home || actual.epoch.homeHash !== hashJSON([state.home,String(state.root.dev),String(state.root.ino),String(state.root.uid)])) fail();
   const token = Object.freeze({}) as PlacementActivationCaptureProof; captures.set(token,{owner,intent:actual}); return token;

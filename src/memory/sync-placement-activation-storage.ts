@@ -81,6 +81,8 @@ function safe<T>(work: () => T): T {
   }
 }
 export function sealPlacementActivationIntent(body: PlacementActivationIntentBody): PlacementActivationIntent { return safe(() => validate(body, false)); }
+/** Detached data validation uses intent bounds, never policy-payload string limits. */
+export function validatePlacementActivationIntent(value: unknown): PlacementActivationIntent { return safe(() => validate(value, true)); }
 export function placementActivationFinalMarkers(value: PlacementActivationIntent): { profile: string; shards: string } {
   return safe(() => {
     const intent = validate(value, true), old = baseMarkers(intent.previousProfile, intent.previousShards);

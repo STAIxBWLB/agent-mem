@@ -37,6 +37,16 @@ export class PlacementActivationError extends Error {
   }
 }
 function fail(cause: PlacementActivationError["causeClass"]): never { throw new PlacementActivationError(cause); }
+function rethrowActivationFailure(error:unknown):never {
+    if(error&&typeof error==="object"&&!types.isProxy(error)){
+      if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError)throw error;
+      if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError){
+        const code=Object.getOwnPropertyDescriptor(error,"code");
+        if(code&&"value" in code){if(code.value==="bound")fail("bound");if(code.value==="busy")fail("busy");if(code.value==="changed")fail("changed");if(code.value==="authorization")fail("authorization");}
+      }
+    }
+    fail("metadata");
+}
 function counts(source: PlacementSourcePreview) {
   const evaluate = outboundPolicyEvaluator(source.home), categories: Partial<Record<SyncPolicyCategory,number>> = {};
   let eligibleOriginals=0,declined=0,intrinsicLocal=0;
@@ -48,7 +58,7 @@ function counts(source: PlacementSourcePreview) {
   source.assertSourcesUnchanged();
   return {selected:source.rows.size+source.specialRows.size,eligibleOriginals,declined,intrinsicLocal,categories,dependencyDecisions:"deferred-to-sync" as const};
 }
-function committed(home:string,intent:PlacementActivationIntent) {
+function committed(home:string,intent:Pick<PlacementActivationIntent,"epoch"|"plan">) {
   const markers=readPlacementRuntimeMarkers(home);
   if ((markers.profile as {schema?:string})?.schema!=="agent-mem.profile/v3"||(markers.shards as {schema?:string})?.schema!=="agent-mem.shards/v3") return false;
   const binding=readActivePlacementBinding(home,markers.profile,markers.shards);
@@ -61,7 +71,7 @@ function syncFile(file:string) {
   try { const actual=fstatSync(fd,{bigint:true}); if(actual.dev!==before.dev||actual.ino!==before.ino||actual.size!==before.size)fail("changed");fsyncSync(fd); }
   finally{closeSync(fd);}fsyncDirectory(join(file,".."));
 }
-function authorize(options:PlacementActivationOptions,intent:PlacementActivationIntent) {
+function authorize(options:PlacementActivationOptions,intent:Pick<PlacementActivationIntent,"epoch"|"plan">) {
   let okay=false;try{okay=options.authorize(Object.freeze({seal:intent.plan.seal,generation:intent.epoch.generation,homeHash:intent.epoch.homeHash}))===true;}catch{fail("authorization");}
   if(!okay)fail("authorization");
 }
@@ -81,6 +91,17 @@ async function fenced<T>(home:string,directories:readonly string[],work:(mutatio
     }finally{for(const release of releases.reverse())release();}
   });
 }
+async function finishCommittedActivation(home:string,binding:Pick<PlacementActivationIntent,"epoch"|"plan">,options:PlacementActivationOptions,
+  mutation:MutationHandle,owner:ReturnType<typeof createPlacementActivationOwner>,intent?:PlacementActivationIntent,report?:ReturnType<typeof counts>) {
+  const epochHash=placementEpochHash(binding.epoch);
+  const check=()=>{assertPlacementActivationOwner(owner);requirePlacementHomeFloor(home);if(!committed(home,binding))fail("changed");readSyncPlacementWriterRoots(home);assertMutationHandle(mutation,home);};
+  authorize(options,binding);check();
+  for(const name of ["profile.json","shards.json",SYNC_PLACEMENT_WRITER_ROOTS_FILE,join("sync-placement","epochs",epochHash,"epoch.json"),join("sync-placement","epochs",epochHash,"activation.json")]){check();syncFile(join(home,name));}
+  ensurePlacementFence(home,epochHash,{mutation,assertCurrent:check});check();
+  if(intent)clearPlacementActivationIntent(home,intent,{mutation,assertCurrent:check});else fsyncDirectory(home);
+  await options.checkpoint?.("after-remove");check();
+  return{mode:options.mode,active:true,forwardOnly:true,epochHash,generation:binding.epoch.generation,writers:binding.plan.writers.length,source:report,resumed:options.mode==="resume",alreadyCommitted:!intent,writerProof:"not-claimed-during-committed-cleanup" as const};
+}
 export async function activateSyncPlacement(options:PlacementActivationOptions) {
   if(!["dry-run","apply","resume"].includes(options.mode)||typeof options.authorize!=="function")fail("authorization");
   let home:string;
@@ -88,7 +109,11 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
   const pending=readPlacementActivationIntent(home);
   const initialBase=pending?undefined:requirePlacementActivationPrerequisites(home);
   const initialFloorHash=pending?requirePlacementHomeFloor(home):initialBase!.floorHash;
-  if(options.mode==="resume"&&!pending)throw Error("No retained sync placement activation exists; run amem migrate --sync-placement --dry-run to review an initial activation.");
+  if(options.mode==="resume"&&!pending){
+    if(!initialBase?.active)throw Error("No retained sync placement activation exists; run amem migrate --sync-placement --dry-run to review an initial activation.");
+    const active=initialBase.active,dirs=active.activation.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
+    return fenced(home,dirs,(mutation,owner)=>finishCommittedActivation(home,{epoch:active.epoch,plan:active.activation},options,mutation,owner)).catch(error=>rethrowActivationFailure(error));
+  }
   if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume rather than creating a new plan.");
   if(!pending){
     const base=initialBase!;
@@ -117,14 +142,7 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     }
     const fixed=intent,epochHash=placementEpochHash(fixed.epoch);
     const metadataCheck=()=>{assertPlacementActivationOwner(owner);requirePlacementHomeFloor(home);if(!committed(home,fixed))fail("changed");readSyncPlacementWriterRoots(home);assertMutationHandle(mutation,home);};
-    const finish=async()=>{
-      authorize(options,fixed);metadataCheck();
-      for(const name of ["profile.json","shards.json",SYNC_PLACEMENT_WRITER_ROOTS_FILE,join("sync-placement","epochs",epochHash,"epoch.json"),join("sync-placement","epochs",epochHash,"activation.json")]){metadataCheck();syncFile(join(home,name));}
-      ensurePlacementFence(home,epochHash,{mutation,assertCurrent:metadataCheck});metadataCheck();
-      clearPlacementActivationIntent(home,fixed,{mutation,assertCurrent:metadataCheck});await options.checkpoint?.("after-remove");metadataCheck();
-      return{mode:options.mode,active:true,forwardOnly:true,epochHash,generation:fixed.epoch.generation,writers:fixed.plan.writers.length,source:report,resumed:options.mode==="resume"};
-    };
-    if(committed(home,fixed))return finish();
+    if(committed(home,fixed))return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
     const current:PlacementWriterContext=writer??initialPlacementWriterContext(home,fixed.roots,options.ownRoot);
     if(canonicalJSON(current.measurement.writers)!==canonicalJSON(fixed.plan.writers))fail("changed");
     const proof=createPlacementActivationCaptureProof(owner,fixed);
@@ -137,16 +155,9 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     await options.checkpoint?.("after-shards");check();
     if(canonicalJSON(readPlacementRuntimeMarkers(home).profile)+"\n"!==final.profile)writeProfileJSON(join(home,"profile.json"),JSON.parse(final.profile));else syncFile(join(home,"profile.json"));
     await options.checkpoint?.("after-profile");check();
-    ensurePlacementFence(home,epochHash,{mutation,assertCurrent:check});await options.checkpoint?.("after-fence");metadataCheck();return finish();
+    ensurePlacementFence(home,epochHash,{mutation,assertCurrent:check});await options.checkpoint?.("after-fence");metadataCheck();return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
   });}catch(error){
     try{options.testOnlyFailure?.(error);}catch{/* observers never affect production outcomes */}
-    if(error&&typeof error==="object"&&!types.isProxy(error)){
-      if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError)throw error;
-      if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError){
-        const code=Object.getOwnPropertyDescriptor(error,"code");
-        if(code&&"value" in code){if(code.value==="bound")fail("bound");if(code.value==="busy")fail("busy");if(code.value==="changed")fail("changed");if(code.value==="authorization")fail("authorization");}
-      }
-    }
-    fail("metadata");
+    return rethrowActivationFailure(error);
   }
 }
