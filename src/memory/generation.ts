@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./platform.ts";
 import { shardDir, userShardDir } from "./shard.ts";
 import { readPublicPruneInputSetChain } from "./public-prune-input-chain.ts";
+import { profileLockRecoveryError, safeProfileLockMessage } from "./profile-lock-diagnostic.ts";
 
 export interface BoundProfile {
   kind: "shared-v1" | "generation";
@@ -96,12 +97,14 @@ export function readSelector(memoryDir: string, absoluteDeadline?: number): { se
       const current = readProfileJSON(join(memoryDir, "profile.json"));
       if (result.revision === (current === undefined ? "absent" : hashJSON(current))) return result;
     } catch (error) {
-      if (error instanceof SyncPlacementRuntimeError) throw error;
-      if (error instanceof Error && error.message === "public prune view unavailable") throw error; // A spent wait budget is never restarted.
+      if (safeProfileLockMessage(error)) throw error;
+      if (error instanceof SyncPlacementRuntimeError) throw profileLockRecoveryError(memoryDir) ?? error;
+      if (error instanceof Error && error.message === "public prune view unavailable") throw profileLockRecoveryError(memoryDir) ?? error; // A spent wait budget is never restarted.
       if (!lstatSync(join(memoryDir, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }) && !lstatSync(join(memoryDir, "profile.lock"), { throwIfNoEntry: false })) throw error;
-      waitForPublicPruneWriter(memoryDir, deadline);
+      try { waitForPublicPruneWriter(memoryDir, deadline); } catch (failure) { throw profileLockRecoveryError(memoryDir) ?? failure; }
     }
   }
+  const diagnostic=profileLockRecoveryError(memoryDir);if(diagnostic)throw diagnostic;
   return unavailable();
 }
 

@@ -12,6 +12,7 @@ import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
+import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -314,6 +315,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
     if (marked && error instanceof AgentUsageError) throw error;
+    const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
       let usage: Error | undefined, parsed: ReturnType<typeof parseCommand> | undefined;

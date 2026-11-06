@@ -7,13 +7,14 @@ import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile }
 import { legacyShardMarkerShape } from "./shard.ts";
 import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts";
+import { profileLockRefusal, rememberProfileLockError } from "./profile-lock-diagnostic.ts";
 
 export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
 export const PLACEMENT_MARKER_REFUSAL = "sync placement metadata is invalid or unsupported; person inspection and a compatible reader are required before continuing";
 export const PLACEMENT_ACTIVATION_PENDING = "sync placement activation is pending or incomplete; have the person inspect retained evidence and run amem migrate --sync-placement --resume, or --abandon only while both markers retain their original v2 bytes";
 export class SyncPlacementRuntimeError extends Error {
   readonly code: "sync_placement_not_enabled" | "sync_placement_unavailable";
-  constructor(reason: string) { super(reason); this.name = "SyncPlacementRuntimeError"; this.code = reason === PLACEMENT_STAGE1_REFUSAL ? "sync_placement_not_enabled" : "sync_placement_unavailable"; }
+  constructor(reason: string) { super(reason); this.name = "SyncPlacementRuntimeError"; this.code = reason === PLACEMENT_STAGE1_REFUSAL ? "sync_placement_not_enabled" : "sync_placement_unavailable";rememberProfileLockError(this,reason); }
 }
 class MarkerChanged extends Error {}
 const same = (left: BigIntStats, right: BigIntStats) => left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
@@ -65,6 +66,9 @@ export function placementMarkerRefusal(profile: unknown, shards: unknown): strin
 /** Selector preflight only recognizes v3. Legacy malformed/split metadata must retain its existing reader/recovery path. */
 // This narrow probe is not a data/transport gate; effects must still use the full runtime guard.
 export function placementSelectorRefusal(home: string): string | undefined {
+  const refusal=selectorRefusal(home);return refusal?profileLockRefusal(home)??refusal:undefined;
+}
+function selectorRefusal(home:string):string|undefined {
   // A durable placement fence forbids falling back to raw legacy sync after marker rollback.
   const fenced = placementFencePresent(home);
   const pending = placementActivationPending(home);
@@ -100,5 +104,5 @@ export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,
   catch { return PLACEMENT_MARKER_REFUSAL; }
 }
 export function assertPlacementRuntime(home: string): void {
-  const refusal = placementRuntimeRefusal(home); if (refusal) throw new SyncPlacementRuntimeError(refusal);
+  const refusal = placementRuntimeRefusal(home); if (refusal) throw new SyncPlacementRuntimeError(profileLockRefusal(home)??refusal);
 }
