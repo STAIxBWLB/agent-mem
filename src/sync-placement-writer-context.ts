@@ -69,6 +69,9 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
     const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home,markers.profile,markers.shards);
     if (!binding) return fail("active locator","unavailable");
     let roots: string[]; try { roots = readSyncPlacementWriterRoots(home); } catch { return fail("active locator","unavailable"); }
+    const needed = required(home,ownRoot);
+    if(!roots.includes(needed.own))return fail("running CLI","missing");
+    if(needed.receipt.some(root=>!roots.includes(root)))return fail("setup receipt","missing");
     const measurement = measureComplete(home,roots,ownRoot);
     if (canonicalJSON(measurement.writers) !== canonicalJSON(binding.activation.writers)) return fail("declared writer","changed");
     return measurement;
@@ -87,7 +90,7 @@ export function previewActivePlacementWriters(home: string, ownRoot: string, req
   const expected = active.activation.writers;
   let measurement: SyncPlacementWriterMeasurement;
   try { measurement = measureSyncPlacementWriters(selected); }
-  catch { return { complete:false, matches:false, roots:[] as SyncPlacementWriterMeasurement["roots"], expected, missingCategories:["declared writer"] as PlacementWriterRootCategory[], differences:expected.map(row=>({writerId:row.writerId,state:"unverified" as const})) }; }
+  catch { return { complete:false, matches:false, roots:[] as SyncPlacementWriterMeasurement["roots"], expected, missingCategories:["declared writer"] as PlacementWriterRootCategory[], differences:expected.map(row=>({writerId:row.writerId,state:"unverified" as const})),refusalCategory:"declared writer" as PlacementWriterRootCategory }; }
   const needed = required(home,ownRoot), missingCategories: PlacementWriterRootCategory[] = [];
   if (!measurement.roots.some(row=>row.root===needed.own)) missingCategories.push("running CLI");
   if (needed.receipt.some(root=>!measurement.roots.some(row=>row.root===root))) missingCategories.push("setup receipt");
@@ -96,5 +99,8 @@ export function previewActivePlacementWriters(home: string, ownRoot: string, req
     return {writerId:row.writerId,state:!actual?"missing":canonicalJSON(row)===canonicalJSON(actual)?"unchanged":"changed"};
   });
   for (const row of measurement.writers) if (!expected.some(value=>value.writerId===row.writerId)) differences.push({writerId:row.writerId,state:"added"});
-  return {complete:true,matches:missingCategories.length===0&&differences.every(row=>row.state==="unchanged"),roots:measurement.roots,expected,missingCategories,differences};
+  const matches=missingCategories.length===0&&differences.every(row=>row.state==="unchanged");
+  const changed=measurement.roots.find(row=>{const old=expected.find(value=>value.writerId===row.writerId);return !old||old.pin!==row.pin||old.version!==row.version;});
+  const refusalCategory:PlacementWriterRootCategory=missingCategories[0]??(changed?.root===needed.own?"running CLI":changed&&needed.receipt.includes(changed.root)?"setup receipt":"declared writer");
+  return {complete:true,matches,roots:measurement.roots,expected,missingCategories,differences,refusalCategory};
 }

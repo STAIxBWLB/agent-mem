@@ -56,7 +56,7 @@ function counts(source: PlacementSourcePreview) {
     if (verdict.ok) eligibleOriginals++; else { declined++;categories[verdict.category]=(categories[verdict.category]??0)+1; }
   }
   source.assertSourcesUnchanged();
-  return {selected:source.rows.size+source.specialRows.size,eligibleOriginals,declined,intrinsicLocal,categories,dependencyDecisions:"deferred-to-sync" as const};
+  return {selected:source.rows.size+source.specialRows.size,policyPermittedOriginals:eligibleOriginals,declined,intrinsicLocal,categories,dependencyDecisions:"deferred-to-sync" as const};
 }
 function committed(home:string,intent:Pick<PlacementActivationIntent,"epoch"|"plan">) {
   const markers=readPlacementRuntimeMarkers(home);
@@ -118,8 +118,12 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
   if(!pending){
     const base=initialBase!;
     if(base.active){
-      if(options.mode==="apply")throw Error("Sync placement is already active; restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Preview differences with amem migrate --sync-placement --dry-run.");
-      return{mode:options.mode,active:true,forwardOnly:true,renewalSupported:false,writers:previewActivePlacementWriters(home,options.ownRoot,options.writerRoots),source:counts(previewSyncPlacementSources(home))};
+      const difference=previewActivePlacementWriters(home,options.ownRoot,options.writerRoots);
+      if(options.mode==="apply"){
+        if(!difference.matches)throw new PlacementWriterContextError(difference.refusalCategory,"changed");
+        throw Error("Sync placement is already active (active locator category); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Preview differences with amem migrate --sync-placement --dry-run.");
+      }
+      return{mode:options.mode,active:true,forwardOnly:true,renewalSupported:false,writers:difference,source:counts(previewSyncPlacementSources(home))};
     }
   }
   const source=pending?undefined:previewSyncPlacementSources(home);

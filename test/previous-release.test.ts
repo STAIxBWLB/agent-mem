@@ -13,10 +13,12 @@ import { CandidateStore } from "../src/memory/candidates.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { previousRelease } from "../scripts/previous-release.ts";
+import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
+import { placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
-import { createPlacementInspectionFixture, createInspectionRemote, inspectionGit, inspectionNote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
+import { createPlacementInspectionFixture, createInspectionRemote, inspectionGit, inspectionNote, reachableInspectionRowIds, inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
 
 // #199 AC6 / #249: this build and the previous minor line on one shared home. The CI job `previous-release` resolves
 // its latest published plain release with scripts/previous-release.ts and sets AMEM_PREV_ROOT; locally the suite skips without it, and
@@ -221,6 +223,17 @@ console.log(JSON.stringify({results,effects,admitted}));`)) as {results:{operati
     for(const value of floorResult.results){expect(value.refused).toBe(true);expect(value.code).toBe("format_floor");expect(value.message).toContain(`Upgrade amem to ${currentVersion} or later.`);}
     expect(floorResult.effects).toBe(0); expect(floorResult.admitted).toBe(0); expect(active.snapshot()).toEqual(floored);
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");
+  },30_000);
+
+  test("person floor protects a home activated by the real initial coordinator from N-1 effects",async()=>{
+    const runner=fixture(),active=await placementActivationFixture();clean.push(active.close);
+    await activateSyncPlacement(active.options("apply"));
+    const before=inspectionFilesystemSnapshot(active.base);
+    const native={...runner,env:{...runner.env,AMEM_HOME:active.base,AGENTHUB_HOME:active.root}};
+    const result=JSON.parse(run(native,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
+let effects=0;Bun.spawn=()=>{effects++;throw Error('unexpected network/process');};Bun.spawnSync=()=>{effects++;throw Error('unexpected process');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
+let code,message;try{const store=openShardStore({memoryDir:${JSON.stringify(active.base)},project:${JSON.stringify(active.project)}});try{store.note(${JSON.stringify(inspectionNote("N1 must not write through person floor",active.project))});}finally{store.close();}}catch(error){code=error.code;message=error.message;}console.log(JSON.stringify({code,message,effects}));`));
+    expect(result.code).toBe("format_floor");expect(result.message).toContain("Upgrade amem to 0.21.0 or later.");expect(result.effects).toBe(0);expect(inspectionFilesystemSnapshot(active.base)).toEqual(before);
   },30_000);
 
   for(const version of ["v1","v2"] as const)test(`inactive ${version} shards preserve previous-release reads, writes and ordinary local Git sync`,async()=>{

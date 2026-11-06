@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { placementActivationFixture, activationOwnRoot } from "./fakes/sync-placement-activation.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { inspectionFilesystemSnapshot, createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
+import { MemoryStore } from "../src/memory/store.ts";
+import { migrateShards } from "../src/memory/shard-migration.ts";
 import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
 
@@ -23,6 +25,12 @@ function localCliRemote(f:ReturnType<typeof hookFixture>){
   writeFileSync(join(bin,"gh"),'#!/usr/bin/env bun\nif(process.argv[2]!=="repo"||process.argv[3]!=="view")process.exit(2);console.log("PRIVATE");\n',{mode:0o700});
   const script=`#!/usr/bin/env bun\nconst args=process.argv.slice(2);const transport=args.some(x=>["fetch","push","ls-remote"].includes(x));const mapped=transport?args.map(x=>x==="origin"||x===${JSON.stringify(url)}?${JSON.stringify(remote)}:x):args;const p=Bun.spawnSync([${JSON.stringify(git)},...mapped],{stdout:"inherit",stderr:"inherit",stdin:"ignore",timeout:50000});process.exit(p.exitCode);\n`;
   writeFileSync(join(bin,"git"),script,{mode:0o700});f.env.PATH=bin+":"+f.env.PATH;return{remote,url};
+}
+function unregisteredWriter(f:ReturnType<typeof hookFixture>){
+  const extra=join(f.root,"unregistered writer");for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
+  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});
+  writeFileSync(join(extra,"src","index.ts"),"// unregistered measured fixture, never executed\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
+  return extra;
 }
 function success(result:ReturnType<typeof run>){expect(result.exitCode,result.stderr.toString()).toBe(0);return JSON.parse(result.stdout.toString()) as Record<string,unknown>;}
 
@@ -47,9 +55,7 @@ for(const conflict of ["--shards","--public-prune-view","--deactivate","--genera
 
 test("person activation supports plain and cadence sync with an unreceipted writer; drift fails closed",async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);
-  const extra=join(f.root,"unregistered writer");for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
-  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});
-  writeFileSync(join(extra,"src","index.ts"),"// unregistered measured fixture, never executed\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
+  const extra=unregisteredWriter(f);
   const args=["migrate","--sync-placement","--writer-root",activationOwnRoot,"--writer-root",extra,"--json"];
   const before=inspectionFilesystemSnapshot(f.base),preview=success(run(f,[...args,"--dry-run"]));
   expect(preview).toMatchObject({active:false,forwardOnly:true,source:{declined:1}});expect(JSON.stringify(preview)).not.toContain("NEVER_PUBLIC_ACTIVATION_BODY");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
@@ -73,4 +79,29 @@ test("missing prerequisites/floor and missing explicit CLI root refuse with next
   expect(result.stderr.toString()).toContain("formats.json");expect(result.stderr.toString()).toContain("0.21.0");
   writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-06"}]),{mode:0o600});
   result=run(f,["migrate","--sync-placement","--apply","--json"]);expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("explicit complete --writer-root");
+});
+
+
+test("incomplete CLI or receipt writer inventory refuses before durable activation",async()=>{
+  const f=await placementActivationFixture();cleanup.push(f.close);const extra=unregisteredWriter(f);
+  let before=inspectionFilesystemSnapshot(f.base),result=run(f,["migrate","--sync-placement","--apply","--writer-root",extra,"--json"]);
+  expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("running CLI");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  const setup=join(f.base,"setup");mkdirSync(setup,{mode:0o700});
+  const image=(value:unknown)=>({mode:0o600,bytes:Buffer.from(JSON.stringify(value)).toString("base64")});
+  const value={version:2,target:"claude",intent:"a".repeat(64),phase:"applied",changes:[0,1].map(index=>({key:`claude:${index}`,path:join(f.root,"home",index===0?".claude.json":"settings.json"),before:{mode:0o600,bytes:null},
+    after:image(index===0?{mcpServers:{amem:{command:process.execPath,args:["--smol",join(extra,"bin","amem.js"),"mcp"]}}}:{})}))};
+  writeFileSync(join(setup,"claude.json"),JSON.stringify(value),{mode:0o600});before=inspectionFilesystemSnapshot(f.base);
+  result=run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"]);
+  expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("setup receipt");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+});
+
+test("missing migration prerequisites name their exact next command and never migrate automatically",async()=>{
+  const f=hookFixture();cleanup.push(f.close);const store=new MemoryStore({memoryDir:f.base,deferPromotions:true});
+  try{store.note({op:"note",project:f.project,scope:"project",tier:"long",kind:"finding",peer:"person",source:"person",text:"migration prerequisite fixture",about:[]});}finally{store.close();}
+  writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-06"}]),{mode:0o600});
+  let before=inspectionFilesystemSnapshot(f.base),result=run(f,["migrate","--sync-placement","--dry-run","--json"]);
+  expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("amem migrate --shards --dry-run");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  expect((await migrateShards({memoryDir:f.base,generation:"b".repeat(32),mode:"apply",authorizedPerson:true,tty:true})).active).toBe(true);
+  before=inspectionFilesystemSnapshot(f.base);result=run(f,["migrate","--sync-placement","--dry-run","--json"]);
+  expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("amem migrate --public-prune-view --dry-run");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
 });
