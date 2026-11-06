@@ -1,8 +1,7 @@
 name: check
+# Nonshipping diagnostic branch: normal product CI is intentionally not triggered here.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

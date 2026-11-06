@@ -1,0 +1,120 @@
+name: task-148-order-diagnostic
+on:
+  pull_request:
+    paths: ['.github/workflows/task-148-order-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [shard-first, target-first]
+    env:
+      TASK148_SOURCE: c26cc41309d16433f095ec5f95da0c4c3e209492
+      TASK148_TIMING: 76fe97df933a108331c05f629e9ab0dcaf80ffdf
+      TASK148_ORDER: ${{ matrix.order }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: c26cc41309d16433f095ec5f95da0c4c3e209492
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Verify pinned diagnostic runtime
+        run: |
+          if [ "$(bun --version)" != 1.4.2 ]; then
+            echo '::error::Diagnostic Bun version differs; restore the fixed 1.4.2 setup before rerunning.'
+            exit 1
+          fi
+      - name: Fixed two-attempt order comparison, with every outcome retained
+        shell: bash
+        run: |
+          umask 077
+          export TASK148_DIR="$RUNNER_TEMP/task148-order"
+          echo "TASK148_DIR=$TASK148_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$TASK148_DIR"
+          fixed_source() {
+            if [ "$(git rev-parse HEAD)" != "$TASK148_SOURCE" ] || [ "$(git hash-object test/ci-timings.json)" != "$TASK148_TIMING" ] || ! git diff --quiet -- src test; then
+              echo '::error::Fixed diagnostic source or timing input changed; restore the original source identity before rerunning.'
+              exit 2
+            fi
+          }
+          attempt() {
+            local label="$1"
+            local task148_cmd=(bun test --timeout 20000)
+            if [ "$label" = shard ]; then
+              task148_cmd+=(--shard=1/2 --timings=test/ci-timings.json)
+            else
+              task148_cmd+=(./test/hook-transcript-worker.test.ts)
+            fi
+            fixed_source
+            echo "TASK148_ATTEMPT_BEGIN arm=$TASK148_ORDER label=$label"
+            set +e
+            "${task148_cmd[@]}" 2>&1 | tee "$TASK148_DIR/$label.log"
+            local task148_codes=("${PIPESTATUS[@]}")
+            set -e
+            if [ "${task148_codes[1]}" -ne 0 ]; then
+              echo '::error::Diagnostic log retention failed; inspect runner storage before rerunning.'
+              exit 2
+            fi
+            printf '%s\n' "${task148_codes[0]}" > "$TASK148_DIR/$label.exit"
+            echo "TASK148_ATTEMPT_END arm=$TASK148_ORDER label=$label exit=${task148_codes[0]}"
+          }
+          if [ "$TASK148_ORDER" = shard-first ]; then
+            attempt shard
+            attempt target
+          else
+            attempt target
+            attempt shard
+          fi
+      - name: Report all outcomes and verify exact original file order
+        if: always() && !cancelled()
+        run: |
+          python3 - <<'PYREPORT'
+          import hashlib,json,os,pathlib,re,sys
+          root=pathlib.Path(os.environ.get('TASK148_DIR',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'task148-order')))
+          expected='cf719d3d8d152792165e3c9e68b32dc048693534dd6b05a8f6744790fba23059'
+          cases=['slow-store:linux:Stop','slow-store:linux:SessionEnd','slow-store:darwin-codepath:Stop','slow-store:darwin-codepath:SessionEnd']
+          report={'diagnostic':'task148-order-replay','arm':os.environ['TASK148_ORDER'],'source':os.environ['TASK148_SOURCE'],'timingBlob':os.environ['TASK148_TIMING'],'attempts':[]}
+          all_pass=True
+          for label in ['shard','target']:
+           item={'label':label}
+           try:
+            text=(root/(label+'.log')).read_text()
+            item['exit']=int((root/(label+'.exit')).read_text())
+            files=[];plain_files=[];metrics=[]
+            for line in text.splitlines():
+             match=re.search(r'##\[group\](?:\./)?(test/.*\.test\.ts):',line)
+             if match:files.append(match[1])
+             plain=re.fullmatch(r'(?:\./)?(test/.*\.test\.ts):',line)
+             if plain:plain_files.append(plain[1])
+             if line.startswith('{'):
+              try:
+               row=json.loads(line)
+               if row.get('diagnostic')=='task110-metrics' and row.get('case') in cases:metrics.append(row)
+              except ValueError:pass
+            if not files:files=plain_files
+            summaries=re.findall(r'Ran (\d+) tests across (\d+) files\.',text)
+            if not summaries:raise ValueError('test summary missing')
+            tests,file_count=map(int,summaries[-1]);order_hash=hashlib.sha256(json.dumps(files,separators=(',',':')).encode()).hexdigest()
+            item.update(tests=tests,files=file_count,headers=len(files),orderHash=order_hash,slowStoreMetrics=metrics)
+            if label=='shard':complete=(tests==2486 and file_count==232 and len(files)==232 and order_hash==expected)
+            else:complete=(tests>0 and file_count==1 and files==['test/hook-transcript-worker.test.ts'])
+            complete=complete and sorted(row['case'] for row in metrics)==sorted(cases)
+            item['diagnosticComplete']=complete;item['testsPassed']=item['exit']==0
+            all_pass=all_pass and complete and item['testsPassed']
+           except (OSError,ValueError) as error:
+            item.update(diagnosticComplete=False,reason=str(error));all_pass=False
+           report['attempts'].append(item)
+          report['allAttemptsPassed']=all_pass
+          output=json.dumps(report,indent=2);print(output)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as summary:summary.write('## Task 148 fixed-order diagnostic\n```json\n'+output+'\n```\n')
+          if not all_pass:
+           print('::error::Order diagnostic has a failed or incomplete attempt; inspect all retained logs and receipts before changing product CI.')
+           sys.exit(1)
+          PYREPORT
