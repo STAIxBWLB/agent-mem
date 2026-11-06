@@ -6,6 +6,7 @@ import * as writerContextModule from "../src/sync-placement-writer-context.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
+import type { SyncPlacementWriterAttestation } from "../src/memory/sync-placement-plan.ts";
 import { activateSyncPlacement, PlacementActivationError } from "../src/memory/sync-placement-activation.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { syncMemory } from "../src/memory/sync.ts";
@@ -139,7 +140,7 @@ test("an overbound future locator refuses before retaining any activation intent
   // Already-validated measurement seam: paths fit existing4096-byte/depth/root-count limits. No foreign package
   // trees are created and no attestation/measurement bypass is introduced in product code.
   const roots=paths.map(root=>({root,writerId:hashJSON(["agent-mem.sync-placement-writer/v1",root]),version:"0.21.0",pin:"a".repeat(64)}));
-  const writers=roots.map(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+  const writers=roots.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
   expect(Buffer.byteLength(canonicalJSON(roots.map(({root,writerId})=>({root,writerId}))))).toBeGreaterThan(256*1024);
   expect(Buffer.byteLength(canonicalJSON(paths))).toBeLessThan(1024*1024);
   const context=spyOn(writerContextModule,"initialPlacementWriterContext").mockReturnValue({measurement:{roots,writers},attest:()=>({writers,legacySyncQuiesced:true})});
