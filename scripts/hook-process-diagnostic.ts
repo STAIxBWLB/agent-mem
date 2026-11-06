@@ -24,10 +24,13 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
   const children=ids.slice(0,128).map(pid=>{
     const owned=input.workers.find(row=>row.pid===pid), receipts=rows.filter(row=>row.childPid===pid);
     const find=(phase:HookLifecycleReceipt["phase"])=>receipts.find(row=>row.phase===phase);
-    const spawn=find("spawn"),exit=find("exit"),kill=find("kill-request"),reapStart=find("reap-start"),reapEnd=find("reap-end"),output=find("output-end");
+    const spawn=find("spawn"),exit=find("exit"),kill=find("kill-request"),reapStart=find("reap-start"),reapEnd=find("reap-end"),output=find("output-end"),rss=find("rss-finish");
     return {pid,kind:owned?.kind??spawn?.kind??null,detached:owned?.detached??null,
       spawnMs:time(spawn),exitPromiseMs:time(exit),killRequestMs:time(kill),reapStartMs:time(reapStart),reapEndMs:time(reapEnd),outputEndMs:time(output),
       reaped:reapEnd?.reaped===1?true:reapEnd?.reaped===0?false:null,outputLate:output?.late===1?true:output?.late===0?false:null,
+      outputAvailable:output?.outputAvailable===1?true:output?.outputAvailable===0?false:null,
+      rss:rss?{source:rss.source??null,known:numeric(rss.known),kb:numeric(rss.kb),rawKB:numeric(rss.rawKB),observationFailed:numeric(rss.observationFailed),
+        counters:{vmhwm:numeric(rss.vmhwm),vmpeakBound:numeric(rss.vmpeakBound),platformRusage:numeric(rss.platformRusage),rawFallback:numeric(rss.rawFallback),unavailable:numeric(rss.unavailable)}}:null,
       relativeToWorkerExitedWindowMs:{spawn:relative(spawn),exitPromise:relative(exit),reapStart:relative(reapStart),reapEnd:relative(reapEnd)},
       receiptComplete:!!spawn&&!!exit&&!!reapEnd};
   });

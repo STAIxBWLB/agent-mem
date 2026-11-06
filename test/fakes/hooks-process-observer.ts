@@ -2,9 +2,12 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface HookLifecycleReceipt {
-  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "truncated";
+  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
   parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
-  boundMs?: number; reaped?: number; late?: number; code?: number;
+  boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
+  source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
+  known?: number; kb?: number; rawKB?: number; observationFailed?: number;
+  vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
 }
 
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
@@ -39,7 +42,8 @@ Bun.plugin({name:'observe-worker-precheck',setup(builder){builder.onLoad({filter
  ['exit = child.exited.then(code => { exited = true; return code; });','exit = child.exited.then(code => { exited = true;globalThis.__hookChildLife("exit",child.pid,"worker",{code}); return code; });'],
  ['    killed = true;','    killed = true;globalThis.__hookChildLife("kill-request",owned.pid,"worker");'],
  ['      const reaped = exited || !(await boundedWait(exit!)).late;','      globalThis.__hookChildLife("reap-start",owned.pid,"worker",{boundMs:REAP_BOUND_MS});const reaped = exited || !(await boundedWait(exit!)).late;globalThis.__hookChildLife("reap-end",owned.pid,"worker",{reaped:Number(reaped)});'],
- ['      const body = reaped ? await boundedWait(output!) : { late: true };','      const body = reaped ? await boundedWait(output!) : { late: true };globalThis.__hookChildLife("output-end",owned.pid,"worker",{late:Number(body.late)});']
+ ['      const body = reaped ? await boundedWait(output!) : { late: true };','      const body = reaped ? await boundedWait(output!) : { late: true };globalThis.__hookChildLife("output-end",owned.pid,"worker",{late:Number(body.late),outputAvailable:Number(body.value!==undefined)});'],
+ ['      const accounting = tracker!.finish(workerRawKB);','      const accounting = tracker!.finish(workerRawKB);globalThis.__hookChildLife("rss-finish",owned.pid,"worker",{...accounting.rssSources,kb:accounting.rssKB,rawKB:workerRawKB});']
  ];
  for(const [anchor,replacement]of anchors){if(contents.split(anchor).length!==2)throw Error('worker lifecycle observation anchor changed; update the exact test preload and rerun observer controls');contents=contents.replace(anchor,replacement);}
  return {loader:'ts',contents};
@@ -48,7 +52,8 @@ Bun.plugin({name:'observe-worker-precheck',setup(builder){builder.onLoad({filter
  ['    exited = true;','    exited = true;globalThis.__hookChildLife("exit",child.pid,"native",{code});'],
  ['    if (exited) return;','    if (exited) return;globalThis.__hookChildLife("kill-request",child.pid,"native");'],
  ['    await exit;','    globalThis.__hookChildLife("reap-start",child.pid,"native");await exit;'],
- ['    await rssReceipt;','    await rssReceipt;globalThis.__hookChildLife("reap-end",child.pid,"native",{reaped:Number(exited)});']
+ ['    await rssReceipt;','    await rssReceipt;globalThis.__hookChildLife("reap-end",child.pid,"native",{reaped:Number(exited)});'],
+ ['    if (observationFailed) usage.rssSources.unavailable++;','    if (observationFailed) usage.rssSources.unavailable++;globalThis.__hookChildLife("rss-finish",child.pid,"native",{source:selected.source,known:Number(selected.known),kb:selected.kb,rawKB:selected.rawKB,observationFailed:Number(observationFailed)});']
  ];for(const [anchor,replacement]of anchors){if(contents.split(anchor).length!==2)throw Error('native lifecycle observation anchor changed; update the exact test preload and rerun observer controls');contents=contents.replace(anchor,replacement);}return{loader:'ts',contents};
 });}});
 globalThis.__hookProcessNote=note;
@@ -83,7 +88,7 @@ if(stallWorker&&process.argv[1]===worker){
       if(statSync(lifecycle).size>2*1024*1024)throw Error("child lifecycle diagnostic exceeds 2 MiB; retain the fixture and inspect its bounded observer workload");
       return readFileSync(lifecycle,"utf8").split("\n").filter(Boolean).map(line=>{
         const row=JSON.parse(line) as HookLifecycleReceipt;
-        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","truncated"].includes(row.phase)
+        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","truncated"].includes(row.phase)
           || !Number.isSafeInteger(row.parentPid)||row.parentPid<=0||!Number.isSafeInteger(row.childPid)||row.childPid<0
           || !["worker","native"].includes(row.kind)||!Number.isFinite(row.atMs)||row.atMs<0)throw Error("child lifecycle diagnostic is malformed; retain the fixture and inspect the observer receipts");
         return row;

@@ -20,6 +20,10 @@ test("reaped exit with late output does not become an abandoned worker",()=>{
   const diagnostic=hookProcessDiagnostic(input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("exit",120),row("reap-start",121,{boundMs:10}),row("reap-end",121,{reaped:1}),row("output-end",132,{late:1})]));
   expect(diagnostic.children[0]).toMatchObject({reaped:true,outputLate:true,relativeToWorkerExitedWindowMs:{exitPromise:-1}});
 });
+test("child-specific RSS and missing output identify the image without inventing a known peak",()=>{
+  const diagnostic=hookProcessDiagnostic(input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("output-end",130,{late:0,outputAvailable:0}),row("rss-finish",131,{unavailable:2,vmhwm:0,vmpeakBound:0,platformRusage:0,rawFallback:0,kb:0,rawKB:0})]));
+  expect(diagnostic.children[0]).toMatchObject({outputAvailable:false,rss:{known:null,counters:{unavailable:2,vmhwm:0}}});
+});
 test("missing observer or metric receipts remain unknown, never fabricated exit or zero abandonment",()=>{
   const diagnostic=hookProcessDiagnostic(input([]));
   expect(diagnostic).toMatchObject({lifecyclePresent:false,abandonedChildren:null,rssSources:null,workerExitedWindow:{present:false,startMs:null}});
@@ -48,7 +52,7 @@ test("the real preload records spawn, native and worker exit/reap receipts witho
     expect(result.exitCode,result.stderr.toString()).toBe(0);
     const receipts=observer.lifecycle(result.pid),workers=observer.read();
     expect(workers.some(worker=>worker.kind==="worker")).toBe(true);expect(workers.some(worker=>worker.kind==="native")).toBe(true);
-    for(const worker of workers){const events=receipts.filter(row=>row.childPid===worker.pid);expect(events.some(row=>row.phase==="spawn")).toBe(true);expect(events.some(row=>row.phase==="exit")).toBe(true);expect(events.some(row=>row.phase==="reap-end")).toBe(true);}
+    for(const worker of workers){const events=receipts.filter(row=>row.childPid===worker.pid);expect(events.some(row=>row.phase==="spawn")).toBe(true);expect(events.some(row=>row.phase==="exit")).toBe(true);expect(events.some(row=>row.phase==="reap-end")).toBe(true);expect(events.some(row=>row.phase==="rss-finish")).toBe(true);}
     expect(receipts.find(row=>row.phase==="reap-start"&&row.kind==="worker")?.boundMs).toBe(10);
     const diagnostic=hookProcessDiagnostic({event:"Stop",run:1,logicalRun:1,parentPid:result.pid,workers,evidence:observer.evidence(),lifecycle:receipts,
       expectedOwnedChildren:null,expectation:"observed-spawn-attempts",metric:readMetrics(f.base).filter(row=>row.kind==="hook").at(-1)});
