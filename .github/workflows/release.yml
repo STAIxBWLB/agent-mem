@@ -11,6 +11,26 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Frozen benchmark/runtime tests resolve their pinned base commit.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      # Seeded from macOS full-suite groups in run 42120864196 (whole-file milliseconds).
+      # ponytail: cached weights only balance two shards; new files use Bun's median.
+      # Refresh on dgx02: bun test --timings=test/ci-timings.json --update-timings
+      - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/2 --timings=test/ci-timings.json
+  gate:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -34,9 +54,8 @@ jobs:
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
       - run: bun x tsc --noEmit
       - run: bun scripts/check-boundary.ts
-      - run: bun test --timeout 20000
   publish:
-    needs: check
+    needs: [gate, check]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -63,7 +82,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      # The section was validated in `check`, before npm publish.
+      # The section was validated in `gate`, before npm publish.
       - name: Release notes from CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}
