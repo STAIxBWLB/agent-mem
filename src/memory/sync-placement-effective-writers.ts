@@ -1,7 +1,7 @@
 /** Expected inventory metadata only. Callers must still obtain fresh install attestations. */
 import { lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON } from "./generation.ts";
+import { hashJSON } from "./generation.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";

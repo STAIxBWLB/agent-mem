@@ -5,8 +5,6 @@ import { canonicalJSON } from "./memory/generation.ts";
 import { readSetupWriterRoots } from "./setup.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
-import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
-import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 import { SharedWriterRevisionError } from "./memory/sync-placement-writer-revision-format.ts";
