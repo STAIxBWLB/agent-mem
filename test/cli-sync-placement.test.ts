@@ -21,7 +21,7 @@ function localCliRemote(f:ReturnType<typeof hookFixture>){
   const remote=createInspectionRemote(f.root),url="https://github.com/amem-fixture/sync-placement.git",bin=join(f.root,"fixture-bin");mkdirSync(bin,{mode:0o700});
   const git=Bun.which("git");if(!git)throw Error("fixture needs its native git binary");
   writeFileSync(join(bin,"gh"),'#!/usr/bin/env bun\nif(process.argv[2]!=="repo"||process.argv[3]!=="view")process.exit(2);console.log("PRIVATE");\n',{mode:0o700});
-  const script=`#!/usr/bin/env bun\nconst args=process.argv.slice(2);const transport=args.some(x=>["fetch","push","ls-remote"].includes(x));const extra=transport?["-c",${JSON.stringify("remote.origin.url="+remote)},"-c",${JSON.stringify("remote.origin.pushurl="+remote)}]:[];const mapped=transport?args.map(x=>x===${JSON.stringify(url)}?${JSON.stringify(remote)}:x):args;const p=Bun.spawnSync([${JSON.stringify(git)},...extra,...mapped],{stdout:"inherit",stderr:"inherit",stdin:"ignore",timeout:50000});process.exit(p.exitCode);\n`;
+  const script=`#!/usr/bin/env bun\nconst args=process.argv.slice(2);const transport=args.some(x=>["fetch","push","ls-remote"].includes(x));const mapped=transport?args.map(x=>x==="origin"||x===${JSON.stringify(url)}?${JSON.stringify(remote)}:x):args;const p=Bun.spawnSync([${JSON.stringify(git)},...mapped],{stdout:"inherit",stderr:"inherit",stdin:"ignore",timeout:50000});process.exit(p.exitCode);\n`;
   writeFileSync(join(bin,"git"),script,{mode:0o700});f.env.PATH=bin+":"+f.env.PATH;return{remote,url};
 }
 function success(result:ReturnType<typeof run>){expect(result.exitCode,result.stderr.toString()).toBe(0);return JSON.parse(result.stdout.toString()) as Record<string,unknown>;}
