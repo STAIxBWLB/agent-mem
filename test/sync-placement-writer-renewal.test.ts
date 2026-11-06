@@ -88,6 +88,18 @@ test("a precommit renewal can be abandoned after pin drift and retried explicitl
   const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:1});
 },60_000);
 
+test("precommit resume refuses a source-recovery intent introduced after interruption",async()=>{
+  const f=await fixture();floor(f.base);const next=install(f.root,"resume writer"),options=f.options("apply");options.writerRoots=[activationOwnRoot,next];
+  options.renewalCheckpoint=phase=>{if(phase==="revision-fsync")throw Error("precommit interruption");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();
+  const dir=join(f.base,"projects",shardKeyHash(f.project),"prune-plans");mkdirSync(dir,{mode:0o700});
+  const pending=join(dir,"pending-log-"+"a".repeat(16)+".json");writeFileSync(pending,"{}",{mode:0o600});
+  const before=inspectionFilesystemSnapshot(f.base);
+  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("restore the inventoried install");
+  expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  rmSync(pending);expect(await activateSyncPlacement(f.options("resume"))).toMatchObject({renewed:true,sequence:1});
+},60_000);
+
 test("an irreversible renewal finishes only its frozen pins and requires another review after a second upgrade",async()=>{
   const f=await fixture();floor(f.base);const next=install(f.root,"irreversible next"),options=f.options("apply");options.writerRoots=[activationOwnRoot,next];
   options.renewalCheckpoint=phase=>{if(phase==="commit-started")throw Error("one commit byte retained");};

@@ -120,7 +120,8 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   if(!history.pending&&options.mode==="abandon")throw new WriterRenewalError("changed");
   if(!history.pending&&options.mode==="apply"&&!options.writerRoots.length)throw new WriterRenewalError("candidate");
   // No new intent is written before every pre-existing recovery obligation has been rejected.
-  const sourceCheck=options.mode==="apply"?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
+  const admitsInventory=options.mode==="apply"||options.mode==="resume"&&history.pending&&!history.appendStarted;
+  const sourceCheck=admitsInventory?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
   return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
     let intent=history.pending;
     const cleanupOnly=!intent&&options.mode==="resume"&&!!history.current;
