@@ -22,6 +22,8 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
   const relative=(row:HookLifecycleReceipt|undefined)=>row&&window?numeric(row.atMs-window.atMs):null;
   const ids=[...new Set([...input.workers.map(row=>row.pid),...rows.filter(row=>row.childPid>0).map(row=>row.childPid)])];
   const sources=input.metric?.rssSources;
+  // Hook metrics omit a zero abandoned count; an absent metric still provides no count at all.
+  const abandoned=input.metric?.kind==="hook"?(input.metric.abandonedChildren===undefined?0:numeric(input.metric.abandonedChildren)):null;
   const children=ids.slice(0,128).map(pid=>{
     const owned=input.workers.find(row=>row.pid===pid), receipts=rows.filter(row=>row.childPid===pid);
     const find=(phase:HookLifecycleReceipt["phase"])=>receipts.find(row=>row.phase===phase);
@@ -39,7 +41,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
     expectedOwnedChildren:input.expectedOwnedChildren,expectation:input.expectation,observedOwnedChildren:input.workers.length,
     expectedWorkerChildren:input.expectedWorkerChildren??null,
     spawnAttempts:rows.filter(row=>row.phase==="spawn-attempt").length,spawnFailures:rows.filter(row=>row.phase==="spawn-failed").length,
-    abandonedChildren:numeric(input.metric?.abandonedChildren),metricPresent:!!input.metric,rssCoverage:HOOK_RSS_COVERAGE,rssScope:input.metric?.rssScope==="owned-images"?"owned-images":null,
+    abandonedChildren:abandoned,metricPresent:!!input.metric,rssCoverage:HOOK_RSS_COVERAGE,rssScope:input.metric?.rssScope==="owned-images"?"owned-images":null,
     workerExitedWindow:{boundMs:10,startMs:time(window),observedBoundMs:numeric(window?.boundMs),present:!!window},
     rssSources:sources?{vmhwm:numeric(sources.vmhwm),vmpeakBound:numeric(sources.vmpeakBound),platformRusage:numeric(sources.platformRusage),rawFallback:numeric(sources.rawFallback),unavailable:numeric(sources.unavailable)}:null,
     cliRawRssMB:numeric(input.cliRawRssMB),productionRssMB:numeric(input.metric?.rssMB),rawRssMB:numeric(input.metric?.rawRssMB),wallMs:numeric(input.metric?.wallMs),

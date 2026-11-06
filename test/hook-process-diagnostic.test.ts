@@ -4,6 +4,7 @@ import type { HookLifecycleReceipt } from "./fakes/hooks-process-observer.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
+import type { MetricSample } from "../src/memory/metrics.ts";
 import { readFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -30,6 +31,9 @@ test("missing observer or metric receipts remain unknown, never fabricated exit 
   const diagnostic=hookProcessDiagnostic(input([]));
   expect(diagnostic).toMatchObject({lifecyclePresent:false,abandonedChildren:null,rssSources:null,workerExitedWindow:{present:false,startMs:null}});
   expect(diagnostic.children[0]).toMatchObject({reaped:null,exitPromiseMs:null,receiptComplete:false});
+});
+test("a present hook metric's omitted abandoned field means zero under the existing producer contract",()=>{
+  expect(hookProcessDiagnostic({...input([]),metric:{kind:"hook",at:"2026-11-06T00:00:00Z"} as MetricSample}).abandonedChildren).toBe(0);
 });
 test("native receipts share the parent's clock but do not invent a worker window",()=>{
   const diagnostic=hookProcessDiagnostic({...input([row("spawn-attempt",100,{childPid:0,kind:"native"}),row("spawn",101,{kind:"native"}),row("exit",120,{kind:"native"}),row("reap-end",122,{kind:"native",reaped:1})]),
