@@ -99,7 +99,7 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
     }
     for(const check of checks)check();
     measured.sort((a,b)=>a.root<b.root?-1:a.root>b.root?1:0);
-    const writers=measured.map(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+    const writers=measured.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
     return{roots:measured,writers};
   }catch(error){if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementWriterError)throw error;return fail("unavailable");}
 }

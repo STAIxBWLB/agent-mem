@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { chmodSync, closeSync, ftruncateSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { measureSyncPlacementWriters, SyncPlacementWriterError } from "../src/memory/sync-placement-writers.ts";
+import { measureSyncPlacementWriters, SyncPlacementWriterError, type SyncPlacementWriterErrorCode } from "../src/memory/sync-placement-writers.ts";
 import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -22,7 +22,7 @@ function install(parent=temp(),name="install",version="0.21.0"){
   writeFileSync(join(root,".claude-plugin","plugin.json"),"{}\n",{mode:0o644});
   return root;
 }
-function refused(work:()=>unknown,code?:string){
+function refused(work:()=>unknown,code?:SyncPlacementWriterErrorCode){
   let failure:unknown;try{work();}catch(error){failure=error;}
   expect(failure).toBeInstanceOf(SyncPlacementWriterError);
   const error=failure as SyncPlacementWriterError;
