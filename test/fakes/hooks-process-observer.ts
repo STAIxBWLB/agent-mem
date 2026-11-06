@@ -1,14 +1,26 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { realPath } from "../../src/memory/platform.ts";
+import { instrumentHookLifecycle } from "./hooks-process-lifecycle.ts";
+
+export interface HookLifecycleReceipt {
+  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
+  parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
+  boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
+  source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
+  known?: number; kb?: number; rawKB?: number; observationFailed?: number;
+  vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
+}
 
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
-export function hookProcessObserver(root: string, stallWorker = false) {
+export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false) {
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
   const nativePidFile = join(root, "owned-native.pid"), entered = join(root, "owned-native.entered");
-  const worker = join(import.meta.dir, "../../src/session-brief-worker.ts");
-  writeFileSync(preload, `import {appendFileSync,readFileSync,writeFileSync} from 'node:fs';
+  const worker = join(realPath(sourceRoot), "src/session-brief-worker.ts");
+  const lifecycle = join(root, "hook-child-lifecycle.jsonl");
+  let rendered = `import {appendFileSync,readFileSync,writeFileSync} from 'node:fs';
 const worker=${JSON.stringify(worker)},receipt=${JSON.stringify(receipt)},preload=${JSON.stringify(preload)},stallWorker=${stallWorker};
 const loads=globalThis[Symbol.for('amem.hook.observer.loads')]=(globalThis[Symbol.for('amem.hook.observer.loads')]??0)+1;
 const note=(phase,values={})=>appendFileSync(${JSON.stringify(evidence)},JSON.stringify({phase,pid:process.pid,loads,...values})+'\\n',{mode:0o600});
@@ -45,8 +57,22 @@ if(stallWorker&&process.argv[1]===worker){
  writeFileSync(${JSON.stringify(entered)},'entered',{mode:0o600});
  await sleeper.exited;
 }
-`, { mode: 0o600 });
+`;
+  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle);
+  writeFileSync(preload,rendered,{mode:0o600});
   return { preload, worker, nativePidFile, entered,
+    /** Observation only, never signalling authority. A missing exit flush is explicit missing evidence. */
+    lifecycle(parentPid?:number): HookLifecycleReceipt[] {
+      if(!existsSync(lifecycle))return[];
+      if(statSync(lifecycle).size>2*1024*1024)throw Error("child lifecycle diagnostic exceeds 2 MiB; retain the fixture and inspect its bounded observer workload");
+      return readFileSync(lifecycle,"utf8").split("\n").filter(Boolean).map(line=>{
+        const row=JSON.parse(line) as HookLifecycleReceipt;
+        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","truncated"].includes(row.phase)
+          || !Number.isSafeInteger(row.parentPid)||row.parentPid<=0||!Number.isSafeInteger(row.childPid)||row.childPid<0
+          || !["worker","native"].includes(row.kind)||!Number.isFinite(row.atMs)||row.atMs<0)throw Error("child lifecycle diagnostic is malformed; retain the fixture and inspect the observer receipts");
+        return row;
+      }).filter(row=>parentPid===undefined||row.parentPid===parentPid);
+    },
     evidence(): HookProcessEvidence[] {
       if (!existsSync(evidence)) return [];
       return readFileSync(evidence, "utf8").split("\n").filter(Boolean).map(line => {

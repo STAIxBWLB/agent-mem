@@ -7,6 +7,7 @@ import { reportBudgetAdvisory } from "../../scripts/hook-timing-check.ts";
 import { measuredHookRss, measuredBudgetHookRss } from "../../scripts/hook-rss-check.ts";
 import { hookFixture } from "./hooks-fixture.ts";
 import { hookProcessObserver } from "./hooks-process-observer.ts";
+import { hookProcessDiagnostic } from "../../scripts/hook-process-diagnostic.ts";
 
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
@@ -38,8 +39,8 @@ export function timeoutOwnedGroupsGone(table: string, groups: readonly number[])
 
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
-export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean) {
-  const observer = hookProcessObserver(f.root, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
+export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
+  const observer = hookProcessObserver(f.root, true, undefined, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
   let nativePids: number[] = [], groups: number[] = [];
   try {
     const start = performance.now();
@@ -47,7 +48,9 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       ? f.runFunctional(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` })
       : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
     const wallMs = performance.now() - start, workers = observer.read();
-    check(workers.length === (event === "SessionStart" ? 3 : 2), "timeout probe did not observe every owned child");
+    check(workers.length === (event === "SessionStart" ? 3 : 2), "timeout probe did not observe every owned child: "+JSON.stringify(hookProcessDiagnostic({event,...invocation,parentPid:result.pid,variant:functional?"timeout-functional":"timeout-native",
+      expectedOwnedChildren:event==="SessionStart"?3:2,expectation:"fixture-contract",workers,evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),
+      metric:readMetrics(f.base).filter(row=>row.kind==="hook").at(-1),cliRawRssMB:result.resourceUsage.maxRSS/1048576})));
     groups = workers.map(worker => worker.pid);
     check(workers.every(worker => worker.detached), "timeout child did not own its process group");
     check(existsSync(observer.entered) && existsSync(observer.nativePidFile), "timeout fixture did not reach its owned blocking command");
