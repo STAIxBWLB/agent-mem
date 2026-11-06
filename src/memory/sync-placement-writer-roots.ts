@@ -12,6 +12,7 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementJournal } from "./sync-placement-journal-storage.ts";
 import { writeImmutableActivationMetadata } from "./public-prune-activation.ts";
 import { measureSyncPlacementWriters, SyncPlacementWriterError, type MeasuredSyncPlacementWriterRoot } from "./sync-placement-writers.ts";
+import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import type { SyncPlacementWriterAttestation } from "./sync-placement-plan.ts";
 
 export const SYNC_PLACEMENT_WRITER_ROOTS_FILE="sync-placement-writer-roots.json";
@@ -26,7 +27,10 @@ const hash=(text:string)=>createHash("sha256").update(text).digest("hex");
 const hex=(value:unknown):value is string=>typeof value==="string"&&value.length===64&&/^[a-f0-9]+$/.test(value);
 const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.mode,s.uid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 function fail():never {throw new SyncPlacementWriterError("unavailable");}
-function protectedCall<T>(work:()=>T):T {try{return work();}catch{return fail();}}
+function protectedCall<T>(work:()=>T):T {try{return work();}catch(error){
+  if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementWriterError){const code=Object.getOwnPropertyDescriptor(error,"code");if(code&&"value"in code&&code.value==="bound")throw new SyncPlacementWriterError("bound");}
+  return fail();
+}}
 function directory(home:string):BigIntStats {
   const s=lstatSync(home,{bigint:true});
   if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==BigInt(process.getuid?.()??-1)||(s.mode&0o777n)!==0o700n)fail();return s;
@@ -60,7 +64,8 @@ function validate(input:unknown):Locator {
     roots.push({root:item.root,writerId:item.writerId});prior=item.root;ids.add(item.writerId);
   }
   const body:LocatorBody={schema:SYNC_PLACEMENT_WRITER_ROOTS_SCHEMA,homeHash:value.homeHash,epochHash:value.epochHash,activationHash:value.activationHash,roots};
-  if(hashJSON(body)!==value.seal||Buffer.byteLength(canonicalJSON(value)+"\n")>MAX_BYTES)fail();
+  if(hashJSON(body)!==value.seal)fail();
+  if(Buffer.byteLength(canonicalJSON(value)+"\n")>MAX_BYTES)throw new SyncPlacementWriterError("bound");
   return{...body,seal:value.seal};
 }
 function idSet(writers:readonly SyncPlacementWriterAttestation[]):string[] {
@@ -89,32 +94,56 @@ function readOwned(file:string):{text:string;check():void} {
   }finally{closeSync(fd);}
 }
 export interface SyncPlacementWriterRootsInput {epochHash:string;homeHash:string;activationHash:string;roots:readonly MeasuredSyncPlacementWriterRoot[]}
+export interface SyncPlacementWriterRootsBinding {homeHash:string;epochHash:string;activationHash:string;writers:readonly SyncPlacementWriterAttestation[]}
+function copiedInput(input:SyncPlacementWriterRootsInput) {
+  const copied=object(input,["epochHash","homeHash","activationHash","roots"]);
+  if(!hex(copied.epochHash)||!hex(copied.homeHash)||!hex(copied.activationHash))fail();
+  const roots=array(copied.roots).map(value=>{
+    const root=object(value,["root","writerId","version","pin"]);
+    if(typeof root.root!=="string"||typeof root.version!=="string"||!hex(root.writerId)||!hex(root.pin))fail();
+    return{root:root.root,writerId:root.writerId,version:root.version,pin:root.pin};
+  }).sort((a,b)=>a.root<b.root?-1:a.root>b.root?1:0);
+  return{homeHash:copied.homeHash,epochHash:copied.epochHash,activationHash:copied.activationHash,roots};
+}
+/** Pure initial-locator data plan. It proves framing/binding/bounds only, never fresh install bytes or permission. */
+export function planSyncPlacementWriterRoots(input:SyncPlacementWriterRootsInput,binding:SyncPlacementWriterRootsBinding):Locator {
+  return protectedCall(()=>{
+    const copied=copiedInput(input),expected=object(binding,["homeHash","epochHash","activationHash","writers"]);
+    if(!hex(expected.homeHash)||!hex(expected.epochHash)||!hex(expected.activationHash))fail();
+    const writers=memoryPolicySnapshot(expected.writers) as readonly SyncPlacementWriterAttestation[]|undefined;if(!writers)fail();idSet(writers);
+    const proposed=copied.roots.map(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+    if(canonicalJSON(proposed)!==canonicalJSON([...writers].sort((a,b)=>a.writerId.localeCompare(b.writerId))))fail();
+    const body:LocatorBody={schema:SYNC_PLACEMENT_WRITER_ROOTS_SCHEMA,homeHash:copied.homeHash,epochHash:copied.epochHash,activationHash:copied.activationHash,
+      roots:copied.roots.map(({root,writerId})=>({root,writerId}))};
+    const value=validate({...body,seal:hashJSON(body)});
+    bind(value,{homeHash:expected.homeHash,epochHash:expected.epochHash,activationHash:expected.activationHash},writers);return value;
+  });
+}
 export interface SyncPlacementWriterRootsWriteOptions {mutation:MutationHandle;assertCurrent():void}
 /** Called only under activation's live fences. Initial bytes are immutable; renewal belongs to its own reviewed protocol. */
 export function writeSyncPlacementWriterRoots(homeInput:string,input:SyncPlacementWriterRootsInput,expectedWriters:readonly SyncPlacementWriterAttestation[],options:SyncPlacementWriterRootsWriteOptions):void {
   protectedCall(()=>{
     const home=realPath(homeInput),before=directory(home);assertMutationHandle(options.mutation,home);options.assertCurrent();
-    const copied=object(input,["epochHash","homeHash","activationHash","roots"]);
-    if(!hex(copied.epochHash)||!hex(copied.homeHash)||!hex(copied.activationHash))fail();
-    const roots=array(copied.roots).map(value=>{
-      const root=object(value,["root","writerId","version","pin"]);
-      if(typeof root.root!=="string"||typeof root.version!=="string"||!hex(root.writerId)||!hex(root.pin))fail();
-      return{root:root.root,writerId:root.writerId,version:root.version,pin:root.pin};
-    });
+    const copied=copiedInput(input),roots=copied.roots;
     const measured=measureSyncPlacementWriters(roots.map(root=>root.root));
     if(canonicalJSON(measured.roots)!==canonicalJSON(roots.sort((a,b)=>a.root<b.root?-1:a.root>b.root?1:0)))fail();
     const journal=readPlacementJournal(home,copied.epochHash),expected=memoryPolicySnapshot(expectedWriters);
     if(!expected||!Array.isArray(expected))fail();idSet(expected);
     const sorted=(writers:readonly SyncPlacementWriterAttestation[])=>[...writers].sort((a,b)=>a.writerId.localeCompare(b.writerId));
     if(canonicalJSON(sorted(measured.writers))!==canonicalJSON(sorted(expected))||canonicalJSON(sorted(measured.writers))!==canonicalJSON(sorted(journal.activation.writers)))fail();
-    const body:LocatorBody={schema:SYNC_PLACEMENT_WRITER_ROOTS_SCHEMA,homeHash:copied.homeHash,epochHash:copied.epochHash,activationHash:copied.activationHash,
-      roots:measured.roots.map(({root,writerId})=>({root,writerId}))};
-    const value=validate({...body,seal:hashJSON(body)});
-    bind(value,{homeHash:journal.epoch.homeHash,epochHash:hashJSON(journal.epoch),activationHash:journal.activation.seal},journal.activation.writers);
+    const value=planSyncPlacementWriterRoots({...copied,roots:measured.roots},{homeHash:journal.epoch.homeHash,epochHash:hashJSON(journal.epoch),activationHash:journal.activation.seal,writers:journal.activation.writers});
     if(canonicalJSON(idSet(expected))!==canonicalJSON(idSet(journal.activation.writers)))fail();
     assertMutationHandle(options.mutation,home);options.assertCurrent();
     const file=join(home,SYNC_PLACEMENT_WRITER_ROOTS_FILE),text=canonicalJSON(value)+"\n";
     const existing=lstatSync(file,{throwIfNoEntry:false});if(existing){const read=readOwned(file);if(read.text!==text)fail();read.check();}
+    // The shared writer reads a crash-left orphan before its own content check. Bound that read here,
+    // after the final caller proof; only its exact deterministic staging name can be resumed.
+    const staging=lstatSync(`${file}.pending-${hash(text)}`,{bigint:true,throwIfNoEntry:false});
+    if(staging){
+      if(!staging.isFile()||staging.isSymbolicLink()||staging.uid!==BigInt(process.getuid?.()??-1)||(staging.mode&0o777n)!==0o600n||staging.size>BigInt(MAX_BYTES))fail();
+      if(existing){const final=fileState(file);if(final.nlink!==2n||staging.nlink!==2n||stamp(staging)!==stamp(final))fail();}
+      else if(staging.nlink!==1n)fail();
+    }
     writeImmutableActivationMetadata(file,text);
     assertMutationHandle(options.mutation,home);options.assertCurrent();
     const after=directory(home);if(after.dev!==before.dev||after.ino!==before.ino)fail();

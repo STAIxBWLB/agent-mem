@@ -1,8 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
-import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
+import * as writerContextModule from "../src/sync-placement-writer-context.ts";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
+import { realPath } from "../src/memory/platform.ts";
+import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
+import { activateSyncPlacement, PlacementActivationError } from "../src/memory/sync-placement-activation.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { syncMemory } from "../src/memory/sync.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
@@ -126,3 +130,27 @@ test("a newly receipted root is checked again at the final publication boundary"
     expect(writers.lastRefusal?.category).toBe("setup receipt");expect(reachableInspectionRowIds(remote)).toEqual([]);
   }finally{store.close();}
 },60_000);
+
+
+test("an overbound future locator refuses before retaining any activation intent or epoch",async()=>{
+  const f=await fixture(),originalMarkers=["profile.json","shards.json","formats.json"].map(name=>readFileSync(join(f.base,name),"utf8"));
+  const prefix="/"+Array.from({length:5},(_,index)=>String(index)+"x".repeat(199)).join("/");
+  const paths=[realPath(ownRoot),...Array.from({length:255},(_,index)=>`${prefix}/install-${String(index).padStart(3,"0")}`)].sort();
+  // Already-validated measurement seam: paths fit existing4096-byte/depth/root-count limits. No foreign package
+  // trees are created and no attestation/measurement bypass is introduced in product code.
+  const roots=paths.map(root=>({root,writerId:hashJSON(["agent-mem.sync-placement-writer/v1",root]),version:"0.21.0",pin:"a".repeat(64)}));
+  const writers=roots.map(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+  expect(Buffer.byteLength(canonicalJSON(roots.map(({root,writerId})=>({root,writerId}))))).toBeGreaterThan(256*1024);
+  expect(Buffer.byteLength(canonicalJSON(paths))).toBeLessThan(1024*1024);
+  const context=spyOn(writerContextModule,"initialPlacementWriterContext").mockReturnValue({measurement:{roots,writers},attest:()=>({writers,legacySyncQuiesced:true})});
+  const options=f.options("apply"),checkpoints:string[]=[];options.writerRoots=paths;options.checkpoint=phase=>{checkpoints.push(phase);};
+  try{
+    let error:unknown;try{await activateSyncPlacement(options);}catch(caught){error=caught;}
+    expect(context).toHaveBeenCalled();expect(error).toBeInstanceOf(PlacementActivationError);expect((error as PlacementActivationError).causeClass).toBe("bound");
+    expect(checkpoints).toEqual([]);
+    expect(existsSync(join(f.base,"sync-placement-activation.json"))).toBe(false);
+    expect(existsSync(join(f.base,"sync-placement"))).toBe(false);
+    expect(existsSync(join(f.base,"sync-placement-writer-roots.json"))).toBe(false);
+    expect(["profile.json","shards.json","formats.json"].map(name=>readFileSync(join(f.base,name),"utf8"))).toEqual(originalMarkers);
+  }finally{context.mockRestore();}
+},20_000);

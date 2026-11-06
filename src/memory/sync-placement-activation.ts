@@ -17,7 +17,8 @@ import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { captureSyncPlacementActivationContext, previewSyncPlacementSources, type PlacementSourcePreview } from "./sync-placement-capture.ts";
 import { createPlacementActivationOwner, assertPlacementActivationOwner, createPlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 import { sealPlacementActivationIntent, readPlacementActivationIntent, writePlacementActivationIntent, clearPlacementActivationIntent, placementActivationFinalMarkers, PLACEMENT_ACTIVATION_INTENT_SCHEMA, type PlacementActivationIntent } from "./sync-placement-activation-storage.ts";
-import { writeSyncPlacementWriterRoots, readSyncPlacementWriterRoots, SYNC_PLACEMENT_WRITER_ROOTS_FILE } from "./sync-placement-writer-roots.ts";
+import { writeSyncPlacementWriterRoots, readSyncPlacementWriterRoots, planSyncPlacementWriterRoots, SYNC_PLACEMENT_WRITER_ROOTS_FILE } from "./sync-placement-writer-roots.ts";
+import { SyncPlacementWriterError } from "./sync-placement-writers.ts";
 import { requirePlacementActivationPrerequisites, requirePlacementHomeFloor } from "./sync-placement-prerequisites.ts";
 import { outboundPolicyEvaluator, type SyncPolicyCategory } from "./sync-screen.ts";
 import { initialPlacementWriterContext, previewActivePlacementWriters, PlacementWriterContextError, type PlacementWriterContext } from "../sync-placement-writer-context.ts";
@@ -40,7 +41,7 @@ function fail(cause: PlacementActivationError["causeClass"]): never { throw new 
 function rethrowActivationFailure(error:unknown):never {
     if(error&&typeof error==="object"&&!types.isProxy(error)){
       if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError)throw error;
-      if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError){
+      if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError||error instanceof SyncPlacementWriterError){
         const code=Object.getOwnPropertyDescriptor(error,"code");
         if(code&&"value" in code){if(code.value==="bound")fail("bound");if(code.value==="busy")fail("busy");if(code.value==="changed")fail("changed");if(code.value==="authorization")fail("authorization");}
       }
@@ -141,6 +142,10 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
       const epoch:PlacementEpoch={schema:PLACEMENT_EPOCH_SCHEMA,publicationFormat:PLACEMENT_FORMAT,generation:(context.profile as {generation:string}).generation,homeHash:context.homeHash,contextHash:hashJSON(context),nonce:randomBytes(16).toString("hex")};
       const plan=planSyncPlacementActivation(context,placementEpochHash(epoch));
       intent=sealPlacementActivationIntent({schema:PLACEMENT_ACTIVATION_INTENT_SCHEMA,home,epoch,plan,roots:writer!.measurement.roots.map(row=>row.root).sort(),previousProfile:source!.markers.profileText,previousShards:source!.markers.shardsText,profileStamp:source!.markers.profileStamp,shardsStamp:source!.markers.shardsStamp,floorHash:initialFloorHash});
+      // All future initial-locator framing/binding limits must fit before retaining an exclusive activation intent.
+      const epochHash=placementEpochHash(epoch);
+      planSyncPlacementWriterRoots({epochHash,homeHash:epoch.homeHash,activationHash:plan.seal,roots:writer!.measurement.roots},
+        {epochHash,homeHash:epoch.homeHash,activationHash:plan.seal,writers:plan.writers});
       validateSyncPlacementActivation(plan,{current:()=>{initialCheck();return context;},authorize:()=>{authorize(options,intent!);return true;}});
       writePlacementActivationIntent(home,intent,{mutation,assertCurrent:initialCheck});
     }
