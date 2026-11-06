@@ -22,7 +22,7 @@ function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"m
   if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
   const cause=detail?`; ${failureDetails[detail]}`:"";
   if(phase==="initial")return `Sync placement initial writer proof is ${causeClass} (${category} category${cause}); ${category==="setup receipt"?"upgrade or repair the managed amem install and its host exact pin, then rerun amem setup <target> --apply":"upgrade or repair the amem install and its host exact pin"}. Declare the complete writer roots and rerun amem migrate --sync-placement --dry-run.`;
-  return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Review initial inputs with amem migrate --sync-placement --dry-run --writer-root <install-root>.`;
+  return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or have the person run amem migrate --sync-placement --dry-run and --apply with the complete --writer-root inventory after installing the required 0.22.0 home floor.`;
 }
 export class PlacementWriterContextError extends Error {
   constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail) {

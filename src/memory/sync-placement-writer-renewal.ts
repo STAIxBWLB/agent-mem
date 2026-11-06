@@ -1,5 +1,5 @@
 /** Person-only same-epoch writer renewal. No source/journal recovery, publication or floor writer. */
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { lstatSync, opendirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { canonicalJSON, readProfileJSON, hashJSON, legacyProfileMarkerShape } from "./generation.ts";
@@ -96,12 +96,16 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   requireWriterRenewalHomeFloor(home);
   if(history.pending&&options.mode==="apply")throw new SharedWriterRevisionError("pending");
   if(!history.pending&&options.mode==="abandon")throw new WriterRenewalError("changed");
-  if(!history.pending&&options.mode==="resume")return{mode:options.mode,active:true,renewed:false,nothingPending:true,sequence:history.sequence};
-  if(!history.pending&&!options.writerRoots.length)throw new WriterRenewalError("candidate");
+  if(!history.pending&&options.mode==="apply"&&!options.writerRoots.length)throw new WriterRenewalError("candidate");
   // No new intent is written before every pre-existing recovery obligation has been rejected.
   const sourceCheck=options.mode==="apply"?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
   return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
     let intent=history.pending;
+    const cleanupOnly=!intent&&options.mode==="resume"&&!!history.current;
+    if(cleanupOnly){
+      const prefix=Buffer.from(history.commits.slice(0,-1).map(row=>canonicalJSON(row)+"\n").join(""));
+      intent=createWriterRenewalIntent({schema:WRITER_RENEWAL_INTENT_SCHEMA,home,revision:history.current!,commit:history.commits.at(-1)!,previousLogBytes:prefix.length,previousLogHash:createHash("sha256").update(prefix).digest("hex")});
+    }
     const locator=readInitialSyncPlacementWriterLocator(home);
     const metadata=()=>{
       assertPlacementActivationOwner(owner);requireWriterRenewalHomeFloor(home);
@@ -110,6 +114,10 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
         if(anchor.sequence>journal.sequence||(anchor.sequence===0?b.epochHash:journal.records[anchor.sequence-1]?.seal)!==anchor.headHash)throw new WriterRenewalError("changed");}
     };
     metadata();
+    if(cleanupOnly){
+      person(options,intent!);clearWriterRenewalIntent(home,intent!,{mutation,assertCurrent:metadata});
+      return{mode:options.mode,active:true,renewed:false,alreadyCommitted:true,sequence:history.sequence,remainingRevisions:WRITER_REVISION_LIMIT-history.sequence};
+    }
     if(!intent){
       journalClear(home,b.epochHash);sourceCheck?.();
       const current=readWriterHistory(home,{...b,initialLocatorHash:locator.seal});

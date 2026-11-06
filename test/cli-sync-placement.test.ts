@@ -30,7 +30,7 @@ function localCliRemote(f:ReturnType<typeof hookFixture>){
 }
 function unregisteredWriter(f:ReturnType<typeof hookFixture>){
   const extra=join(f.root,"unregistered writer");for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
-  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});
+  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.22.0"}),{mode:0o644});
   writeFileSync(join(extra,"src","index.ts"),"// unregistered measured fixture, never executed\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
   return extra;
 }
@@ -68,7 +68,7 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const cadence=success(run(f,["sync","--if-due","--force","--json"]));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});
-  const blocked=run(f,["sync","--json"]);expect(blocked.exitCode).not.toBe(0);expect(blocked.stderr.toString()).toContain("an amem release that supports renewal");
+  const blocked=run(f,["sync","--json"]);expect(blocked.exitCode).not.toBe(0);expect(blocked.stderr.toString()).toContain("amem migrate --sync-placement --dry-run");
   const failed=readSyncState(f.base);expect(failed.failures).toBe(1);
   expect(nextSyncAt(failed)!-Date.parse(failed.lastAttemptAt!)).toBe(SYNC_BACKOFF_BASE_MS);
   const deferred=success(run(f,["sync","--if-due","--json"]));expect(deferred).toMatchObject({skipped:"not due",failures:1});expect(readSyncState(f.base)).toEqual(failed);
@@ -76,8 +76,13 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const repeated=readSyncState(f.base);expect(repeated.failures).toBe(2);expect(nextSyncAt(repeated)!-Date.parse(repeated.lastAttemptAt!)).toBe(2*SYNC_BACKOFF_BASE_MS);
   const drift=success(run(f,["migrate","--sync-placement","--dry-run","--json"]));expect(drift.active).toBe(true);expect((drift.writers as {matches:boolean}).matches).toBe(false);
   const preserved=inspectionFilesystemSnapshot(f.base),renew=run(f,["migrate","--sync-placement","--apply","--json"]);
-  expect(renew.exitCode).not.toBe(0);expect(renew.stderr.toString()).toContain("supports renewal");expect(inspectionFilesystemSnapshot(f.base)).toEqual(preserved);
+  expect(renew.exitCode).not.toBe(0);expect(renew.stderr.toString()).toContain("home floor of 0.22.0");expect(inspectionFilesystemSnapshot(f.base)).toEqual(preserved);
   expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);
+  const initialMap=readFileSync(join(f.base,"sync-placement-writer-roots.json")),fence=readFileSync(join(f.base,"sync-placement","active.json"));
+  writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.22.0",since:"2026-11-06"}]),{mode:0o600});
+  expect(success(run(f,[...args,"--apply"]))).toMatchObject({active:true,renewed:true,sequence:1});
+  expect(success(run(f,["sync","--json"])).ok).toBe(true);expect(success(run(f,["sync","--if-due","--force","--json"])).ok).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
 },60_000);
 
 test("missing prerequisites/floor and missing explicit CLI root refuse with next steps",async()=>{

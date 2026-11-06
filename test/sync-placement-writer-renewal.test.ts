@@ -12,6 +12,7 @@ import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { readSyncPlacementWriterRoots } from "../src/memory/sync-placement-writer-roots.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
@@ -45,7 +46,7 @@ test("root retirement renews the same epoch and resumes publication with unchang
   expect(await activateSyncPlacement(options)).toMatchObject({active:true,renewed:true,epochHash:f.epoch,sequence:1,remainingRevisions:63});
   expect(records(f.base,f.epoch)).toEqual(old);expect(readPlacementJournal(f.base,f.epoch).records).toEqual(previousJournal.records);expect(readPlacementProjection(f.base,f.epoch)).toEqual(previousProjection);
   expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
-  expect(readSyncPlacementWriterRoots(f.base)).toContain(f.extra);expect(readEffectiveSyncPlacementWriters(f.base).roots).toEqual([activationOwnRoot,next].sort());
+  expect(readSyncPlacementWriterRoots(f.base)).toContain(f.extra);expect(readEffectiveSyncPlacementWriters(f.base).roots).toEqual([realPath(activationOwnRoot),next].sort());
   store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
   try{
     const after=await inspectSyncPlacement(store,{placementAttestation:attest});expect(after.complete).toBe(true);expect(after).toEqual(beforeInspection!);
