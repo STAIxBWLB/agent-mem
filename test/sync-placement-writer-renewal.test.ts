@@ -120,12 +120,25 @@ for(const pending of ["publication","append","source"] as const)test("renewal re
 for(const phase of ["intent-started","intent-written","intent-fsync","intent-published","revision-written","revision-fsync","commit-started","commit-written","commit-fsync","intent-cleared"] as const)
 test("native renewal SIGKILL recovers the same epoch: "+phase,async()=>{
   const f=await fixture();floor(f.base);const next=install(f.root,"native next writer"),old=records(f.base,f.epoch);
-  const source=captureSyncPlacementContext(f.base,{attest:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()}),key=[...source.rows.values()].find(r=>r.key.id===f.declined)!.key;
   const child=Bun.spawnSync([process.execPath,join(import.meta.dir,"fakes/sync-placement-renewal-crash.ts"),f.base,activationOwnRoot,phase,JSON.stringify([activationOwnRoot,next])],{cwd:f.cwd,env:f.env,stdout:"pipe",stderr:"pipe",timeout:30_000});
   expect(child.exitCode).not.toBe(0);expect(child.stdout.toString(),child.stderr.toString()).toContain(phase);
   let result:Awaited<ReturnType<typeof activateSyncPlacement>>;
   if(["intent-started","intent-written","intent-fsync"].includes(phase)){
     await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("--abandon");
+    expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
+    const reopened=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});try{expect(reopened.get(f.allowed,f.project)).toBeDefined();}finally{reopened.close();}
+    const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];result=await activateSyncPlacement(reviewed);
+  }else result=await activateSyncPlacement(f.options("resume"));
+  expect(result?.active).toBe(true);
+  expect(readEffectiveSyncPlacementWriters(f.base).revisionSequence).toBe(1);expect(records(f.base,f.epoch)).toEqual(old);
+  expect(readdirSync(join(f.base,"sync-placement","epochs"))).toEqual([f.epoch]);expect(existsSync(join(f.base,"sync-placement-writer-renewal.json"))).toBe(false);
+},60_000);
+
+test("unpublished staging preserves ordinary reads but names the explicit cleanup for placement effects",async()=>{
+  const f=await fixture();floor(f.base);const next=install(f.root,"staging next");
+  const source=captureSyncPlacementContext(f.base,{attest:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()}),key=[...source.rows.values()].find(r=>r.key.id===f.declined)!.key;
+  const options=f.options("apply");options.writerRoots=[activationOwnRoot,next];options.renewalCheckpoint=stage=>{if(stage==="intent-started")throw Error("returned lock after unpublished staging interruption");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();expect(existsSync(join(f.base,"profile.lock"))).toBe(false);
     const attest=()=>({writers:measureSyncPlacementWriters([activationOwnRoot,f.extra]).writers,legacySyncQuiesced:true as const});
     const normal=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
     try{
@@ -134,10 +147,6 @@ test("native renewal SIGKILL recovers the same epoch: "+phase,async()=>{
       const request={epochHash:f.epoch,expectedHead:f.epoch,requestId:"b".repeat(64),key},port={attest,authorize:()=>true};
       expect(()=>holdPlacementRow(f.base,request,port)).toThrow("--abandon");expect(()=>releasePlacementHold(f.base,request,port)).toThrow("--abandon");
     }finally{normal.close();}
-    expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
-    const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];result=await activateSyncPlacement(reviewed);
-  }else result=await activateSyncPlacement(f.options("resume"));
-  expect(result?.active).toBe(true);
-  expect(readEffectiveSyncPlacementWriters(f.base).revisionSequence).toBe(1);expect(records(f.base,f.epoch)).toEqual(old);
-  expect(readdirSync(join(f.base,"sync-placement","epochs"))).toEqual([f.epoch]);expect(existsSync(join(f.base,"sync-placement-writer-renewal.json"))).toBe(false);
+  expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
+  expect(readPlacementJournal(f.base,f.epoch).records).toHaveLength(0);
 },60_000);
