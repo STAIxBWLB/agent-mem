@@ -15,6 +15,7 @@ import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, validatePla
   SyncPlacementJournalError, type PlacementEpoch, type PlacementKey, type PlacementCommittedOutcome, type PlacementAmbiguousOutcome } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection } from "./sync-placement-projection.ts";
 import { preparePlacementEpoch, readPlacementJournal, appendPlacementEvent } from "./sync-placement-journal-storage.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 export interface PlacementJournalPreview { epoch: PlacementEpoch; plan: SyncPlacementActivationPlan }
 export interface PlacementAuthorizationBinding {
@@ -28,7 +29,13 @@ export interface PlacementJournalPort extends PlacementCapturePort {
 }
 function fail(code: "invalid" | "changed" | "authorization" | "policy" | "local" | "conflict" | "pending" | "busy" = "invalid"): never { throw new SyncPlacementJournalError(code); }
 function protectedCall<T>(work: () => T): T {
-  try { return work(); } catch (error) { if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SyncPlacementJournalError) throw error; return fail("changed"); }
+  try { return work(); } catch (error) {
+    if(error&&typeof error==="object"&&!types.isProxy(error)){
+      if(error instanceof SyncPlacementJournalError)throw error;
+      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
+    }
+    return fail("changed");
+  }
 }
 function person(port: PlacementJournalPort, action: "prepare" | "hold" | "release", seal: string, details: Omit<PlacementAuthorizationBinding, "action" | "seal"> = {}): void {
   let authorized = false;

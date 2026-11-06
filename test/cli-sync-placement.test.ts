@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { placementActivationFixture, activationOwnRoot } from "./fakes/sync-placement-activation.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { inspectionFilesystemSnapshot, createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
@@ -81,9 +81,12 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const initialMap=readFileSync(join(f.base,"sync-placement-writer-roots.json")),fence=readFileSync(join(f.base,"sync-placement","active.json"));
   writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.22.0",since:"2026-11-06"}]),{mode:0o600});
   expect(success(run(f,[...args,"--apply"]))).toMatchObject({active:true,renewed:true,sequence:1});
-  expect(success(run(f,["sync","--json"])).ok).toBe(true);expect(success(run(f,["sync","--if-due","--force","--json"])).ok).toBe(true);
+  expect(success(run(f,["sync","--json"])).ok).toBe(true);
+  const writer=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});let fresh:string;
+  try{fresh=writer.note({op:"note",project:f.project,scope:"project",tier:"long",kind:"finding",peer:"person",source:"person",text:"cadence publication after renewal",about:[]});}finally{writer.close();}
+  expect(success(run(f,["sync","--if-due","--force","--json"])).ok).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
   expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
-},60_000);
+},120_000); // Several actual local-Git publications plus fresh writer measurements; this is functional, not R2 timing proof.
 
 test("missing prerequisites/floor and missing explicit CLI root refuse with next steps",async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);

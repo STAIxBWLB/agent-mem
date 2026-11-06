@@ -8,7 +8,7 @@ import { syncMemory } from "../src/memory/sync.ts";
 import { inspectSyncPlacement } from "../src/memory/sync-placement-inspection.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
 import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
-import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
+import { readPlacementProjection, holdPlacementRow, releasePlacementHold } from "../src/memory/sync-placement-journal.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { readSyncPlacementWriterRoots } from "../src/memory/sync-placement-writer-roots.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
@@ -18,6 +18,7 @@ import { acquireMutation } from "../src/memory/mutation.ts";
 import { appendPlacementEvent } from "../src/memory/sync-placement-journal-storage.ts";
 import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
+import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
 import { realPath } from "../src/memory/platform.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -66,7 +67,7 @@ test("root retirement renews the same epoch and resumes publication with unchang
     expect(changed.length).toBe(original.length);expect(changed).not.toBe(original);
     writeFileSync(file,changed,{mode:0o600});expect(()=>proof.assertCurrent()).toThrow();writeFileSync(file,original,{mode:0o600});
   }finally{store.close();}
-},60_000);
+},120_000); // Two actual publications and two retained-history inspections, with fresh package pins at every boundary.
 
 test("renewal requires the person floor and explicit complete roots without creating another epoch",async()=>{
   const f=await fixture(),before=records(f.base,f.epoch);
@@ -84,6 +85,15 @@ test("a precommit renewal can be abandoned after pin drift and retried explicitl
   writeFileSync(join(next,"src","index.ts"),"// moved again\n",{mode:0o644});await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow();
   expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({active:true,abandoned:true,sequence:0});
   const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:1});
+},60_000);
+
+test("an irreversible renewal finishes only its frozen pins and requires another review after a second upgrade",async()=>{
+  const f=await fixture();floor(f.base);const next=install(f.root,"irreversible next"),options=f.options("apply");options.writerRoots=[activationOwnRoot,next];
+  options.renewalCheckpoint=phase=>{if(phase==="commit-started")throw Error("one commit byte retained");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();writeFileSync(join(next,"src","index.ts"),"// later upgrade\n",{mode:0o644});
+  await expect(activateSyncPlacement(f.options("abandon"))).rejects.toThrow();
+  expect(await activateSyncPlacement(f.options("resume"))).toMatchObject({renewed:true,sequence:1});expect(()=>activePlacementWriterContext(f.base,activationOwnRoot)).toThrow();
+  const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:2});
 },60_000);
 
 for(const pending of ["publication","append","source"] as const)test("renewal refuses existing "+pending+" recovery before any effect",async()=>{
@@ -110,11 +120,20 @@ for(const pending of ["publication","append","source"] as const)test("renewal re
 for(const phase of ["intent-started","intent-written","intent-fsync","intent-published","revision-written","revision-fsync","commit-started","commit-written","commit-fsync","intent-cleared"] as const)
 test("native renewal SIGKILL recovers the same epoch: "+phase,async()=>{
   const f=await fixture();floor(f.base);const next=install(f.root,"native next writer"),old=records(f.base,f.epoch);
+  const source=captureSyncPlacementContext(f.base,{attest:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()}),key=[...source.rows.values()].find(r=>r.key.id===f.declined)!.key;
   const child=Bun.spawnSync([process.execPath,join(import.meta.dir,"fakes/sync-placement-renewal-crash.ts"),f.base,activationOwnRoot,phase,JSON.stringify([activationOwnRoot,next])],{cwd:f.cwd,env:f.env,stdout:"pipe",stderr:"pipe",timeout:30_000});
   expect(child.exitCode).not.toBe(0);expect(child.stdout.toString(),child.stderr.toString()).toContain(phase);
   let result:Awaited<ReturnType<typeof activateSyncPlacement>>;
   if(["intent-started","intent-written","intent-fsync"].includes(phase)){
     await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("--abandon");
+    const attest=()=>({writers:measureSyncPlacementWriters([activationOwnRoot,f.extra]).writers,legacySyncQuiesced:true as const});
+    const normal=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
+    try{
+      const blocked=await syncMemory(normal,{remote:createInspectionRemote(f.root),visibility:async()=>"private",placementAttestation:attest});expect(blocked.ok).toBe(false);expect(blocked.error).toContain("--abandon");
+      const report=await inspectSyncPlacement(normal,{placementAttestation:attest});expect(report.complete).toBe(false);if(!report.complete)expect(report.nextStep).toContain("--abandon");
+      const request={epochHash:f.epoch,expectedHead:f.epoch,requestId:"b".repeat(64),key},port={attest,authorize:()=>true};
+      expect(()=>holdPlacementRow(f.base,request,port)).toThrow("--abandon");expect(()=>releasePlacementHold(f.base,request,port)).toThrow("--abandon");
+    }finally{normal.close();}
     expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
     const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];result=await activateSyncPlacement(reviewed);
   }else result=await activateSyncPlacement(f.options("resume"));
