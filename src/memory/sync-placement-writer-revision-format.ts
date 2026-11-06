@@ -17,12 +17,13 @@ export const WRITER_REVISION_SCHEMA="agent-mem.sync-placement-writer-revision/v1
 export const WRITER_COMMIT_SCHEMA="agent-mem.sync-placement-writer-commit/v1";
 export const WRITER_RENEWAL_INTENT_SCHEMA="agent-mem.sync-placement-writer-renewal/v1";
 
-export type SharedWriterRevisionErrorCode="invalid"|"bound"|"changed"|"pending"|"cap";
+export type SharedWriterRevisionErrorCode="invalid"|"bound"|"changed"|"pending"|"staging"|"cap";
 const messages:Record<SharedWriterRevisionErrorCode,string>={
   invalid:"Writer renewal metadata is invalid or unsupported; have the person inspect the retained same-epoch inventory and rerun amem migrate --sync-placement --dry-run.",
   bound:"Writer renewal metadata exceeds its supported bound; retain the existing inventory and request a separately reviewed archival/checkpoint before retrying.",
   changed:"Writer renewal bindings changed; retain the existing inventory, inspect the same-epoch evidence and review a fresh dry-run before applying.",
   pending:"Writer renewal is pending; preserve its exact intent and have the person run amem migrate --sync-placement --resume.",
+  staging:"Writer renewal has orphan staging without a registered final intent; have the person inspect it and run amem migrate --sync-placement --abandon, then amem migrate --sync-placement --dry-run before another apply.",
   cap:"Writer revision capacity is exhausted (remaining 0); retain this epoch and request a separately reviewed archival/checkpoint before another renewal.",
 };
 // ponytail: at most64 immutable writer revisions; only a separately reviewed archival/checkpoint can extend this history.

@@ -14,7 +14,7 @@ import {
 } from "./sync-placement-writer-revision-format.ts";
 
 export interface WriterHistoryBinding { epochHash: string; activationHash: string; homeHash: string; generation: string; initialLocatorHash?: string }
-export type WriterHistoryPhase = "intent-written" | "intent-fsync" | "revision-written" | "revision-fsync" | "commit-started" | "commit-written" | "commit-fsync" | "intent-cleared";
+export type WriterHistoryPhase = "intent-started" | "intent-written" | "intent-fsync" | "intent-published" | "revision-written" | "revision-fsync" | "commit-started" | "commit-written" | "commit-fsync" | "intent-cleared";
 export interface WriterHistoryOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: WriterHistoryPhase): void }
 export interface WriterHistoryRead {
   current?: WriterRevision; commits: WriterCommit[]; anchors: { sequence: number; headHash: string }[];
@@ -24,12 +24,12 @@ const encode = (value: unknown) => Buffer.from(canonicalJSON(value) + "\n");
 const sha = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 const stamp = (s: BigIntStats) => [s.dev,s.ino,s.uid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const identity = (s: BigIntStats) => [s.dev,s.ino,s.uid,s.mode].map(String).join(":");
-function fail(code: "invalid" | "bound" | "changed" | "pending" = "invalid"): never { throw new SharedWriterRevisionError(code); }
+function fail(code: "invalid" | "bound" | "changed" | "pending" | "staging" = "invalid"): never { throw new SharedWriterRevisionError(code); }
 function safe<T>(work: () => T): T {
   try { return work(); } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SharedWriterRevisionError) {
       const code=Object.getOwnPropertyDescriptor(error,"code");
-      if(code&&"value"in code&&["invalid","bound","changed","pending","cap"].includes(code.value))throw new SharedWriterRevisionError(code.value);
+      if(code&&"value"in code&&["invalid","bound","changed","pending","staging","cap"].includes(code.value))throw new SharedWriterRevisionError(code.value);
     }
     return fail();
   }
@@ -91,12 +91,14 @@ export function isWriterRenewalIntentTempName(name:string):boolean {const match=
 function intentTemps(p:Paths):string[]{
   const iterator=opendirSync(p.home),out:string[]=[];let count=0,bytes=0;
   try{for(;;){const item=iterator.readSync();if(!item)break;if(++count>20000||(bytes+=Buffer.byteLength(item.name))>8*1024*1024)fail("bound");
-    if(item.name.startsWith(WRITER_RENEWAL_INTENT_FILE+".pending-")){if(!isWriterRenewalIntentTempName(item.name)||out.length)fail();out.push(item.name);}
-  }}finally{iterator.closeSync();}return out;
+    if(item.name.startsWith(WRITER_RENEWAL_INTENT_FILE+".pending-")){if(!isWriterRenewalIntentTempName(item.name))fail();if(out.length>=256)fail("bound");out.push(item.name);}
+  }}finally{iterator.closeSync();}return out.sort();
 }
-function readIntent(p:Paths,checks:(()=>void)[],expected?:WriterRenewalIntent):{file?:FileRead;intent?:WriterRenewalIntent;temp?:string}{
-  const names=intentTemps(p);checks.push(()=>{if(canonicalJSON(intentTemps(p))!==canonicalJSON(names))fail("changed");});
-  const final=read(p.intent,WRITER_RENEWAL_INTENT_MAX_BYTES,checks,[1n,2n]),temp=names[0]?join(p.home,names[0]):undefined;
+function readIntent(p:Paths,checks:(()=>void)[],expected?:WriterRenewalIntent,ignoreUnpublishedStaging=false):{file?:FileRead;intent?:WriterRenewalIntent;temp?:string}{
+  const names=intentTemps(p);if(!ignoreUnpublishedStaging)checks.push(()=>{if(canonicalJSON(intentTemps(p))!==canonicalJSON(names))fail("changed");});
+  const final=read(p.intent,WRITER_RENEWAL_INTENT_MAX_BYTES,checks,[1n,2n]);
+  if(!final&&names.length){if(ignoreUnpublishedStaging)return{};fail("staging");}
+  if(names.length>1)fail();const temp=names[0]?join(p.home,names[0]):undefined;
   const staging=temp?read(temp,WRITER_RENEWAL_INTENT_MAX_BYTES,checks,[1n,2n]):undefined;
   if(!final&&!staging)return{};
   const file=final??staging!;
@@ -111,7 +113,7 @@ function readIntent(p:Paths,checks:(()=>void)[],expected?:WriterRenewalIntent):{
 function publishIntent(p:Paths,intent:WriterRenewalIntent,opts:WriterHistoryOptions):void{
   const before=readIntent(p,[],intent),full=encode(intent),temp=join(p.home,writerRenewalIntentTempName(intent));
   if(!before.file||!lstatSync(p.intent,{throwIfNoEntry:false})){
-    complete(p,temp,full,WRITER_RENEWAL_INTENT_MAX_BYTES,opts,"intent-written","intent-fsync");proof(p,opts);
+    complete(p,temp,full,WRITER_RENEWAL_INTENT_MAX_BYTES,opts,"intent-written","intent-fsync",{at:0,phase:"intent-started"});proof(p,opts);
     const staged=readFileExpected(temp,full,WRITER_RENEWAL_INTENT_MAX_BYTES);proof(p,opts);
     if(stamp(lstatSync(temp,{bigint:true}))!==stamp(staged.stat))fail("changed");linkSync(temp,p.intent);syncDir(p,p.home,opts);
   }
@@ -122,11 +124,11 @@ function publishIntent(p:Paths,intent:WriterRenewalIntent,opts:WriterHistoryOpti
   if(stamp(lstatSync(p.intent,{bigint:true}))!==stamp(final.stat))fail("changed");
 }
 interface Snapshot { result:WriterHistoryRead; paths:Paths; log:Buffer; intentBytes?:Buffer }
-function snapshot(home:string,b:WriterHistoryBinding,allowPending:boolean,expected?:WriterRenewalIntent):Snapshot {
+function snapshot(home:string,b:WriterHistoryBinding,allowPending:boolean,expected?:WriterRenewalIntent,ignoreUnpublishedStaging=false):Snapshot {
   const p=paths(home,b), checks:(()=>void)[]=[], names=manifest(p);
   for(const [dir,stat]of p.dirs)checks.push(()=>{if(identity(checkedDir(dir))!==identity(stat))fail("changed");});
   checks.push(()=>{if(canonicalJSON(manifest(p))!==canonicalJSON(names))fail("changed");});
-  const intentRead=readIntent(p,checks,expected),intentFile=intentRead.file;let pending=intentRead.intent;
+  const intentRead=readIntent(p,checks,expected,ignoreUnpublishedStaging),intentFile=intentRead.file;let pending=intentRead.intent;
   if(pending){if(!allowPending)fail("pending");if(pending.home!==p.home)fail();boundRevision(pending.revision,b);}
   else if(expected)fail("pending");
   const logFile=read(p.log,WRITER_COMMIT_MAX_BYTES,checks), log=logFile?.bytes??Buffer.alloc(0);
@@ -174,14 +176,14 @@ function syncDir(p:Paths,dir:string,opts:WriterHistoryOptions):void {
   proof(p,opts);const stat=checkedDir(dir),fd=openSync(dir,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
   try{if(identity(fstatSync(fd,{bigint:true}))!==identity(stat))fail("changed");proof(p,opts);fsyncSync(fd);}finally{closeSync(fd);}proof(p,opts);
 }
-function complete(p:Paths,file:string,full:Buffer,max:number,opts:WriterHistoryOptions,written:WriterHistoryPhase,synced:WriterHistoryPhase,commitStart?:number):void {
+function complete(p:Paths,file:string,full:Buffer,max:number,opts:WriterHistoryOptions,written:WriterHistoryPhase,synced:WriterHistoryPhase,start?:{at:number;phase:WriterHistoryPhase}):void {
   if(full.length>max)fail("bound");proof(p,opts);const prior=read(file,max);if(prior&&(prior.bytes.length>full.length||!prior.bytes.equals(full.subarray(0,prior.bytes.length))))fail();
   let installed:BigIntStats;
   const fd=openSync(file,constants.O_WRONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK|(prior?0:constants.O_CREAT|constants.O_EXCL),0o600);
   try{
     const opened=fstatSync(fd,{bigint:true});owned(opened);if(prior?stamp(opened)!==stamp(prior.stat):opened.size!==0n)fail("changed");
     let observed=opened;proof(p,opts);let at=prior?.bytes.length??0;
-    while(at<full.length){proof(p,opts);if(stamp(fstatSync(fd,{bigint:true}))!==stamp(observed)||stamp(lstatSync(file,{bigint:true}))!==stamp(observed))fail("changed");const firstCommitByte=at===commitStart;const n=writeSync(fd,full,at,firstCommitByte?1:full.length-at,at);if(n<=0)fail();at+=n;observed=fstatSync(fd,{bigint:true});if(firstCommitByte)opts.phase?.("commit-started");}
+    while(at<full.length){proof(p,opts);if(stamp(fstatSync(fd,{bigint:true}))!==stamp(observed)||stamp(lstatSync(file,{bigint:true}))!==stamp(observed))fail("changed");const firstByte=start!==undefined&&at===start.at;const n=writeSync(fd,full,at,firstByte?1:full.length-at,at);if(n<=0)fail();at+=n;observed=fstatSync(fd,{bigint:true});if(firstByte)opts.phase?.(start!.phase);}
     opts.phase?.(written);proof(p,opts);const after=fstatSync(fd,{bigint:true});if(stamp(after)!==stamp(observed)||after.size!==BigInt(full.length)||stamp(lstatSync(file,{bigint:true}))!==stamp(after))fail("changed");fsyncSync(fd);installed=fstatSync(fd,{bigint:true});opts.phase?.(synced);
     if(stamp(lstatSync(file,{bigint:true}))!==stamp(installed))fail("changed");
   }finally{closeSync(fd);}syncDir(p,dirname(file),opts);proof(p,opts);if(stamp(lstatSync(file,{bigint:true}))!==stamp(installed!))fail("changed");
@@ -197,7 +199,7 @@ export function writeWriterRenewalIntent(home:string,value:WriterRenewalIntent,o
     const prior=readIntent(p,[],intent).file;
     const old=prior?snapshot(home,b,true,intent):snapshot(home,b,false);
     if(!prior&&(intent.revision.sequence!==old.result.sequence+1||intent.revision.previousHash!==old.result.headHash||intent.previousLogBytes!==old.result.logBytes||intent.previousLogHash!==old.result.logHash))fail("changed");
-    old.result.assertCurrent();publishIntent(p,intent,opts);snapshot(home,b,true).result.assertCurrent();
+    old.result.assertCurrent();publishIntent(p,intent,opts);snapshot(home,b,true).result.assertCurrent();opts.phase?.("intent-published");
   });
 }
 export function writeWriterRevision(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
@@ -211,7 +213,7 @@ export function appendWriterCommit(home:string,value:WriterRenewalIntent,opts:Wr
     publishIntent(read.paths,intent,opts);
     complete(read.paths,join(read.paths.epoch,writerRevisionFile(intent.revision.sequence)),encode(intent.revision),WRITER_REVISION_MAX_BYTES,opts,"revision-written","revision-fsync");
     const prefix=read.log.subarray(0,intent.previousLogBytes),full=Buffer.concat([prefix,encode(intent.commit)]);
-    complete(read.paths,read.paths.log,full,WRITER_COMMIT_MAX_BYTES,opts,"commit-written","commit-fsync",intent.previousLogBytes);snapshot(home,intentBinding(intent),true).result.assertCurrent();});
+    complete(read.paths,read.paths.log,full,WRITER_COMMIT_MAX_BYTES,opts,"commit-written","commit-fsync",{at:intent.previousLogBytes,phase:"commit-started"});snapshot(home,intentBinding(intent),true).result.assertCurrent();});
 }
 export function clearWriterRenewalIntent(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
   safe(()=>{const intent=validateWriterRenewalIntent(value),p=paths(home,intentBinding(intent));proof(p,opts);
@@ -241,5 +243,36 @@ export function abandonWriterRenewal(home:string,value:WriterRenewalIntent,opts:
     const pending=read(p.intent,WRITER_RENEWAL_INTENT_MAX_BYTES);
     if(pending){proof(p,opts);if(!pending.bytes.equals(encode(intent))||stamp(lstatSync(p.intent,{bigint:true}))!==stamp(pending.stat))fail("changed");unlinkSync(p.intent);opts.phase?.("intent-cleared");}
     syncDir(p,p.home,opts);proof(p,opts);snapshot(home,intentBinding(intent),false).result.assertCurrent();
+  });
+}
+
+
+/** Person coordinator only: discard unpublished atomic-intent staging, never a registered or committed renewal.
+ * This purpose-specific reader exception is deliberately unavailable to ordinary history/resolver callers. */
+export function abandonUnpublishedWriterStaging(home:string,input:WriterHistoryBinding,opts:WriterHistoryOptions&{assertCommittedHistory?(history:WriterHistoryRead):void}):{removed:number}{
+  return safe(()=>{
+    const b=binding(input),p=paths(home,b);proof(p,opts);
+    if(lstatSync(p.intent,{throwIfNoEntry:false}))fail("pending");
+    const before=snapshot(home,b,false,undefined,true);before.result.assertCurrent();
+    const guarded:WriterHistoryOptions={...opts,assertCurrent(){opts.assertCurrent();opts.assertCommittedHistory?.(before.result);}};
+    proof(p,guarded);
+    const members=new Map<string,{stat:BigIntStats;hash:string}>();
+    for(const name of intentTemps(p)){
+      proof(p,guarded);const file=join(p.home,name),value=read(file,WRITER_RENEWAL_INTENT_MAX_BYTES);if(!value)fail("changed");
+      members.set(name,{stat:value.stat,hash:sha(value.bytes)});
+    }
+    const check=()=>{
+      proof(p,guarded);before.result.assertCurrent();
+      if(lstatSync(p.intent,{throwIfNoEntry:false})||canonicalJSON(intentTemps(p))!==canonicalJSON([...members.keys()].sort()))fail("changed");
+    };
+    check();let removed=0;
+    for(const [name,expected]of members){
+      check();const file=join(p.home,name),value=read(file,WRITER_RENEWAL_INTENT_MAX_BYTES);
+      if(!value||stamp(value.stat)!==stamp(expected.stat)||sha(value.bytes)!==expected.hash)fail("changed");
+      check();if(stamp(lstatSync(file,{bigint:true}))!==stamp(expected.stat))fail("changed");
+      unlinkSync(file);members.delete(name);removed++;syncDir(p,p.home,guarded);check();
+    }
+    // A previous owner may have unlinked the last stage before the directory fsync/acknowledgement.
+    syncDir(p,p.epoch,guarded);syncDir(p,p.home,guarded);check();return{removed};
   });
 }

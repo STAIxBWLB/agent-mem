@@ -21,6 +21,7 @@ import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -338,6 +339,7 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
+      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
       if (error instanceof SyncPlacementJournalError) throw error;
       if (error instanceof SegmentReadBudgetError) return fail("bound");
     }

@@ -12,6 +12,12 @@ import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { readSyncPlacementWriterRoots } from "../src/memory/sync-placement-writer-roots.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
+import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
+import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
+import { acquireMutation } from "../src/memory/mutation.ts";
+import { appendPlacementEvent } from "../src/memory/sync-placement-journal-storage.ts";
+import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
+import { shardKeyHash } from "../src/memory/shard.ts";
 import { realPath } from "../src/memory/platform.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -54,6 +60,11 @@ test("root retirement renews the same epoch and resumes publication with unchang
     const result=await syncMemory(store,{remote,visibility:async()=>"private",placementAttestation:attest});expect(result.ok,JSON.stringify(result)).toBe(true);
     expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh].sort());expect(store.get(f.declined,f.project)?.text).toBe("NEVER_PUBLIC_ACTIVATION_BODY");
     expect(readPlacementJournal(f.base,f.epoch).records.slice(0,previousJournal.records.length)).toEqual(previousJournal.records);
+    const proof=readEffectiveSyncPlacementWriters(f.base);proof.assertCurrent();
+    const dir=join(f.base,"sync-placement","epochs",f.epoch),chunk=readdirSync(dir).filter(n=>/^records-/.test(n)).sort()[0]!;
+    const file=join(dir,chunk),original=readFileSync(file,"utf8"),changed=original.replace(/"effectHash":"([a-f0-9])/,(_,first:string)=>'"effectHash":"'+(first==="a"?"b":"a"));
+    expect(changed.length).toBe(original.length);expect(changed).not.toBe(original);
+    writeFileSync(file,changed,{mode:0o600});expect(()=>proof.assertCurrent()).toThrow();writeFileSync(file,original,{mode:0o600});
   }finally{store.close();}
 },60_000);
 
@@ -75,12 +86,39 @@ test("a precommit renewal can be abandoned after pin drift and retried explicitl
   const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:1});
 },60_000);
 
-for(const phase of ["intent-written","intent-fsync","revision-written","revision-fsync","commit-started","commit-written","commit-fsync","intent-cleared"] as const)
-test("native renewal SIGKILL resumes the same epoch and exact request: "+phase,async()=>{
+for(const pending of ["publication","append","source"] as const)test("renewal refuses existing "+pending+" recovery before any effect",async()=>{
+  const f=await fixture();floor(f.base);
+  if(pending==="publication"){
+    const store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
+    try{
+      const result=await syncPlacementMemory(store,{remote:createInspectionRemote(f.root),visibility:async()=>"private",placementAttestation:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()},phase=>{if(phase==="plan-fsynced")throw Error("isolated retained publication");});
+      expect(result.ok).toBe(false);expect(readPlacementJournal(f.base,f.epoch).publicationReservation).toBeDefined();
+    }finally{store.close();}
+  }else if(pending==="append"){
+    const capture=captureSyncPlacementContext(f.base,{attest:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()}),row=[...capture.rows.values()].find(r=>r.key.id===f.declined)!;
+    const mutation=acquireMutation(f.base);if(!mutation)throw Error("fixture mutation unavailable");
+    try{expect(()=>appendPlacementEvent(f.base,f.epoch,{kind:"hold",requestId:"a".repeat(64),effectHash:"b".repeat(64),key:row.key,sourcePlacement:"synced",reason:"personal-data"},f.epoch,{mutation,assertCurrent(){},phase(stage){if(stage==="intent-fsync")throw Error("isolated retained append");}})).toThrow();}finally{mutation();}
+    expect(readPlacementJournal(f.base,f.epoch).pending).toBe(true);
+  }else{
+    const dir=join(f.base,"projects",shardKeyHash(f.project),"prune-plans");mkdirSync(dir,{mode:0o700});writeFileSync(join(dir,"pending-log-"+"a".repeat(16)+".json"),"{}",{mode:0o600});
+  }
+  const before=inspectionFilesystemSnapshot(f.base),options=f.options("apply");options.writerRoots=[activationOwnRoot,f.extra];
+  await expect(activateSyncPlacement(options)).rejects.toThrow("restore the inventoried install");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  expect(existsSync(join(f.base,"sync-placement-writer-renewal.json"))).toBe(false);
+},60_000);
+
+for(const phase of ["intent-started","intent-written","intent-fsync","intent-published","revision-written","revision-fsync","commit-started","commit-written","commit-fsync","intent-cleared"] as const)
+test("native renewal SIGKILL recovers the same epoch: "+phase,async()=>{
   const f=await fixture();floor(f.base);const next=install(f.root,"native next writer"),old=records(f.base,f.epoch);
   const child=Bun.spawnSync([process.execPath,join(import.meta.dir,"fakes/sync-placement-renewal-crash.ts"),f.base,activationOwnRoot,phase,JSON.stringify([activationOwnRoot,next])],{cwd:f.cwd,env:f.env,stdout:"pipe",stderr:"pipe",timeout:30_000});
   expect(child.exitCode).not.toBe(0);expect(child.stdout.toString(),child.stderr.toString()).toContain(phase);
-  const result=await activateSyncPlacement(f.options("resume"));expect(result?.active).toBe(true);
+  let result:Awaited<ReturnType<typeof activateSyncPlacement>>;
+  if(["intent-started","intent-written","intent-fsync"].includes(phase)){
+    await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("--abandon");
+    expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
+    const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];result=await activateSyncPlacement(reviewed);
+  }else result=await activateSyncPlacement(f.options("resume"));
+  expect(result?.active).toBe(true);
   expect(readEffectiveSyncPlacementWriters(f.base).revisionSequence).toBe(1);expect(records(f.base,f.epoch)).toEqual(old);
   expect(readdirSync(join(f.base,"sync-placement","epochs"))).toEqual([f.epoch]);expect(existsSync(join(f.base,"sync-placement-writer-renewal.json"))).toBe(false);
 },60_000);

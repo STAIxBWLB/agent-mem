@@ -185,6 +185,17 @@ export function readPlacementJournal(home: string, epochHash: string): Placement
 }
 /** Writer history only needs the authoritative row prefix, including during owned publication-root writes.
  * Full transport/recovery still uses readPlacementJournal and its reservation proof. */
+export function placementWriterJournalToken(home:string,epochHash:string):string {
+  return protectedIO(()=>{
+    const p=paths(home,epochHash),dir=state(p.dir,true);if(!dir)fail("changed");
+    const rows:unknown[]=[["directory",String(dir.dev),String(dir.ino),String(dir.mode),String(dir.uid)]];
+    for(const name of names(p.dir,PLACEMENT_JOURNAL_MAX_OBJECTS-1))if(name.startsWith("records-")||name==="append-intent.json"){
+      const s=state(join(p.dir,name));if(!s)fail("changed");
+      rows.push([name,String(s.dev),String(s.ino),String(s.mode),String(s.uid),String(s.nlink),String(s.size),String(s.mtimeNs),String(s.ctimeNs)]);
+    }
+    return canonicalJSON(rows);
+  });
+}
 export function readPlacementWriterJournalAnchors(home:string,epochHash:string):Pick<PlacementJournalRead,"epoch"|"activation"|"records"|"sequence"|"headHash"> {
   return protectedIO(()=>{
     const read=snapshot(paths(home,epochHash));

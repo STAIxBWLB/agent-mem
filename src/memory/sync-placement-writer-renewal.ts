@@ -2,6 +2,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { lstatSync, opendirSync } from "node:fs";
 import { join, basename } from "node:path";
+import { types } from "node:util";
 import { canonicalJSON, readProfileJSON, hashJSON, legacyProfileMarkerShape } from "./generation.ts";
 import { validatePlacementProfile } from "./sync-placement-format.ts";
 import { realPath } from "./platform.ts";
@@ -10,7 +11,7 @@ import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-
 import { readInitialSyncPlacementWriterLocator } from "./sync-placement-writer-roots.ts";
 import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { readPlacementJournal, readPlacementWriterJournalAnchors, writerRenewalCapacity } from "./sync-placement-journal-storage.ts";
-import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appendWriterCommit, clearWriterRenewalIntent, abandonWriterRenewal, type WriterHistoryPhase } from "./sync-placement-writer-history.ts";
+import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appendWriterCommit, clearWriterRenewalIntent, abandonWriterRenewal, abandonUnpublishedWriterStaging, type WriterHistoryPhase, type WriterHistoryRead } from "./sync-placement-writer-history.ts";
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
 import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
@@ -85,13 +86,34 @@ function person(options:PlacementActivationOptions,intent:WriterRenewalIntent):v
 }
 export async function renewSyncPlacementWriters(options:PlacementActivationOptions):Promise<Record<string,unknown>|undefined>{
   const home=realPath(options.memoryDir),initial=active(home),b=binding(initial);
-  const history=readWriterHistory(home,b,{allowPending:true});
+  let history:WriterHistoryRead;
+  try{history=readWriterHistory(home,b,{allowPending:true});}catch(error){
+    if(options.mode!=="abandon"||!error||typeof error!=="object"||types.isProxy(error)||!(error instanceof SharedWriterRevisionError)||Object.getOwnPropertyDescriptor(error,"code")?.value!=="staging")throw error;
+    requireWriterRenewalHomeFloor(home);
+    return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
+      const locator=readInitialSyncPlacementWriterLocator(home),seal=hashJSON({action:"abandon-unpublished-writer-staging",...b,initialLocatorHash:locator.seal});
+      let authorized=false;try{authorized=options.authorize(Object.freeze({seal,generation:b.generation,homeHash:b.homeHash}))===true;}catch{}
+      if(!authorized)throw new WriterRenewalError("authorization");
+      const assertCurrent=()=>{assertPlacementActivationOwner(owner);requireWriterRenewalHomeFloor(home);if(canonicalJSON(binding(active(home)))!==canonicalJSON(b)||readInitialSyncPlacementWriterLocator(home).seal!==locator.seal)throw new WriterRenewalError("changed");};
+      const assertCommittedHistory=(history:WriterHistoryRead)=>{
+        assertCurrent();const journal=readPlacementWriterJournalAnchors(home,b.epochHash);
+        for(const anchor of history.anchors)if(anchor.sequence>journal.sequence||(anchor.sequence===0?b.epochHash:journal.records[anchor.sequence-1]?.seal)!==anchor.headHash)throw new WriterRenewalError("changed");
+      };
+      const cleared=abandonUnpublishedWriterStaging(home,{...b,initialLocatorHash:locator.seal},{mutation,assertCurrent,assertCommittedHistory});
+      return{mode:options.mode,active:true,abandoned:true,unpublishedStagingRemoved:cleared.removed,nextStep:"amem migrate --sync-placement --dry-run"};
+    });
+  }
   if(!history.pending&&(options.mode==="resume"||options.mode==="abandon")&&history.sequence===0)return undefined;
   if(options.mode==="dry-run"){
     if(history.pending)return{mode:options.mode,active:true,renewalSupported:true,pending:true,commitStarted:history.appendStarted,abandonable:!history.appendStarted,sequence:history.sequence,remainingRevisions:WRITER_REVISION_LIMIT-history.sequence};
     const expected=readEffectiveSyncPlacementWriters(home);let floorReady=true;try{requireWriterRenewalHomeFloor(home);}catch{floorReady=false;}
+    let recoveryReady=true,objectSlotsRemaining:number|undefined;
+    try{journalClear(home,b.epochHash);pendingSources(home);objectSlotsRemaining=256-readPlacementJournal(home,b.epochHash).objects;}catch{recoveryReady=false;}
+    const writers=previewActivePlacementWriters(home,options.ownRoot,options.writerRoots),remaining=WRITER_REVISION_LIMIT-history.sequence;
     return{mode:options.mode,active:true,renewalSupported:true,forwardOnly:true,sequence:history.sequence,revisionHash:history.headHash,remainingRevisions:WRITER_REVISION_LIMIT-history.sequence,
-      floorReady,requiredHomeFloor:"0.22.0",writers:previewActivePlacementWriters(home,options.ownRoot,options.writerRoots),expectedWriterCount:expected.writers.length};
+      quiescence:"deferred-to-apply",floorReady,requiredHomeFloor:"0.22.0",recoveryReady,...(recoveryReady?{}:{nextStep:new WriterRenewalError("pending").message}),
+      ...(objectSlotsRemaining===undefined?{}:{objectSlotsRemaining}),...(remaining<=4?{capacityNotice:`${remaining} renewals remain before the 64-revision ceiling; the shared object budget may refuse earlier. Archival/checkpointing requires a separate reviewed protocol.`}:{}),
+      writers,candidateMinimumVersion:"0.22.0",candidatesSupported:writers.complete&&writers.roots.every(r=>supported(r.version)),expectedWriterCount:expected.writers.length};
   }
   requireWriterRenewalHomeFloor(home);
   if(history.pending&&options.mode==="apply")throw new SharedWriterRevisionError("pending");

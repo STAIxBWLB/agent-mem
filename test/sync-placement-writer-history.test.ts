@@ -14,7 +14,7 @@ import {
 } from "../src/memory/sync-placement-writer-revision-format.ts";
 import {
   readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appendWriterCommit, clearWriterRenewalIntent,
-  abandonWriterRenewal, writerRenewalIntentTempName, type WriterHistoryOptions, type WriterHistoryBinding,
+  abandonWriterRenewal, abandonUnpublishedWriterStaging, writerRenewalIntentTempName, type WriterHistoryOptions, type WriterHistoryBinding,
 } from "../src/memory/sync-placement-writer-history.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -66,10 +66,12 @@ test("exact candidate and SECOND commit prefixes resume without truncate, duplic
   expect(fs.readFileSync(f.log)).toEqual(Buffer.concat([prefix,encode(second.commit)]));expect(readWriterHistory(f.home,f.binding).sequence).toBe(2);
 });
 
-test("an exact partial intent temp is never a readable fallback, but the same supplied intent can finish it",()=>{
+test("an unpublished partial intent is staging-only until explicit person cleanup, then a fresh attempt can publish",()=>{
   const f=fixture(),intent=f.intent(),temp=join(f.home,writerRenewalIntentTempName(intent));fs.writeFileSync(temp,encode(intent).subarray(0,27),{mode:0o600});
   expect(()=>readWriterHistory(f.home,f.binding)).toThrow(SharedWriterRevisionError);expect(()=>readWriterHistory(f.home,f.binding,{allowPending:true})).toThrow(SharedWriterRevisionError);
-  writeWriterRenewalIntent(f.home,intent,f.opts);expect(fs.readFileSync(f.pending)).toEqual(encode(intent));expect(fs.existsSync(temp)).toBe(false);
+  expect(()=>writeWriterRenewalIntent(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);
+  expect(abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toEqual({removed:1});expect(fs.existsSync(temp)).toBe(false);
+  writeWriterRenewalIntent(f.home,intent,f.opts);expect(fs.readFileSync(f.pending)).toEqual(encode(intent));
   abandonWriterRenewal(f.home,intent,f.opts);expect(readWriterHistory(f.home,f.binding).sequence).toBe(0);
 });
 
@@ -116,7 +118,7 @@ test("forged or released home mutation handles cannot write metadata",()=>{
   f.mutation();const released=tree(f.home);expect(()=>writeWriterRenewalIntent(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);expect(tree(f.home)).toEqual(released);
 });
 
-for(const phase of ["intent-written","intent-fsync","revision-written","revision-fsync","commit-started","commit-written","commit-fsync"]as const)test("new owner reasserts exact durability after "+phase,()=>{
+for(const phase of ["intent-published","revision-written","revision-fsync","commit-started","commit-written","commit-fsync"]as const)test("new owner reasserts exact durability after "+phase,()=>{
   const f=fixture(),intent=f.intent();let failed=false;
   const opts:WriterHistoryOptions={...f.opts,phase(current){if(!failed&&current===phase){failed=true;throw Error("isolated phase interruption");}}};
   const run=()=>{writeWriterRenewalIntent(f.home,intent,opts);writeWriterRevision(f.home,intent,opts);appendWriterCommit(f.home,intent,opts);};
@@ -162,4 +164,61 @@ test("the first commit byte makes abandon irreversible and exact metadata-only r
   const pending=readWriterHistory(f.home,f.binding,{allowPending:true});expect(pending.sequence).toBe(0);expect(pending.appendStarted).toBe(true);expect(pending.pending).toEqual(intent);
   const before=tree(f.home);expect(()=>abandonWriterRenewal(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);expect(tree(f.home)).toEqual(before);
   appendWriterCommit(f.home,intent,f.opts);clearWriterRenewalIntent(f.home,intent,f.opts);expect(fs.readFileSync(f.log)).toEqual(encode(intent.commit));expect(readWriterHistory(f.home,f.binding).headHash).toBe(intent.commit.seal);
+});
+
+
+for(const phase of ["intent-started","intent-written","intent-fsync"]as const)test("unpublished staging interruption requires explicit abandon and fresh apply: "+phase,()=>{
+  const f=fixture(),intent=f.intent();let stopped=false;
+  expect(()=>writeWriterRenewalIntent(f.home,intent,{...f.opts,phase(current){if(current===phase){stopped=true;throw Error("isolated unpublished stage interruption");}}})).toThrow(SharedWriterRevisionError);
+  expect(stopped).toBe(true);expect(fs.existsSync(f.pending)).toBe(false);
+  const file=join(f.home,writerRenewalIntentTempName(intent));expect(fs.existsSync(file)).toBe(true);
+  if(phase==="intent-started")expect(fs.readFileSync(file)).toEqual(encode(intent).subarray(0,1));
+  for(const allowPending of [false,true]){try{readWriterHistory(f.home,f.binding,{allowPending});throw Error("expected staging refusal");}catch(error){expect(error).toBeInstanceOf(SharedWriterRevisionError);expect((error as SharedWriterRevisionError).code).toBe("staging");}}
+  expect(()=>writeWriterRenewalIntent(f.home,intent,f.opts)).toThrow(SharedWriterRevisionError);
+  expect(abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toEqual({removed:1});expect(readWriterHistory(f.home,f.binding).sequence).toBe(0);
+  f.commit(f.intent());expect(readWriterHistory(f.home,f.binding).sequence).toBe(1);
+});
+
+test("unpublished cleanup streams multiple owned staging files and leaves committed history byte-identical",()=>{
+  const f=fixture(),first=f.intent();f.commit(first);const record=fs.readFileSync(join(f.epoch,writerRevisionFile(1))),log=fs.readFileSync(f.log);
+  for(const [name,text]of [["e".repeat(64),"{"],["f".repeat(64),"partial canonical candidate"]]as const)fs.writeFileSync(join(f.home,WRITER_RENEWAL_INTENT_FILE+".pending-"+name),text,{mode:0o600});
+  expect(abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toEqual({removed:2});expect(fs.readFileSync(f.log)).toEqual(log);expect(fs.readFileSync(join(f.epoch,writerRevisionFile(1)))).toEqual(record);expect(readWriterHistory(f.home,f.binding).sequence).toBe(1);
+});
+
+for(const kind of ["final-intent","uncommitted-revision","partial-log","unknown-name","hardlink","symlink","mode","oversize"]as const)test("unpublished cleanup refuses unsafe or dependent evidence without effects: "+kind,()=>{
+  const f=fixture(),intent=f.intent(),stage=join(f.home,writerRenewalIntentTempName(intent));
+  if(kind==="final-intent")writeWriterRenewalIntent(f.home,intent,f.opts);
+  else fs.writeFileSync(stage,"{",{mode:0o600});
+  if(kind==="uncommitted-revision")fs.writeFileSync(join(f.epoch,writerRevisionFile(1)),encode(intent.revision),{mode:0o600});
+  if(kind==="partial-log")fs.writeFileSync(f.log,encode(intent.commit).subarray(0,1),{mode:0o600});
+  if(kind==="unknown-name")fs.writeFileSync(join(f.home,WRITER_RENEWAL_INTENT_FILE+".pending-unknown"),"",{mode:0o600});
+  if(kind==="hardlink")fs.linkSync(stage,join(f.home,"unrelated-hardlink"));
+  if(kind==="symlink"){fs.unlinkSync(stage);fs.symlinkSync(join(f.home,"unrelated"),stage);}
+  if(kind==="mode")fs.chmodSync(stage,0o644);
+  if(kind==="oversize"){const fd=fs.openSync(stage,"w");fs.ftruncateSync(fd,1024*1024+1);fs.closeSync(fd);}
+  const before=tree(f.home);expect(()=>abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toThrow(SharedWriterRevisionError);expect(tree(f.home)).toEqual(before);
+});
+
+test("unpublished cleanup captures all fingerprints before deleting and refuses a changed remaining inode",()=>{
+  const f=fixture(),one=WRITER_RENEWAL_INTENT_FILE+".pending-"+"a".repeat(64),two=WRITER_RENEWAL_INTENT_FILE+".pending-"+"b".repeat(64);
+  for(const name of [one,two])fs.writeFileSync(join(f.home,name),"{",{mode:0o600});let changed=false;
+  expect(()=>abandonUnpublishedWriterStaging(f.home,f.binding,{...f.opts,assertCurrent(){if(!fs.existsSync(join(f.home,one))&&!changed){fs.unlinkSync(join(f.home,two));fs.writeFileSync(join(f.home,two),"{",{mode:0o600});changed=true;}}})).toThrow(SharedWriterRevisionError);
+  expect(changed).toBe(true);expect(fs.existsSync(join(f.home,two))).toBe(true);expect(fs.existsSync(f.pending)).toBe(false);
+});
+
+test("unpublished cleanup retries directory durability even after the last staging file is already absent",()=>{
+  const f=fixture(),stage=join(f.home,WRITER_RENEWAL_INTENT_FILE+".pending-"+"f".repeat(64));fs.writeFileSync(stage,"{",{mode:0o600});
+  const home=fs.statSync(f.home,{bigint:true}),original=fs.fsyncSync;let failed=false,retried=false;
+  const spy=spyOn(fs,"fsyncSync").mockImplementation(fd=>{const stat=fs.fstatSync(fd,{bigint:true});if(stat.dev===home.dev&&stat.ino===home.ino&&!fs.existsSync(stage)){if(!failed){failed=true;throw Error("isolated post-unlink directory interruption");}retried=true;}return original(fd);});
+  try{expect(()=>abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toThrow(SharedWriterRevisionError);expect(fs.existsSync(stage)).toBe(false);expect(abandonUnpublishedWriterStaging(f.home,f.binding,f.opts)).toEqual({removed:0});expect(retried).toBe(true);}finally{spy.mockRestore();}
+  expect(readWriterHistory(f.home,f.binding).sequence).toBe(0);
+});
+
+
+test("cleanup-only actual journal anchor proof can refuse before any staging deletion",()=>{
+  const f=fixture(),intent=f.intent();f.commit(intent);
+  const stage=join(f.home,WRITER_RENEWAL_INTENT_FILE+".pending-"+"f".repeat(64));fs.writeFileSync(stage,"{",{mode:0o600});
+  const before=tree(f.home);let called=false;
+  expect(()=>abandonUnpublishedWriterStaging(f.home,f.binding,{...f.opts,assertCommittedHistory(history){called=true;expect(history.anchors).toEqual([intent.revision.journal]);throw Error("isolated actual journal prefix mismatch");}})).toThrow(SharedWriterRevisionError);
+  expect(called).toBe(true);expect(tree(f.home)).toEqual(before);
 });

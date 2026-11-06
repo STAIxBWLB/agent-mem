@@ -25,6 +25,7 @@ import type { PlacementPublicationDecisionReason } from "./sync-placement-public
 import type { ShardSyncRealm, ShardSyncRow } from "./shard-sync-format.ts";
 import type { MemoryStore } from "./store.ts";
 import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 export interface SyncPlacementInspectionOptions {
   screen?: RowScreen;
@@ -219,6 +220,9 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
   } catch (error) {
     let reason: SyncPlacementInspectionIncompleteReason = phase;
     if (error && typeof error === "object" && !types.isProxy(error)) {
+      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
+        if(code==="staging"||code==="pending")return{complete:false,reason:"journal-unavailable",nextStep:new SharedWriterRevisionError(code).message};
+      }
       if (error instanceof Incomplete) reason = error.reason;
       else if (error instanceof FormatFloorError) {
         if (error.code === "format_floor") reason = "reader-upgrade-required";

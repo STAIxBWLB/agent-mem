@@ -9,15 +9,17 @@ import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
+import { SharedWriterRevisionError } from "./memory/sync-placement-writer-revision-format.ts";
 
-export type PlacementWriterRootCategory = "running CLI" | "setup receipt" | "declared writer" | "active locator" | "home floor";
+export type PlacementWriterRootCategory = "running CLI" | "setup receipt" | "declared writer" | "active locator" | "home floor" | "writer renewal";
 export type PlacementWriterContextPhase = "initial" | "active";
 const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
   "below-minimum":"release is below 0.21.0", "wrong-package":"package is not @staix/agent-mem", "writable-runtime":"runtime code is group- or world-writable", unreadable:"runtime files are unreadable or missing",
   "invalid-version":"package version is not a supported plain release", "invalid-inventory":"root inventory is invalid or duplicated", "unsafe-runtime":"runtime files have unsafe types or symlinks",
   "missing-runtime":"required bin/amem.js or src/index.ts is missing",bound:"inventory exceeds a supported bound",changed:"install changed during measurement",
 };
-function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail):string {
+function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail,renewalState?:"pending"|"staging"):string {
+  if(category==="writer renewal")return new SharedWriterRevisionError(renewalState==="staging"?"staging":"pending").message;
   if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
   if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
   const cause=detail?`; ${failureDetails[detail]}`:"";
@@ -25,18 +27,20 @@ function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"m
   return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or have the person run amem migrate --sync-placement --dry-run and --apply with the complete --writer-root inventory after installing the required 0.22.0 home floor.`;
 }
 export class PlacementWriterContextError extends Error {
-  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail) {
-    super(writerContextMessage(category,causeClass,phase,detail)); this.name = "PlacementWriterContextError";
+  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging") {
+    super(writerContextMessage(category,causeClass,phase,detail,renewalState)); this.name = "PlacementWriterContextError";
   }
 }
 function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
+  if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="pending"||code==="staging")return new PlacementWriterContextError("writer renewal","unavailable",phase,undefined,code);}
   if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementWriterContextError) {
     const fields=Object.getOwnPropertyDescriptors(error),root=fields.category,cause=fields.causeClass,detail=fields.detail;
     const category:unknown=root&&"value"in root?root.value:undefined,causeClass:unknown=cause&&"value"in cause?cause.value:undefined;
-    if (typeof category==="string" && ["running CLI","setup receipt","declared writer","active locator","home floor"].includes(category)
+    if (typeof category==="string" && ["running CLI","setup receipt","declared writer","active locator","home floor","writer renewal"].includes(category)
       && typeof causeClass==="string" && ["missing","changed","unavailable"].includes(causeClass)) {
       const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
-      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail);
+      const state=fields.renewalState?.value;
+      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail,state==="staging"||state==="pending"?state:undefined);
     }
   }
   return new PlacementWriterContextError(category,"unavailable",phase);

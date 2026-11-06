@@ -13,6 +13,8 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { captureSyncPlacementContext, placementCaptureContextHash, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
 import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
+import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
+import { types } from "node:util";
 import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
@@ -481,6 +483,10 @@ class PlacementTransport {
       this.factual=true;return await this.finish(material);
     }catch(error){
       try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
+      if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){
+        const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
+        if(code==="staging"||code==="pending")return this.result(false,this.attemptHash?"unknown":"not-needed",new SharedWriterRevisionError(code).message);
+      }
       return this.result(false,this.attemptHash?"unknown":"not-needed",this.attemptHash?"Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.":"Placement sync is unavailable; verify the active epoch, selected sources, policy, private remote and writer pins before retrying.");
     }finally{
       let ownedCache=true;try{this.metadata();}catch{ownedCache=false;}

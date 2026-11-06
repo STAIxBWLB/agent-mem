@@ -111,3 +111,11 @@ test("numeric journal/revision limits fail closed without creating a new epoch o
   refused(()=>createWriterRevision({...body(),journal:{sequence:20001,headHash:H(1)}}),"invalid");
   const immutable=canonicalJSON(final);refused(()=>validateWriterRevision({...final,seal:H(88)}),"invalid");expect(canonicalJSON(final)).toBe(immutable);
 });
+
+test("orphan staging has a distinct safe person cleanup action and never advises resume",()=>{
+  const error=new SharedWriterRevisionError("staging");expect(error.code).toBe("staging");
+  expect(error.message).toContain("orphan staging without a registered final intent");
+  expect(error.message).toContain("amem migrate --sync-placement --abandon");
+  expect(error.message).toContain("then amem migrate --sync-placement --dry-run");
+  expect(error.message).not.toContain("--resume");expect(error.remaining).toBeUndefined();
+});

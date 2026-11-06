@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
-import { readPlacementWriterJournalAnchors } from "./sync-placement-journal-storage.ts";
+import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
 import { readWriterHistory } from "./sync-placement-writer-history.ts";
 import { SharedWriterRevisionError, writerRevisionWriters } from "./sync-placement-writer-revision-format.ts";
 import { readInitialSyncPlacementWriterLocator, SYNC_PLACEMENT_WRITER_ROOTS_FILE } from "./sync-placement-writer-roots.ts";
@@ -33,13 +33,17 @@ export function readEffectiveSyncPlacementWriters(home:string):EffectiveSyncPlac
     requireWriterRenewalHomeFloor(home);
     if(!initial||history.current?.initialLocatorHash!==initial.seal)fail();
   }
+  let anchorToken:string|undefined;
+  // ponytail: native inode/size/ctime identity permits prefix reuse; hostile same-user rewrites need immutable snapshot blocks.
   const anchors=()=>{
     if(!history.sequence)return;
+    const token=placementWriterJournalToken(home,epochHash);if(token===anchorToken)return;
     const journal=readPlacementWriterJournalAnchors(home,epochHash);
     if(journal.epoch.homeHash!==binding.epoch.homeHash||journal.activation.seal!==binding.activation.seal)fail();
     for(const anchor of history.anchors){
       if(anchor.sequence>journal.sequence||(anchor.sequence===0?epochHash:journal.records[anchor.sequence-1]?.seal)!==anchor.headHash)fail();
     }
+    if(placementWriterJournalToken(home,epochHash)!==token)fail();anchorToken=token;
   };
   const assertCurrent=()=>{
     history.assertCurrent();if(key(active(home))!==bindingKey||fileStamp(home)!==initialStamp)fail();

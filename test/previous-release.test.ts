@@ -3,7 +3,7 @@ import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "../src/memory/sync-placement-format.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
@@ -14,7 +14,7 @@ import { indexFileName } from "../src/memory/index-file.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { previousRelease } from "../scripts/previous-release.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
-import { placementActivationFixture } from "./fakes/sync-placement-activation.ts";
+import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
@@ -31,6 +31,8 @@ test("previousRelease keeps patches and minor releases on the latest patch of th
   expect(previousRelease("0.20.0", published)).toBe("0.19.10");
   expect(previousRelease("0.21.0", published)).toBe("0.20.3");
   expect(previousRelease("0.21.9", published)).toBe("0.20.3");
+  expect(previousRelease("0.22.0", published)).toBe("0.21.0");
+  expect(previousRelease("0.22.9", published)).toBe("0.21.0");
 });
 
 test("previousRelease skips prereleases and non-plain versions without jumping across a missing minor line", () => {
@@ -152,7 +154,7 @@ try { console.log(JSON.stringify({ ids: s.list({ project: ${JSON.stringify(f.pro
     expect(await drain(f)).toContain("claude:before floor");
     expect(readFileSync(join(f.base, "formats.json"), "utf8")).toBe("[]");
   });
-  test("sync placement v3 markers are refused by the previous reader before effects; a person-authored floor requests upgrade", () => {
+  test("incomplete sync placement v3 markers are refused before effects; a person-authored floor requests upgrade", () => {
     const f = fixture(), mine = new MemoryStore({ memoryDir: f.base }); mine.close();
     const profile = validatePlacementProfile({ schema: PLACEMENT_PROFILE_SCHEMA, kind: "generation", generation: "e".repeat(32),
       foreignPruneFormat: "agent-mem.public-prune-witness/v1", pruneInputSetHash: "a".repeat(64), publicationFormat: PLACEMENT_FORMAT, placementHead: "b".repeat(64) });
@@ -186,7 +188,7 @@ console.log(JSON.stringify(result));`));
     expect(() => new MemoryStore({ memoryDir: f.base })).toThrow("Upgrade amem"); expect(snapshot()).toEqual(floored);
   });
 
-  test("an actually activated v3 home refuses previous-release read, write and sync before admission or unfiltered publication", async () => {
+  test("a person-authored 0.22 home floor refuses previous-release v3 read, write and sync before effects", async () => {
     const host = fixture(), active = await createPlacementInspectionFixture(); clean.push(active.close);
     const previous = { ...host, env: { ...host.env, AMEM_HOME: active.home, AGENTHUB_HOME: active.root } };
     const probe = () => JSON.parse(run(previous, `const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
@@ -206,34 +208,65 @@ for(const operation of ['read','write','sync']){
   finally{store?.close();}
 }
 console.log(JSON.stringify({results,effects,admitted}));`)) as {results:{operation:string;refused:boolean;message:string;code:string|null}[];effects:number;admitted:number};
+    // 0.21 understands an unrenewed v3 home. This test explicitly acts as the person installing the new feature floor.
+    writeFileSync(join(active.home,"formats.json"),canonicalJSON([{surface:"home",minReader:"0.22.0",since:"2026-11-06"}])+"\n",{mode:0o600});
     const before = active.snapshot(), observed = probe();
     expect(observed.results.map(value=>({operation:value.operation,refused:value.refused}))).toEqual([
       {operation:"read",refused:true},{operation:"write",refused:true},{operation:"sync",refused:true},
     ]);
     expect(observed.effects).toBe(0); expect(observed.admitted).toBe(0);
-    // Published N-1 shard admission is safe but has no actionable v3 upgrade remedy without a person floor.
-    for (const value of observed.results) expect(value.message).toBe("no active curated shard migration");
+    for(const value of observed.results){expect(value.code).toBe("format_floor");expect(value.message).toContain("Upgrade amem to 0.22.0 or later.");}
     expect(active.snapshot()).toEqual(before);
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe(""); expect(active.reachableIds()).toEqual([]);
-    // A known old release cannot gain new diagnostics retroactively. The documented existing person-authored
-    // home floor supplies its actionable upgrade remedy; activation/runtime code must never install that floor.
-    const currentVersion = (JSON.parse(readFileSync(new URL("../package.json",import.meta.url),"utf8")) as {version:string}).version;
-    writeFileSync(join(active.home,"formats.json"),canonicalJSON([{surface:"home",minReader:currentVersion,since:"2026-11-06"}])+"\n",{mode:0o600});
-    const floored = active.snapshot(), floorResult = probe();
-    for(const value of floorResult.results){expect(value.refused).toBe(true);expect(value.code).toBe("format_floor");expect(value.message).toContain(`Upgrade amem to ${currentVersion} or later.`);}
-    expect(floorResult.effects).toBe(0); expect(floorResult.admitted).toBe(0); expect(active.snapshot()).toEqual(floored);
-    expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");
   },30_000);
 
-  test("person floor protects a home activated by the real initial coordinator from N-1 effects",async()=>{
+  test("actual same-epoch writer renewal is fenced from N-1 read, write and sync by the person 0.22 floor",async()=>{
     const runner=fixture(),active=await placementActivationFixture();clean.push(active.close);
-    await activateSyncPlacement(active.options("apply"));
-    const before=inspectionFilesystemSnapshot(active.base);
+    const extra=join(active.root,"N1 measured writer");for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
+    writeFileSync(join(extra,"package.json"),canonicalJSON({name:"@staix/agent-mem",version:"0.22.0"})+"\n",{mode:0o644});
+    writeFileSync(join(extra,"src","index.ts"),"// initial measured pin\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// isolated fixture, never executed\n",{mode:0o755});
+    const initial=active.options("apply");initial.writerRoots=[activationOwnRoot,extra];await activateSyncPlacement(initial);
+    const epoch=(JSON.parse(readFileSync(join(active.base,"profile.json"),"utf8")) as {placementHead:string}).placementHead;
+    // Only the fake-home test person writes the floor; neither initial activation nor renewal may write it.
+    writeFileSync(join(active.base,"formats.json"),canonicalJSON([{surface:"home",minReader:"0.22.0",since:"2026-11-06"}])+"\n",{mode:0o600});
+    writeFileSync(join(extra,"src","index.ts"),"// upgraded measured pin\n",{mode:0o644});
+    const renewal=active.options("apply");renewal.writerRoots=[activationOwnRoot,extra];
+    expect(await activateSyncPlacement(renewal)).toMatchObject({active:true,renewed:true,epochHash:epoch,sequence:1});
+    const remote=createInspectionRemote(active.root,"renewed-n1.git"),before=inspectionFilesystemSnapshot(active.root);
     const native={...runner,env:{...runner.env,AMEM_HOME:active.base,AGENTHUB_HOME:active.root}};
     const result=JSON.parse(run(native,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
-let effects=0;Bun.spawn=()=>{effects++;throw Error('unexpected network/process');};Bun.spawnSync=()=>{effects++;throw Error('unexpected process');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
-let code,message;try{const store=openShardStore({memoryDir:${JSON.stringify(active.base)},project:${JSON.stringify(active.project)}});try{store.note(${JSON.stringify(inspectionNote("N1 must not write through person floor",active.project))});}finally{store.close();}}catch(error){code=error.code;message=error.message;}console.log(JSON.stringify({code,message,effects}));`));
-    expect(result.code).toBe("format_floor");expect(result.message).toContain("Upgrade amem to 0.21.0 or later.");expect(result.effects).toBe(0);expect(inspectionFilesystemSnapshot(active.base)).toEqual(before);
+const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+let effects=0,admitted=0;Bun.spawn=()=>{effects++;throw Error('unexpected process');};Bun.spawnSync=()=>{effects++;throw Error('unexpected process');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
+const results=[];for(const operation of ['read','write','sync']){let store;try{store=openShardStore({memoryDir:${JSON.stringify(active.base)},project:${JSON.stringify(active.project)}});admitted++;
+if(operation==='read')store.list({project:${JSON.stringify(active.project)}});else if(operation==='write')store.note(${JSON.stringify(inspectionNote("N1 must not append after writer renewal",active.project))});else await syncMemory(store,{remote:${JSON.stringify(remote)},visibility:async()=>{effects++;return 'private';}});
+results.push({operation,refused:false});}catch(error){results.push({operation,refused:true,code:error.code,message:error.message});}finally{store?.close();}}
+console.log(JSON.stringify({results,effects,admitted}));`));
+    expect(result.results).toHaveLength(3);for(const value of result.results){expect(value.refused).toBe(true);expect(value.code).toBe("format_floor");expect(value.message).toContain("Upgrade amem to 0.22.0 or later.");}
+    expect(result.effects).toBe(0);expect(result.admitted).toBe(0);expect(inspectionFilesystemSnapshot(active.root)).toEqual(before);
+    expect(inspectionGit(remote,"for-each-ref","--format=%(refname)")).toBe("");expect(reachableInspectionRowIds(remote)).toEqual([]);
+  },60_000);
+
+  test("without a new floor, N-1 may read unrenewed v3 but refuses unknown writer-history journal and publication",async()=>{
+    const runner=fixture(),active=await createPlacementInspectionFixture();clean.push(active.close);
+    const native={...runner,env:{...runner.env,AMEM_HOME:active.home,AGENTHUB_HOME:active.root}};
+    const result=JSON.parse(run(native,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const {readPlacementJournal}=await import(${JSON.stringify(prev("src/memory/sync-placement-journal-storage.ts"))});
+const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+const {writeFileSync,existsSync}=await import('node:fs');
+const {inspectionFilesystemSnapshot}=await import(${JSON.stringify(pathToFileURL(resolve(import.meta.dir,"fakes/sync-placement-inspection.ts")).href)});
+const store=openShardStore({memoryDir:${JSON.stringify(active.home)},project:${JSON.stringify(active.project)},deferPromotions:true});
+try{
+const readable=store.get(${JSON.stringify(active.ids.project)},${JSON.stringify(active.project)})?.id===${JSON.stringify(active.ids.project)};
+writeFileSync(${JSON.stringify(join(active.home,"sync-placement","epochs",active.epochHash,"writer-revision-00001.json"))},'{}',{mode:0o600});
+const before=inspectionFilesystemSnapshot(${JSON.stringify(active.root)});let effects=0,journalRefused=false;
+Bun.spawn=()=>{effects++;throw Error('unexpected process');};Bun.spawnSync=()=>{effects++;throw Error('unexpected process');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
+try{readPlacementJournal(${JSON.stringify(active.home)},${JSON.stringify(active.epochHash)});}catch{journalRefused=true;}
+const synced=await syncMemory(store,{remote:${JSON.stringify(active.remote)},visibility:async()=>{effects++;return 'private';},placementAttestation:()=>({legacySyncQuiesced:true,writers:${JSON.stringify(active.port.attest().writers)}})});
+const unchanged=JSON.stringify(inspectionFilesystemSnapshot(${JSON.stringify(active.root)}))===JSON.stringify(before);
+console.log(JSON.stringify({readable,journalRefused,ok:synced.ok,pushed:synced.pushed,effects,unchanged,cache:existsSync(${JSON.stringify(join(active.home,"shard-sync-placement"))})}));
+}finally{store.close();}`));
+    expect(result).toEqual({readable:true,journalRefused:true,ok:false,pushed:false,effects:0,unchanged:true,cache:false});
+    expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");expect(active.reachableIds()).toEqual([]);
   },30_000);
 
   for(const version of ["v1","v2"] as const)test(`inactive ${version} shards preserve previous-release reads, writes and ordinary local Git sync`,async()=>{
