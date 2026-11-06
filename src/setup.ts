@@ -756,10 +756,11 @@ export function readSetupWriterRoots(home: string): string[] {
     owned(initial); if (!initial.isDirectory()) fail("unsafe");
     // ponytail:256 setup namespace entries and doctor's existing32MiB aggregate receipt-byte ceiling.
     // A reviewed metadata-only setup inventory is required before increasing either ceiling.
-    const files: { name: string; stat: BigIntStats }[] = [], iterator = opendirSync(directory);
+    const files: { name: string; stat: BigIntStats }[] = [], namespace: string[] = [], iterator = opendirSync(directory);
     let entries = 0, totalBytes = 0;
     try { for (;;) {
       const entry = iterator.readSync(); if (!entry) break;
+      namespace.push(entry.name);
       if (++entries > 256) fail("bound"); if (entry.name === "setup.lock") fail("pending");
       if (!entry.name.endsWith(".json")) continue; // Retained .json.stale-* and unregistered temps are historical, never current authority.
       const stat = lstatSync(join(directory, entry.name), { bigint: true }); owned(stat); if (!stat.isFile() || stat.nlink !== 1n) fail("unsafe");
@@ -791,6 +792,10 @@ export function readSetupWriterRoots(home: string): string[] {
     }
     const finalHome = lstatSync(home, { bigint: true }); owned(finalHome);
     if (!finalHome.isDirectory() || stamp(lstatSync(directory, { bigint: true })) !== stamp(initial) || finalHome.dev !== base.dev || finalHome.ino !== base.ino) fail("changed");
+    const finalNames: string[] = [], finalDirectory = opendirSync(directory);
+    try { for (;;) { const entry = finalDirectory.readSync(); if (!entry) break; if (finalNames.length >= namespace.length) fail("changed"); finalNames.push(entry.name); } }
+    finally { finalDirectory.closeSync(); }
+    if (JSON.stringify(finalNames.sort()) !== JSON.stringify(namespace.sort())) fail("changed");
     for (const file of files) if (stamp(lstatSync(join(directory, file.name), { bigint: true })) !== stamp(file.stat)) fail("changed");
     for (const runtime of launchers) if (realPath(dirname(dirname(runtime.entry))) !== runtime.root) fail("changed");
     return [...roots].sort();

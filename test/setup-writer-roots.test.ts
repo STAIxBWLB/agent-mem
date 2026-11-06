@@ -116,3 +116,17 @@ test("setup namespace has a fixed entry ceiling without reading ignored history"
   const f = fixture(); for (let index = 0; index < 257; index++) writeFileSync(join(f.dir, `historical-${index}.tmp`), "", { mode: 0o600 });
   expect(category(() => readSetupWriterRoots(f.home))).toBe("bound");
 });
+
+test("a same-stamp newly registered receipt cannot be omitted from completeness", () => {
+  const f = fixture(), first = f.install("first"), second = f.install("second"); save(f.dir, receipt("claude", join(first,"bin","amem.js")));
+  const original = fs.readSync, nativeStat = fs.lstatSync, directoryStat = lstatSync(f.dir,{bigint:true}); let changed = false;
+  const metadata = spyOn(fs,"lstatSync").mockImplementation(((...args:Parameters<typeof fs.lstatSync>) => args[0]===f.dir ? directoryStat : Reflect.apply(nativeStat,fs,args)) as typeof fs.lstatSync);
+  const write = spyOn(fs,"readSync").mockImplementation(((...args:Parameters<typeof fs.readSync>) => {
+    const result = Reflect.apply(original,fs,args);
+    if (!changed) { changed=true; save(f.dir,receipt("qwen",join(second,"bin","amem.js"))); }
+    return result;
+  }) as typeof fs.readSync);
+  try { expect(category(()=>readSetupWriterRoots(f.home))).toBe("changed"); }
+  finally { write.mockRestore(); metadata.mockRestore(); }
+  expect(changed).toBe(true); expect(readFileSync(join(f.dir,"qwen.json"),"utf8")).toContain("qwen");
+});

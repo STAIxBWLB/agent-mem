@@ -44,7 +44,7 @@ function object(input:unknown,keys:readonly string[]):Record<string,unknown> {
 }
 function array(input:unknown):unknown[] {
   if(!input||typeof input!=="object"||types.isProxy(input)||!Array.isArray(input)||Object.getPrototypeOf(input)!==Array.prototype||Object.getOwnPropertySymbols(input).length)fail();
-  const fields=Object.getOwnPropertyDescriptors(input),length=fields.length?.value;
+  const fields=Object.getOwnPropertyDescriptors(input),length=Object.getOwnPropertyDescriptor(input,"length")?.value;
   if(!Number.isSafeInteger(length)||length<1||length>MAX_ROOTS||Object.keys(fields).length!==length+1)fail();
   const out:unknown[]=[];for(let i=0;i<length;i++){const field=fields[String(i)];if(!field||!("value"in field)||!field.enumerable)fail();out.push(field.value);}return out;
 }
