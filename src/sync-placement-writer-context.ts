@@ -11,9 +11,14 @@ import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 
 export type PlacementWriterRootCategory = "running CLI" | "setup receipt" | "declared writer" | "active locator" | "home floor";
+function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable"):string {
+  if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and restore its matching activation backup or use a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
+  if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
+  return `Sync placement writer proof is ${causeClass} (${category} category); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Review initial inputs with amem migrate --sync-placement --dry-run --writer-root <install-root>.`;
+}
 export class PlacementWriterContextError extends Error {
   constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable") {
-    super(`Sync placement writer proof is ${causeClass} (${category} category); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Review initial inputs with amem migrate --sync-placement --dry-run --writer-root <install-root>.`);
+    super(writerContextMessage(category,causeClass));
     this.name = "PlacementWriterContextError";
   }
 }
@@ -86,7 +91,9 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
 export function previewActivePlacementWriters(home: string, ownRoot: string, requested: readonly string[] = []) {
   const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home,markers.profile,markers.shards);
   if (!active) return fail("active locator","unavailable");
-  const mapped = readSyncPlacementWriterRoots(home), selected = requested.length ? [...requested] : mapped;
+  let mapped: string[];
+  try { mapped=readSyncPlacementWriterRoots(home); } catch { return fail("active locator","unavailable"); }
+  const selected = requested.length ? [...requested] : mapped;
   const expected = active.activation.writers;
   let measurement: SyncPlacementWriterMeasurement;
   try { measurement = measureSyncPlacementWriters(selected); }

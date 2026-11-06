@@ -49,6 +49,7 @@ test("closed initial intent binds epoch/base markers/stamp sizes and derives the
   expect(code(() => sealPlacementActivationIntent({ ...f.body, profileStamp: ["1", "2", "0", "3", "4"] }))).toBe("invalid");
   expect(() => sealPlacementActivationIntent({ ...f.body, plan: { ...f.body.plan, targetShardsHash: "5".repeat(64) } })).toThrow();
   expect(() => sealPlacementActivationIntent({ ...f.body, roots: ["relative-install"] })).toThrow();
+  expect(() => sealPlacementActivationIntent({ ...f.body, roots: ["/" + "가".repeat(1500)] })).toThrow();
 });
 
 test("codec rejects getters/proxies/unknown fields without evaluating caller data or errors", () => {

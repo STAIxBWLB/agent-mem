@@ -108,3 +108,21 @@ test("a mapped root changing after the sealed intent refuses before CAS without 
     expect(store.get(f.declined,f.project)?.text).toBe("NEVER_PUBLIC_ACTIVATION_BODY");
   }finally{store.close();}
 },60_000);
+
+test("a newly receipted root is checked again at the final publication boundary",async()=>{
+  const f=await fixture();await activateSyncPlacement(f.options("apply"));
+  const extra=join(f.root,"newly configured writer");for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
+  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});writeFileSync(join(extra,"src","index.ts"),"// fixture\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
+  const remote=createInspectionRemote(f.root),store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
+  try{
+    const writers=activePlacementWriterContext(f.base,ownRoot);let registered=false;
+    const {syncPlacementMemory}=await import("../src/memory/sync-placement-transport.ts");
+    const result=await syncPlacementMemory(store,{remote,visibility:async()=>"private",placementAttestation:writers.attest},stage=>{
+      if(stage!=="before-cas")return;registered=true;const setup=join(f.base,"setup");mkdirSync(setup,{mode:0o700});
+      const image=(value:unknown)=>({mode:0o600,bytes:Buffer.from(JSON.stringify(value)).toString("base64")});
+      writeFileSync(join(setup,"claude.json"),JSON.stringify({version:2,target:"claude",intent:"a".repeat(64),phase:"applied",changes:[0,1].map(index=>({key:`claude:${index}`,path:join(f.root,"home",index===0?".claude.json":"settings.json"),before:{mode:0o600,bytes:null},after:image(index===0?{mcpServers:{amem:{command:process.execPath,args:["--smol",join(extra,"bin","amem.js"),"mcp"]}}}:{})}))}),{mode:0o600});
+    });
+    expect(registered).toBe(true);expect(result).toMatchObject({ok:false,pushed:false,placementPublication:{outcome:"unknown"}});
+    expect(writers.lastRefusal?.category).toBe("setup receipt");expect(reachableInspectionRowIds(remote)).toEqual([]);
+  }finally{store.close();}
+},60_000);

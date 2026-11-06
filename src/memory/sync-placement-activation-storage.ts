@@ -43,7 +43,7 @@ function array(value: unknown, maximum: number): unknown[] {
   return output;
 }
 function path(value: unknown): string {
-  if (typeof value !== "string" || !isAbsolute(value) || value.length > 4096 || value.includes("\0") || resolve(value) !== value) fail("invalid"); return value;
+  if (typeof value !== "string" || !isAbsolute(value) || Buffer.byteLength(value) > 4096 || value.includes("\0") || resolve(value) !== value) fail("invalid"); return value;
 }
 function markerStamp(value: unknown, text: string): PlacementActivationMarkerStamp {
   const fields = array(value, 5);
