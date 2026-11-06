@@ -16,7 +16,8 @@ import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.
 import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { appendPlacementEvent } from "../src/memory/sync-placement-journal-storage.ts";
-import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
+import { captureSyncPlacementContext, placementCaptureContextHash } from "../src/memory/sync-placement-capture.ts";
+import { canonicalJSON } from "../src/memory/generation.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -94,6 +95,27 @@ test("an irreversible renewal finishes only its frozen pins and requires another
   await expect(activateSyncPlacement(f.options("abandon"))).rejects.toThrow();
   expect(await activateSyncPlacement(f.options("resume"))).toMatchObject({renewed:true,sequence:1});expect(()=>activePlacementWriterContext(f.base,activationOwnRoot)).toThrow();
   const reviewed=f.options("apply");reviewed.writerRoots=[activationOwnRoot,next];expect(await activateSyncPlacement(reviewed)).toMatchObject({renewed:true,sequence:2});
+},60_000);
+
+test("returning pins to A still binds a distinct committed inventory head",async()=>{
+  const f=await fixture();floor(f.base);const attest=()=>activePlacementWriterContext(f.base,activationOwnRoot).attest();
+  const initial=captureSyncPlacementContext(f.base,{attest}),file=join(f.extra,"src","index.ts"),original=readFileSync(file);
+  const options=f.options("apply");options.writerRoots=[activationOwnRoot,f.extra];
+  writeFileSync(file,"// B pin\n",{mode:0o644});expect(await activateSyncPlacement(options)).toMatchObject({sequence:1});
+  writeFileSync(file,original,{mode:0o644});expect(await activateSyncPlacement(options)).toMatchObject({sequence:2});
+  const restored=captureSyncPlacementContext(f.base,{attest});expect(canonicalJSON(restored.context)).toBe(canonicalJSON(initial.context));
+  expect(placementCaptureContextHash(restored)).not.toBe(placementCaptureContextHash(initial));expect(()=>initial.assertUnchanged()).toThrow();
+},60_000);
+
+test("inventory tampering at the final CAS boundary never publishes the candidate",async()=>{
+  const f=await fixture();floor(f.base);const next=install(f.root,"CAS writer"),options=f.options("apply");options.writerRoots=[activationOwnRoot,next];await activateSyncPlacement(options);
+  const remote=createInspectionRemote(f.root),store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});let injected=false;
+  try{
+    const result=await syncPlacementMemory(store,{remote,visibility:async()=>"private",placementAttestation:()=>activePlacementWriterContext(f.base,activationOwnRoot).attest()},phase=>{
+      if(phase==="before-cas"){const file=join(f.base,"sync-placement","epochs",f.epoch,"writer-revisions.jsonl");writeFileSync(file,readFileSync(file,"utf8")+"\n",{mode:0o600});injected=true;}
+    });
+    expect(injected).toBe(true);expect(result.ok).toBe(false);expect(result.placementPublication?.outcome).toBe("unknown");expect(reachableInspectionRowIds(remote)).toEqual([]);
+  }finally{store.close();}
 },60_000);
 
 for(const pending of ["publication","append","source"] as const)test("renewal refuses existing "+pending+" recovery before any effect",async()=>{

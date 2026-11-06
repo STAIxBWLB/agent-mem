@@ -193,7 +193,7 @@ class PlacementTransport {
     this.capture = captureSyncPlacementContext(this.home, { attest: this.opts.placementAttestation!, ...(this.opts.policyVersion ? { policyVersion: this.opts.policyVersion } : {}) }, this.targets.map(physical), pending);
     if (this.capture.activeHead !== this.epochHash || this.capture.context.homeHash !== this.journal.epoch.homeHash
       || canonicalJSON(this.capture.context.writers) !== canonicalJSON(this.writerInventory?.writers)
-      || this.capture.writerInventory?.revisionHash!==this.writerInventory?.revisionHash) refuse();
+      || !!this.writerInventory?.revisionSequence&&this.capture.writerInventory?.revisionHash!==this.writerInventory.revisionHash) refuse();
     this.check();
   }
   async applicationCoordinator(): Promise<ShardSyncApplications> {

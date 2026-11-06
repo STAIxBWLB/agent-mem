@@ -20,7 +20,7 @@ import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
-import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
+import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
@@ -303,7 +303,7 @@ function capture(home: string, port: PlacementCapturePort, selected?: readonly P
   const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
-  const writerInventory=source.activeHead?readEffectiveSyncPlacementWriters(source.home):undefined;
+  const writerInventory=source.activeHead&&writerInventoryEvidence(source.home,source.activeHead)?readEffectiveSyncPlacementWriters(source.home):undefined;
   if(writerInventory&&canonicalJSON(context.writers)!==canonicalJSON(writerInventory.writers))fail();
   const assertUnchanged = () => {
     try {
@@ -312,6 +312,7 @@ function capture(home: string, port: PlacementCapturePort, selected?: readonly P
       const checked = planSyncPlacementActivation({ ...context, writers: currentAttestation.writers, legacySyncQuiesced: currentAttestation.legacySyncQuiesced }, "0".repeat(64));
       if (canonicalJSON(checked.writers) !== canonicalJSON(context.writers) || currentVersion !== policyVersion) fail();
       writerInventory?.assertCurrent();
+      if(source.activeHead&&!writerInventory&&writerInventoryEvidence(source.home,source.activeHead))fail();
       source.assertSourcesUnchanged();
     } catch { fail(); }
   };

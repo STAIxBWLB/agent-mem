@@ -1,12 +1,12 @@
 /** Expected inventory metadata only. Callers must still obtain fresh install attestations. */
-import { lstatSync } from "node:fs";
+import { lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
-import { readWriterHistory } from "./sync-placement-writer-history.ts";
-import { SharedWriterRevisionError, writerRevisionWriters } from "./sync-placement-writer-revision-format.ts";
+import { readWriterHistory, isWriterRenewalIntentTempName } from "./sync-placement-writer-history.ts";
+import { SharedWriterRevisionError, writerRevisionWriters, WRITER_RENEWAL_INTENT_FILE } from "./sync-placement-writer-revision-format.ts";
 import { readInitialSyncPlacementWriterLocator, SYNC_PLACEMENT_WRITER_ROOTS_FILE } from "./sync-placement-writer-roots.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
 import type { SyncPlacementWriterAttestation } from "./sync-placement-plan.ts";
@@ -25,8 +25,25 @@ const fileStamp=(home:string)=>{
   const s=lstatSync(join(home,SYNC_PLACEMENT_WRITER_ROOTS_FILE),{bigint:true,throwIfNoEntry:false});
   return s?[s.dev,s.ino,s.mode,s.uid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":"):undefined;
 };
+/** A source-only capture can bootstrap its initial fence; do not impose renewal admission on that old path. */
+export function writerInventoryEvidence(home:string,epochHash:string):boolean{
+  const scan=(dir:string,maximum:number,match:(name:string)=>boolean)=>{
+    const reader=opendirSync(dir);let count=0,found=false;try{for(;;){const e=reader.readSync();if(!e)break;if(++count>maximum)throw new SharedWriterRevisionError("bound");if(match(e.name))found=true;}}finally{reader.closeSync();}return found;
+  };
+  const outside=scan(home,20000,name=>{
+    if(name.startsWith(WRITER_RENEWAL_INTENT_FILE+".pending-")&&!isWriterRenewalIntentTempName(name))throw new SharedWriterRevisionError("invalid");
+    return name===WRITER_RENEWAL_INTENT_FILE||isWriterRenewalIntentTempName(name);
+  });
+  let dir=home;
+  for(const part of ["sync-placement","epochs",epochHash]){
+    dir=join(dir,part);const s=lstatSync(dir,{throwIfNoEntry:false});if(!s)return outside;
+    if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==process.getuid?.()||(s.mode&0o077)!==0)throw new SharedWriterRevisionError("invalid");
+  }
+  return scan(dir,255,name=>name.startsWith("writer-"))||outside;
+}
 export function readEffectiveSyncPlacementWriters(home:string):EffectiveSyncPlacementWriters {
   const binding=active(home),bindingKey=key(binding),epochHash=binding.profile.placementHead;
+  writerInventoryEvidence(home,epochHash);
   const history=readWriterHistory(home,{epochHash,activationHash:binding.activation.seal,homeHash:binding.epoch.homeHash,generation:binding.epoch.generation});
   const initialStamp=fileStamp(home),initial=initialStamp===undefined?undefined:readInitialSyncPlacementWriterLocator(home);
   if(history.sequence){
