@@ -109,7 +109,7 @@ test("precommit resume refuses a source-recovery intent introduced after interru
   const dir=join(f.base,"projects",shardKeyHash(f.project),"prune-plans");mkdirSync(dir,{mode:0o700});
   const pending=join(dir,"pending-log-"+"a".repeat(16)+".json");writeFileSync(pending,"{}",{mode:0o600});
   const before=inspectionFilesystemSnapshot(f.base);
-  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("restore the inventoried install");
+  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("--abandon first. Then restore the inventoried install");
   expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
   rmSync(pending);expect(await activateSyncPlacement(f.options("resume"))).toMatchObject({renewed:true,sequence:1});
 },60_000);

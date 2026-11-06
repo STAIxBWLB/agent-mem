@@ -25,7 +25,7 @@ import type { PlacementActivationOptions } from "./sync-placement-activation.ts"
 export class WriterRenewalError extends Error{
   constructor(readonly causeClass:"pending"|"candidate"|"changed"|"capacity"|"authorization",details=""){
     super(causeClass==="pending"
-      ? "Writer renewal refuses an outstanding append, publication, reservation or source-recovery intent; restore the inventoried install (for example dot ai rollback amem or the host's previous pin), run amem sync to finish the exact attempt, then preview and apply renewal."
+      ? "Writer renewal refuses an outstanding append, publication, reservation or source-recovery intent; if a precommit renewal is retained, run amem migrate --sync-placement --abandon first. Then restore the inventoried install (for example dot ai rollback amem or the host's previous pin), run amem sync to finish the exact attempt, then preview and apply renewal."
       :causeClass==="candidate"
         ? "Writer renewal requires an explicit complete --writer-root inventory of 0.22.0-or-later installs; upgrade the CLI/host pins, refresh managed setup receipts and run amem migrate --sync-placement --dry-run before applying."
         :causeClass==="capacity"
