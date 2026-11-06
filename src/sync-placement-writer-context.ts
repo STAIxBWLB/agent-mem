@@ -78,3 +78,23 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
     catch (error) { context.lastRefusal = safeRefusal(error,"active locator"); throw context.lastRefusal; }
   } }; return context;
 }
+
+/** Person preview only: incomplete measurements remain explicit and never become an attestation. */
+export function previewActivePlacementWriters(home: string, ownRoot: string, requested: readonly string[] = []) {
+  const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home,markers.profile,markers.shards);
+  if (!active) return fail("active locator","unavailable");
+  const mapped = readSyncPlacementWriterRoots(home), selected = requested.length ? [...requested] : mapped;
+  const expected = active.activation.writers;
+  let measurement: SyncPlacementWriterMeasurement;
+  try { measurement = measureSyncPlacementWriters(selected); }
+  catch { return { complete:false, matches:false, roots:[] as SyncPlacementWriterMeasurement["roots"], expected, missingCategories:["declared writer"] as PlacementWriterRootCategory[], differences:expected.map(row=>({writerId:row.writerId,state:"unverified" as const})) }; }
+  const needed = required(home,ownRoot), missingCategories: PlacementWriterRootCategory[] = [];
+  if (!measurement.roots.some(row=>row.root===needed.own)) missingCategories.push("running CLI");
+  if (needed.receipt.some(root=>!measurement.roots.some(row=>row.root===root))) missingCategories.push("setup receipt");
+  const differences = expected.map(row=>{
+    const actual = measurement.writers.find(value=>value.writerId===row.writerId);
+    return {writerId:row.writerId,state:!actual?"missing":canonicalJSON(row)===canonicalJSON(actual)?"unchanged":"changed"};
+  });
+  for (const row of measurement.writers) if (!expected.some(value=>value.writerId===row.writerId)) differences.push({writerId:row.writerId,state:"added"});
+  return {complete:true,matches:missingCategories.length===0&&differences.every(row=>row.state==="unchanged"),roots:measurement.roots,expected,missingCategories,differences};
+}
