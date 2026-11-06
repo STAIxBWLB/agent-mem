@@ -15,6 +15,7 @@ const scanned = await scanHookTranscriptTail({ cwd, session_id: "reap-probe", tr
 if (!scanned?.offset || scanned.stopReason === "unavailable") throw Error("Representative probe scan is incomplete; inspect the isolated fixture");
 const store = new CaptureStore({ memoryDir: base, project, cwd, busyTimeoutMs: 0 });
 store.append({ project, agent: "claude", event: "Recap", excerpt: "representative reap probe" });
+Object.defineProperty(globalThis, "__reapProbeOpenStore", { value: store });
 const rss = hookRssReading();
 await Bun.write(Bun.stdout, JSON.stringify({ ready: true, fixture: "capture-store-scanned", openStore: true,
   transcriptOffset: scanned.offset, rssKB: rss.kb, rawRssKB: rss.rawKB, rssSource: rss.source,

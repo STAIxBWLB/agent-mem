@@ -81,7 +81,8 @@ export async function probeHookReap(series: "idle" | "contended" = "idle") {
         if (footprint.transcriptOffset !== Buffer.byteLength(transcript))
           throw Error("Representative reap probe did not complete the transcript scan; retain this incomplete attempt");
         ready = true;
-        await Bun.sleep(Math.max(20, 100 - (performance.now() - spawnedAt)));
+        const killDue = Math.max(performance.now() + 20, spawnedAt + 100);
+        while (performance.now() < killDue) await Bun.sleep(Math.max(1, Math.ceil(killDue - performance.now())));
         if (exitedAt !== undefined) throw Error("Reap probe busy worker exited before SIGKILL; inspect the fixture and discard this incomplete schedule");
         stop();
         code = await within(exit, waitMs);
