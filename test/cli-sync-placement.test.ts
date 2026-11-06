@@ -9,6 +9,8 @@ import { MemoryStore } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
+import { readSyncState, nextSyncAt, SYNC_BACKOFF_BASE_MS } from "../src/memory/sync-cadence.ts";
+import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
@@ -41,7 +43,7 @@ test("shared parser/help/completions expose only migrate writer roots and forwar
   for(const shell of ["zsh","bash","fish"])expect(completionScript(shell)).toContain("--sync-placement");
 });
 
-for(const mode of ["--dry-run","--apply","--resume"])test("agent activation refuses before home access: "+mode,()=>{
+for(const mode of ["--dry-run","--apply","--resume","--abandon"])test("agent activation refuses before home access: "+mode,()=>{
   const f=hookFixture();cleanup.push(f.close);expect(existsSync(f.base)).toBe(false);
   const result=run(f,["migrate","--sync-placement",mode,"--json"],true);
   expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("requires a person");expect(existsSync(f.base)).toBe(false);
@@ -67,6 +69,11 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});
   const blocked=run(f,["sync","--json"]);expect(blocked.exitCode).not.toBe(0);expect(blocked.stderr.toString()).toContain("an amem release that supports renewal");
+  const failed=readSyncState(f.base);expect(failed.failures).toBe(1);
+  expect(nextSyncAt(failed)!-Date.parse(failed.lastAttemptAt!)).toBe(SYNC_BACKOFF_BASE_MS);
+  const deferred=success(run(f,["sync","--if-due","--json"]));expect(deferred).toMatchObject({skipped:"not due",failures:1});expect(readSyncState(f.base)).toEqual(failed);
+  const forced=run(f,["sync","--if-due","--force","--json"]);expect(forced.exitCode).not.toBe(0);
+  const repeated=readSyncState(f.base);expect(repeated.failures).toBe(2);expect(nextSyncAt(repeated)!-Date.parse(repeated.lastAttemptAt!)).toBe(2*SYNC_BACKOFF_BASE_MS);
   const drift=success(run(f,["migrate","--sync-placement","--dry-run","--json"]));expect(drift.active).toBe(true);expect((drift.writers as {matches:boolean}).matches).toBe(false);
   const preserved=inspectionFilesystemSnapshot(f.base),renew=run(f,["migrate","--sync-placement","--apply","--json"]);
   expect(renew.exitCode).not.toBe(0);expect(renew.stderr.toString()).toContain("supports renewal");expect(inspectionFilesystemSnapshot(f.base)).toEqual(preserved);
@@ -80,6 +87,21 @@ test("missing prerequisites/floor and missing explicit CLI root refuse with next
   writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-06"}]),{mode:0o600});
   result=run(f,["migrate","--sync-placement","--apply","--json"]);expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("explicit complete --writer-root");
 });
+
+test("only a person can abandon a changed pre-marker attempt and reopen the ordinary home",async()=>{
+  const f=await placementActivationFixture();cleanup.push(f.close);
+  const options=f.options("apply");options.checkpoint=stage=>{if(stage==="after-root-map")throw Error("interrupted initial apply");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();
+  writeFileSync(join(f.base,"amem.config.json"),JSON.stringify({piiPatterns:["NEVER_PUBLIC_","new restriction"]}),{mode:0o600});
+  const resumed=run(f,["migrate","--sync-placement","--resume","--json"]);expect(resumed.exitCode).not.toBe(0);expect(resumed.stderr.toString()).toContain("frozen policy input");
+  const before=inspectionFilesystemSnapshot(f.base),agent=run(f,["migrate","--sync-placement","--abandon","--json"],true);
+  expect(agent.exitCode).not.toBe(0);expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  expect(success(run(f,["migrate","--sync-placement","--abandon","--json"]))).toMatchObject({active:false,abandoned:true});
+  expect(run(f,["list","--json"]).exitCode).toBe(0);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const active=inspectionFilesystemSnapshot(f.base),refused=run(f,["migrate","--sync-placement","--abandon","--json"]);
+  expect(refused.exitCode).not.toBe(0);expect(inspectionFilesystemSnapshot(f.base)).toEqual(active);
+},60_000);
 
 
 test("incomplete CLI or receipt writer inventory refuses before durable activation",async()=>{

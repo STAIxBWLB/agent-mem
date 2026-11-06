@@ -3,7 +3,7 @@ import { types } from "node:util";
 import { realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
 import { readSetupWriterRoots } from "./setup.ts";
-import { measureSyncPlacementWriters, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
+import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readSyncPlacementWriterRoots } from "./memory/sync-placement-writer-roots.ts";
 import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
@@ -11,41 +11,58 @@ import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 
 export type PlacementWriterRootCategory = "running CLI" | "setup receipt" | "declared writer" | "active locator" | "home floor";
-function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable"):string {
-  if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and restore its matching activation backup or use a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
+export type PlacementWriterContextPhase = "initial" | "active";
+const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
+  "below-minimum":"release is below 0.21.0", "wrong-package":"package is not @staix/agent-mem", "writable-runtime":"runtime code is group- or world-writable", unreadable:"runtime files are unreadable or missing",
+  "invalid-version":"package version is not a supported plain release", "invalid-inventory":"root inventory is invalid or duplicated", "unsafe-runtime":"runtime files have unsafe types or symlinks",
+  "missing-runtime":"required bin/amem.js or src/index.ts is missing",bound:"inventory exceeds a supported bound",changed:"install changed during measurement",
+};
+function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail):string {
+  if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
   if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
-  return `Sync placement writer proof is ${causeClass} (${category} category); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Review initial inputs with amem migrate --sync-placement --dry-run --writer-root <install-root>.`;
+  const cause=detail?`; ${failureDetails[detail]}`:"";
+  if(phase==="initial")return `Sync placement initial writer proof is ${causeClass} (${category} category${cause}); ${category==="setup receipt"?"upgrade or repair the managed amem install and its host exact pin, then rerun amem setup <target> --apply":"upgrade or repair the amem install and its host exact pin"}. Declare the complete writer roots and rerun amem migrate --sync-placement --dry-run.`;
+  return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Review initial inputs with amem migrate --sync-placement --dry-run --writer-root <install-root>.`;
 }
 export class PlacementWriterContextError extends Error {
-  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable") {
-    super(writerContextMessage(category,causeClass));
-    this.name = "PlacementWriterContextError";
+  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail) {
+    super(writerContextMessage(category,causeClass,phase,detail)); this.name = "PlacementWriterContextError";
   }
 }
-function safeRefusal(error: unknown, category: PlacementWriterRootCategory): PlacementWriterContextError {
+function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
   if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementWriterContextError) {
-    const root = Object.getOwnPropertyDescriptor(error,"category"), cause = Object.getOwnPropertyDescriptor(error,"causeClass");
+    const fields=Object.getOwnPropertyDescriptors(error),root=fields.category,cause=fields.causeClass,detail=fields.detail;
     if (root && "value" in root && ["running CLI","setup receipt","declared writer","active locator","home floor"].includes(root.value)
-      && cause && "value" in cause && ["missing","changed","unavailable"].includes(cause.value)) return new PlacementWriterContextError(root.value,cause.value);
+      && cause && "value" in cause && ["missing","changed","unavailable"].includes(cause.value)) {
+      const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
+      return new PlacementWriterContextError(root.value,cause.value,phase,ownDetail);
+    }
   }
-  return new PlacementWriterContextError(category,"unavailable");
+  return new PlacementWriterContextError(category,"unavailable",phase);
 }
-const fail = (category: PlacementWriterRootCategory, cause: PlacementWriterContextError["causeClass"]): never => { throw new PlacementWriterContextError(category,cause); };
-function required(home: string, ownRoot: string) {
+const fail = (category: PlacementWriterRootCategory, cause: PlacementWriterContextError["causeClass"],phase:PlacementWriterContextPhase="active",detail?:SyncPlacementWriterFailureDetail): never => { throw new PlacementWriterContextError(category,cause,phase,detail); };
+function required(home: string, ownRoot: string,phase:PlacementWriterContextPhase="active") {
   let own: string, receipt: string[];
-  try { own = realPath(ownRoot); } catch { return fail("running CLI","unavailable"); }
-  try { receipt = readSetupWriterRoots(home); } catch { return fail("setup receipt","unavailable"); }
+  try { own = realPath(ownRoot); } catch { return fail("running CLI","unavailable",phase,"unreadable"); }
+  try { receipt = readSetupWriterRoots(home); } catch { return fail("setup receipt","unavailable",phase,"unreadable"); }
   return { own, receipt, roots: [...new Set([own,...receipt])].sort() };
 }
-function measureComplete(home: string, roots: readonly string[], ownRoot: string): SyncPlacementWriterMeasurement {
-  const before = required(home,ownRoot);
-  let result: SyncPlacementWriterMeasurement;
-  try { result = measureSyncPlacementWriters(roots); } catch { return fail("declared writer","unavailable"); }
-  if (!result.roots.some(row => row.root === before.own)) fail("running CLI","missing");
-  if (before.receipt.some(root => !result.roots.some(row => row.root === root))) fail("setup receipt","missing");
-  const after = required(home,ownRoot);
-  if (after.own !== before.own) fail("running CLI","changed");
-  if (canonicalJSON(after.receipt) !== canonicalJSON(before.receipt)) fail("setup receipt","changed");
+function rootCategory(root:string|undefined,needed:ReturnType<typeof required>):PlacementWriterRootCategory {
+  if(root===needed.own)return "running CLI";return root&&needed.receipt.includes(root)?"setup receipt":"declared writer";
+}
+function measurementRefusal(error:unknown,roots:readonly string[],needed:ReturnType<typeof required>,phase:PlacementWriterContextPhase):PlacementWriterContextError {
+  const detail=extractSyncPlacementWriterFailure(error);let root:string|undefined;
+  if(detail?.rootIndex!==undefined){try{root=realPath(roots[detail.rootIndex]!);}catch{/* Missing noncanonical declared path is still unavailable, never fresh evidence. */}}
+  return new PlacementWriterContextError(rootCategory(root,needed),detail?.code==="changed"?"changed":"unavailable",phase,detail?.detail??"unreadable");
+}
+function measureComplete(home: string, roots: readonly string[], ownRoot: string,phase:PlacementWriterContextPhase="active"): SyncPlacementWriterMeasurement {
+  const before = required(home,ownRoot,phase);let result: SyncPlacementWriterMeasurement;
+  try { result = measureSyncPlacementWriters(roots); } catch(error) { throw measurementRefusal(error,roots,before,phase); }
+  if (!result.roots.some(row => row.root === before.own)) fail("running CLI","missing",phase);
+  if (before.receipt.some(root => !result.roots.some(row => row.root === root))) fail("setup receipt","missing",phase);
+  const after = required(home,ownRoot,phase);
+  if (after.own !== before.own) fail("running CLI","changed",phase,"changed");
+  if (canonicalJSON(after.receipt) !== canonicalJSON(before.receipt)) fail("setup receipt","changed",phase,"changed");
   return result;
 }
 export interface PlacementWriterContext {
@@ -55,16 +72,19 @@ export interface PlacementWriterContext {
 }
 /** Preview creates no quiescence claim. The coordinator invokes attest only while its live apply fences are held. */
 export function initialPlacementWriterContext(home: string, roots: readonly string[], ownRoot: string): PlacementWriterContext {
-  const selected = roots.length ? [...roots] : required(home,ownRoot).roots;
-  const measurement = measureComplete(home,selected,ownRoot), canonical = measurement.roots.map(row=>row.root);
+  const selected = roots.length ? [...roots] : required(home,ownRoot,"initial").roots;
+  const measurement = measureComplete(home,selected,ownRoot,"initial"), canonical = measurement.roots.map(row=>row.root);
   const floor = requirePlacementHomeFloor(home);
   const context: PlacementWriterContext = { measurement, attest: () => {
     try {
-      if (requirePlacementHomeFloor(home) !== floor) return fail("home floor","changed");
-      const current = measureComplete(home,canonical,ownRoot);
-      if (canonicalJSON(current.writers) !== canonicalJSON(measurement.writers)) return fail("declared writer","changed");
+      if (requirePlacementHomeFloor(home) !== floor) return fail("home floor","changed","initial");
+      const current = measureComplete(home,canonical,ownRoot,"initial");
+      if (canonicalJSON(current.writers) !== canonicalJSON(measurement.writers)) {
+        const changed=current.roots.find(row=>!measurement.writers.some(old=>old.writerId===row.writerId&&old.version===row.version&&old.pin===row.pin));
+        return fail(rootCategory(changed?.root,required(home,ownRoot,"initial")),"changed","initial","changed");
+      }
       return { writers: current.writers, legacySyncQuiesced: true };
-    } catch (error) { context.lastRefusal = safeRefusal(error,"declared writer"); throw context.lastRefusal; }
+    } catch (error) { context.lastRefusal = safeRefusal(error,"declared writer","initial"); throw context.lastRefusal; }
   } }; return context;
 }
 /** Active callbacks re-read the bound locator AND measure every package anew. No activation or renewal occurs. */
@@ -78,7 +98,10 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
     if(!roots.includes(needed.own))return fail("running CLI","missing");
     if(needed.receipt.some(root=>!roots.includes(root)))return fail("setup receipt","missing");
     const measurement = measureComplete(home,roots,ownRoot);
-    if (canonicalJSON(measurement.writers) !== canonicalJSON(binding.activation.writers)) return fail("declared writer","changed");
+    if (canonicalJSON(measurement.writers) !== canonicalJSON(binding.activation.writers)) {
+      const changed=measurement.roots.find(row=>!binding.activation.writers.some(old=>old.writerId===row.writerId&&old.version===row.version&&old.pin===row.pin));
+      return fail(rootCategory(changed?.root,needed),"changed","active","changed");
+    }
     return measurement;
   };
   const measurement = read(), context: PlacementWriterContext = { measurement, attest: () => {

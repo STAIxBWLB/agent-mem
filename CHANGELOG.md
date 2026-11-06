@@ -4,7 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
-- Add person-only, home-wide `amem migrate --sync-placement --dry-run|--apply|--resume` with explicit local writer roots, fresh bounded package pins, receipt completeness, crash-safe initial activation and an immutable root locator for ordinary/cadence sync (#281). Keep policy evaluation and sticky decisions in the existing core; writer renewal remains #282. Existing row, wire, index and journal/fence formats stay unchanged; inactive v1/v2 homes retain N-1 behavior. Activated homes require the person-authored home floor (0.20.3 refuses before effects); 0.21.0 library hosts still require their own matching fresh attestation, while its CLI has no activation/attestation adapter. No real-home activation or release is performed by this change.
+- Add person-only, home-wide `amem migrate --sync-placement --dry-run|--apply|--resume|--abandon` with explicit local writer roots, fresh bounded package pins, receipt completeness, crash-safe initial activation, bounded pre-marker abandonment and an immutable root locator for ordinary/cadence sync (#281). Keep policy evaluation and sticky decisions in the existing core; writer renewal remains #282. Existing row, wire, index and journal/fence formats stay unchanged; inactive v1/v2 homes retain N-1 behavior. Activated homes require the person-authored home floor (0.20.3 refuses before effects); 0.21.0 library hosts still require their own matching fresh attestation, while its CLI has no activation/attestation adapter. No real-home activation or release is performed by this change.
 
 ## 0.21.0
 

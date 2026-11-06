@@ -15,11 +15,28 @@ const causes: Record<SyncPlacementWriterErrorCode,string> = {
   invalid:"invalid or duplicate writer-root inventory",unavailable:"unreadable or unsafe writer-root runtime files",
   unsupported:"unsupported writer-root package identity or release",bound:"writer-root inventory exceeds its supported bound",changed:"writer-root changed during measurement",
 };
+export type SyncPlacementWriterFailureDetail = "below-minimum" | "wrong-package" | "writable-runtime" | "unreadable" | "invalid-version" | "invalid-inventory" | "unsafe-runtime" | "missing-runtime" | "bound" | "changed";
+const details:Record<SyncPlacementWriterFailureDetail,string>={
+  "below-minimum":"release is below 0.21.0", "wrong-package":"package is not @staix/agent-mem", "writable-runtime":"runtime code is group- or world-writable",
+  unreadable:"runtime files are unreadable or missing", "invalid-version":"package version is not a supported plain release", "invalid-inventory":"root inventory is invalid or duplicated",
+  "unsafe-runtime":"runtime files have unsafe types or symlinks", "missing-runtime":"required bin/amem.js or src/index.ts is missing",bound:"inventory exceeds a supported bound",changed:"install changed during measurement",
+};
 export class SyncPlacementWriterError extends Error {
-  constructor(readonly code: SyncPlacementWriterErrorCode, readonly rootIndex?: number) {
-    super(`Sync placement ${causes[code]}; restore the inventoried install, or renew the writer inventory with an amem release that supports renewal.`);
+  constructor(readonly code: SyncPlacementWriterErrorCode, readonly rootIndex?: number, readonly detail:SyncPlacementWriterFailureDetail=code==="unsupported"?"invalid-version":code==="invalid"?"invalid-inventory":code==="bound"?"bound":code==="changed"?"changed":"unreadable") {
+    super(`Sync placement ${causes[code]} (${details[detail]}); upgrade or repair the amem install and its host exact pin, then rerun amem migrate --sync-placement --dry-run. For a managed writer, rerun amem setup <target> --apply after upgrading.`);
     this.name="SyncPlacementWriterError";
   }
+}
+/** Closed own data only: external error messages, accessors and proxies are never diagnostic authority. */
+export function extractSyncPlacementWriterFailure(error:unknown):{code:SyncPlacementWriterErrorCode;detail:SyncPlacementWriterFailureDetail;rootIndex?:number}|undefined {
+  try{
+    if(!error||typeof error!=="object"||types.isProxy(error)||!(error instanceof SyncPlacementWriterError))return;
+    const fields=Object.getOwnPropertyDescriptors(error),code=fields.code?.value,detail=fields.detail?.value,index=fields.rootIndex;
+    if(typeof code!=="string"||!Object.hasOwn(causes,code)||typeof detail!=="string"||!Object.hasOwn(details,detail)
+      ||index&&!("value"in index))return;
+    const rootIndex=index?.value;if(rootIndex!==undefined&&(!Number.isSafeInteger(rootIndex)||rootIndex<0||rootIndex>=256))return;
+    return{code:code as SyncPlacementWriterErrorCode,detail:detail as SyncPlacementWriterFailureDetail,...(rootIndex===undefined?{}:{rootIndex})};
+  }catch{return;}
 }
 const MAX_ROOTS=256,MAX_FILES=4096,MAX_BYTES=64*1024*1024,MAX_PACKAGE=64*1024,MAX_PATH=4096,MAX_NODES=8192;
 // ponytail: namespace traversal also caps 8192 entries and depth64; larger installs need a reviewed chunked inventory.
@@ -27,9 +44,12 @@ const RUNTIME=["src","bin","hooks",".claude-plugin"] as const;
 const stamp=(s:BigIntStats)=>[s.dev,s.ino,s.mode,s.uid,s.gid,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const digest=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 
+/** Internal frozen-locator identity; callers validate canonical paths before treating it as a writer key. */
+export function syncPlacementWriterId(root:string):string {return hashJSON(["agent-mem.sync-placement-writer/v1",root]);}
+
 export function measureSyncPlacementWriters(input:readonly string[]):SyncPlacementWriterMeasurement {
   let index:number|undefined;
-  function fail(code:SyncPlacementWriterErrorCode):never {throw new SyncPlacementWriterError(code,index);}
+  function fail(code:SyncPlacementWriterErrorCode,detail?:SyncPlacementWriterFailureDetail):never {throw new SyncPlacementWriterError(code,index,detail);}
   if(!input||typeof input!=="object"||types.isProxy(input)||!Array.isArray(input)||Object.getPrototypeOf(input)!==Array.prototype
     ||input.length<1||Object.getOwnPropertySymbols(input).length)fail("invalid");
   if(input.length>MAX_ROOTS)fail("bound");
@@ -42,7 +62,8 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
     const node=(file:string,directory:boolean):BigIntStats=>{
       const s=lstatSync(file,{bigint:true});
       // Public installs may be readable by everyone and share Bun's hardlinked cache. Writeable code is unsafe.
-      if(s.isSymbolicLink()||(directory?!s.isDirectory():!s.isFile())||(s.mode&0o022n)!==0n)fail("unavailable");
+      if(s.isSymbolicLink()||(directory?!s.isDirectory():!s.isFile()))fail("unavailable","unsafe-runtime");
+      if((s.mode&0o022n)!==0n)fail("unavailable","writable-runtime");
       return s;
     };
     for(index=0;index<input.length;index++){
@@ -84,24 +105,26 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
         });
         for(const name of names.sort()){
           const child=`${relative}/${name}`,s=lstatSync(path(child),{bigint:true});
-          if(s.isSymbolicLink())fail("unavailable");
+          if(s.isSymbolicLink())fail("unavailable","unsafe-runtime");
           if(s.isDirectory())visit(child,depth+1);else read(child,MAX_BYTES);
         }
       };
-      let pkg:unknown;
-      try{pkg=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(read("package.json",MAX_PACKAGE)));}catch(error){if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementWriterError)throw error;fail("unsupported");}
+      const packageBytes=read("package.json",MAX_PACKAGE);let pkg:unknown;
+      try{pkg=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(packageBytes));}catch(error){if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementWriterError)throw error;fail("unsupported");}
       const version=pkg&&typeof pkg==="object"&&!Array.isArray(pkg)?Object.getOwnPropertyDescriptor(pkg,"version")?.value:undefined;
       const name=pkg&&typeof pkg==="object"?Object.getOwnPropertyDescriptor(pkg,"name")?.value:undefined;
       const match=typeof version==="string"&&version.length<=64?/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(version):null;
-      if(name!=="@staix/agent-mem"||!match||match[0]!==version)fail("unsupported");
-      const parts=match.slice(1).map(Number);if(!parts.every(Number.isSafeInteger)||parts[0]===0&&parts[1]!<21)fail("unsupported");
+      if(name!=="@staix/agent-mem")fail("unsupported","wrong-package");
+      if(!match||match[0]!==version)fail("unsupported","invalid-version");
+      const parts=match.slice(1).map(Number);if(!parts.every(Number.isSafeInteger))fail("unsupported","invalid-version");
+      if(parts[0]===0&&parts[1]!<21)fail("unsupported","below-minimum");
       for(const relative of RUNTIME){
         const file=path(relative),s=lstatSync(file,{bigint:true,throwIfNoEntry:false});
         if(s)visit(relative);else rememberCheck(()=>{if(lstatSync(file,{throwIfNoEntry:false}))fail("changed");});
       }
-      if(!inventory.some(([file])=>file==="bin/amem.js")||!inventory.some(([file])=>file==="src/index.ts"))fail("unsupported");
+      if(!inventory.some(([file])=>file==="bin/amem.js")||!inventory.some(([file])=>file==="src/index.ts"))fail("unsupported","missing-runtime");
       inventory.sort(([a],[b])=>a<b?-1:a>b?1:0);
-      measured.push({root,writerId:hashJSON(["agent-mem.sync-placement-writer/v1",root]),version:version as string,pin:hashJSON(inventory)});
+      measured.push({root,writerId:syncPlacementWriterId(root),version:version as string,pin:hashJSON(inventory)});
     }
     for(const check of checks)check();
     for(const check of namespaces)check();

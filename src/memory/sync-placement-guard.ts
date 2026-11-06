@@ -10,7 +10,7 @@ import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts
 
 export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
 export const PLACEMENT_MARKER_REFUSAL = "sync placement metadata is invalid or unsupported; person inspection and a compatible reader are required before continuing";
-export const PLACEMENT_ACTIVATION_PENDING = "sync placement activation is pending or incomplete; have the person inspect retained evidence and run amem migrate --sync-placement --resume";
+export const PLACEMENT_ACTIVATION_PENDING = "sync placement activation is pending or incomplete; have the person inspect retained evidence and run amem migrate --sync-placement --resume, or --abandon only while both markers retain their original v2 bytes";
 export class SyncPlacementRuntimeError extends Error {
   readonly code: "sync_placement_not_enabled" | "sync_placement_unavailable";
   constructor(reason: string) { super(reason); this.name = "SyncPlacementRuntimeError"; this.code = reason === PLACEMENT_STAGE1_REFUSAL ? "sync_placement_not_enabled" : "sync_placement_unavailable"; }

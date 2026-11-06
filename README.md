@@ -572,8 +572,10 @@ amem migrate --sync-placement --dry-run --writer-root '<cli-install-root>' --wri
 amem migrate --sync-placement --apply --writer-root '<cli-install-root>' --writer-root '<host-amem-install-root>' --json
 # Only for an interrupted initial activation, using its retained frozen inputs:
 amem migrate --sync-placement --resume --json
+# If inputs changed and BOTH marker files still have their original v2 bytes:
+amem migrate --sync-placement --abandon --json
 ```
 
-Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
+Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. Initial writer errors name the root category and cause, with upgrade/setup instructions. If a pre-marker interruption retained an intent and its inputs changed, person `--abandon` removes only its owned initial metadata so a fresh preview/apply can follow. It cannot remove a v3 marker, active fence or journal history. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
 
 Restore pinned installs if they become unavailable or change. An already-active home's dry-run reports the diff, but apply cannot renew it; writer renewal is a separate follow-up (#282). Do not edit activation files, downgrade markers or start a new epoch to bypass a hold. See the [activation and recovery contract](docs/contracts.md#person-run-initial-sync-placement-activation-281) for bounds, source/policy drift, old readers and the publication ceiling.

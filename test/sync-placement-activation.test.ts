@@ -7,7 +7,7 @@ import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
 import type { SyncPlacementWriterAttestation } from "../src/memory/sync-placement-plan.ts";
-import { activateSyncPlacement, PlacementActivationError } from "../src/memory/sync-placement-activation.ts";
+import { activateSyncPlacement, PlacementActivationError, PlacementActivationInputError } from "../src/memory/sync-placement-activation.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { syncMemory } from "../src/memory/sync.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
@@ -67,12 +67,44 @@ for(const phase of ["after-intent","after-epoch","after-root-map","after-shards"
   },60_000);
 
 test("precommit policy drift refuses resume without a new epoch or source rewrite",async()=>{
-  const f=await fixture(),options=f.options("apply");options.checkpoint=stage=>{if(stage==="after-intent")throw Error("isolated precommit crash");};
+  const f=await fixture(),options=f.options("apply");options.checkpoint=stage=>{if(stage==="after-root-map")throw Error("isolated precommit crash");};
   await expect(activateSyncPlacement(options)).rejects.toThrow();
   const intent=readFileSync(join(f.base,"sync-placement-activation.json")),profile=readFileSync(join(f.base,"profile.json"));
   writeFileSync(join(f.base,"amem.config.json"),JSON.stringify({piiPatterns:["NEVER_PUBLIC_","additional restriction"]}),{mode:0o600});
-  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow();
+  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("frozen policy input changed");
   expect(readFileSync(join(f.base,"sync-placement-activation.json"))).toEqual(intent);expect(readFileSync(join(f.base,"profile.json"))).toEqual(profile);
+  expect(()=>openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true})).toThrow();
+  const epoch=JSON.parse(intent.toString()).plan.targetProfile.placementHead as string;
+  expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({active:false,abandoned:true});
+  for(const name of ["sync-placement-activation.json","sync-placement-writer-roots.json",join("sync-placement","epochs",epoch)])expect(existsSync(join(f.base,name))).toBe(false);
+  const reopened=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});try{expect(reopened.get(f.allowed,f.project)?.text).toBe("initial activation permitted original");}finally{reopened.close();}
+  expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
+},60_000);
+
+test("a changed writer can abandon only its pre-marker attempt and apply a newly reviewed pin",async()=>{
+  const f=await fixture(),extra=join(f.root,"pre-marker writer");
+  for(const dir of [extra,join(extra,"src"),join(extra,"bin")])mkdirSync(dir,{mode:0o755});
+  writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}),{mode:0o644});
+  writeFileSync(join(extra,"src","index.ts"),"// original writer\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
+  const options=f.options("apply");options.writerRoots=[ownRoot,extra];options.checkpoint=stage=>{if(stage==="after-root-map")throw Error("pre-marker interruption");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();
+  writeFileSync(join(extra,"src","index.ts"),"// upgraded writer\n",{mode:0o644});
+  await expect(activateSyncPlacement(f.options("resume"))).rejects.toThrow("frozen writer root input changed");
+  expect((await activateSyncPlacement(f.options("abandon"))).active).toBe(false);
+  const store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});try{expect(store.get(f.declined,f.project)?.text).toBe("NEVER_PUBLIC_ACTIVATION_BODY");}finally{store.close();}
+  const reviewed=f.options("apply");reviewed.writerRoots=[ownRoot,extra];expect((await activateSyncPlacement(reviewed)).active).toBe(true);
+},60_000);
+
+for(const input of ["source","floor"] as const)test("pre-marker resume reports frozen "+input+" drift without changing retained evidence",async()=>{
+  const f=await fixture(),options=f.options("apply");options.checkpoint=stage=>{if(stage==="after-intent")throw Error("pre-marker interruption");};
+  await expect(activateSyncPlacement(options)).rejects.toThrow();
+  const intent=readFileSync(join(f.base,"sync-placement-activation.json"));
+  if(input==="floor")writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-07"}]),{mode:0o600});
+  else {const machine=join(f.base,"machine.json");writeFileSync(machine,readFileSync(machine,"utf8")+"\n",{mode:0o600});}
+  let error:unknown;try{await activateSyncPlacement(f.options("resume"));}catch(caught){error=caught;}
+  expect(error).toBeInstanceOf(PlacementActivationInputError);expect((error as PlacementActivationInputError).inputClass).toBe(input);expect((error as Error).message).toContain("--abandon");
+  expect(readFileSync(join(f.base,"sync-placement-activation.json"))).toEqual(intent);
+  expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
 },60_000);
 
 test("postcommit source and policy progress do not turn cleanup into a stale-plan refusal",async()=>{

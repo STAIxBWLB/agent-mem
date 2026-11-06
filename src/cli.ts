@@ -380,12 +380,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const { definition, options, rawArgs: args } = parsed;
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "migrate" && options["--sync-placement"] === true) {
-    const modes = ["--dry-run","--apply","--resume","--deactivate"].filter(key=>options[key]===true);
+    const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
-      throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply or --resume and the writer roots, never combine migration families or deactivate.");
+      throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
     if (actor === "agent") throw new AgentUsageError("Sync placement activation requires a person; ask the person to run amem migrate --sync-placement --dry-run and review the home-wide forward-only transition.");
-  } else if (parsed.path[0] === "migrate" && options["--writer-root"] !== undefined) {
-    throw new AgentUsageError("--writer-root applies only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined)) {
+    throw new AgentUsageError("--writer-root and --abandon apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
@@ -481,12 +481,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if ((options["--history"] === true || options["--as-of"] !== undefined) && (options["--all-projects"] === true || options["--tier"] === "repo")) throw Error("historical recall selects this active project's curated store; cross-project/repo history is unavailable");
   if (sub === "migrate") {
-    const modes = ["--apply", "--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
+    const modes = ["--apply", "--dry-run", "--resume", "--abandon", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     if (options["--sync-placement"] === true) {
       const { activateSyncPlacement } = await import("./memory/sync-placement-activation.ts");
-      const result = await activateSyncPlacement({ memoryDir:memoryHome(),mode:mode as "dry-run"|"apply"|"resume",
+      const result = await activateSyncPlacement({ memoryDir:memoryHome(),mode:options["--abandon"]?"abandon":mode as "dry-run"|"apply"|"resume",
         writerRoots:repeated(argv,"--writer-root"),ownRoot:fileURLToPath(new URL("..",import.meta.url)),
         authorize:()=>cliAttribution()?.actor==="person" });
       if (options["--json"] === true) return JSON.stringify(result,null,2);
@@ -1081,12 +1081,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const memoryArgs = captureImport && !options["--json"] ? [...syncArgs, "--json"] : syncArgs;
   let output: string;
   let placementWriters: import("./sync-placement-writer-context.ts").PlacementWriterContext | undefined;
-  if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
-    const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
-    placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
-  }
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
+    if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
+      const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
+      placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
+    }
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },

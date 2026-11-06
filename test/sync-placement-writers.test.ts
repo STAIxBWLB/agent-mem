@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { chmodSync, closeSync, ftruncateSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { measureSyncPlacementWriters, SyncPlacementWriterError, type SyncPlacementWriterErrorCode } from "../src/memory/sync-placement-writers.ts";
+import { measureSyncPlacementWriters, SyncPlacementWriterError, extractSyncPlacementWriterFailure, type SyncPlacementWriterErrorCode } from "../src/memory/sync-placement-writers.ts";
 import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -27,8 +27,8 @@ function refused(work:()=>unknown,code?:SyncPlacementWriterErrorCode){
   expect(failure).toBeInstanceOf(SyncPlacementWriterError);
   const error=failure as SyncPlacementWriterError;
   if(code)expect(error.code).toBe(code);
-  expect(error.message).toContain("writer-root");expect(error.message).toContain("restore the inventoried install");
-  expect(error.message).toContain("an amem release that supports renewal");return error;
+  expect(error.message).toContain("writer-root");expect(error.message).toContain("upgrade or repair the amem install");
+  expect(error.message).toContain("host exact pin");return error;
 }
 
 test("byte pins are deterministic and location independent, while writer identity binds the canonical root",()=>{
@@ -119,6 +119,28 @@ test("accessor inventories and external error messages are never invoked",()=>{
   const fault=spyOn(fs,"readSync").mockImplementation(()=>{throw Object.defineProperty({},"message",{get(){invoked++;return "PRIVATE_ERROR_CANARY";}});});
   try{expect(refused(()=>measureSyncPlacementWriters([root])).message).not.toContain("PRIVATE_ERROR_CANARY");}finally{fault.mockRestore();}
   expect(invoked).toBe(0);
+});
+
+test("closed writer diagnostics distinguish minimum release, package identity, writable code and unreadable input",()=>{
+  const root=install();
+  writeFileSync(join(root,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.20.99"}));
+  expect(extractSyncPlacementWriterFailure(refused(()=>measureSyncPlacementWriters([root]),"unsupported"))).toEqual({code:"unsupported",detail:"below-minimum",rootIndex:0});
+  writeFileSync(join(root,"package.json"),JSON.stringify({name:"other-package",version:"0.21.0"}));
+  expect(extractSyncPlacementWriterFailure(refused(()=>measureSyncPlacementWriters([root]),"unsupported"))?.detail).toBe("wrong-package");
+  writeFileSync(join(root,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.21.0"}));chmodSync(join(root,"src/index.ts"),0o666);
+  expect(extractSyncPlacementWriterFailure(refused(()=>measureSyncPlacementWriters([root]),"unavailable"))?.detail).toBe("writable-runtime");
+  chmodSync(join(root,"src/index.ts"),0o644);unlinkSync(join(root,"package.json"));
+  expect(extractSyncPlacementWriterFailure(refused(()=>measureSyncPlacementWriters([root]),"unavailable"))?.detail).toBe("unreadable");
+});
+
+test("diagnostic extraction refuses forged accessors and proxies without reading external messages",()=>{
+  let called=0;const error=new SyncPlacementWriterError("unsupported",0,"below-minimum");
+  Object.defineProperty(error,"message",{get(){called++;return "PRIVATE_MESSAGE";}});
+  expect(extractSyncPlacementWriterFailure(error)).toEqual({code:"unsupported",rootIndex:0,detail:"below-minimum"});
+  Object.defineProperty(error,"detail",{get(){called++;return "wrong-package";}});
+  expect(extractSyncPlacementWriterFailure(error)).toBeUndefined();
+  expect(extractSyncPlacementWriterFailure(new Proxy(error,{getPrototypeOf(){called++;throw Error("not invoked");}}))).toBeUndefined();
+  expect(called).toBe(0);
 });
 
 test("an added runtime file after directory inventory is a changed snapshot, not a silently omitted byte",()=>{

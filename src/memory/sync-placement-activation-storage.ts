@@ -18,7 +18,8 @@ const MAX_BYTES = 1024 * 1024, ROOTS_MAX = 256;
 export type PlacementActivationMarkerStamp = [string, string, string, string, string];
 export interface PlacementActivationIntent {
   schema: typeof PLACEMENT_ACTIVATION_INTENT_SCHEMA; home: string; epoch: PlacementEpoch; plan: SyncPlacementActivationPlan; roots: string[];
-  previousProfile: string; previousShards: string; profileStamp: PlacementActivationMarkerStamp; shardsStamp: PlacementActivationMarkerStamp; floorHash: string; seal: string;
+  previousProfile: string; previousShards: string; profileStamp: PlacementActivationMarkerStamp; shardsStamp: PlacementActivationMarkerStamp; floorHash: string;
+  inputHashes: {sourceHash:string;aliasesHash:string;policyHash:string}; seal: string;
 }
 export type PlacementActivationIntentBody = Omit<PlacementActivationIntent, "seal">;
 export interface PlacementActivationStorageProof { mutation: MutationHandle; assertCurrent(): void }
@@ -58,16 +59,20 @@ function baseMarkers(profile: unknown, shards: unknown) {
   return validatePlacementBaseV2(decode(profile), decode(shards));
 }
 function validate(value: unknown, sealed: boolean): PlacementActivationIntent {
-  const v = object(value, ["schema", "home", "epoch", "plan", "roots", "previousProfile", "previousShards", "profileStamp", "shardsStamp", "floorHash", ...(sealed ? ["seal"] : [])]);
+  const v = object(value, ["schema", "home", "epoch", "plan", "roots", "previousProfile", "previousShards", "profileStamp", "shardsStamp", "floorHash", "inputHashes", ...(sealed ? ["seal"] : [])]);
   if (v.schema !== PLACEMENT_ACTIVATION_INTENT_SCHEMA || !hex(v.floorHash) || sealed && !hex(v.seal)) fail("invalid");
   const home = path(v.home), epoch = validatePlacementEpoch(v.epoch), plan = validatePlacementPlan(v.plan), base = baseMarkers(v.previousProfile, v.previousShards);
+  const inputs=object(v.inputHashes,["sourceHash","aliasesHash","policyHash"]);
+  if(!hex(inputs.sourceHash)||!hex(inputs.aliasesHash)||!hex(inputs.policyHash))fail("invalid");
+  const inputHashes={sourceHash:inputs.sourceHash,aliasesHash:inputs.aliasesHash,policyHash:inputs.policyHash};
+  if(hashJSON({...base,homeHash:epoch.homeHash,...inputHashes,realms:plan.realms,writers:plan.writers,legacySyncQuiesced:true})!==plan.contextHash)fail("invalid");
   const roots = array(v.roots, ROOTS_MAX).map(path); if (new Set(roots).size !== roots.length || canonicalJSON([...roots].sort()) !== canonicalJSON(roots)) fail("invalid");
   if (epoch.contextHash !== plan.contextHash || epoch.generation !== plan.generation || base.profile.generation !== epoch.generation || placementEpochHash(epoch) !== plan.targetProfile.placementHead
     || hashJSON(base.profile) !== plan.previousProfileHash || hashJSON(base.shards) !== plan.previousShardsHash) fail("invalid");
   const final = validatePlacementShards({ ...base.shards, schema: PLACEMENT_SHARDS_SCHEMA, selectorRevision: hashJSON(plan.targetProfile), publicationFormat: PLACEMENT_FORMAT, placementHead: plan.targetProfile.placementHead }, plan.targetProfile);
   validatePlacementMarkerTransition(base.profile, base.shards, plan.targetProfile, final); if (hashJSON(final) !== plan.targetShardsHash) fail("invalid");
   const body: PlacementActivationIntentBody = { schema: PLACEMENT_ACTIVATION_INTENT_SCHEMA, home, epoch, plan, roots, previousProfile: v.previousProfile as string, previousShards: v.previousShards as string,
-    profileStamp: markerStamp(v.profileStamp, v.previousProfile as string), shardsStamp: markerStamp(v.shardsStamp, v.previousShards as string), floorHash: v.floorHash };
+    profileStamp: markerStamp(v.profileStamp, v.previousProfile as string), shardsStamp: markerStamp(v.shardsStamp, v.previousShards as string), floorHash: v.floorHash,inputHashes };
   const intent = { ...body, seal: hashJSON(body) }; if (sealed && intent.seal !== v.seal) fail("corrupt"); if (bytes(intent).length > MAX_BYTES) fail("bound"); return intent;
 }
 function safe<T>(work: () => T): T {

@@ -28,7 +28,7 @@ function fixture() {
   writeFileSync(join(home, "profile.json"), previousProfile, { mode: 0o600 }); writeFileSync(join(home, "shards.json"), previousShards, { mode: 0o600 });
   const stamp = (name: string): PlacementActivationMarkerStamp => { const s = lstatSync(join(home, name), { bigint: true }); return [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].map(String) as PlacementActivationMarkerStamp; };
   const body: PlacementActivationIntentBody = { schema: PLACEMENT_ACTIVATION_INTENT_SCHEMA, home, epoch, plan, roots: [join(home, "install")], previousProfile, previousShards,
-    profileStamp: stamp("profile.json"), shardsStamp: stamp("shards.json"), floorHash: "4".repeat(64) };
+    profileStamp: stamp("profile.json"), shardsStamp: stamp("shards.json"), floorHash: "4".repeat(64),inputHashes:{sourceHash:context.sourceHash,aliasesHash:context.aliasesHash,policyHash:context.policyHash} };
   const intent = sealPlacementActivationIntent(body), mutation = acquireMutation(home); if (!mutation) throw Error("fixture home mutation unavailable"); cleanup.push(mutation);
   return { home, body, intent, file: join(home, PLACEMENT_ACTIVATION_INTENT_FILE), proof: { mutation, assertCurrent() {} } };
 }
@@ -50,6 +50,7 @@ test("closed initial intent binds epoch/base markers/stamp sizes and derives the
   expect(() => sealPlacementActivationIntent({ ...f.body, plan: { ...f.body.plan, targetShardsHash: "5".repeat(64) } })).toThrow();
   expect(() => sealPlacementActivationIntent({ ...f.body, roots: ["relative-install"] })).toThrow();
   expect(() => sealPlacementActivationIntent({ ...f.body, roots: ["/" + "가".repeat(1500)] })).toThrow();
+  expect(()=>sealPlacementActivationIntent({...f.body,inputHashes:{...f.body.inputHashes,policyHash:"a".repeat(64)}})).toThrow();
 });
 
 test("codec rejects getters/proxies/unknown fields without evaluating caller data or errors", () => {

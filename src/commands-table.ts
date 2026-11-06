@@ -117,6 +117,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--shards": flag("Migrate the curated home into project and user shards"),
     "--public-prune-view": flag("Enable the forward-only v2 public prune view on an active split"),
     "--sync-placement": flag("Person-only forward-only placement activation on this memory home; no automatic migration or renewal"),
+    "--abandon": flag("Person-only: discard an interrupted sync-placement attempt only before either v3 marker is installed"),
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },

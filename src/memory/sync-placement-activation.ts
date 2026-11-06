@@ -22,10 +22,11 @@ import { SyncPlacementWriterError } from "./sync-placement-writers.ts";
 import { requirePlacementActivationPrerequisites, requirePlacementHomeFloor } from "./sync-placement-prerequisites.ts";
 import { outboundPolicyEvaluator, type SyncPolicyCategory } from "./sync-screen.ts";
 import { initialPlacementWriterContext, previewActivePlacementWriters, PlacementWriterContextError, type PlacementWriterContext } from "../sync-placement-writer-context.ts";
+import { abandonPlacementActivation, PlacementActivationAbandonError } from "./sync-placement-abandon.ts";
 
 export type PlacementActivationStage = "after-intent"|"after-epoch"|"after-root-map"|"after-shards"|"after-profile"|"after-fence"|"after-remove";
 export interface PlacementActivationOptions {
-  memoryDir: string; mode: "dry-run"|"apply"|"resume"; writerRoots: readonly string[]; ownRoot: string;
+  memoryDir: string; mode: "dry-run"|"apply"|"resume"|"abandon"; writerRoots: readonly string[]; ownRoot: string;
   authorize(binding: Readonly<{seal:string;generation:string;homeHash:string}>): boolean;
   checkpoint?(stage: PlacementActivationStage): void|Promise<void>;
   /** Internal fault-test observer, never supplied by CLI options. */
@@ -33,14 +34,24 @@ export interface PlacementActivationOptions {
 }
 export class PlacementActivationError extends Error {
   constructor(readonly causeClass: "readers"|"busy"|"changed"|"metadata"|"authorization"|"pending"|"bound") {
-    super(`Sync placement activation failed (${causeClass}); close cooperating writers, inspect retained activation evidence and run amem migrate --sync-placement --resume. This transition is forward-only; do not restore v2 markers.`);
+    super(`Sync placement activation failed (${causeClass}); close cooperating writers and run amem migrate --sync-placement --dry-run before retrying apply. If an activation intent is retained, use --resume, or --abandon only while both markers are still the original v2 bytes. Once a v3 marker exists, resume is forward-only; never restore v2 markers.`);
     this.name="PlacementActivationError";
   }
+}
+export class PlacementActivationInputError extends Error {
+  constructor(readonly inputClass:"policy"|"source"|"aliases"|"writer root"|"receipt"|"floor"){
+    super(`Sync placement activation frozen ${inputClass} input changed or is unavailable; restore that input and run amem migrate --sync-placement --resume. If both markers still contain their original v2 bytes, the person may run amem migrate --sync-placement --abandon, then review a fresh --dry-run and --apply. Once any v3 marker exists, only forward resume is supported.`);
+    this.name="PlacementActivationInputError";
+  }
+}
+function writerInputFailure(error:unknown):never {
+  const category=error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof PlacementWriterContextError?Object.getOwnPropertyDescriptor(error,"category")?.value:undefined;
+  throw new PlacementActivationInputError(category==="setup receipt"?"receipt":"writer root");
 }
 function fail(cause: PlacementActivationError["causeClass"]): never { throw new PlacementActivationError(cause); }
 function rethrowActivationFailure(error:unknown):never {
     if(error&&typeof error==="object"&&!types.isProxy(error)){
-      if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError)throw error;
+      if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError||error instanceof PlacementActivationInputError||error instanceof PlacementActivationAbandonError)throw error;
       if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError||error instanceof SyncPlacementWriterError){
         const code=Object.getOwnPropertyDescriptor(error,"code");
         if(code&&"value" in code){if(code.value==="bound")fail("bound");if(code.value==="busy")fail("busy");if(code.value==="changed")fail("changed");if(code.value==="authorization")fail("authorization");}
@@ -104,18 +115,28 @@ async function finishCommittedActivation(home:string,binding:Pick<PlacementActiv
   return{mode:options.mode,active:true,forwardOnly:true,epochHash,generation:binding.epoch.generation,writers:binding.plan.writers.length,source:report,resumed:options.mode==="resume",alreadyCommitted:!intent,writerProof:"not-claimed-during-committed-cleanup" as const};
 }
 export async function activateSyncPlacement(options:PlacementActivationOptions) {
-  if(!["dry-run","apply","resume"].includes(options.mode)||typeof options.authorize!=="function")fail("authorization");
+  if(!["dry-run","apply","resume","abandon"].includes(options.mode)||typeof options.authorize!=="function")fail("authorization");
   let home:string;
   try{home=realPath(options.memoryDir);}catch{throw Error("Sync placement memory home is unavailable; select an existing private home and run amem migrate --sync-placement --dry-run.");}
   const pending=readPlacementActivationIntent(home);
+  if(options.mode==="abandon"){
+    if(!pending)throw Error("No initial sync placement intent is retained; use amem migrate --sync-placement --dry-run to inspect the home. Active v3 placement cannot be abandoned or downgraded.");
+    const dirs=pending.plan.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
+    return fenced(home,dirs,async(mutation,owner)=>{
+      authorize(options,pending);
+      abandonPlacementActivation(home,pending,{mutation,assertCurrent:()=>assertPlacementActivationOwner(owner)});
+      return{mode:options.mode,active:false,abandoned:true,forwardOnly:true,nextStep:"amem migrate --sync-placement --dry-run"};
+    }).catch(error=>rethrowActivationFailure(error));
+  }
   const initialBase=pending?undefined:requirePlacementActivationPrerequisites(home);
-  const initialFloorHash=pending?requirePlacementHomeFloor(home):initialBase!.floorHash;
+  let initialFloorHash:string;
+  try{initialFloorHash=pending?requirePlacementHomeFloor(home):initialBase!.floorHash;}catch(error){if(pending)throw new PlacementActivationInputError("floor");throw error;}
   if(options.mode==="resume"&&!pending){
     if(!initialBase?.active)throw Error("No retained sync placement activation exists; run amem migrate --sync-placement --dry-run to review an initial activation.");
     const active=initialBase.active,dirs=active.activation.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
     return fenced(home,dirs,(mutation,owner)=>finishCommittedActivation(home,{epoch:active.epoch,plan:active.activation},options,mutation,owner)).catch(error=>rethrowActivationFailure(error));
   }
-  if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume rather than creating a new plan.");
+  if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume, or person --abandon while both markers retain the original v2 bytes, before reviewing a new --dry-run.");
   if(!pending){
     const base=initialBase!;
     if(base.active){
@@ -141,7 +162,7 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
       const normalized=planSyncPlacementActivation(context,"0".repeat(64));context.writers=normalized.writers;context.realms=normalized.realms;
       const epoch:PlacementEpoch={schema:PLACEMENT_EPOCH_SCHEMA,publicationFormat:PLACEMENT_FORMAT,generation:(context.profile as {generation:string}).generation,homeHash:context.homeHash,contextHash:hashJSON(context),nonce:randomBytes(16).toString("hex")};
       const plan=planSyncPlacementActivation(context,placementEpochHash(epoch));
-      intent=sealPlacementActivationIntent({schema:PLACEMENT_ACTIVATION_INTENT_SCHEMA,home,epoch,plan,roots:writer!.measurement.roots.map(row=>row.root).sort(),previousProfile:source!.markers.profileText,previousShards:source!.markers.shardsText,profileStamp:source!.markers.profileStamp,shardsStamp:source!.markers.shardsStamp,floorHash:initialFloorHash});
+      intent=sealPlacementActivationIntent({schema:PLACEMENT_ACTIVATION_INTENT_SCHEMA,home,epoch,plan,roots:writer!.measurement.roots.map(row=>row.root).sort(),previousProfile:source!.markers.profileText,previousShards:source!.markers.shardsText,profileStamp:source!.markers.profileStamp,shardsStamp:source!.markers.shardsStamp,floorHash:initialFloorHash,inputHashes:{sourceHash:context.sourceHash,aliasesHash:context.aliasesHash,policyHash:context.policyHash}});
       // All future initial-locator framing/binding limits must fit before retaining an exclusive activation intent.
       const epochHash=placementEpochHash(epoch);
       planSyncPlacementWriterRoots({epochHash,homeHash:epoch.homeHash,activationHash:plan.seal,roots:writer!.measurement.roots},
@@ -152,10 +173,22 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     const fixed=intent,epochHash=placementEpochHash(fixed.epoch);
     const metadataCheck=()=>{assertPlacementActivationOwner(owner);requirePlacementHomeFloor(home);if(!committed(home,fixed))fail("changed");readSyncPlacementWriterRoots(home);assertMutationHandle(mutation,home);};
     if(committed(home,fixed))return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
-    const current:PlacementWriterContext=writer??initialPlacementWriterContext(home,fixed.roots,options.ownRoot);
-    if(canonicalJSON(current.measurement.writers)!==canonicalJSON(fixed.plan.writers))fail("changed");
+    let current:PlacementWriterContext;
+    try{current=writer??initialPlacementWriterContext(home,fixed.roots,options.ownRoot);}catch(error){writerInputFailure(error);}
+    if(canonicalJSON(current.measurement.writers)!==canonicalJSON(fixed.plan.writers))throw new PlacementActivationInputError("writer root");
     const proof=createPlacementActivationCaptureProof(owner,fixed);
-    const check=()=>{assertPlacementActivationOwner(owner);if(requirePlacementHomeFloor(home)!==fixed.floorHash)fail("changed");current.attest();const captured=captureSyncPlacementActivationContext(home,{attest:current.attest},proof);if(hashJSON(captured.context)!==fixed.plan.contextHash)fail("changed");captured.assertUnchanged();assertPlacementActivationOwner(owner);};
+    const check=()=>{
+      assertPlacementActivationOwner(owner);
+      try{if(requirePlacementHomeFloor(home)!==fixed.floorHash)throw Error();}catch{throw new PlacementActivationInputError("floor");}
+      try{current.attest();}catch(error){writerInputFailure(error);}
+      let captured:ReturnType<typeof captureSyncPlacementActivationContext>;
+      try{captured=captureSyncPlacementActivationContext(home,{attest:current.attest},proof);}catch(error){if(current.lastRefusal)writerInputFailure(current.lastRefusal);throw new PlacementActivationInputError("source");}
+      if(captured.context.policyHash!==fixed.inputHashes.policyHash)throw new PlacementActivationInputError("policy");
+      if(captured.context.aliasesHash!==fixed.inputHashes.aliasesHash)throw new PlacementActivationInputError("aliases");
+      if(captured.context.sourceHash!==fixed.inputHashes.sourceHash||hashJSON(captured.context)!==fixed.plan.contextHash)throw new PlacementActivationInputError("source");
+      try{captured.assertUnchanged();}catch(error){if(current.lastRefusal)writerInputFailure(current.lastRefusal);throw new PlacementActivationInputError("source");}
+      assertPlacementActivationOwner(owner);
+    };
     authorize(options,fixed);check();writePlacementActivationIntent(home,fixed,{mutation,assertCurrent:check});await options.checkpoint?.("after-intent");check();
     preparePlacementEpoch(home,fixed.epoch,fixed.plan,{mutation,assertCurrent:check});await options.checkpoint?.("after-epoch");check();
     writeSyncPlacementWriterRoots(home,{epochHash,homeHash:fixed.epoch.homeHash,activationHash:fixed.plan.seal,roots:current.measurement.roots},fixed.plan.writers,{mutation,assertCurrent:check});await options.checkpoint?.("after-root-map");check();
