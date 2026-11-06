@@ -77,10 +77,10 @@ test("no source file writes formats.json: raising a floor is a person's step", (
     if (entry.isDirectory()) walk(file); else if (/\.ts$/.test(entry.name) && entry.name !== "formats.ts" && /formats\.json|FORMATS_FILE/.test(readFileSync(file, "utf8"))) offenders.push(file);
   } };
   walk(src);
-  // The inbox watches floor metadata to invalidate cached rows; it never raises a floor.
-  const inboxReader = join(src, "ui", "inbox.ts");
-  expect(offenders).toEqual([inboxReader]);
-  expect(readFileSync(inboxReader, "utf8")).not.toMatch(/writeFile|writeSync|appendFile|renameSync|linkSync|truncate|chmod|mkdir|unlink|rmSync/);
+  // These readers watch or require the person-authored floor; none raises it.
+  const readers = [join(src, "ui", "inbox.ts"), join(src, "sync-placement-writer-context.ts"), join(src, "memory", "sync-placement-prerequisites.ts")];
+  expect(offenders.sort()).toEqual(readers.sort());
+  for (const reader of readers) expect(readFileSync(reader, "utf8")).not.toMatch(/writeFile|writeSync|appendFile|renameSync|linkSync|truncate|chmod|mkdir|unlink|rmSync/);
   expect(readFileSync(join(src, "memory", "formats.ts"), "utf8")).not.toMatch(/writeFileSync|writeSync|appendFileSync|renameSync|linkSync/);
 });
 
