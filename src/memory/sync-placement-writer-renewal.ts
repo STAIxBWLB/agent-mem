@@ -120,7 +120,9 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   if(!history.pending&&options.mode==="abandon")throw new WriterRenewalError("changed");
   if(!history.pending&&options.mode==="apply"&&!options.writerRoots.length)throw new WriterRenewalError("candidate");
   // No new intent is written before every pre-existing recovery obligation has been rejected.
-  let sourceCheck=options.mode==="apply"?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
+  // An unlocked refusal stays entirely passive; crashed owners must first be reclaimed by the real fences below.
+  const passivePreflight=options.mode==="apply"||options.mode==="resume"&&history.pending&&!history.appendStarted&&!lstatSync(join(home,"profile.lock"),{throwIfNoEntry:false});
+  let sourceCheck=passivePreflight?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
   return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
     if(options.mode==="resume"&&history.pending&&!history.appendStarted){journalClear(home,b.epochHash);sourceCheck=pendingSources(home,owner);}
     let intent=history.pending;
