@@ -35,7 +35,7 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
   if(input.length>MAX_ROOTS)fail("bound");
   const fields=Object.getOwnPropertyDescriptors(input);
   if(Object.keys(fields).length!==input.length+1)fail("invalid");
-  const requested:string[]=[],seen=new Set<string>(),checks:(()=>void)[]=[],measured:MeasuredSyncPlacementWriterRoot[]=[];
+  const requested:string[]=[],seen=new Set<string>(),checks:(()=>void)[]=[],namespaces:(()=>void)[]=[],measured:MeasuredSyncPlacementWriterRoot[]=[];
   let files=0,bytes=0,nodes=0;
   const rememberCheck=(check:()=>void)=>{const rootIndex=index;checks.push(()=>{index=rootIndex;check();});};
   try {
@@ -76,6 +76,12 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
         const dir=opendirSync(file);
         try{for(;;){const entry=dir.readSync();if(!entry)break;if(++nodes>MAX_NODES)fail("bound");names.push(entry.name);}}finally{dir.closeSync();}
         if(stamp(node(file,true))!==stamp(before))fail("changed");
+        const rootIndex=index;
+        namespaces.push(()=>{
+          index=rootIndex;const current:string[]=[],reader=opendirSync(file);
+          try{for(;;){const entry=reader.readSync();if(!entry)break;if(current.length>=names.length)fail("changed");current.push(entry.name);}}finally{reader.closeSync();}
+          if(JSON.stringify(current.sort())!==JSON.stringify(names))fail("changed");
+        });
         for(const name of names.sort()){
           const child=`${relative}/${name}`,s=lstatSync(path(child),{bigint:true});
           if(s.isSymbolicLink())fail("unavailable");
@@ -98,6 +104,7 @@ export function measureSyncPlacementWriters(input:readonly string[]):SyncPlaceme
       measured.push({root,writerId:hashJSON(["agent-mem.sync-placement-writer/v1",root]),version:version as string,pin:hashJSON(inventory)});
     }
     for(const check of checks)check();
+    for(const check of namespaces)check();
     measured.sort((a,b)=>a.root<b.root?-1:a.root>b.root?1:0);
     const writers=measured.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
     return{roots:measured,writers};

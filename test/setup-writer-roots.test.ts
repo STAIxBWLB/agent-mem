@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readSetupWriterRoots, SetupWriterRootsError, type SetupTarget } from "../src/setup.ts";
@@ -64,7 +64,7 @@ test("escaped JSON slash values and quoted TOML entry paths use the shared MCP/l
 });
 
 test("missing setup directory/home is read-only empty, not initialization", () => {
-  const f = fixture(); rmSync(f.dir); const before = tree(f.root); expect(readSetupWriterRoots(f.home)).toEqual([]);
+  const f = fixture(); rmdirSync(f.dir); const before = tree(f.root); expect(readSetupWriterRoots(f.home)).toEqual([]);
   expect(readSetupWriterRoots(join(f.root, "missing-home"))).toEqual([]); expect(tree(f.root)).toEqual(before);
 });
 
@@ -90,7 +90,7 @@ test("active setup lock and symlinked receipt/namespace refuse without cleanup o
   expect(category(() => readSetupWriterRoots(f.home))).toBe("pending"); expect(tree(f.root)).toEqual(before); unlinkSync(join(f.dir, "setup.lock"));
   renameReceipt(); before = tree(f.root); expect(category(() => readSetupWriterRoots(f.home))).toBe("unsafe"); expect(tree(f.root)).toEqual(before);
   function renameReceipt() { const retained = join(f.root, "retained.json"); writeFileSync(retained, readFileSync(file), { mode: 0o600 }); unlinkSync(file); symlinkSync(retained, file); }
-  const other = fixture(); rmSync(other.dir); symlinkSync(f.dir, other.dir); before = tree(other.root);
+  const other = fixture(); rmdirSync(other.dir); symlinkSync(f.dir, other.dir); before = tree(other.root);
   expect(category(() => readSetupWriterRoots(other.home))).toBe("unsafe"); expect(tree(other.root)).toEqual(before);
 });
 
