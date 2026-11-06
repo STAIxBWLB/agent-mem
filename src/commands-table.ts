@@ -116,6 +116,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),
     "--shards": flag("Migrate the curated home into project and user shards"),
     "--public-prune-view": flag("Enable the forward-only v2 public prune view on an active split"),
+    "--sync-placement": flag("Person-only forward-only placement activation on this memory home; no automatic migration or renewal"),
+    "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },
   doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: json },

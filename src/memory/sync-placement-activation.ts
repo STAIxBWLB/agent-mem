@@ -34,7 +34,7 @@ export class PlacementActivationError extends Error {
     this.name="PlacementActivationError";
   }
 }
-const fail = (cause: PlacementActivationError["causeClass"]): never => { throw new PlacementActivationError(cause); };
+function fail(cause: PlacementActivationError["causeClass"]): never { throw new PlacementActivationError(cause); }
 function counts(source: PlacementSourcePreview) {
   const evaluate = outboundPolicyEvaluator(source.home), categories: Partial<Record<SyncPolicyCategory,number>> = {};
   let eligibleOriginals=0,declined=0,intrinsicLocal=0;

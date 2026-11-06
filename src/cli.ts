@@ -1,5 +1,5 @@
 import { assertFormatFloor } from "./memory/formats.ts";
-import { placementRuntimeRefusal } from "./memory/sync-placement-guard.ts";
+import { placementRuntimeRefusal, readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
 import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
@@ -20,6 +20,7 @@ import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -378,6 +379,14 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   const { definition, options, rawArgs: args } = parsed;
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
+  if (parsed.path[0] === "migrate" && options["--sync-placement"] === true) {
+    const modes = ["--dry-run","--apply","--resume","--deactivate"].filter(key=>options[key]===true);
+    if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
+      throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply or --resume and the writer roots, never combine migration families or deactivate.");
+    if (actor === "agent") throw new AgentUsageError("Sync placement activation requires a person; ask the person to run amem migrate --sync-placement --dry-run and review the home-wide forward-only transition.");
+  } else if (parsed.path[0] === "migrate" && options["--writer-root"] !== undefined) {
+    throw new AgentUsageError("--writer-root applies only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+  }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
       || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
@@ -475,6 +484,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--apply", "--dry-run", "--resume", "--deactivate"].filter(key => options[key] === true);
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
+    if (options["--sync-placement"] === true) {
+      const { activateSyncPlacement } = await import("./memory/sync-placement-activation.ts");
+      const result = await activateSyncPlacement({ memoryDir:memoryHome(),mode:mode as "dry-run"|"apply"|"resume",
+        writerRoots:repeated(argv,"--writer-root"),ownRoot:fileURLToPath(new URL("..",import.meta.url)),
+        authorize:()=>cliAttribution()?.actor==="person" });
+      if (options["--json"] === true) return JSON.stringify(result,null,2);
+      // Metadata only: the source reader and locator are never serialized into this receipt.
+      return `sync placement: ${result.mode}; ${result.active?"active":"inactive"}; home-wide, forward-only (no deactivate)\n${JSON.stringify(result,null,2)}`;
+    }
     const common = { memoryDir: memoryHome(), ...(options["--generation"] ? { generation: String(options["--generation"]) } : {}), authorizedPerson: true, tty: true };
     if (options["--public-prune-view"] === true) {
       if (options["--deactivate"] || options["--generation"] || options["--shards"]) throw new Error("public prune view is forward-only on an active split; no deactivate, generation replacement or new split");
@@ -1062,15 +1080,21 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const syncArgs = args.filter((arg, index) => arg !== "--if-due" && arg !== "--force" && !captureArgs.has(index) && (!legacySearch || arg !== "--filter") && (!explainSearch || arg !== "--explain"));
   const memoryArgs = captureImport && !options["--json"] ? [...syncArgs, "--json"] : syncArgs;
   let output: string;
+  let placementWriters: import("./sync-placement-writer-context.ts").PlacementWriterContext | undefined;
+  if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
+    const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
+    placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
+  }
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
-      sync: { screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));
   } catch (error) {
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
+    if (sub === "sync" && placementWriters?.lastRefusal) throw Error(`${placementWriters.lastRefusal.message} ${(error as Error).message}`);
     throw error;
   }
   finally {
@@ -1082,7 +1106,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "sync") {
     // `--json` returns the failed result instead of throwing: read the real outcome from it, never assume a returned string means the sync worked.
     let failure: string | undefined;
-    if (options["--json"]) { try { const result = JSON.parse(output) as { ok?: unknown; error?: unknown }; if (result.ok === false) failure = typeof result.error === "string" ? result.error : "sync failed"; } catch { /* not a sync result */ } }
+    if (options["--json"]) { try {
+      const result = JSON.parse(output) as { ok?: unknown; error?: unknown };
+      if (result.ok === false) {
+        failure = typeof result.error === "string" ? result.error : "sync failed";
+        if (placementWriters?.lastRefusal) { result.error = `${placementWriters.lastRefusal.message} ${failure}`; output = JSON.stringify(result,null,2); }
+      }
+    } catch { /* not a sync result */ } }
     stampSync(failure, stop?.cause());
   }
   if (captureImport) {
