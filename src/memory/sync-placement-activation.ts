@@ -108,6 +108,7 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     const initialCheck=()=>{assertPlacementActivationOwner(owner);source!.assertSourcesUnchanged();writer!.attest();if(requirePlacementHomeFloor(home)!==initialFloorHash)fail("changed");};
     if(!intent){
       initialCheck();const facts=writer!.attest(),context={...source!.base,writers:facts.writers,legacySyncQuiesced:true as const};
+      const normalized=planSyncPlacementActivation(context,"0".repeat(64));context.writers=normalized.writers;context.realms=normalized.realms;
       const epoch:PlacementEpoch={schema:PLACEMENT_EPOCH_SCHEMA,publicationFormat:PLACEMENT_FORMAT,generation:(context.profile as {generation:string}).generation,homeHash:context.homeHash,contextHash:hashJSON(context),nonce:randomBytes(16).toString("hex")};
       const plan=planSyncPlacementActivation(context,placementEpochHash(epoch));
       intent=sealPlacementActivationIntent({schema:PLACEMENT_ACTIVATION_INTENT_SCHEMA,home,epoch,plan,roots:writer!.measurement.roots.map(row=>row.root).sort(),previousProfile:source!.markers.profileText,previousShards:source!.markers.shardsText,profileStamp:source!.markers.profileStamp,shardsStamp:source!.markers.shardsStamp,floorHash:initialFloorHash});

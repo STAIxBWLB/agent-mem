@@ -25,7 +25,7 @@ async function fixture(){
   // Test acts as the person: core activation must never write formats.json or change privacy policy.
   writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-06"}])+"\n",{mode:0o600});
   writeFileSync(join(f.base,"amem.config.json"),JSON.stringify({piiPatterns:["NEVER_PUBLIC_"]})+"\n",{mode:0o600});
-  const options=(mode:PlacementActivationOptions["mode"]):PlacementActivationOptions=>({memoryDir:f.base,mode,writerRoots:[ownRoot],ownRoot,authorize:()=>true,testOnlyFailure:error=>console.error("isolated activation failure",error)});
+  const options=(mode:PlacementActivationOptions["mode"]):PlacementActivationOptions=>({memoryDir:f.base,mode,writerRoots:[ownRoot],ownRoot,authorize:()=>true});
   return{...f,allowed,declined,options};
 }
 
