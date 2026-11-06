@@ -1,30 +1,39 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repository=resolve(import.meta.dir,".."),modules=join(repository,"node_modules");
-const compiler=join(modules,"typescript","bin","tsc"),hostTypes="bun-types-host-1-4-2";
+const compiler=join(modules,"typescript","bin","tsc"),hostTypes="bun-types-host-1-4-2",hostWrapper=join("@types","bun-host-1-4-2");
 /** Compiler subprocess only: importing the public package is a generated typecheck, never runtime evaluation. */
 function compileHost(install:string){
   const alias=JSON.parse(readFileSync(join(modules,hostTypes,"package.json"),"utf8")) as {name?:string;version?:string};
   expect(alias.name).toBe("bun-types");expect(alias.version).toBe("1.4.2");
+  const wrapper=JSON.parse(readFileSync(join(modules,hostWrapper,"package.json"),"utf8")) as {name?:string;version?:string};
+  expect(wrapper.name).toBe("@types/bun");expect(wrapper.version).toBe("1.4.2");
   const root=mkdtempSync(join(tmpdir(),"amem-strict-host-"));
   try{
     const project=join(root,"host"),home=join(root,"home"),temp=join(root,"tmp");
     mkdirSync(join(project,"node_modules","@staix"),{recursive:true,mode:0o700});mkdirSync(home,{mode:0o700});mkdirSync(temp,{mode:0o700});
+    const localModules=join(project,"node_modules"),localTypes=join(localModules,"@types");mkdirSync(localTypes,{mode:0o700});
     symlinkSync(install,join(project,"node_modules","@staix","agent-mem"),"dir");
+    symlinkSync(join(modules,hostTypes),join(localModules,"bun-types"),"dir");
+    symlinkSync(join(modules,hostWrapper),join(localTypes,"bun"),"dir");
+    symlinkSync(join(modules,"@types","node"),join(localTypes,"node"),"dir");
+    if(existsSync(join(modules,"undici-types")))symlinkSync(join(modules,"undici-types"),join(localModules,"undici-types"),"dir");
     writeFileSync(join(project,"package.json"),JSON.stringify({name:"isolated-amem-strict-host",private:true,type:"module"})+"\n",{mode:0o600});
     writeFileSync(join(project,"entry.ts"),`import * as memory from "@staix/agent-mem";
 export const publicStore = memory.MemoryStore;
-// The pinned 1.4.2 declaration must admit undefined; default 1.4.3 types must not satisfy this sentinel.
-const tomlCanBeUndefined: ReturnType<typeof Bun.TOML.stringify> = undefined;
+// Witness the actual object-call overload, not the last signature of a possibly merged overloaded function.
+function objectWriter() { return Bun.TOML.stringify({ setup_value: 1 }); }
+const tomlCanBeUndefined: ReturnType<typeof objectWriter> = undefined;
 void tomlCanBeUndefined;
 `,{mode:0o600});
     writeFileSync(join(project,"tsconfig.json"),JSON.stringify({compilerOptions:{
       target:"ESNext",module:"Preserve",moduleResolution:"bundler",lib:["ESNext"],strict:true,noUncheckedIndexedAccess:true,noEmit:true,
       allowImportingTsExtensions:true,resolveJsonModule:true,skipLibCheck:true,
-      types:[hostTypes],typeRoots:[modules,join(modules,"@types")],
+      // Fixture isolation only: dependencies resolve at the fake installed host, not the repo's newer dev types.
+      preserveSymlinks:true,types:["bun"],typeRoots:[localTypes],
     },files:["entry.ts"]},null,2)+"\n",{mode:0o600});
     // No inherited Bun/Node preload, personal configuration or memory home enters the compiler process.
     const result=Bun.spawnSync([process.execPath,compiler,"--project",join(project,"tsconfig.json"),"--pretty","false","--locale","en"],{
