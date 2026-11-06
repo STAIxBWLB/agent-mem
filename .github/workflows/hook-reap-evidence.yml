@@ -35,31 +35,40 @@ jobs:
         run: |
           set -o pipefail
           bun test --timeout 20000 test/hook-transcript-worker.test.ts 2>&1 | tee reap-before-worker.log
-      - name: Representative 200-worker idle series (lower bound only)
+      - name: Representative 200-worker CPU idle series (lower bound only)
+        id: cpu_idle
         if: always() && !cancelled()
         run: |
           set -o pipefail
-          bun scripts/probe-hook-reap.ts --series=idle | tee reap-probe-idle.jsonl
-      - name: Representative 200-worker series concurrent with hooks budget
-        if: always() && !cancelled()
+          bun scripts/probe-hook-reap.ts --series=idle --phase=cpu | tee reap-probe-cpu-idle.jsonl
+      - name: Representative 200-worker capture-write idle series
+        id: write_idle
+        if: always() && !cancelled() && steps.cpu_idle.outcome == 'success'
+        run: |
+          set -o pipefail
+          bun scripts/probe-hook-reap.ts --series=idle --phase=write | tee reap-probe-write-idle.jsonl
+      - name: Fixed CPU then capture-write series concurrent with hooks budgets
+        if: always() && !cancelled() && steps.write_idle.outcome == 'success'
         run: |
           set +e
           set -o pipefail
-          (
-            bun -e 'console.log(JSON.stringify({phase:"load-start",epochMs:Date.now()}))' > reap-load-window.jsonl
-            bun scripts/measure-hooks-budget.ts > reap-contended-hooks.log 2>&1
+          for phase in cpu write; do
+            (
+              bun -e 'console.log(JSON.stringify({phase:"load-start",epochMs:Date.now()}))' > "reap-load-$phase-window.jsonl"
+              bun scripts/measure-hooks-budget.ts > "reap-contended-$phase-hooks.log" 2>&1
+              load_status=$?
+              bun -e 'console.log(JSON.stringify({phase:"load-end",epochMs:Date.now()}))' >> "reap-load-$phase-window.jsonl"
+              exit "$load_status"
+            ) &
+            load_pid=$!
+            bun scripts/probe-hook-reap.ts --series=contended "--phase=$phase" | tee "reap-probe-$phase-contended.jsonl"
+            probe_status=${PIPESTATUS[0]}
+            # Wait for the finite owned workload even on failure; never admit another probe after an incomplete one.
+            wait "$load_pid"
             load_status=$?
-            bun -e 'console.log(JSON.stringify({phase:"load-end",epochMs:Date.now()}))' >> reap-load-window.jsonl
-            exit "$load_status"
-          ) &
-          load_pid=$!
-          bun scripts/probe-hook-reap.ts --series=contended | tee reap-probe-contended.jsonl
-          probe_status=${PIPESTATUS[0]}
-          # Wait for the finite owned workload even when the probe fails; never leave an idle load process.
-          wait "$load_pid"
-          load_status=$?
-          echo "probe_status=$probe_status load_status=$load_status"
-          if [ "$probe_status" -ne 0 ] || [ "$load_status" -ne 0 ]; then exit 1; fi
+            echo "phase=$phase probe_status=$probe_status load_status=$load_status"
+            if [ "$probe_status" -ne 0 ] || [ "$load_status" -ne 0 ]; then exit 1; fi
+          done
       - name: Retain every outcome and raw latency
         if: always() && !cancelled()
         uses: actions/upload-artifact@v7
@@ -67,7 +76,7 @@ jobs:
           name: hook-reap-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             reap-before-*.log
-            reap-contended-hooks.log
-            reap-load-window.jsonl
+            reap-contended-*-hooks.log
+            reap-load-*-window.jsonl
             reap-probe-*.jsonl
           retention-days: 14
