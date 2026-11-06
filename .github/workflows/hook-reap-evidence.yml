@@ -1,0 +1,51 @@
+name: hook-reap-evidence
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hook-reap-evidence.yml
+      - scripts/probe-hook-reap.ts
+      - test/fakes/hook-reap-busy.ts
+      - test/hook-reap-probe.test.ts
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Unchanged hooks budget before timing changes
+        run: |
+          set -o pipefail
+          bun scripts/measure-hooks-budget.ts 2>&1 | tee reap-before-hooks.log
+      - name: Unchanged transcript budget before timing changes
+        if: always() && !cancelled()
+        run: |
+          set -o pipefail
+          bun scripts/measure-transcript-budget.ts 2>&1 | tee reap-before-transcript.log
+      - name: Strict affected worker file before timing changes
+        if: always() && !cancelled()
+        run: |
+          set -o pipefail
+          bun test --timeout 20000 test/hook-transcript-worker.test.ts 2>&1 | tee reap-before-worker.log
+      - name: Fixed serial 200-worker group-SIGKILL probe after measurement workload
+        if: always() && !cancelled()
+        run: |
+          set -o pipefail
+          bun scripts/probe-hook-reap.ts | tee reap-probe.jsonl
+      - name: Retain every outcome and raw latency
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hook-reap-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reap-before-*.log
+            reap-probe.jsonl
+          retention-days: 14
