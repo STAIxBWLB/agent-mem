@@ -39,7 +39,7 @@ jobs:
           echo "TASK148_DIR=$TASK148_DIR" >> "$GITHUB_ENV"
           mkdir -p "$TASK148_DIR"
           fixed_source() {
-            if [ "$(git rev-parse HEAD)" != "$TASK148_SOURCE" ] || [ "$(git hash-object test/ci-timings.json)" != "$TASK148_TIMING" ] || ! git diff --quiet -- src test; then
+            if [ "$(git rev-parse HEAD)" != "$TASK148_SOURCE" ] || [ "$(git hash-object test/ci-timings.json)" != "$TASK148_TIMING" ] || ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard -- src test)" ]; then
               echo '::error::Fixed diagnostic source or timing input changed; restore the original source identity before rerunning.'
               exit 2
             fi
@@ -72,6 +72,7 @@ jobs:
             attempt target
             attempt shard
           fi
+          fixed_source
       - name: Report all outcomes and verify exact original file order
         if: always() && !cancelled()
         run: |
