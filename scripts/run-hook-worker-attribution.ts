@@ -97,7 +97,7 @@ async function runBatch(directory: string) {
     if (misses.length >= manifest.targetMisses) break;
   }
   const report = save();
-  console.log(JSON.stringify({ diagnostic: "hook-worker-attribution-result/v1", ...report }));
+  console.log(JSON.stringify({ ...report, diagnostic: "hook-worker-attribution-result/v1" }));
   if (!report.attributionTargetMet || !report.originalScriptsPassed || results.some(row => row.parserIncomplete)) {
     console.error("Attribution batch has insufficient evidence or a strict script/parser failure; retain every artifact and inspect the per-attempt outcomes before another batch");
     process.exitCode = 1;
