@@ -15,6 +15,7 @@ import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
+import { hookProcessDiagnostic } from "./hook-process-diagnostic.ts";
 import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
@@ -22,6 +23,7 @@ import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
 const round = (value: number) => Math.round(value * 100) / 100;
+const phaseDiagnostics = process.argv.includes("--phase-diagnostics");
 interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   wallMs: number;
   /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
@@ -30,7 +32,9 @@ interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
 async function measureHooks() {
-const f = hookFixture(), observer = hookProcessObserver(f.root);
+const f = hookFixture(), observer = hookProcessObserver(f.root,false,undefined,phaseDiagnostics,phaseDiagnostics);
+observer.preserveBeforeClose(f);
+let phaseLogicalRun = 0;
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
@@ -84,6 +88,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     : Bun.spawnSync([hookBin, "hook", event], { cwd: f.cwd, env: { ...f.env, BUN_OPTIONS: `--preload=${observer.preload}` }, stdin: Buffer.from(JSON.stringify(input)), stdout: "pipe", stderr: "pipe", detached: true, timeout: 3000, maxBuffer: 16 * 1024 });
   if (jcode && result.stdout.length) throw new Error("jcode observer hook wrote stdout");
   const wallMs = performance.now() - start;
+  try {
   ownedGroups.add(result.pid);
   const workers = observer.read().slice(beforeWorkers);
   // Register every observed group before any assertion, including a malformed/extra-worker observation.
@@ -166,10 +171,20 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
   return { wallMs, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
+  } finally {
+    if(phaseDiagnostics){
+      const trace=observer.workerPhaseReport(result.pid),last=readMetrics(f.base).filter(row=>row.kind==="hook"&&row.wallMs!==undefined).at(-1);
+      console.log(JSON.stringify({...hookProcessDiagnostic({event,run:invocations,logicalRun:phaseLogicalRun,parentPid:result.pid,variant:"phase-hooks",
+        expectedOwnedChildren:null,expectation:"observed-spawn-attempts",workers:observer.read().slice(beforeWorkers),evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),
+        metric:JSON.stringify(last)===JSON.stringify(before)?undefined:last,cliRawRssMB:result.resourceUsage.maxRSS/1048576,
+        phaseInstrumentation:true,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}),workload:group}));
+    }
+  }
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
   for (let index = 0; index < count; index++) {
+    phaseLogicalRun=index+1;
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>(name, stalledAttempts);
     const completed = await budgetSample(`${name}-${index + 1}`, run, attempt => { attempts.push(attempt); record(attempt); });
     const sample = keepAttemptWall(keepAttemptRss(completed, attempts), attempts);

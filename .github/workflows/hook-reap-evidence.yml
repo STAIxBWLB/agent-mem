@@ -1,11 +1,6 @@
 name: hook-reap-evidence
 on:
-  pull_request:
-    paths:
-      - .github/workflows/hook-reap-evidence.yml
-      - scripts/probe-hook-reap.ts
-      - test/fakes/hook-reap-busy.ts
-      - test/hook-reap-probe.test.ts
+  # Retained CPU/write probe evidence. Phase-attribution revisions must not silently repeat this schedule.
   workflow_dispatch:
 permissions:
   contents: read

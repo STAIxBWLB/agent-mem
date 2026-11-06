@@ -7,6 +7,7 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import type { MetricSample } from "../src/memory/metrics.ts";
 import { readFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { HookWorkerPhase } from "./fakes/hooks-worker-phases.ts";
 
 const row=(phase:HookLifecycleReceipt["phase"],atMs:number,extra:Partial<HookLifecycleReceipt>={}):HookLifecycleReceipt=>({phase,atMs,parentPid:10,childPid:20,kind:"worker",...extra});
 function input(lifecycle:HookLifecycleReceipt[]){return{event:"Stop" as const,run:12,logicalRun:32,parentPid:10,expectedOwnedChildren:1,expectation:"fixture-contract" as const,
@@ -18,6 +19,34 @@ test("a late worker exit and the actual failed reap are distinct receipts at the
   expect(diagnostic).toMatchObject({event:"Stop",run:12,logicalRun:32,expectedOwnedChildren:1,observedOwnedChildren:1,abandonedChildren:null,
     workerExitedWindow:{boundMs:10,startMs:21,observedBoundMs:10,present:true}});
   expect(diagnostic.children[0]).toMatchObject({pid:20,reaped:false,outputLate:true,exitPromiseMs:34,relativeToWorkerExitedWindowMs:{exitPromise:13,reapEnd:11}});
+});
+test("phase attribution uses the last receipt before kill and preserves both parent timer snapshots",()=>{
+  const diagnostic=hookProcessDiagnostic({...input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("kill-request",120),
+    row("reap-start",121,{boundMs:10,timerId:1,timerLagMs:1,timerWindowChildPid:0}),
+    row("timer-fired",133.6,{timerId:2,timerDelayMs:10,timerDueMs:131,timerCallbackAtMs:133.6,timerLagMs:2.6,timerWindowChildPid:20}),
+    row("reap-end",133.6,{reaped:0,timerId:2,timerLagMs:2.6,timerWindowChildPid:20})]),phaseInstrumentation:true,
+    workerPhases:[{phase:HookWorkerPhase.Boot,pid:20,parentPid:10,atMs:102,seq:1},
+      {phase:HookWorkerPhase.CommitEnter,pid:20,parentPid:10,atMs:119,seq:2},{phase:HookWorkerPhase.OutputBegin,pid:20,parentPid:10,atMs:140,seq:3}]});
+  expect(diagnostic.children[0]).toMatchObject({lastWorkerPhaseBeforeKill:{phase:"CommitEnter",msBeforeKill:1},
+    parentTimerAtReapStart:{lagMs:1},parentTimerAtReapEnd:{lagMs:2.6},phaseTraceMissing:false});
+  expect(diagnostic.children[0]?.exitedWindowTimerFirings).toHaveLength(1);
+});
+test("partial trace with no completed boot receipt stays unknown rather than an invented exec phase",()=>{
+  const diagnostic=hookProcessDiagnostic({...input([row("spawn",101)]),phaseInstrumentation:true,phaseTracePartial:true,workerPhases:[]});
+  expect(diagnostic.children[0]).toMatchObject({phaseTracePartial:true,lastWorkerPhaseBeforeKill:null,noPhaseReceiptMeaning:"partial trace; preload entry unknown"});
+});
+test("opt-in parent timer observation preserves callback arguments and reports the existing timer at reap end",async()=>{
+  const f=hookFixture(),observer=hookProcessObserver(f.root,false,undefined,true,true);
+  try{
+    const code=`globalThis.__hookChildLife('reap-start',999,'worker',{boundMs:10});
+const timer=setTimeout(function(a,b){if(a!==12||b!==34)throw Error('timer arguments');globalThis.__hookChildLife('reap-end',999,'worker',{reaped:0});},5,12,34);
+if(typeof timer.ref!=='function'||typeof timer.unref!=='function')throw Error('timer handle');timer.ref();`;
+    const child=Bun.spawn([process.execPath,"--preload",observer.preload,"--eval",code],{env:{...f.env,BUN_OPTIONS:""},stdout:"pipe",stderr:"pipe"});
+    const error=await new Response(child.stderr).text();expect(await child.exited,error).toBe(0);
+    const rows=observer.lifecycle(child.pid),fired=rows.find(row=>row.phase==="timer-fired"),end=rows.find(row=>row.phase==="reap-end");
+    expect(fired?.timerWindowChildPid).toBe(999);expect(Number.isFinite(fired?.timerLagMs)).toBe(true);
+    expect(end?.timerId).toBe(fired?.timerId);expect(end?.timerLagMs).toBe(fired?.timerLagMs);
+  }finally{f.close();}
 });
 test("reaped exit with late output does not become an abandoned worker",()=>{
   const diagnostic=hookProcessDiagnostic(input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("exit",120),row("reap-start",121,{boundMs:10}),row("reap-end",121,{reaped:1}),row("output-end",132,{late:1})]));

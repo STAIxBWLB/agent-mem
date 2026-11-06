@@ -13,8 +13,10 @@ const bin = resolve(root, "bin/amem.js");
 const revision = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe", stderr: "pipe" });
 if (revision.exitCode !== 0) throw Error("baseline is not a Git checkout");
 const groups = [];
+const phaseDiagnostics=process.argv.includes("--phase-diagnostics");
 for (const event of ["Stop", "SessionEnd"]) {
-  const f = hookFixture(), samples = [],observer=hookProcessObserver(f.root,false,resolve(root),true);
+  const f = hookFixture(), samples = [],observer=hookProcessObserver(f.root,false,resolve(root),true,phaseDiagnostics);
+  observer.preserveBeforeClose(f);
   try {
     await f.seed();
     for (let run = 1; run <= 20; run++) {
@@ -30,6 +32,11 @@ for (const event of ["Stop", "SessionEnd"]) {
         stdin: Buffer.from(JSON.stringify({ cwd: f.cwd, hook_event_name: event, session_id: "baseline-" + run, transcript_path: transcript })),
         stdout: "pipe", stderr: "pipe", timeout: 3000 });
       const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
+      if(phaseDiagnostics){const trace=observer.workerPhaseReport(result.pid);
+        console.log(JSON.stringify(hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
+          expectedOwnedChildren:null,expectation:"observed-spawn-attempts",workers:observer.read().slice(beforeWorkers),evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),metric,
+          cliRawRssMB:result.resourceUsage.maxRSS/1048576,phaseInstrumentation:true,workerPhases:trace.rows,phaseTracePartial:trace.partialTail})));
+      }
       if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("main comparison hook unavailable");
       let rss:ReturnType<typeof measuredHookRss>;
       try{rss=measuredHookRss(metric,result.resourceUsage.maxRSS/1048576);}catch{

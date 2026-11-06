@@ -1,5 +1,5 @@
 /** Nonshipping source observation only. This never edits a target file or changes its branch/timer expressions. */
-export function instrumentHookLifecycle(preload:string,receipt:string):string {
+export function instrumentHookLifecycle(preload:string,receipt:string,timerLagEnabled=false):string {
   const worker=[
     ["exit = child.exited.then(code => { exited = true; return code; });","exit = child.exited.then(code => { exited = true;globalThis.__hookChildLife('exit',child.pid,'worker',{code}); return code; });"],
     ["    killed = true;","    killed = true;globalThis.__hookChildLife('kill-request',owned.pid,'worker');"],
@@ -19,9 +19,20 @@ export function instrumentHookLifecycle(preload:string,receipt:string):string {
     preload=preload.replace(anchor,value);
   };
   // ponytail:512 metadata receipts per CLI, with explicit truncation; larger invocations need a reviewed streaming observer.
+  const timerState=timerLagEnabled?`let activeReapChild=0,lastTimer=null,timerSequence=0;`:"";
+  const snapshots=timerLagEnabled?`if(kind==='worker'&&phase==='reap-start')activeReapChild=childPid;
+if(kind==='worker'&&(phase==='reap-start'||phase==='reap-end'))values={...values,timerId:lastTimer?.timerId??null,timerDueMs:lastTimer?.timerDueMs??null,timerLagMs:lastTimer?.timerLagMs??null,timerCallbackAtMs:lastTimer?.timerCallbackAtMs??null,timerDelayMs:lastTimer?.timerDelayMs??null,timerWindowChildPid:lastTimer?.timerWindowChildPid??null};
+if(kind==='worker'&&phase==='reap-end')activeReapChild=0;`:"";
+  const timerObserver=timerLagEnabled?`const originalSetTimeout=globalThis.setTimeout;
+globalThis.setTimeout=new Proxy(originalSetTimeout,{apply(target,self,args){const callback=args[0];if(typeof callback!=='function')return Reflect.apply(target,self,args);
+const timerId=++timerSequence,timerWindowChildPid=activeReapChild,timerDelayMs=typeof args[1]==='number'&&Number.isFinite(args[1])?Math.max(1,args[1]):1,timerDueMs=performance.timeOrigin+performance.now()+timerDelayMs;
+const observed=function(...values){const timerCallbackAtMs=performance.timeOrigin+performance.now();lastTimer={timerId,timerWindowChildPid,timerDelayMs,timerDueMs,timerCallbackAtMs,timerLagMs:timerCallbackAtMs-timerDueMs};life('timer-fired',timerWindowChildPid,'worker',lastTimer);return Reflect.apply(callback,this,values);};
+return Reflect.apply(target,self,[observed,...args.slice(1)]);}});`:"";
   replace("note('preload');",`const receipts=[];let truncated=false;
-const life=(phase,childPid,kind,values={})=>{if(receipts.length>=512){truncated=true;return;}receipts.push({phase,parentPid:process.pid,childPid,kind,atMs:performance.timeOrigin+performance.now(),...values});};
+${timerState}
+const life=(phase,childPid,kind,values={})=>{${snapshots}if(receipts.length>=512){truncated=true;return;}receipts.push({phase,parentPid:process.pid,childPid,kind,atMs:performance.timeOrigin+performance.now(),...values});};
 globalThis.__hookChildLife=life;
+${timerObserver}
 process.once('exit',()=>{if(truncated)receipts.push({phase:'truncated',parentPid:process.pid,childPid:0,kind:'worker',atMs:performance.timeOrigin+performance.now()});if(receipts.length)appendFileSync(${JSON.stringify(receipt)},receipts.map(row=>JSON.stringify(row)+'\\n').join(''),{mode:0o600});});
 const transformLifecycle=(source,anchors)=>{for(const [anchor,replacement]of anchors){if(source.split(anchor).length!==2)throw Error('Child lifecycle observation anchor changed; update the exact test preload and rerun observer controls');source=source.replace(anchor,replacement);}return source;};
 const workerLifecycle=source=>transformLifecycle(source,${JSON.stringify(worker)});

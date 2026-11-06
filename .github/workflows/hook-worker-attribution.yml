@@ -1,0 +1,40 @@
+name: hook-worker-attribution
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hook-worker-attribution.yml
+      - test/fakes/hooks-worker-phases.ts
+      - test/fakes/hooks-process-lifecycle.ts
+      - test/fakes/hooks-process-observer.ts
+      - test/hook-worker-phases.test.ts
+      - test/hook-process-diagnostic.test.ts
+      - test/hook-transcript-worker.test.ts
+      - scripts/hook-process-diagnostic.ts
+      - scripts/measure-hooks-budget.ts
+      - scripts/measure-transcript-budget.ts
+      - scripts/measure-hook-baseline.ts
+      - scripts/run-hook-worker-attribution.ts
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Real worker phases and parent timer lag (bounded three-attempt batch)
+        run: bun scripts/run-hook-worker-attribution.ts "$RUNNER_TEMP/hook-worker-attribution"
+      - name: Retain every attempt, strict failure and raw numeric receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hook-worker-attribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hook-worker-attribution/
+          retention-days: 14

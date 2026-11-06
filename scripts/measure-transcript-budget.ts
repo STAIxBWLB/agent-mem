@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
+import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
+import { hookProcessDiagnostic } from "./hook-process-diagnostic.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
@@ -14,6 +16,7 @@ import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_W
 
 let stallWarned = false;
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
+const phaseDiagnostics=process.argv.includes("--phase-diagnostics");
 /** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
  * leaving uninterruptible I/O may exist; after it any survivor fails R1. Per invocation the harness records the count of
  * children alive at hook exit (the hook's own `abandonedChildren`) and how long the last one survived. Owned children are
@@ -79,6 +82,9 @@ async function verifyReplay(f: ReturnType<typeof hookFixture>, digest: string, e
 }
 async function measure() {
   let f = hookFixture();
+  let phaseObserver=phaseDiagnostics?hookProcessObserver(f.root,false,undefined,true,true):undefined;
+  phaseObserver?.preserveBeforeClose(f);
+  let phaseInvocation=0;
   runnerFingerprint();
   const incompleteRuns: Record<string, number> = {};
   const handlerWalls: { event: string; metricWallMs: number }[] = [];
@@ -86,7 +92,7 @@ async function measure() {
   try {
     await f.seed();
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= RUNS; logicalRun++) {
-      if (event === "StopBurst") { f.close(); f = hookFixture(); await f.seed(); }
+      if (event === "StopBurst") { f.close(); f = hookFixture(); await f.seed(); phaseObserver=phaseDiagnostics?hookProcessObserver(f.root,false,undefined,true,true):undefined; phaseObserver?.preserveBeforeClose(f); }
       const transcript = join(f.root, "transcript.jsonl"), session = event + "-" + logicalRun, at = new Date().toISOString(), marker = "summary " + session;
       const lines = [JSON.stringify({ type: "assistant", timestamp: at }), JSON.stringify({ type: "ai-title", aiTitle: marker }),
         JSON.stringify({ type: "system", subtype: "away_summary", timestamp: at, content: marker }),
@@ -112,9 +118,16 @@ async function measure() {
       let previousAvailable = new Set<string>();
       for (let followUp = 0; followUp <= MAX_FOLLOW_UPS; followUp++) {
         Bun.gc(true);
-        const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
+        const beforeWorkers=phaseObserver?.read().length??0;
+        const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript },
+          phaseObserver?{BUN_OPTIONS:`--preload=${phaseObserver.preload}`} : {});
         const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
-        await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });
+        try { await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp }); }
+        finally { if(phaseObserver){const trace=phaseObserver.workerPhaseReport(result.pid);
+          console.log(JSON.stringify({...hookProcessDiagnostic({event:event==="StopBurst"?"Stop":event as "Stop"|"SessionEnd",variant:"phase-transcript",run:++phaseInvocation,logicalRun,parentPid:result.pid,
+            expectedOwnedChildren:null,expectation:"observed-spawn-attempts",workers:phaseObserver.read().slice(beforeWorkers),evidence:phaseObserver.evidence(),lifecycle:phaseObserver.lifecycle(result.pid),metric,
+            cliRawRssMB:result.resourceUsage.maxRSS/1048576,phaseInstrumentation:true,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}),workload:event,followUp}));
+        } }
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
           exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
         if (result.exitCode !== 0 || result.stdout.length || !metric || !Number.isFinite(metric.wallMs) || metric.wallMs! < 0) throw Error("transcript budget hook unavailable");

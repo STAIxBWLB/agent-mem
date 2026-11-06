@@ -1,21 +1,26 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { realPath } from "../../src/memory/platform.ts";
 import { instrumentHookLifecycle } from "./hooks-process-lifecycle.ts";
+import { createHookWorkerPhases } from "./hooks-worker-phases.ts";
 
 export interface HookLifecycleReceipt {
-  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
+  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "timer-fired" | "truncated";
   parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
   boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
   source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
   known?: number; kb?: number; rawKB?: number; observationFailed?: number;
   vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
+  timerId?: number | null; timerDueMs?: number | null; timerLagMs?: number | null; timerCallbackAtMs?: number | null;
+  timerDelayMs?: number | null; timerWindowChildPid?: number | null;
 }
 
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
-export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false) {
+export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, phaseEnabled = false) {
+  if (phaseEnabled && !lifecycleEnabled) throw Error("Worker phases require parent lifecycle observation; enable both diagnostic modes");
+  const phases = phaseEnabled ? createHookWorkerPhases(root, realPath(sourceRoot)) : undefined;
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
   const nativePidFile = join(root, "owned-native.pid"), entered = join(root, "owned-native.entered");
   const worker = join(realPath(sourceRoot), "src/session-brief-worker.ts");
@@ -58,16 +63,44 @@ if(stallWorker&&process.argv[1]===worker){
  await sleeper.exited;
 }
 `;
-  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle);
+  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,phaseEnabled);
+  if(phases){
+    const anchor="original(argv,options)";
+    if(rendered.split(anchor).length!==2)throw Error("Worker phase launch anchor changed; update the diagnostic observer before running");
+    // Keep argv unchanged so an independent slow-store argv wrapper still matches the real worker.
+    rendered=rendered.replace(anchor,`original(argv,matched?{...options,env:{...options?.env,BUN_OPTIONS:[options?.env?.BUN_OPTIONS,${JSON.stringify("--preload="+phases.preload)}].filter(Boolean).join(' ')}}:options)`);
+  }
   writeFileSync(preload,rendered,{mode:0o600});
-  return { preload, worker, nativePidFile, entered,
+  return { preload, worker, nativePidFile, entered, phaseEnabled,
+    preserveBeforeClose(fixture:{close:()=>void}){
+      const directory=process.env.AMEM_TEST_PHASE_ARTIFACTS;
+      if(!phaseEnabled||!phases||!directory)return;
+      mkdirSync(directory,{recursive:true,mode:0o700});
+      const destination=mkdtempSync(join(directory,"fixture-")),close=fixture.close.bind(fixture);
+      let preserved=false;
+      fixture.close=()=>{
+        if(!preserved){
+          // Fixed numeric receipt files only; never copy the fake memory store or its row payloads.
+          for(const [source,name]of [[phases.file,"worker-phases.jsonl"],[lifecycle,"parent-lifecycle.jsonl"],[evidence,"admission.jsonl"]] as const)if(existsSync(source)){
+            const stat=lstatSync(source);
+            if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.uid!==process.getuid?.()||stat.mode&0o077||stat.size>8*1024*1024)
+              throw Error("Raw phase diagnostic receipt is unsafe or exceeds8MiB; retain the fixture and inspect the owned observer");
+            copyFileSync(source,join(destination,name),constants.COPYFILE_EXCL);
+          }
+          preserved=true;
+        }
+        close();
+      };
+    },
+    workerPhases(parentPid?:number){return phases?.read(parentPid)??[];},
+    workerPhaseReport(parentPid?:number){return phases?.readReport(parentPid)??{rows:[],partialTail:false};},
     /** Observation only, never signalling authority. A missing exit flush is explicit missing evidence. */
     lifecycle(parentPid?:number): HookLifecycleReceipt[] {
       if(!existsSync(lifecycle))return[];
       if(statSync(lifecycle).size>2*1024*1024)throw Error("child lifecycle diagnostic exceeds 2 MiB; retain the fixture and inspect its bounded observer workload");
       return readFileSync(lifecycle,"utf8").split("\n").filter(Boolean).map(line=>{
         const row=JSON.parse(line) as HookLifecycleReceipt;
-        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","truncated"].includes(row.phase)
+        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","timer-fired","truncated"].includes(row.phase)
           || !Number.isSafeInteger(row.parentPid)||row.parentPid<=0||!Number.isSafeInteger(row.childPid)||row.childPid<0
           || !["worker","native"].includes(row.kind)||!Number.isFinite(row.atMs)||row.atMs<0)throw Error("child lifecycle diagnostic is malformed; retain the fixture and inspect the observer receipts");
         return row;

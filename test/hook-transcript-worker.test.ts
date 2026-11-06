@@ -111,7 +111,9 @@ test("a final hook reaps blocked directly owned metadata before writing known RS
 
 for (const platform of ["linux", "darwin-codepath"] as const) for (const event of ["Stop", "SessionEnd"] as const) test("a slow synchronous capture statement remains killable with known child provenance: " + platform + " " + event, async () => {
   const f = hookFixture(), preload = join(f.root, "slow-store.ts"), entered = join(f.root, "slow-store-entered"), transcript = join(f.root, "slow-transcript.jsonl");
-  const observer=hookProcessObserver(f.root,false,undefined,true);
+  const phaseDiagnostics=process.env.AMEM_TEST_WORKER_PHASES==="1";
+  const observer=hookProcessObserver(f.root,false,undefined,true,phaseDiagnostics);
+  observer.preserveBeforeClose(f);
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "summary before slow store" }) + "\n");
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
@@ -127,14 +129,17 @@ await import(${JSON.stringify(observer.preload)});`);
   try {
     await f.seed();
     const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
-    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms
     // behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
     const evidence=observer.evidence().filter(row=>row.pid===result.pid);
+    const trace=observer.workerPhaseReport(result.pid);
     const diagnostic=JSON.stringify(hookProcessDiagnostic({event,variant:platform,run:1,logicalRun:(platform==="linux"?0:2)+(event==="Stop"?1:2),parentPid:result.pid,expectedWorkerChildren:1,
       expectedOwnedChildren:evidence.some(row=>row.phase==="preload")?evidence.filter(row=>row.phase==="attempt"&&row.exact===1).length:null,expectation:"observed-spawn-attempts",
-      workers:observer.read(),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576}));
+      workers:observer.read(),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576,
+      phaseInstrumentation:phaseDiagnostics,workerPhases:trace.rows,phaseTracePartial:trace.partialTail}));
+    if(phaseDiagnostics)console.log(diagnostic);
+    expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); expect(rssSourcesKnown(metric.rssSources!),diagnostic).toBe(true); expect(metric.rssSources!.unavailable,diagnostic).toBe(0);
     if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
