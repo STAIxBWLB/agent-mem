@@ -119,7 +119,7 @@ export async function inspectSyncPlacement(store: MemoryStore, input: SyncPlacem
     const port: PlacementCapturePort = { attest: options.placementAttestation, ...(options.policyVersion ? { policyVersion: options.policyVersion } : {}) };
     const capture = captureSyncPlacementContext(home, port, targets.map(target => physical(target.realm)));
     captured = true;
-    if (capture.activeHead !== active.profile.placementHead || canonicalJSON(capture.context.writers) !== canonicalJSON(active.activation.writers)) fail("attestation-unavailable");
+    if (capture.activeHead !== active.profile.placementHead || canonicalJSON(capture.context.writers) !== canonicalJSON(capture.writerInventory?.writers??active.activation.writers)) fail("attestation-unavailable");
     phase = "journal-unavailable"; const retained = captureInspectionJournal(home, active.profile.placementHead);
     const check = () => {
       if (binding() !== beforeBinding) fail("binding-changed"); retained.assertCurrent(); capture.assertUnchanged();

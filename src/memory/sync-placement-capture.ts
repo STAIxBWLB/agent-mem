@@ -20,6 +20,7 @@ import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
+import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -37,10 +38,12 @@ export interface PlacementCapture {
   /** Diagnostic inventory only; these rows never enter the ordinary transport/capture row map implicitly. */
   specialRows: Map<string, PlacementSpecialSourceRow>;
   sourceRowsByRealm: Map<string, readonly PruneSourceRow[]>;
+  writerInventory?:EffectiveSyncPlacementWriters;
   assertCurrent(): void;
   /** Under live writer fences, inode/ctime/size checks protect the already-hashed prefixes across callbacks without reparsing rows. */
   assertUnchanged(): void;
 }
+export function placementCaptureContextHash(capture:Pick<PlacementCapture,"context"|"writerInventory">):string{return writerBoundPlacementContextHash(capture.context,capture.writerInventory);}
 export interface PlacementActivationMarkerSnapshot {
   profileText: string; shardsText: string; profileStamp: [string,string,string,string,string]; shardsStamp: [string,string,string,string,string];
 }
@@ -299,17 +302,20 @@ function capture(home: string, port: PlacementCapturePort, selected?: readonly P
   const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
+  const writerInventory=source.activeHead?readEffectiveSyncPlacementWriters(source.home):undefined;
+  if(writerInventory&&canonicalJSON(context.writers)!==canonicalJSON(writerInventory.writers))fail();
   const assertUnchanged = () => {
     try {
       const currentAttestation = memoryPolicySnapshot(port.attest()), currentVersion = port.policyVersion?.();
       if (!currentAttestation) fail();
       const checked = planSyncPlacementActivation({ ...context, writers: currentAttestation.writers, legacySyncQuiesced: currentAttestation.legacySyncQuiesced }, "0".repeat(64));
       if (canonicalJSON(checked.writers) !== canonicalJSON(context.writers) || currentVersion !== policyVersion) fail();
+      writerInventory?.assertCurrent();
       source.assertSourcesUnchanged();
     } catch { fail(); }
   };
   return { home: source.home, context, assertUnchanged, ...(source.activeHead ? { activeHead: source.activeHead } : {}),
-    markerHash: source.markerHash, fingerprint: hashJSON({ context, markerHash: source.markerHash }), directories: source.directories,
+    ...(writerInventory?{writerInventory}:{}),markerHash: source.markerHash, fingerprint: hashJSON({ context, markerHash: source.markerHash,...(writerInventory?.revisionSequence?{writerRevisionHash:writerInventory.revisionHash}:{}) }), directories: source.directories,
     prefixes: source.prefixes, rows: source.rows, specialRows: source.specialRows, sourceRowsByRealm: source.sourceRowsByRealm };
 }
 

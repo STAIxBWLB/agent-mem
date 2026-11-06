@@ -11,7 +11,8 @@ import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
-import { captureSyncPlacementContext, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
+import { captureSyncPlacementContext, placementCaptureContextHash, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
+import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
@@ -50,15 +51,18 @@ class PlacementTransport {
   targets: Target[] = []; homeMutation?: MutationHandle; rootMutation?: MutationHandle; cacheIdentity?: {dev:number;ino:number}; cacheConfigIdentity?: string; epochHash = ""; journal!: PlacementJournalRead; capture?: PlacementCapture;
   machineId = ""; url = ""; revision = ""; accepted = false; factual = false; attempted = false; lastPolicyCheckUnixMs?: number; lastPolicyHash?: string; policyCheckSource?: "live"|"durable-intent"; attemptHash?: string;
   evaluator?: ReturnType<typeof outboundPolicyEvaluator>; applications?: ShardSyncApplications; current?: Materialized; recovered = false;
+  writerInventory?:EffectiveSyncPlacementWriters;
   constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void) { this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
   attest(): void {
     if (!this.opts.placementAttestation || this.opts.screen && !this.opts.policyVersion) refuse();
     const value = memoryPolicySnapshot(this.opts.placementAttestation());
     if (!value || value.legacySyncQuiesced !== true || !Array.isArray(value.writers)) refuse();
     const writers = [...value.writers].sort((a,b) => a.writerId.localeCompare(b.writerId));
-    if (canonicalJSON(writers) !== canonicalJSON(this.journal.activation.writers)) refuse();
+    if(!this.writerInventory||canonicalJSON(writers)!==canonicalJSON(this.writerInventory.writers))refuse();
+    this.writerInventory.assertCurrent();
   }
   metadata(): void {
+    this.writerInventory?.assertCurrent();
     if(this.rootMutation)assertMutationHandle(this.rootMutation,this.root);
     if(this.cacheIdentity){const stat=lstatSync(this.cache);if(stat.isSymbolicLink()||!stat.isDirectory()||stat.dev!==this.cacheIdentity.dev||stat.ino!==this.cacheIdentity.ino)refuse();}
     if(this.cacheIdentity){
@@ -105,7 +109,7 @@ class PlacementTransport {
   async initialize(): Promise<void> {
     const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
     if (!active || this.store.profile.publicationFormat !== PLACEMENT_FORMAT || this.store.profile.placementHead !== active.profile.placementHead) refuse();
-    this.epochHash = active.profile.placementHead; this.machineId = active.shards.machine.id; this.revision = readSelector(this.home).revision; this.journal = readPlacementJournal(this.home, this.epochHash); this.attest();
+    this.epochHash = active.profile.placementHead; this.machineId = active.shards.machine.id; this.revision = readSelector(this.home).revision; this.journal = readPlacementJournal(this.home, this.epochHash); this.writerInventory=readEffectiveSyncPlacementWriters(this.home);this.attest();
     const opened = this.store.openedSyncTargets();
     if (!opened.length || opened.length > 2 || !opened.includes(this.store) || opened.some(item => item.profile.home !== this.home || !item.profile.sharded || !item.profile.generation
       || !item.profile.shardUser && item.profile.shardKey !== this.store.profile.shardKey)) refuse();
@@ -186,7 +190,8 @@ class PlacementTransport {
       pathHash: digest(`log/${item.row.machine}.jsonl`), offset: item.offset, prefixHash: item.prefixHash, line: item.line })));
     this.capture = captureSyncPlacementContext(this.home, { attest: this.opts.placementAttestation!, ...(this.opts.policyVersion ? { policyVersion: this.opts.policyVersion } : {}) }, this.targets.map(physical), pending);
     if (this.capture.activeHead !== this.epochHash || this.capture.context.homeHash !== this.journal.epoch.homeHash
-      || canonicalJSON(this.capture.context.writers) !== canonicalJSON(this.journal.activation.writers)) refuse();
+      || canonicalJSON(this.capture.context.writers) !== canonicalJSON(this.writerInventory?.writers)
+      || this.capture.writerInventory?.revisionHash!==this.writerInventory?.revisionHash) refuse();
     this.check();
   }
   async applicationCoordinator(): Promise<ShardSyncApplications> {
@@ -232,7 +237,7 @@ class PlacementTransport {
       publisherLineages:(index,rows)=>{const target=this.targets[index]!;assertPublisherBoundary(target.store.profile,target.mutation!);return publisherPruneLineages(target.store.profile,target.mutation!,rows);}});
     for(const [index,target]of this.targets.entries())Object.assign(target,materialized.targets[index]!);
     const {decisions,plannedTargets:targets,objects}=materialized;
-    const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:hashJSON(capture.context),markerHash:capture.markerHash,
+    const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:placementCaptureContextHash(capture),markerHash:capture.markerHash,
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     let bundle=planPlacementPublication(body,{sources:capture.prefixes,decisions,objects});
@@ -446,7 +451,7 @@ class PlacementTransport {
       catch { if(retained)return await this.terminalUnknown(retained);throw new Error("placement source preflight unavailable"); }
       if(retained){
         const root=retained.bundle.root;
-        const stable=root.contextHash===hashJSON(this.capture!.context)&&root.markerHash===this.capture!.markerHash&&root.sourceHash===this.capture!.context.sourceHash
+        const stable=root.contextHash===placementCaptureContextHash(this.capture!)&&root.markerHash===this.capture!.markerHash&&root.sourceHash===this.capture!.context.sourceHash
           &&root.policyHash===this.capture!.context.policyHash&&root.targets.every((target,index)=>target.expectedRemoteHead===(this.targets[index]?.remote??null));
         if(!stable)return await this.terminalUnknown(retained);
       }

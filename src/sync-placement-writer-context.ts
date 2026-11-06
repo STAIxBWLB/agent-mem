@@ -4,7 +4,7 @@ import { realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
 import { readSetupWriterRoots } from "./setup.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
-import { readSyncPlacementWriterRoots } from "./memory/sync-placement-writer-roots.ts";
+import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
@@ -92,17 +92,17 @@ export function initialPlacementWriterContext(home: string, roots: readonly stri
 export function activePlacementWriterContext(home: string, ownRoot: string): PlacementWriterContext {
   const read = () => {
     requirePlacementHomeFloor(home);
-    const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home,markers.profile,markers.shards);
-    if (!binding) return fail("active locator","unavailable");
-    let roots: string[]; try { roots = readSyncPlacementWriterRoots(home); } catch { return fail("active locator","unavailable"); }
+    const effective=readEffectiveSyncPlacementWriters(home);
+    const roots=effective.roots;if(!roots)return fail("active locator","unavailable");
     const needed = required(home,ownRoot);
     if(!roots.includes(needed.own))return fail("running CLI","missing");
     if(needed.receipt.some(root=>!roots.includes(root)))return fail("setup receipt","missing");
     const measurement = measureComplete(home,roots,ownRoot);
-    if (canonicalJSON(measurement.writers) !== canonicalJSON(binding.activation.writers)) {
-      const changed=measurement.roots.find(row=>!binding.activation.writers.some(old=>old.writerId===row.writerId&&old.version===row.version&&old.pin===row.pin));
+    if (canonicalJSON(measurement.writers) !== canonicalJSON(effective.writers)) {
+      const changed=measurement.roots.find(row=>!effective.writers.some(old=>old.writerId===row.writerId&&old.version===row.version&&old.pin===row.pin));
       return fail(rootCategory(changed?.root,needed),"changed","active","changed");
     }
+    effective.assertCurrent();
     return measurement;
   };
   const measurement = read(), context: PlacementWriterContext = { measurement, attest: () => {
@@ -113,12 +113,9 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
 
 /** Person preview only: incomplete measurements remain explicit and never become an attestation. */
 export function previewActivePlacementWriters(home: string, ownRoot: string, requested: readonly string[] = []) {
-  const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home,markers.profile,markers.shards);
-  if (!active) return fail("active locator","unavailable");
-  let mapped: string[];
-  try { mapped=readSyncPlacementWriterRoots(home); } catch { return fail("active locator","unavailable"); }
+  const effective=readEffectiveSyncPlacementWriters(home),mapped=effective.roots;if(!mapped)return fail("active locator","unavailable");
   const selected = requested.length ? [...requested] : mapped;
-  const expected = active.activation.writers;
+  const expected = effective.writers;
   let measurement: SyncPlacementWriterMeasurement;
   try { measurement = measureSyncPlacementWriters(selected); }
   catch { return { complete:false, matches:false, roots:[] as SyncPlacementWriterMeasurement["roots"], expected, missingCategories:["declared writer"] as PlacementWriterRootCategory[], differences:expected.map(row=>({writerId:row.writerId,state:"unverified" as const})),refusalCategory:"declared writer" as PlacementWriterRootCategory }; }

@@ -21,7 +21,8 @@ interface LocatorBody {
   schema:typeof SYNC_PLACEMENT_WRITER_ROOTS_SCHEMA;homeHash:string;epochHash:string;activationHash:string;
   roots:{root:string;writerId:string}[];
 }
-interface Locator extends LocatorBody {seal:string}
+export interface InitialSyncPlacementWriterLocator extends LocatorBody {seal:string}
+type Locator=InitialSyncPlacementWriterLocator;
 const MAX_BYTES=256*1024,MAX_ROOTS=256,MAX_PATH=4096;
 const hash=(text:string)=>createHash("sha256").update(text).digest("hex");
 const hex=(value:unknown):value is string=>typeof value==="string"&&value.length===64&&/^[a-f0-9]+$/.test(value);
@@ -151,7 +152,7 @@ export function writeSyncPlacementWriterRoots(homeInput:string,input:SyncPlaceme
   });
 }
 /** Returns only initial locator paths; the caller must independently remeasure their actual bytes at each attestation. */
-export function readSyncPlacementWriterRoots(homeInput:string):string[] {
+export function readInitialSyncPlacementWriterLocator(homeInput:string):InitialSyncPlacementWriterLocator {
   return protectedCall(()=>{
     const home=realPath(homeInput),before=directory(home);
     const active=()=>{const markers=readPlacementRuntimeMarkers(home),value=readActivePlacementBinding(home,markers.profile,markers.shards);if(!value)fail();return value;};
@@ -160,6 +161,7 @@ export function readSyncPlacementWriterRoots(homeInput:string):string[] {
     bind(value,{homeHash:initial.epoch.homeHash,epochHash:initial.profile.placementHead,activationHash:initial.activation.seal},initial.activation.writers);
     const final=active();if(canonicalJSON(final)!==canonicalJSON(initial))fail();
     const after=directory(home);if(after.dev!==before.dev||after.ino!==before.ino)fail();read.check();
-    return value.roots.map(root=>root.root);
+    return value;
   });
 }
+export function readSyncPlacementWriterRoots(homeInput:string):string[]{return readInitialSyncPlacementWriterLocator(homeInput).roots.map(root=>root.root);}

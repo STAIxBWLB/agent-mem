@@ -75,4 +75,6 @@ export type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 export { measureSyncPlacementWriters, SyncPlacementWriterError } from "./memory/sync-placement-writers.ts";
 export type { MeasuredSyncPlacementWriterRoot, SyncPlacementWriterMeasurement, SyncPlacementWriterErrorCode } from "./memory/sync-placement-writers.ts";
 export { readSyncPlacementWriterRoots } from "./memory/sync-placement-writer-roots.ts";
+export { readEffectiveSyncPlacementWriters, readEffectiveSyncPlacementWriterRoots } from "./memory/sync-placement-effective-writers.ts";
+export type { EffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 export { readSetupWriterRoots, SetupWriterRootsError } from "./setup.ts";

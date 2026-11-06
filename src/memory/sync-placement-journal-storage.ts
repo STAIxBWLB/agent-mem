@@ -14,6 +14,8 @@ import { PLACEMENT_ACTIVE_FENCE_SCHEMA, PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT
 import { validatePlacementPublicationRoot, validatePlacementPublicationBundle, validatePlacementPublicationFact, publicationFileNames,
   PLACEMENT_PUBLICATION_RECORD_MAX_BYTES, type PlacementPublicationRoot, type PlacementPublicationBundle, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
 import { PlacementProjection } from "./sync-placement-projection.ts";
+import { WRITER_RENEWAL_INTENT_FILE, WRITER_RENEWAL_INTENT_MAX_BYTES, WRITER_COMMIT_LOG, writerHistoryFileLimit, writerRevisionFile } from "./sync-placement-writer-revision-format.ts";
+import { isWriterRenewalIntentTempName } from "./sync-placement-writer-history.ts";
 
 export type PlacementStoragePhase = "epoch-written" | "epoch-fsync" | "activation-written" | "activation-fsync" | "fence-written" | "fence-fsync"
   | "intent-written" | "intent-fsync" | "chunk-written" | "chunk-fsync" | "intent-cleared"
@@ -53,7 +55,18 @@ function names(dir: string, maximum: number): string[] {
   finally { reader.closeSync(); }
   return result.sort();
 }
-function inventory(p: Paths): { files: Map<string, BigIntStats>; token: string } {
+function renewalIntentObjects(home:string):{count:number;token:unknown[]} {
+  const token:unknown[]=[];
+  for(const name of names(home,20000)){
+    if(name!==WRITER_RENEWAL_INTENT_FILE&&!isWriterRenewalIntentTempName(name))continue;
+    const s=lstatSync(join(home,name),{bigint:true});
+    if(!s.isFile()||s.isSymbolicLink()||s.uid!==BigInt(process.getuid?.()??-1)||(s.mode&0o777n)!==0o600n||![1n,2n].includes(s.nlink))fail();
+    if(s.size>BigInt(WRITER_RENEWAL_INTENT_MAX_BYTES))fail("bound");
+    token.push([name,String(s.dev),String(s.ino),String(s.size),String(s.nlink),String(s.mtimeNs),String(s.ctimeNs)]);
+  }
+  return{count:token.length,token};
+}
+function inventory(p: Paths): { files: Map<string, BigIntStats>; token: string; renewalObjects:number } {
   const parents: unknown[] = [];
   for (const dir of [p.home, p.root, p.epochs, p.dir]) { const stat = state(dir, true); parents.push([dir, stat ? [String(stat.dev), String(stat.ino)] : null]); }
   if (state(p.root, true)) for (const name of names(p.root, 2)) {
@@ -63,15 +76,17 @@ function inventory(p: Paths): { files: Map<string, BigIntStats>; token: string }
   const files = new Map<string, BigIntStats>();
   if (state(p.dir, true)) for (const name of names(p.dir, PLACEMENT_JOURNAL_MAX_OBJECTS - 1)) {
     const chunk = /^records-\d{5}\.jsonl$/.test(name);
-    if (!chunk && !publicationName(name) && !["epoch.json", "activation.json", "append-intent.json"].includes(name)) fail();
+    const writerLimit=writerHistoryFileLimit(name);
+    if (!chunk && !publicationName(name) && writerLimit===undefined && !["epoch.json", "activation.json", "append-intent.json"].includes(name)) fail();
     const stat = state(join(p.dir, name))!;
-    if (stat.size > BigInt(chunk || /-chunk-\d{5}\.json$/.test(name) ? PLACEMENT_JOURNAL_CHUNK_MAX_BYTES : PLACEMENT_JOURNAL_ROOT_MAX_BYTES)) fail("bound");
+    if (stat.size > BigInt(writerLimit??(chunk || /-chunk-\d{5}\.json$/.test(name) ? PLACEMENT_JOURNAL_CHUNK_MAX_BYTES : PLACEMENT_JOURNAL_ROOT_MAX_BYTES))) fail("bound");
     files.set(name, stat);
   }
   // One global active.json slot is always reserved, whether that fence exists yet or not.
-  if (files.size + 1 > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
+  const renewal=renewalIntentObjects(p.home);
+  if (files.size + 1 + renewal.count > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
   const fence = state(join(p.root, "active.json"));
-  return { files, token: canonicalJSON({ parents, files: [...files].map(([name, stat]) => [name, String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)]),
+  return { files, renewalObjects:renewal.count, token: canonicalJSON({ parents, renewal:renewal.token, files: [...files].map(([name, stat]) => [name, String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)]),
     fence: fence ? [String(fence.dev), String(fence.ino), String(fence.size), String(fence.mtimeNs), String(fence.ctimeNs)] : null }) };
 }
 function readOwned(file: string, maximum: number): Buffer | undefined {
@@ -152,7 +167,7 @@ function snapshot(p: Paths): Snapshot {
   if ((records.length > 0 || pendingBytes !== undefined) && (!activeFence || fencePending || activeFence.epochHash !== p.hash
     || activeFence.homeHash !== epoch.homeHash || activeFence.generation !== epoch.generation)) fail();
   if (inventory(p).token !== before.token) fail("changed");
-  return { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}) };
+  return { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1 + before.renewalObjects, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}) };
 }
 export function readPlacementJournal(home: string, epochHash: string): PlacementJournalRead {
   return protectedIO(() => {
@@ -168,12 +183,30 @@ export function readPlacementJournal(home: string, epochHash: string): Placement
     if (inventory(p).token !== before) fail("changed"); return result;
   });
 }
+/** Writer history only needs the authoritative row prefix, including during owned publication-root writes.
+ * Full transport/recovery still uses readPlacementJournal and its reservation proof. */
+export function readPlacementWriterJournalAnchors(home:string,epochHash:string):Pick<PlacementJournalRead,"epoch"|"activation"|"records"|"sequence"|"headHash"> {
+  return protectedIO(()=>{
+    const read=snapshot(paths(home,epochHash));
+    return{epoch:read.epoch,activation:read.activation,records:read.records,sequence:read.sequence,headHash:read.headHash};
+  });
+}
 function current(p: Paths, opts: PlacementStorageOptions, required: readonly string[] = []): void {
   try { assertMutationHandle(opts.mutation, p.home); } catch { return fail("busy"); }
   try { opts.assertCurrent(); } catch (error) { if (knownError(error)) throw error; return fail("changed"); }
   try { assertMutationHandle(opts.mutation, p.home); } catch { return fail("busy"); }
   const found = inventory(p), names = new Set([...found.files.keys(), ...required, ...reservedPublicationJournalNames(p)]);
-  if (names.size + 1 > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
+  if(found.renewalObjects)fail("pending");
+  if (names.size + 1 + found.renewalObjects > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
+}
+/** One shared budget includes the outside intent and its transient immutable-publication companion. */
+export function writerRenewalCapacity(home:string,epochHash:string,sequence:number):{objects:number;remainingObjects:number} {
+  return protectedIO(()=>{
+    const p=paths(home,epochHash),found=inventory(p),next=new Set([...found.files.keys(),...reservedPublicationJournalNames(p),WRITER_COMMIT_LOG,writerRevisionFile(sequence)]);
+    const objects=next.size+1+Math.max(2,found.renewalObjects);
+    if(objects>PLACEMENT_JOURNAL_MAX_OBJECTS)fail("bound");
+    return{objects,remainingObjects:PLACEMENT_JOURNAL_MAX_OBJECTS-objects};
+  });
 }
 function writer<T>(home: string, epochHash: string, opts: PlacementStorageOptions, work: (p: Paths) => T, incompleteAttempt?: string, preflight?: readonly string[] | ((p: Paths) => readonly string[])): T {
   return protectedIO(() => {

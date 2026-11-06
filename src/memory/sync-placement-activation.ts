@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { types } from "node:util";
 import { canonicalJSON, hashJSON, withProfileLock, writeProfileJSON, fsyncDirectory } from "./generation.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
-import { generationSyncLock } from "./generation-sync.ts";
+import { withPlacementActivationFences, PlacementInventoryFenceError } from "./sync-placement-activation-locks.ts";
 import { assertNoLiveReaders } from "./reader-lease.ts";
 import { realPath } from "./platform.ts";
 import { planSyncPlacementActivation, validateSyncPlacementActivation, SyncPlacementPlanError } from "./sync-placement-plan.ts";
@@ -23,12 +23,16 @@ import { requirePlacementActivationPrerequisites, requirePlacementHomeFloor } fr
 import { outboundPolicyEvaluator, type SyncPolicyCategory } from "./sync-screen.ts";
 import { initialPlacementWriterContext, previewActivePlacementWriters, PlacementWriterContextError, type PlacementWriterContext } from "../sync-placement-writer-context.ts";
 import { abandonPlacementActivation, PlacementActivationAbandonError } from "./sync-placement-abandon.ts";
+import { renewSyncPlacementWriters } from "./sync-placement-writer-renewal.ts";
+import type { WriterHistoryPhase } from "./sync-placement-writer-history.ts";
 
 export type PlacementActivationStage = "after-intent"|"after-epoch"|"after-root-map"|"after-shards"|"after-profile"|"after-fence"|"after-remove";
 export interface PlacementActivationOptions {
   memoryDir: string; mode: "dry-run"|"apply"|"resume"|"abandon"; writerRoots: readonly string[]; ownRoot: string;
   authorize(binding: Readonly<{seal:string;generation:string;homeHash:string}>): boolean;
   checkpoint?(stage: PlacementActivationStage): void|Promise<void>;
+  /** Internal renewal fault seam; the CLI never supplies it. */
+  renewalCheckpoint?(stage:WriterHistoryPhase):void;
   /** Internal fault-test observer, never supplied by CLI options. */
   testOnlyFailure?(error: unknown): void;
 }
@@ -51,6 +55,7 @@ function writerInputFailure(error:unknown):never {
 function fail(cause: PlacementActivationError["causeClass"]): never { throw new PlacementActivationError(cause); }
 function rethrowActivationFailure(error:unknown):never {
     if(error&&typeof error==="object"&&!types.isProxy(error)){
+      if(error instanceof PlacementInventoryFenceError)fail(error.causeClass);
       if(error instanceof PlacementWriterContextError||error instanceof PlacementActivationError||error instanceof PlacementActivationInputError||error instanceof PlacementActivationAbandonError)throw error;
       if(error instanceof SyncPlacementJournalError||error instanceof SyncPlacementPlanError||error instanceof SyncPlacementWriterError){
         const code=Object.getOwnPropertyDescriptor(error,"code");
@@ -87,22 +92,6 @@ function authorize(options:PlacementActivationOptions,intent:Pick<PlacementActiv
   let okay=false;try{okay=options.authorize(Object.freeze({seal:intent.plan.seal,generation:intent.epoch.generation,homeHash:intent.epoch.homeHash}))===true;}catch{fail("authorization");}
   if(!okay)fail("authorization");
 }
-async function fenced<T>(home:string,directories:readonly string[],work:(mutation:MutationHandle,owner:ReturnType<typeof createPlacementActivationOwner>)=>Promise<T>):Promise<T> {
-  return withProfileLock(home,async()=>{
-    const releases:(()=>void)[]=[];
-    try {
-      const transports=["shard-sync","shard-sync-placement"].map(name=>join(home,name)).filter(dir=>lstatSync(dir,{throwIfNoEntry:false})!==undefined);
-      const dirs=[...new Set([home,...directories,...transports])].sort();let mutation:MutationHandle|undefined;
-      for(const dir of dirs){
-        try{assertNoLiveReaders(dir,{includeShards:true});}catch{fail("readers");}
-        const handle=acquireMutation(dir);if(!handle)fail("busy");releases.push(handle);if(dir===home)mutation=handle;
-      }
-      if(!mutation)fail("busy");
-      for(const dir of [home,...transports]){const release=generationSyncLock(dir);if(!release)fail("busy");releases.push(release);}
-      const owner=createPlacementActivationOwner(home,mutation);return await work(mutation,owner);
-    }finally{for(const release of releases.reverse())release();}
-  });
-}
 async function finishCommittedActivation(home:string,binding:Pick<PlacementActivationIntent,"epoch"|"plan">,options:PlacementActivationOptions,
   mutation:MutationHandle,owner:ReturnType<typeof createPlacementActivationOwner>,intent?:PlacementActivationIntent,report?:ReturnType<typeof counts>) {
   const epochHash=placementEpochHash(binding.epoch);
@@ -119,10 +108,13 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
   let home:string;
   try{home=realPath(options.memoryDir);}catch{throw Error("Sync placement memory home is unavailable; select an existing private home and run amem migrate --sync-placement --dry-run.");}
   const pending=readPlacementActivationIntent(home);
+  if(!pending&&requirePlacementActivationPrerequisites(home).active){
+    const renewed=await renewSyncPlacementWriters(options);if(renewed)return renewed;
+  }
   if(options.mode==="abandon"){
     if(!pending)throw Error("No initial sync placement intent is retained; use amem migrate --sync-placement --dry-run to inspect the home. Active v3 placement cannot be abandoned or downgraded.");
     const dirs=pending.plan.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
-    return fenced(home,dirs,async(mutation,owner)=>{
+    return withPlacementActivationFences(home,dirs,async(mutation,owner)=>{
       authorize(options,pending);
       abandonPlacementActivation(home,pending,{mutation,assertCurrent:()=>assertPlacementActivationOwner(owner)});
       return{mode:options.mode,active:false,abandoned:true,forwardOnly:true,nextStep:"amem migrate --sync-placement --dry-run"};
@@ -134,27 +126,16 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
   if(options.mode==="resume"&&!pending){
     if(!initialBase?.active)throw Error("No retained sync placement activation exists; run amem migrate --sync-placement --dry-run to review an initial activation.");
     const active=initialBase.active,dirs=active.activation.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
-    return fenced(home,dirs,(mutation,owner)=>finishCommittedActivation(home,{epoch:active.epoch,plan:active.activation},options,mutation,owner)).catch(error=>rethrowActivationFailure(error));
+    return withPlacementActivationFences(home,dirs,(mutation,owner)=>finishCommittedActivation(home,{epoch:active.epoch,plan:active.activation},options,mutation,owner)).catch(error=>rethrowActivationFailure(error));
   }
   if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume, or person --abandon while both markers retain the original v2 bytes, before reviewing a new --dry-run.");
-  if(!pending){
-    const base=initialBase!;
-    if(base.active){
-      const difference=previewActivePlacementWriters(home,options.ownRoot,options.writerRoots);
-      if(options.mode==="apply"){
-        if(!difference.matches)throw new PlacementWriterContextError(difference.refusalCategory,"changed");
-        throw Error("Sync placement is already active (active locator category); restore the inventoried install, or renew the writer inventory with an amem release that supports renewal. Preview differences with amem migrate --sync-placement --dry-run.");
-      }
-      return{mode:options.mode,active:true,forwardOnly:true,renewalSupported:false,writers:difference,source:counts(previewSyncPlacementSources(home))};
-    }
-  }
   const source=pending?undefined:previewSyncPlacementSources(home);
   const writer=pending?undefined:initialPlacementWriterContext(home,options.writerRoots,options.ownRoot);
   const report=source?counts(source):undefined;
   if(options.mode==="dry-run")return{mode:options.mode,active:false,forwardOnly:true,quiescence:"deferred-to-apply",realms:source!.base.realms.length,writers:writer!.measurement.roots,source:report};
   if(!pending&&!options.writerRoots.length)throw Error("Initial sync placement apply requires an explicit complete --writer-root inventory; run amem migrate --sync-placement --dry-run, then apply the reviewed roots.");
   const directories=pending?pending.plan.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16))):source!.directories;
-  try{return await fenced(home,directories,async(mutation,owner)=>{
+  try{return await withPlacementActivationFences(home,directories,async(mutation,owner)=>{
     let intent=pending;
     const initialCheck=()=>{assertPlacementActivationOwner(owner);source!.assertSourcesUnchanged();writer!.attest();if(requirePlacementHomeFloor(home)!==initialFloorHash)fail("changed");};
     if(!intent){

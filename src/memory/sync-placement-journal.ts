@@ -10,7 +10,7 @@ import { outboundPolicyEvaluator, type RowScreen } from "./sync-screen.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { planSyncPlacementActivation, validatePlacementPlan, validateSyncPlacementActivation, type SyncPlacementActivationPlan } from "./sync-placement-plan.ts";
-import { captureSyncPlacementContext, type PlacementCapturePort, type PlacementCapture } from "./sync-placement-capture.ts";
+import { captureSyncPlacementContext, placementCaptureContextHash, type PlacementCapturePort, type PlacementCapture } from "./sync-placement-capture.ts";
 import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, validatePlacementEpoch, validatePlacementKey, validatePlacementEvent,
   SyncPlacementJournalError, type PlacementEpoch, type PlacementKey, type PlacementCommittedOutcome, type PlacementAmbiguousOutcome } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection } from "./sync-placement-projection.ts";
@@ -86,7 +86,7 @@ function active(home: string, input: PlacementEffectRequest, port: PlacementCapt
   if (capture.activeHead !== input.epochHash || journal.epoch.homeHash !== capture.context.homeHash
     || journal.epoch.generation !== (capture.context.profile as { generation: string }).generation
     || journal.activation.targetProfile.placementHead !== input.epochHash
-    || canonicalJSON(capture.context.writers) !== canonicalJSON(journal.activation.writers)
+    || canonicalJSON(capture.context.writers) !== canonicalJSON(capture.writerInventory?.writers??journal.activation.writers)
     || canonicalJSON(capture.context.realms.map(({ bindingHash: _hash, ...identity }) => identity))
       !== canonicalJSON(journal.activation.realms.map(({ bindingHash: _hash, ...identity }) => identity))) fail("changed");
   const markers = readPlacementRuntimeMarkers(capture.home), profile = validatePlacementProfile(markers.profile);
@@ -116,7 +116,7 @@ function effect(home: string, raw: PlacementEffectRequest, port: PlacementJourna
       if (!outboundPolicyEvaluator(capture.home, port.screen)(source.row as unknown as Record<string, unknown>).ok) fail("policy");
       partial = { ...fields, kind: "release" };
     } else partial = { ...fields, kind: decision.kind, outcome: decision.outcome };
-    const effectHash = hashJSON({ event: partial, expectedHead: input.expectedHead, markerHash: capture.markerHash, contextHash: hashJSON(capture.context) });
+    const effectHash = hashJSON({ event: partial, expectedHead: input.expectedHead, markerHash: capture.markerHash, contextHash: placementCaptureContextHash(capture) });
     const event = validatePlacementEvent({ ...partial, effectHash });
     if (decision.kind === "release" || decision.kind === "hold" && decision.mode === "person") person(port, decision.kind, effectHash, { epochHash: input.epochHash, key: Object.freeze({ ...input.key, realm: Object.freeze({ ...input.key.realm }) }),
       expectedHead: input.expectedHead, policyHash: capture.context.policyHash });
