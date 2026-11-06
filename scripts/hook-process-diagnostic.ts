@@ -29,7 +29,7 @@ export function hookProcessDiagnostic(input:HookDiagnosticInput) {
       spawnMs:time(spawn),exitPromiseMs:time(exit),killRequestMs:time(kill),reapStartMs:time(reapStart),reapEndMs:time(reapEnd),outputEndMs:time(output),
       reaped:reapEnd?.reaped===1?true:reapEnd?.reaped===0?false:null,outputLate:output?.late===1?true:output?.late===0?false:null,
       outputAvailable:output?.outputAvailable===1?true:output?.outputAvailable===0?false:null,
-      rss:rss?{source:rss.source??null,known:numeric(rss.known),kb:numeric(rss.kb),rawKB:numeric(rss.rawKB),observationFailed:numeric(rss.observationFailed),
+      rss:rss?{source:["VmHWM","vmpeak-bound","platform-rusage","raw-fallback","unavailable"].includes(rss.source??"")?rss.source:null,known:numeric(rss.known),kb:numeric(rss.kb),rawKB:numeric(rss.rawKB),observationFailed:numeric(rss.observationFailed),
         counters:{vmhwm:numeric(rss.vmhwm),vmpeakBound:numeric(rss.vmpeakBound),platformRusage:numeric(rss.platformRusage),rawFallback:numeric(rss.rawFallback),unavailable:numeric(rss.unavailable)}}:null,
       relativeToWorkerExitedWindowMs:{spawn:relative(spawn),exitPromise:relative(exit),reapStart:relative(reapStart),reapEnd:relative(reapEnd)},
       receiptComplete:!!spawn&&!!exit&&!!reapEnd};

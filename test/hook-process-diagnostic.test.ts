@@ -4,6 +4,8 @@ import type { HookLifecycleReceipt } from "./fakes/hooks-process-observer.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
+import { symlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 const row=(phase:HookLifecycleReceipt["phase"],atMs:number,extra:Partial<HookLifecycleReceipt>={}):HookLifecycleReceipt=>({phase,atMs,parentPid:10,childPid:20,kind:"worker",...extra});
 function input(lifecycle:HookLifecycleReceipt[]){return{event:"Stop" as const,run:12,logicalRun:32,parentPid:10,expectedOwnedChildren:1,expectation:"fixture-contract" as const,
@@ -36,8 +38,9 @@ test("native receipts share the parent's clock but do not invent a worker window
   expect(diagnostic.children[0]).toMatchObject({kind:"native",reaped:true,relativeToWorkerExitedWindowMs:{exitPromise:null}});
 });
 test("failure metadata projects no argv, source body, path or unexpected properties",()=>{
-  const value=input([row("spawn-attempt",100,{childPid:0}),row("spawn",101)]);
+  const value=input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("rss-finish",102)]);
   Object.assign(value,{text:"PRIVATE_CANARY",path:"PRIVATE_CANARY"});Object.assign(value.workers[0]!,{text:"PRIVATE_CANARY"});Object.assign(value.lifecycle[0]!,{path:"PRIVATE_CANARY"});
+  Object.assign(value.lifecycle[2]!,{source:"PRIVATE_CANARY"});
   expect(JSON.stringify(hookProcessDiagnostic(value))).not.toMatch(/PRIVATE_CANARY|private\/canary|private row body/);
 });
 test("diagnostic overflow is explicit and bounded rather than silently claiming complete observation",()=>{
@@ -46,7 +49,8 @@ test("diagnostic overflow is explicit and bounded rather than silently claiming 
   const diagnostic=hookProcessDiagnostic(value);expect(diagnostic.truncated).toBe(true);expect(diagnostic.children).toHaveLength(128);expect(diagnostic.observedOwnedChildren).toBe(129);
 });
 test("the real preload records spawn, native and worker exit/reap receipts without changing hook assertions",async()=>{
-  const f=hookFixture(),observer=hookProcessObserver(f.root);
+  const f=hookFixture(),alias=join(f.root,"source-root-alias");symlinkSync(resolve(import.meta.dir,".."),alias);
+  const observer=hookProcessObserver(f.root,false,alias);
   try{
     await f.seed();const result=f.runFunctional("Stop",{prompt:"numeric observer fixture"},{BUN_OPTIONS:`--preload=${observer.preload}`});
     expect(result.exitCode,result.stderr.toString()).toBe(0);

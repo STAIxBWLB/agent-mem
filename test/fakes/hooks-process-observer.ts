@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { realPath } from "../../src/memory/platform.ts";
 
 export interface HookLifecycleReceipt {
   phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
@@ -18,7 +19,7 @@ export function hookProcessObserver(root: string, stallWorker = false, sourceRoo
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
   const nativePidFile = join(root, "owned-native.pid"), entered = join(root, "owned-native.entered");
   const lifecycle = join(root, "hook-child-lifecycle.jsonl");
-  const worker = join(sourceRoot, "src/session-brief-worker.ts");
+  const worker = join(realPath(sourceRoot), "src/session-brief-worker.ts");
   writeFileSync(preload, `import {appendFileSync,readFileSync,writeFileSync} from 'node:fs';
 const worker=${JSON.stringify(worker)},receipt=${JSON.stringify(receipt)},preload=${JSON.stringify(preload)},stallWorker=${stallWorker};
 const loads=globalThis[Symbol.for('amem.hook.observer.loads')]=(globalThis[Symbol.for('amem.hook.observer.loads')]??0)+1;
