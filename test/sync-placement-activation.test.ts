@@ -58,6 +58,11 @@ for(const phase of ["after-intent","after-epoch","after-root-map","after-shards"
     const f=await fixture(),child=Bun.spawnSync([process.execPath,join(import.meta.dir,"fakes/sync-placement-activation-crash.ts"),f.base,ownRoot,phase],{cwd:f.cwd,env:f.env,stdout:"pipe",stderr:"pipe",timeout:30_000});
     expect(child.exitCode).not.toBe(0);expect(child.stdout.toString(),child.stderr.toString()).toContain(phase);
     if(!["after-fence","after-remove"].includes(phase))expect(()=>openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true})).toThrow();
+    if(["after-shards","after-profile","after-fence"].includes(phase)){
+      const names=["profile.json","shards.json","sync-placement-activation.json","sync-placement-writer-roots.json"],before=names.map(name=>readFileSync(join(f.base,name)));
+      await expect(activateSyncPlacement(f.options("abandon"))).rejects.toThrow("forward --resume");
+      expect(names.map(name=>readFileSync(join(f.base,name)))).toEqual(before);
+    }
     const beforeResume=readFileSync(join(f.base,"formats.json"));
     const result=await activateSyncPlacement(f.options("resume"));expect(result.active).toBe(true);
     expect(readFileSync(join(f.base,"formats.json"))).toEqual(beforeResume);
@@ -120,7 +125,10 @@ test("postcommit source and policy progress do not turn cleanup into a stale-pla
 
 test("live reader and person refusal never publish an activation intent",async()=>{
   const f=await fixture(),store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});
-  try{await expect(activateSyncPlacement(f.options("apply"))).rejects.toThrow("readers");}finally{store.close();}
+  try{
+    let error:unknown;try{await activateSyncPlacement(f.options("apply"));}catch(caught){error=caught;}
+    expect(error).toBeInstanceOf(PlacementActivationError);expect((error as PlacementActivationError).causeClass).toBe("readers");expect((error as Error).message).toContain("--dry-run before retrying apply");
+  }finally{store.close();}
   expect(existsSync(join(f.base,"sync-placement-activation.json"))).toBe(false);
   const options=f.options("apply");options.authorize=()=>false;
   await expect(activateSyncPlacement(options)).rejects.toThrow("authorization");
