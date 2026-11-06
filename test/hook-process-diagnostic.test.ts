@@ -5,7 +5,8 @@ import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
 import type { MetricSample } from "../src/memory/metrics.ts";
-import { readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { HookWorkerPhase } from "./fakes/hooks-worker-phases.ts";
 
@@ -47,6 +48,24 @@ if(typeof timer.ref!=='function'||typeof timer.unref!=='function')throw Error('t
     expect(fired?.timerWindowChildPid).toBe(999);expect(Number.isFinite(fired?.timerLagMs)).toBe(true);
     expect(end?.timerId).toBe(fired?.timerId);expect(end?.timerLagMs).toBe(fired?.timerLagMs);
   }finally{f.close();}
+});
+test("raw numeric receipts survive fake-home cleanup without copying memory rows",async()=>{
+  const archive=mkdtempSync(join(tmpdir(),"amem-phase-archive-")),previous=process.env.AMEM_TEST_PHASE_ARTIFACTS,f=hookFixture();
+  process.env.AMEM_TEST_PHASE_ARTIFACTS=archive;
+  const observer=hookProcessObserver(f.root,false,undefined,true,true);observer.preserveBeforeClose(f);
+  try{
+    await f.seed();const transcript=join(f.root,"transcript.jsonl");
+    writeFileSync(transcript,JSON.stringify({type:"ai-title",aiTitle:"PRIVATE_CAPTURE_CANARY",timestamp:new Date().toISOString()})+"\n");
+    const result=f.runFunctional("Stop",{transcript_path:transcript},{BUN_OPTIONS:`--preload=${observer.preload}`});
+    expect(result.exitCode,result.stderr.toString()).toBe(0);f.close();expect(existsSync(f.root)).toBe(false);
+    const folder=join(archive,readdirSync(archive)[0]!);
+    expect(readdirSync(folder).sort()).toEqual(["admission.jsonl","parent-lifecycle.jsonl","worker-phases.jsonl"]);
+    expect(readFileSync(join(folder,"worker-phases.jsonl"),"utf8")).not.toContain("PRIVATE_CAPTURE_CANARY");
+    expect(readFileSync(join(folder,"worker-phases.jsonl"),"utf8")).toContain('"phase":1');
+  }finally{
+    f.close();if(previous===undefined)delete process.env.AMEM_TEST_PHASE_ARTIFACTS;else process.env.AMEM_TEST_PHASE_ARTIFACTS=previous;
+    rmSync(archive,{recursive:true,force:true});
+  }
 });
 test("reaped exit with late output does not become an abandoned worker",()=>{
   const diagnostic=hookProcessDiagnostic(input([row("spawn-attempt",100,{childPid:0}),row("spawn",101),row("exit",120),row("reap-start",121,{boundMs:10}),row("reap-end",121,{reaped:1}),row("output-end",132,{late:1})]));
