@@ -293,10 +293,11 @@ try {
   // Logical sample counts and limits stay unchanged; physical stalls are counted separately.
   const timeoutPaths = [];
   for (const event of ["SessionStart", "PreToolUse"] as const) {
+    let physicalRun=0;
     const sample = await budgetSample(`actual-${event}-timeout`, async () => {
       const timeoutFixture = hookFixture();
       try {
-        const value = await hookTimeoutProbe(timeoutFixture, event, false);
+        const value = await hookTimeoutProbe(timeoutFixture, event, false,{run:++physicalRun,logicalRun:event==="SessionStart"?1:2});
         if (!(value.rssMB < RSS_MB)) throw new Error(`actual ${event} timeout exceeded R2 peak: wall=${value.wallMs}, rss=${value.rssMB}, source=${value.rssSource}, sources=${JSON.stringify(value.rssSources)}`);
         if (!(value.wallMs < WALL_MS)) throw new BudgetStall(`actual ${event} timeout wall below 150 ms`, { wallMs: value.wallMs, rssMB: value.rssMB, limitMs: WALL_MS, rssSource: value.rssSource, rssSourcesJson: JSON.stringify(value.rssSources) });
         return value;

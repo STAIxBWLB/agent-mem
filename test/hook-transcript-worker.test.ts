@@ -6,6 +6,8 @@ import { readMetrics } from "../src/memory/metrics.ts";
 import { rssSourcesKnown, validRssSources } from "../src/hook-resources.ts";
 import { HANDLER_MS } from "../src/hooks.ts";
 import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
+import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
+import { hookProcessDiagnostic } from "../scripts/hook-process-diagnostic.ts";
 /** Existing worker-path fixtures below use an explicit functional host deadline where named. Their relative bounds are
  * not native 140/300 ms R2 proof; the hosted budget harness provides that proof. The slow-append regression uses a
  * lightweight child-only CaptureStore stand-in and an explicit host deadline so its blocked append is reached. */
@@ -109,6 +111,7 @@ test("a final hook reaps blocked directly owned metadata before writing known RS
 
 for (const platform of ["linux", "darwin-codepath"] as const) for (const event of ["Stop", "SessionEnd"] as const) test("a slow synchronous capture statement remains killable with known child provenance: " + platform + " " + event, async () => {
   const f = hookFixture(), preload = join(f.root, "slow-store.ts"), entered = join(f.root, "slow-store-entered"), transcript = join(f.root, "slow-transcript.jsonl");
+  const observer=hookProcessObserver(f.root);
   const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(transcript, JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: "summary before slow store" }) + "\n");
   writeFileSync(preload, `import {readFileSync,writeFileSync} from 'node:fs';
@@ -119,7 +122,8 @@ Bun.plugin({name:'slow-store',setup(b){b.onLoad({filter:/[/]memory[/]capture\\.t
  if(source.split(anchor).length!==2)throw Error('slow store anchor changed');
  return {loader:'ts',contents:source.replace(anchor,anchor+'(globalThis as any).__slowCapture();')};
 });}});
-const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);`);
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
+await import(${JSON.stringify(observer.preload)});`);
   try {
     await f.seed();
     const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
@@ -127,7 +131,11 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms
     // behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
-    expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); expect(rssSourcesKnown(metric.rssSources!)).toBe(true); expect(metric.rssSources!.unavailable).toBe(0);
+    const evidence=observer.evidence().filter(row=>row.pid===result.pid);
+    const diagnostic=JSON.stringify(hookProcessDiagnostic({event,variant:platform,run:1,logicalRun:(platform==="linux"?0:2)+(event==="Stop"?1:2),parentPid:result.pid,expectedWorkerChildren:1,
+      expectedOwnedChildren:evidence.some(row=>row.phase==="preload")?evidence.filter(row=>row.phase==="attempt"&&row.exact===1).length:null,expectation:"observed-spawn-attempts",
+      workers:observer.read(),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576}));
+    expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); expect(rssSourcesKnown(metric.rssSources!),diagnostic).toBe(true); expect(metric.rssSources!.unavailable,diagnostic).toBe(0);
     if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
     expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
