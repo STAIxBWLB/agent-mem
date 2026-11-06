@@ -29,11 +29,6 @@ jobs:
       # ponytail: cached weights only balance two shards; new files use Bun's median.
       # Refresh on dgx02: bun test --timings=test/ci-timings.json --update-timings
       - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/2 --timings=test/ci-timings.json
-      - name: Temporary gate failure control for issue 283
-        if: matrix.os == 'ubuntu-latest' && matrix.shard == 1
-        run: |
-          echo '::error::Intentional issue 283 failure control after completed tests; remove this temporary step after both check names fail.'
-          exit 1
   measure:
     timeout-minutes: 30
     strategy:
