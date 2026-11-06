@@ -80,7 +80,7 @@ function realmBinding(home: string, realms: Realm[]): void {
   for (const realm of realms) guard(metadata(realm.profile) === realm.metadata);
 }
 /** Atomic create-once publication, recovering only this exact complete staging pair. */
-function immutable(file: string, text: string): void {
+export function writeImmutableActivationMetadata(file: string, text: string): void {
   const base = dirname(file); if (!lstatSync(base, { throwIfNoEntry: false })) { mkdirSync(base, { mode: 0o700 }); fsyncDirectory(dirname(base)); } owned(base, true);
   const bytes = Buffer.from(text), temp = file + ".pending-" + createHash("sha256").update(bytes).digest("hex");
   if (lstatSync(file, { throwIfNoEntry: false })) {
@@ -231,7 +231,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
       const dirs = [...new Set([home, ...intent.realms.map(realm => realm.profile.dir)])].sort();
       for (const dir of dirs) { assertNoLiveReaders(dir, {includeShards:true}); const release = acquireMutation(dir); guard(release); releases.push(release); }
       validateAdvance(intent);
-      if (pending) immutable(intentFile, canonicalJSON(intent) + "\n");
+      if (pending) writeImmutableActivationMetadata(intentFile, canonicalJSON(intent) + "\n");
       if (!pending) {
         guard(readProfileBytes(home) === intent.previousProfile && raw(join(home, "shards.json")) === intent.previousShards && aliases(home) === intent.aliases);
         realmBinding(home, intent.realms);
@@ -240,14 +240,14 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
         }) }, home);
       }
       const viewHash = publicPruneViewHash(intent.view);
-      immutable(join(home, "public-prune-input-sets", viewHash + ".json"), canonicalJSON(intent.view) + "\n");
+      writeImmutableActivationMetadata(join(home, "public-prune-input-sets", viewHash + ".json"), canonicalJSON(intent.view) + "\n");
       readPublicPruneViewForActivation(home, viewHash, intent.generation);
       let profile = readProfileBytes(home), shards = raw(join(home, "shards.json"));
       guard((profile === intent.previousProfile || profile === intent.finalProfile) && (shards === intent.previousShards || shards === intent.finalShards));
       guard(profile !== intent.finalProfile || shards === intent.finalShards);
       verify(intent, profile, shards); for (const realm of intent.realms) syncIndex(nextProfile(realm, intent));
       if (!pending && profile === intent.finalProfile && shards === intent.finalShards) return { mode: options.mode, generation: intent.generation, active: true, alreadyActive: true, realms: intent.realms.length, viewHash, maskBuildCheck: "verified" };
-      immutable(intentFile, canonicalJSON(intent) + "\n");
+      writeImmutableActivationMetadata(intentFile, canonicalJSON(intent) + "\n");
       await options.checkpoint?.("after-intent"); verify(intent, profile, shards);
       if (shards !== intent.finalShards) { writeProfileJSON(join(home, "shards.json"), JSON.parse(intent.finalShards)); shards = intent.finalShards; }
       await options.checkpoint?.("after-shards"); verify(intent, profile, shards);

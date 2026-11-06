@@ -19,6 +19,7 @@ import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
 import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
+import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -40,10 +41,13 @@ export interface PlacementCapture {
   /** Under live writer fences, inode/ctime/size checks protect the already-hashed prefixes across callbacks without reparsing rows. */
   assertUnchanged(): void;
 }
+export interface PlacementActivationMarkerSnapshot {
+  profileText: string; shardsText: string; profileStamp: [string,string,string,string,string]; shardsStamp: [string,string,string,string,string];
+}
 /** Source facts only: no writer attestation, quiescence claim or effect authority. */
 export interface PlacementSourcePreview {
   home: string; base: Omit<SyncPlacementActivationContext, "writers" | "legacySyncQuiesced">;
-  activeHead?: string; markerHash: string; directories: string[]; prefixes: PlacementPublicationSource[];
+  activeHead?: string; markerHash: string; markers: PlacementActivationMarkerSnapshot; directories: string[]; prefixes: PlacementPublicationSource[];
   rows: Map<string, PlacementSourceRow>; specialRows: Map<string, PlacementSpecialSourceRow>;
   sourceRowsByRealm: Map<string, readonly PruneSourceRow[]>; assertSourcesUnchanged(): void;
 }
@@ -58,7 +62,7 @@ function ownedDirectory(dir: string): BigIntStats {
 }
 /** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
  * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
-function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string): PlacementSourcePreview {
+function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof): PlacementSourcePreview {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
     if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
@@ -94,7 +98,17 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     const input = bytes(file, optional); if (!input) return undefined;
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input));
   };
-  const rawProfile = json(join(home, "profile.json")), rawShards = json(join(home, "shards.json"));
+  const markerStart = facts.length;
+  const profileBytes = bytes(join(home, "profile.json"))!, shardsBytes = bytes(join(home, "shards.json"))!;
+  const actualMarkers: PlacementActivationMarkerSnapshot = { profileText: profileBytes.toString("utf8"), shardsText: shardsBytes.toString("utf8"),
+    profileStamp: [...(facts[markerStart] as [string,PlacementActivationMarkerSnapshot["profileStamp"],string])[1]], shardsStamp: [...(facts[markerStart+1] as [string,PlacementActivationMarkerSnapshot["shardsStamp"],string])[1]] };
+  const markers = ownerProof ? activationSourceMarkers(ownerProof,home,actualMarkers) : actualMarkers;
+  if (ownerProof) {
+    facts[markerStart] = [join(home,"profile.json"),markers.profileStamp,digest(Buffer.from(markers.profileText))];
+    facts[markerStart+1] = [join(home,"shards.json"),markers.shardsStamp,digest(Buffer.from(markers.shardsText))];
+  }
+  const decodeMarker = (text: string): unknown => JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.from(text)));
+  const rawProfile = decodeMarker(markers.profileText) as { schema?: string }, rawShards = decodeMarker(markers.shardsText);
   let activeHead: string | undefined;
   let base: ReturnType<typeof validatePlacementBaseV2>;
   if (rawProfile?.schema === PLACEMENT_PROFILE_SCHEMA) {
@@ -113,7 +127,10 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   const machine = json(join(home, "machine.json"));
   if (machine?.id !== base.shards.machine.id) fail();
   // An in-flight migration/prune is never accepted as a stable placement source.
-  for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) if (lstatSync(join(home, name), { throwIfNoEntry: false })) fail();
+  for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) {
+    if (name === "profile.lock" && ownerProof) continue; // The module-private proof validated this exact live owner and sealed intent.
+    if (lstatSync(join(home,name),{throwIfNoEntry:false})) fail();
+  }
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
   const rows = new Map<string, PlacementSourceRow>(), specialRows = new Map<string, PlacementSpecialSourceRow>(), sourceRowsByRealm = new Map<string, readonly PruneSourceRow[]>();
   const directories = [home], prefixes: PlacementPublicationSource[] = [];
@@ -257,9 +274,10 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
       if (!currentDefaults || hashJSON({ config: configuration, defaults: currentDefaults, policyVersion }) !== contextBase.policyHash) fail();
       const now = ownedDirectory(home); if (now.dev !== root.dev || now.ino !== root.ino) fail();
       for (const check of sourceChecks) check();
+      if (ownerProof) activationSourceMarkers(ownerProof,home,actualMarkers);
     } catch { fail(); }
   };
-  return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash,
+  return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
     directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
 }
 /** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
@@ -273,11 +291,11 @@ export function previewSyncPlacementSources(home: string): PlacementSourcePrevie
     return fail();
   }
 }
-function capture(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = []): Omit<PlacementCapture, "assertCurrent"> {
+function capture(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], ownerProof?: PlacementActivationCaptureProof): Omit<PlacementCapture, "assertCurrent"> {
   // All host callouts precede filesystem capture, including the final passive proof.
   const attestation = memoryPolicySnapshot(port.attest()), policyVersion = port.policyVersion?.();
   if (!attestation || port.policyVersion && typeof policyVersion !== "string") fail();
-  const source = sourcePreview(home, selected, pending, policyVersion);
+  const source = sourcePreview(home, selected, pending, policyVersion, ownerProof);
   const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
@@ -312,6 +330,20 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     });
     const before = capture(home, port, selection, pending);
     return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
+  } catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      if (error instanceof SyncPlacementJournalError) throw error;
+      if (error instanceof SegmentReadBudgetError) return fail("bound");
+    }
+    return fail();
+  }
+}
+
+/** Internal initial-activation capture only. Tokens require the actual profile owner, live home mutation and exact durable intent. */
+export function captureSyncPlacementActivationContext(home: string, port: PlacementCapturePort, proof: PlacementActivationCaptureProof): PlacementCapture {
+  try {
+    const before = capture(home,port,undefined,[],proof);
+    return { ...before, assertCurrent: () => { if (capture(home,port,undefined,[],proof).fingerprint !== before.fingerprint) fail(); } };
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
