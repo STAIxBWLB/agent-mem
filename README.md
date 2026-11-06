@@ -555,3 +555,27 @@ Private cursors under `hook-transcripts/` store only a session hash, file identi
 The follow-up bound is a benchmark parameter, not a production retry loop. Backlogs advance on later Stop/SessionEnd calls of the same session. Anything unread after its last hook remains uncaptured, so a cold install on a long session keeps only what its remaining hooks can scan; committed rows are not lost.
 
 Search gives these events the existing 1.25 conversation weight and session grouping. The brief selects up to two newest screened main-session Recap/Compact rows first, then fills from the existing chronological rows, under the same record, byte and token caps. With no summaries the output is unchanged. See [verification evidence](docs/bench/transcript-summaries-201.md).
+
+
+## Initial sync placement activation (unreleased)
+
+This command is not included in the published 0.21.0 package; it describes the unreleased implementation in this checkout.
+
+A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
+
+1. Preview and complete the existing shard and public-prune migrations with `amem migrate --shards --dry-run` and `amem migrate --public-prune-view --dry-run` (then their separately reviewed `--apply` steps).
+2. Have the person append the existing `home` floor at 0.21.0 or later in `formats.json`, preserving prior records, and close cooperating memory reader handles.
+3. Declare every local amem installation that writes this home, including an agent-hub library installation even if setup has no receipt for it. The CLI and current setup-receipt roots are mandatory members.
+
+```sh
+amem migrate --sync-placement --dry-run --writer-root '<cli-install-root>' --writer-root '<host-amem-install-root>' --json
+amem migrate --sync-placement --apply --writer-root '<cli-install-root>' --writer-root '<host-amem-install-root>' --json
+# Only for an interrupted initial activation, using its retained frozen inputs:
+amem migrate --sync-placement --resume --json
+# If inputs changed and BOTH marker files still have their original v2 bytes:
+amem migrate --sync-placement --abandon --json
+```
+
+Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. Initial writer errors name the root category and cause, with upgrade/setup instructions. If a pre-marker interruption retained an intent and its inputs changed, person `--abandon` removes only its owned initial metadata so a fresh preview/apply can follow. It cannot remove a v3 marker, active fence or journal history. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
+
+Restore pinned installs if they become unavailable or change. An already-active home's dry-run reports the diff, but apply cannot renew it; writer renewal is a separate follow-up (#282). Do not edit activation files, downgrade markers or start a new epoch to bypass a hold. See the [activation and recovery contract](docs/contracts.md#person-run-initial-sync-placement-activation-281) for bounds, source/policy drift, old readers and the publication ceiling.

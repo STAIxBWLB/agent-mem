@@ -18,6 +18,8 @@ import { validatePruneRow, type PruneSourceRow, type PruneRow } from "./prune.ts
 import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
 import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
 import type { Entry } from "./store.ts";
+import { assertPlacementRuntime } from "./sync-placement-guard.ts";
+import { activationSourceMarkers, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -39,6 +41,16 @@ export interface PlacementCapture {
   /** Under live writer fences, inode/ctime/size checks protect the already-hashed prefixes across callbacks without reparsing rows. */
   assertUnchanged(): void;
 }
+export interface PlacementActivationMarkerSnapshot {
+  profileText: string; shardsText: string; profileStamp: [string,string,string,string,string]; shardsStamp: [string,string,string,string,string];
+}
+/** Source facts only: no writer attestation, quiescence claim or effect authority. */
+export interface PlacementSourcePreview {
+  home: string; base: Omit<SyncPlacementActivationContext, "writers" | "legacySyncQuiesced">;
+  activeHead?: string; markerHash: string; markers: PlacementActivationMarkerSnapshot; directories: string[]; prefixes: PlacementPublicationSource[];
+  rows: Map<string, PlacementSourceRow>; specialRows: Map<string, PlacementSpecialSourceRow>;
+  sourceRowsByRealm: Map<string, readonly PruneSourceRow[]>; assertSourcesUnchanged(): void;
+}
 function fail(code: "changed" | "invalid" | "bound" = "changed"): never { throw new SyncPlacementJournalError(code); }
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const stamp = (s: BigIntStats) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].map(String);
@@ -50,7 +62,7 @@ function ownedDirectory(dir: string): BigIntStats {
 }
 /** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
  * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
-function capture(homeInput: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = []): Omit<PlacementCapture, "assertCurrent"> {
+function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof): PlacementSourcePreview {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
     if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
@@ -58,10 +70,6 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
     selection = copied.map(realm => validatePlacementKey({ realm, id: "0".repeat(32), rowHash: "0".repeat(64) }).realm);
     if (!selection.length || new Set(selection.map(realm => canonicalJSON(realm))).size !== selection.length) fail();
   }
-  // All host callouts precede filesystem capture: a callback cannot alter input after its final proof.
-  const attestation = memoryPolicySnapshot(port.attest()), policyVersion = port.policyVersion?.();
-  if (!attestation) fail();
-  if (port.policyVersion && typeof policyVersion !== "string") fail();
   const home = realPath(homeInput), root = ownedDirectory(home);
   let metadataObjects = 0, metadataBytes = 0;
   const facts: unknown[] = [], sourceChecks: (() => void)[] = [];
@@ -90,7 +98,17 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
     const input = bytes(file, optional); if (!input) return undefined;
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input));
   };
-  const rawProfile = json(join(home, "profile.json")), rawShards = json(join(home, "shards.json"));
+  const markerStart = facts.length;
+  const profileBytes = bytes(join(home, "profile.json"))!, shardsBytes = bytes(join(home, "shards.json"))!;
+  const actualMarkers: PlacementActivationMarkerSnapshot = { profileText: profileBytes.toString("utf8"), shardsText: shardsBytes.toString("utf8"),
+    profileStamp: [...(facts[markerStart] as [string,PlacementActivationMarkerSnapshot["profileStamp"],string])[1]], shardsStamp: [...(facts[markerStart+1] as [string,PlacementActivationMarkerSnapshot["shardsStamp"],string])[1]] };
+  const markers = ownerProof ? activationSourceMarkers(ownerProof,home,actualMarkers) : actualMarkers;
+  if (ownerProof) {
+    facts[markerStart] = [join(home,"profile.json"),markers.profileStamp,digest(Buffer.from(markers.profileText))];
+    facts[markerStart+1] = [join(home,"shards.json"),markers.shardsStamp,digest(Buffer.from(markers.shardsText))];
+  }
+  const decodeMarker = (text: string): unknown => JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.from(text)));
+  const rawProfile = decodeMarker(markers.profileText) as { schema?: string }, rawShards = decodeMarker(markers.shardsText);
   let activeHead: string | undefined;
   let base: ReturnType<typeof validatePlacementBaseV2>;
   if (rawProfile?.schema === PLACEMENT_PROFILE_SCHEMA) {
@@ -109,7 +127,10 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
   const machine = json(join(home, "machine.json"));
   if (machine?.id !== base.shards.machine.id) fail();
   // An in-flight migration/prune is never accepted as a stable placement source.
-  for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) if (lstatSync(join(home, name), { throwIfNoEntry: false })) fail();
+  for (const name of ["profile.lock", PUBLIC_PRUNE_INTENT]) {
+    if (name === "profile.lock" && ownerProof) continue; // The module-private proof validated this exact live owner and sealed intent.
+    if (lstatSync(join(home,name),{throwIfNoEntry:false})) fail();
+  }
   const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
   const rows = new Map<string, PlacementSourceRow>(), specialRows = new Map<string, PlacementSpecialSourceRow>(), sourceRowsByRealm = new Map<string, readonly PruneSourceRow[]>();
   const directories = [home], prefixes: PlacementPublicationSource[] = [];
@@ -242,29 +263,56 @@ function capture(homeInput: string, port: PlacementCapturePort, selected?: reado
   if (selection && realms.length !== selection.length) fail();
   const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS }); if (!defaults) fail();
   const configuration = loadAmemConfig(home).config;
-  const context: SyncPlacementActivationContext = { ...base, homeHash: hashJSON([home, String(root.dev), String(root.ino), String(root.uid)]), sourceHash: hashJSON(facts),
-    aliasesHash: digest(aliases ?? Buffer.alloc(0)), policyHash: hashJSON({ config: configuration, defaults, policyVersion }), realms,
-    writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
-  // Reuse the closed stage-1 context validator, including writer/version/realm bounds.
-  const validated = planSyncPlacementActivation(context, "0".repeat(64));
-  context.writers = validated.writers; context.realms = validated.realms;
-  // ponytail: fast rechecks rely on held mutation fences plus native inode/size/ctime identity for the already-hashed prefixes.
-  // A hostile same-user raw writer is outside that contract; descriptor-bound immutable source blocks are the upgrade path.
-  const assertUnchanged = () => {
+  const contextBase: PlacementSourcePreview["base"] = { ...base,
+    homeHash: hashJSON([home, String(root.dev), String(root.ino), String(root.uid)]), sourceHash: hashJSON(facts),
+    aliasesHash: digest(aliases ?? Buffer.alloc(0)), policyHash: hashJSON({ config: configuration, defaults, policyVersion }), realms };
+  // ponytail: passive checks rely on native inode/size/ctime identity for the hashed prefixes.
+  // Immutable descriptor-bound source blocks are the upgrade path for hostile same-user raw writers.
+  const assertSourcesUnchanged = () => {
     try {
-    // Host callbacks run first; the final filesystem proof never invokes caller code afterwards.
-    const currentAttestation=memoryPolicySnapshot(port.attest()), currentVersion=port.policyVersion?.();
-    if(!currentAttestation) fail();
-    const checked=planSyncPlacementActivation({...context,writers:currentAttestation.writers,legacySyncQuiesced:currentAttestation.legacySyncQuiesced},"0".repeat(64));
-    const currentDefaults=memoryPolicySnapshot({names:DENY_NAMES,segments:DENY_SEGMENTS});
-    if(!currentDefaults)fail();
-    if(canonicalJSON(checked.writers)!==canonicalJSON(context.writers)||hashJSON({config:configuration,defaults:currentDefaults,policyVersion:currentVersion})!==context.policyHash) fail();
-    const now=ownedDirectory(home); if(now.dev!==root.dev||now.ino!==root.ino) fail();
-    for(const check of sourceChecks)check();
+      const currentDefaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS });
+      if (!currentDefaults || hashJSON({ config: configuration, defaults: currentDefaults, policyVersion }) !== contextBase.policyHash) fail();
+      const now = ownedDirectory(home); if (now.dev !== root.dev || now.ino !== root.ino) fail();
+      for (const check of sourceChecks) check();
+      if (ownerProof) activationSourceMarkers(ownerProof,home,actualMarkers);
     } catch { fail(); }
   };
-  return { home, context, assertUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, fingerprint: hashJSON({ context, markerHash }), directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
+  return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
+    directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
 }
+/** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
+export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
+  try { assertPlacementRuntime(home); const preview = sourcePreview(home); preview.assertSourcesUnchanged(); return preview; }
+  catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      if (error instanceof SyncPlacementJournalError) throw error;
+      if (error instanceof SegmentReadBudgetError) return fail("bound");
+    }
+    return fail();
+  }
+}
+function capture(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], ownerProof?: PlacementActivationCaptureProof): Omit<PlacementCapture, "assertCurrent"> {
+  // All host callouts precede filesystem capture, including the final passive proof.
+  const attestation = memoryPolicySnapshot(port.attest()), policyVersion = port.policyVersion?.();
+  if (!attestation || port.policyVersion && typeof policyVersion !== "string") fail();
+  const source = sourcePreview(home, selected, pending, policyVersion, ownerProof);
+  const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
+  const validated = planSyncPlacementActivation(context, "0".repeat(64));
+  context.writers = validated.writers; context.realms = validated.realms;
+  const assertUnchanged = () => {
+    try {
+      const currentAttestation = memoryPolicySnapshot(port.attest()), currentVersion = port.policyVersion?.();
+      if (!currentAttestation) fail();
+      const checked = planSyncPlacementActivation({ ...context, writers: currentAttestation.writers, legacySyncQuiesced: currentAttestation.legacySyncQuiesced }, "0".repeat(64));
+      if (canonicalJSON(checked.writers) !== canonicalJSON(context.writers) || currentVersion !== policyVersion) fail();
+      source.assertSourcesUnchanged();
+    } catch { fail(); }
+  };
+  return { home: source.home, context, assertUnchanged, ...(source.activeHead ? { activeHead: source.activeHead } : {}),
+    markerHash: source.markerHash, fingerprint: hashJSON({ context, markerHash: source.markerHash }), directories: source.directories,
+    prefixes: source.prefixes, rows: source.rows, specialRows: source.specialRows, sourceRowsByRealm: source.sourceRowsByRealm };
+}
+
 export function captureSyncPlacementContext(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pendingInput: readonly PlacementPendingSource[] = []): PlacementCapture {
   try {
     const selection = selected === undefined ? undefined : memoryPolicySnapshot(selected);
@@ -282,6 +330,20 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     });
     const before = capture(home, port, selection, pending);
     return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
+  } catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      if (error instanceof SyncPlacementJournalError) throw error;
+      if (error instanceof SegmentReadBudgetError) return fail("bound");
+    }
+    return fail();
+  }
+}
+
+/** Internal initial-activation capture only. Tokens require the actual profile owner, live home mutation and exact durable intent. */
+export function captureSyncPlacementActivationContext(home: string, port: PlacementCapturePort, proof: PlacementActivationCaptureProof): PlacementCapture {
+  try {
+    const before = capture(home,port,undefined,[],proof);
+    return { ...before, assertCurrent: () => { if (capture(home,port,undefined,[],proof).fingerprint !== before.fingerprint) fail(); } };
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;

@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
 import { legacyShardMarkerShape } from "./shard.ts";
 import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
+import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts";
 
 export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
 export const PLACEMENT_MARKER_REFUSAL = "sync placement metadata is invalid or unsupported; person inspection and a compatible reader are required before continuing";
+export const PLACEMENT_ACTIVATION_PENDING = "sync placement activation is pending or incomplete; have the person inspect retained evidence and run amem migrate --sync-placement --resume, or --abandon only while both markers retain their original v2 bytes";
 export class SyncPlacementRuntimeError extends Error {
   readonly code: "sync_placement_not_enabled" | "sync_placement_unavailable";
   constructor(reason: string) { super(reason); this.name = "SyncPlacementRuntimeError"; this.code = reason === PLACEMENT_STAGE1_REFUSAL ? "sync_placement_not_enabled" : "sync_placement_unavailable"; }
@@ -65,13 +67,17 @@ export function placementMarkerRefusal(profile: unknown, shards: unknown): strin
 export function placementSelectorRefusal(home: string): string | undefined {
   // A durable placement fence forbids falling back to raw legacy sync after marker rollback.
   const fenced = placementFencePresent(home);
+  const pending = placementActivationPending(home);
   let profile: unknown, shards: unknown;
   try { profile = readMarker(join(home, "profile.json")); } catch { /* The original selector reader reports this legacy failure. */ }
   try { shards = readMarker(join(home, "shards.json")); } catch { /* Ordinary migration still owns malformed split-state recovery. */ }
-  if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return fenced ? PLACEMENT_MARKER_REFUSAL : undefined;
+  if (schema(profile) !== PLACEMENT_PROFILE_SCHEMA && schema(shards) !== PLACEMENT_SHARDS_SCHEMA) return pending ? PLACEMENT_ACTIVATION_PENDING : fenced ? PLACEMENT_MARKER_REFUSAL : undefined;
   const refusal = placementMarkerRefusal(profile, shards);
-  if (refusal !== PLACEMENT_STAGE1_REFUSAL) return refusal;
-  try { return readActivePlacementBinding(home, profile, shards) ? undefined : refusal; } catch { return PLACEMENT_MARKER_REFUSAL; }
+  if (refusal !== PLACEMENT_STAGE1_REFUSAL) return pending ? PLACEMENT_ACTIVATION_PENDING : refusal;
+  try { return readActivePlacementBinding(home, profile, shards) ? undefined : pending ? PLACEMENT_ACTIVATION_PENDING : refusal; } catch { return PLACEMENT_MARKER_REFUSAL; }
+}
+function placementActivationPending(home: string): boolean {
+  return lstatSync(join(home,PLACEMENT_ACTIVATION_INTENT),{throwIfNoEntry:false}) !== undefined;
 }
 function placementFencePresent(home: string): boolean {
   const root = lstatSync(join(home, "sync-placement"), { throwIfNoEntry: false });
@@ -82,15 +88,15 @@ function placementFencePresent(home: string): boolean {
 /** Bounded activation/view metadata only; no data/index open, cache mutation, lock or child/network call.
  * The v3 publication coordinator separately proves the complete journal, selected sources and policy. */
 export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
-  try { const fenced = placementFencePresent(home), markers = readPlacementRuntimeMarkers(home);
+  try { const fenced = placementFencePresent(home), pending = placementActivationPending(home), markers = readPlacementRuntimeMarkers(home);
     const refusal = placementMarkerRefusal(markers.profile, markers.shards);
     if (refusal === PLACEMENT_STAGE1_REFUSAL) {
       const active=readActivePlacementBinding(home,markers.profile,markers.shards);
-      if(!active)return refusal;
+      if(!active)return pending ? PLACEMENT_ACTIVATION_PENDING : refusal;
       if(bound && (bound.kind!=="generation"||bound.sharded!==true||bound.generation!==active.profile.generation||bound.publicationFormat!==active.profile.publicationFormat||bound.placementHead!==active.profile.placementHead)) return PLACEMENT_MARKER_REFUSAL;
       return undefined;
     }
-    return refusal ?? (fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
+    return refusal ?? (pending ? PLACEMENT_ACTIVATION_PENDING : fenced ? PLACEMENT_MARKER_REFUSAL : undefined); }
   catch { return PLACEMENT_MARKER_REFUSAL; }
 }
 export function assertPlacementRuntime(home: string): void {

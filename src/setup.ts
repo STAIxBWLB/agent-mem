@@ -10,11 +10,11 @@ import { JCODE_CAPTURE_EVENTS, putJcodeHooks } from "./setup-jcode.ts";
 const jcodeHookCommand = (bun: string, entry: string) => `${quote(bun)} --smol ${quote(entry)} hook jcode`;
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, writeFileSync, type BigIntStats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { memoryHome } from "./memory/home.ts";
 import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
@@ -209,20 +209,16 @@ function assertOpencodeLayout(c: ReturnType<typeof context>, mode: SetupPlan["mo
 }
 function intent(c: ReturnType<typeof context>, target: SetupTarget): string { return digest([1, target, c.paths[target], c.bun, c.entry, ...(["codex", "kimi", "qwen"].includes(target) ? ["capture-json-v1"] : []), ...(target === "jcode" ? ["jcode-hooks-v1"] : []), ...(["claude", "codex", "kimi", "pi", "qwen", "jcode"].includes(target) ? ["root-hooks-v2"] : []), ...(target === "agy" ? [c.workspace!.root] : [])]); }
 function journal(c: ReturnType<typeof context>, target: SetupTarget): string { return join(c.state, target === "agy" ? `agy-${digest(c.workspace!.root)}.json` : `${target}.json`); }
-function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
-  const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
-  const value = record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8")));
+function decodeReceipt(value: Record<string, unknown>, target: SetupTarget, count: number, strict = false): Receipt {
+  if (strict && Object.keys(value).some(key => !["version", "target", "intent", "phase", "changes", "createdDirectory"].includes(key))) throw Error("setup receipt invalid");
   if (value.version !== 1 && value.version !== 2) throw Error("setup receipt version is unsupported; run setup or undo with the release that wrote it");
-  if (value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || requireRuntime && value.intent !== intent(c, target) || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== c.paths[target].length && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
+  if (value.target !== target || typeof value.intent !== "string" || !/^[a-f0-9]{64}$/.test(value.intent) || strict && value.intent.length !== 64 || !["prepared", "applied"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== count && !(target === "jcode" && value.changes.length === 1)) throw Error("setup receipt does not match this installation");
   for (let i = 0; i < value.changes.length; i++) {
-    const change = record(value.changes[i]); const currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
-    if (target === "claude" && i === 0 && typeof change.path === "string" && change.path !== currentPath && !legacyRedirect
-      && resolveSetupPaths({ ...c.env, CLAUDE_CONFIG_DIR: dirname(change.path) }, c.home).redirects.some(row => row.from === change.path && row.to === currentPath))
-      throw Error("setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile");
-    if (change.path !== currentPath && !legacyRedirect || change.key !== `${target}:${i}`) throw Error("setup receipt target mismatch");
+    const change = record(value.changes[i]);
+    if (change.key !== `${target}:${i}` || strict && (Object.keys(change).some(key => !["key", "path", "before", "after", "start"].includes(key)) || typeof change.path !== "string" || !isAbsolute(change.path) || change.path.length > 4096 || change.path.includes("\0"))) throw Error("setup receipt target mismatch");
     for (const key of ["before", "after", ...(change.start !== undefined ? ["start"] : [])]) {
       const v = record(change[key]);
-      if (!Number.isInteger(v.mode) || Number(v.mode) < 0 || Number(v.mode) > 0o777 || v.bytes !== null && (typeof v.bytes !== "string" || v.bytes.length > 2 * MAX || Buffer.from(v.bytes, "base64").toString("base64") !== v.bytes)) throw Error("setup receipt invalid");
+      if (strict && Object.keys(v).sort().join() !== "bytes,mode" || !Number.isInteger(v.mode) || Number(v.mode) < 0 || Number(v.mode) > 0o777 || v.bytes !== null && (typeof v.bytes !== "string" || v.bytes.length > 2 * MAX || strict && (v.bytes.length > Math.ceil(MAX / 3) * 4 || v.bytes.length / 4 * 3 - (v.bytes.endsWith("==") ? 2 : v.bytes.endsWith("=") ? 1 : 0) > MAX) || Buffer.from(v.bytes, "base64").toString("base64") !== v.bytes)) throw Error("setup receipt invalid");
     }
   }
   if (value.createdDirectory !== undefined) {
@@ -230,6 +226,19 @@ function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRunt
     if (target !== "agy" || Object.keys(created).sort().join() !== "dev,ino" || !Number.isSafeInteger(created.dev) || Number(created.dev) < 0 || !Number.isSafeInteger(created.ino) || Number(created.ino) <= 0) throw Error("setup receipt directory ownership invalid");
   }
   return value as unknown as Receipt;
+}
+function receipt(c: ReturnType<typeof context>, target: SetupTarget, requireRuntime = false): Receipt | undefined {
+  const raw = read(journal(c, target), JOURNAL_MAX); if (raw.bytes === null) return;
+  const value = decodeReceipt(record(JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8"))), target, c.paths[target].length);
+  if (requireRuntime && value.intent !== intent(c, target)) throw Error("setup receipt does not match this installation");
+  for (let i = 0; i < value.changes.length; i++) {
+    const change = value.changes[i]!, currentPath = c.paths[target][i], legacyRedirect = c.redirects.some(row => row.target === target && row.from === change.path && row.to === currentPath);
+    if (target === "claude" && i === 0 && typeof change.path === "string" && change.path !== currentPath && !legacyRedirect
+      && resolveSetupPaths({ ...c.env, CLAUDE_CONFIG_DIR: dirname(change.path) }, c.home).redirects.some(row => row.from === change.path && row.to === currentPath))
+      throw Error("setup receipt was written from an Orca Claude profile; rerun setup from that Orca profile");
+    if (change.path !== currentPath && !legacyRedirect) throw Error("setup receipt target mismatch");
+  }
+  return value;
 }
 function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): PlannedHook[] {
   if (target === "jcode") return JCODE_CAPTURE_EVENTS.map(event => ({ event, command: jcodeHookCommand(c.bun, c.entry), timeout: 1 }));
@@ -407,9 +416,14 @@ function previousRuntimes(target: SetupTarget, images: readonly Image[], bun: st
   return [...found.values()];
 }
 /** The runtime of a generated `<bun> --smol <entry> mcp` server record, if the record is exactly that shape. */
-function launcher(value: unknown): { bun: string; entry: string } | undefined {
+function launcher(value: unknown, target?: SetupTarget): { bun: string; entry: string } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
-  const server = value as Record<string, unknown>, args = server.args;
+  const server = value as Record<string, unknown>;
+  if (target === "opencode") {
+    if (server.type !== "local" || !Array.isArray(server.command) || server.command.length !== 4) return;
+    return launcher({ command: server.command[0], args: server.command.slice(1) });
+  }
+  const args = server.args;
   return typeof server.command === "string" && isAbsolute(server.command) && Array.isArray(args) && args.length === 3
     && args[0] === "--smol" && typeof args[1] === "string" && isAbsolute(args[1]) && args[2] === "mcp" ? { bun: server.command, entry: args[1] } : undefined;
 }
@@ -719,4 +733,77 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
   if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s);
   const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
   return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s);
+}
+
+
+/** Fixed safe category only; receipt text, native paths and external error messages are never diagnostics. */
+export class SetupWriterRootsError extends Error {
+  readonly code = "setup_writer_roots_unavailable";
+  constructor(readonly category: "unsafe" | "changed" | "bound" | "unsupported" | "pending" | "unavailable") {
+    super(`Setup writer inventory ${category}; have the person inspect setup receipts and rerun setup before activation.`);
+    this.name = "SetupWriterRootsError";
+  }
+}
+/** Current managed MCP AFTER images only. Native configuration paths and historical BEFORE/START images are never opened. */
+export function readSetupWriterRoots(home: string): string[] {
+  function fail(category: SetupWriterRootsError["category"]): never { throw new SetupWriterRootsError(category); }
+  try {
+    const owned = (stat: BigIntStats) => { if (stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) fail("unsafe"); };
+    const stamp = (stat: BigIntStats) => JSON.stringify([stat.dev, stat.ino, stat.uid, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
+    const base = lstatSync(home, { bigint: true, throwIfNoEntry: false }); if (!base) return []; owned(base); if (!base.isDirectory()) fail("unsafe");
+    const directory = join(home, "setup"), initial = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+    if (!initial) return [];
+    owned(initial); if (!initial.isDirectory()) fail("unsafe");
+    // ponytail:256 setup namespace entries and doctor's existing32MiB aggregate receipt-byte ceiling.
+    // A reviewed metadata-only setup inventory is required before increasing either ceiling.
+    const files: { name: string; stat: BigIntStats }[] = [], namespace: string[] = [], iterator = opendirSync(directory);
+    let entries = 0, totalBytes = 0;
+    try { for (;;) {
+      const entry = iterator.readSync(); if (!entry) break;
+      namespace.push(entry.name);
+      if (++entries > 256) fail("bound"); if (entry.name === "setup.lock") fail("pending");
+      if (!entry.name.endsWith(".json")) continue; // Retained .json.stale-* and unregistered temps are historical, never current authority.
+      const stat = lstatSync(join(directory, entry.name), { bigint: true }); owned(stat); if (!stat.isFile() || stat.nlink !== 1n) fail("unsafe");
+      if (stat.size > BigInt(JOURNAL_MAX) || totalBytes + Number(stat.size) > 32 * 1024 * 1024) fail("bound");
+      totalBytes += Number(stat.size); files.push({ name: entry.name, stat });
+    } } finally { iterator.closeSync(); }
+    const roots = new Set<string>(), launchers: { entry: string; root: string }[] = [];
+    for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
+      const target = (file.name.startsWith("agy-") && /^agy-[a-f0-9]{64}\.json$/.test(file.name) ? "agy" : file.name.slice(0, -5)) as SetupTarget;
+      if (!SETUP_TARGETS.includes(target) || target === "agy" && !/^agy-[a-f0-9]{64}\.json$/.test(file.name)) fail("unsupported");
+      const path = join(directory, file.name), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let text: string;
+      try {
+        const opened = fstatSync(fd, { bigint: true }); owned(opened); if (!opened.isFile() || opened.nlink !== 1n || stamp(opened) !== stamp(file.stat)) fail("changed");
+        const data = Buffer.alloc(Number(opened.size) + 1); let count = 0;
+        while (count < data.length) { const n = readSync(fd, data, count, data.length - count, count); if (!n) break; count += n; }
+        if (count !== Number(opened.size) || stamp(fstatSync(fd, { bigint: true })) !== stamp(opened) || stamp(lstatSync(path, { bigint: true })) !== stamp(opened)) fail("changed");
+        text = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, count));
+      } finally { closeSync(fd); }
+      const counts: Record<SetupTarget, number> = { claude: 2, codex: 2, kimi: 2, pi: 2, qwen: 1, jcode: 2, opencode: 1, gemini: 1, agy: 1 };
+      let value: Receipt;
+      try { value = decodeReceipt(record(JSON.parse(text)), target, counts[target], true); } catch { return fail("unsupported"); }
+      if (value.phase !== "applied") fail("pending");
+      const runtime = launcher(mcpRecord(target, value.changes[0]!.after), target);
+      if (!runtime || runtime.bun.includes("\0") || runtime.entry.length > 4096 || runtime.entry.includes("\0") || !["/bin/amem.js", "/src/cli.ts"].some(suffix => runtime.entry.endsWith(suffix))
+        || target === "opencode" && [runtime.bun, runtime.entry].some(value => /\{(?:env|file):/.test(value))) fail("unsupported");
+      const root = realPath(dirname(dirname(runtime.entry))); if (!lstatSync(root).isDirectory()) fail("unavailable");
+      roots.add(root); launchers.push({ entry: runtime.entry, root });
+    }
+    const finalHome = lstatSync(home, { bigint: true }); owned(finalHome);
+    if (!finalHome.isDirectory() || stamp(lstatSync(directory, { bigint: true })) !== stamp(initial) || finalHome.dev !== base.dev || finalHome.ino !== base.ino) fail("changed");
+    const finalNames: string[] = [], finalDirectory = opendirSync(directory);
+    try { for (;;) { const entry = finalDirectory.readSync(); if (!entry) break; if (finalNames.length >= namespace.length) fail("changed"); finalNames.push(entry.name); } }
+    finally { finalDirectory.closeSync(); }
+    if (JSON.stringify(finalNames.sort()) !== JSON.stringify(namespace.sort())) fail("changed");
+    for (const file of files) if (stamp(lstatSync(join(directory, file.name), { bigint: true })) !== stamp(file.stat)) fail("changed");
+    for (const runtime of launchers) if (realPath(dirname(dirname(runtime.entry))) !== runtime.root) fail("changed");
+    return [...roots].sort();
+  } catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SetupWriterRootsError) {
+      const category = Object.getOwnPropertyDescriptor(error, "category");
+      if (category && "value" in category && ["unsafe", "changed", "bound", "unsupported", "pending", "unavailable"].includes(category.value)) throw new SetupWriterRootsError(category.value);
+    }
+    throw new SetupWriterRootsError("unavailable");
+  }
 }

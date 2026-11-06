@@ -206,11 +206,12 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         const r = await syncMemory(store, { ...opts.sync, ...(remote ? { remote } : {}) });
         if (json) return JSON.stringify(r, null, 2);
         if (!r.ok) fail(`${names.memory} sync: ${r.error}`);
+        const placement = r.placementPublication, placementText = placement ? `; placement ${placement.outcome}, ${placement.exported} exported, ${placement.withheld} withheld this attempt` : "";
         if (r.pruneApplication) {
           const a = r.pruneApplication;
-          return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${r.warning ? `\nnote: ${r.warning}` : ""}`;
+          return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}`;
         }
-        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${r.warning ? `\nnote: ${r.warning}` : ""}`;
+        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}`;
       }
       case "dedupe": {
         const apply = rest.includes("--apply");
