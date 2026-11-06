@@ -20,8 +20,8 @@ export function safeProfileLockMessage(error:unknown):string|undefined {
   return error!==null&&(typeof error==="object"||typeof error==="function")?recognised.get(error):undefined;
 }
 const same=(a:BigIntStats,b:BigIntStats)=>a.dev===b.dev&&a.ino===b.ino&&a.uid===b.uid&&a.mode===b.mode&&a.nlink===b.nlink&&a.size===b.size&&a.mtimeNs===b.mtimeNs&&a.ctimeNs===b.ctimeNs;
-function owned(s:BigIntStats,limit:number):void {
-  if(!s.isFile()||s.isSymbolicLink()||s.uid!==BigInt(process.getuid?.()??-1)||s.nlink!==1n||(s.mode&0o077n)!==0n||s.size>BigInt(limit))throw Error();
+function owned(s:BigIntStats,limit:number,privateFile=true):void {
+  if(!s.isFile()||s.isSymbolicLink()||s.uid!==BigInt(process.getuid?.()??-1)||s.nlink!==1n||(s.mode&(privateFile?0o077n:0o022n))!==0n||s.size>BigInt(limit))throw Error();
 }
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
 const hex=(v:unknown,width:number)=>typeof v==="string"&&v.length===width&&!/[^a-f0-9]/.test(v);
@@ -30,10 +30,10 @@ const hex=(v:unknown,width:number)=>typeof v==="string"&&v.length===width&&!/[^a
 export function profileLockRefusal(home:string):string|undefined {
   try{
     const checks:(()=>void)[]=[];
-    const read=(name:string,limit:number):Record<string,unknown>|undefined=>{
+    const read=(name:string,limit:number,privateFile=true):Record<string,unknown>|undefined=>{
       const file=join(home,name),before=lstatSync(file,{bigint:true,throwIfNoEntry:false});
       if(!before){checks.push(()=>{if(lstatSync(file,{throwIfNoEntry:false}))throw Error();});return;}
-      owned(before,limit);const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      owned(before,limit,privateFile);const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
       try{
         const s=fstatSync(fd,{bigint:true});if(!same(before,s))throw Error();
         const bytes=Buffer.alloc(Number(s.size)+1);let count=0;
@@ -45,7 +45,7 @@ export function profileLockRefusal(home:string):string|undefined {
     };
     const owner=read("profile.lock",4096);if(!owner)return;
     if(Object.keys(owner).sort().join()!=="pid,signature,token"||!Number.isSafeInteger(owner.pid)||Number(owner.pid)<=0||!hex(owner.signature,64)||!hex(owner.token,32))return;
-    const canonical=realPath(home),profile=read("profile.json",262144),shards=read("shards.json",262144);
+    const canonical=realPath(home),profile=read("profile.json",262144,false),shards=read("shards.json",262144,false);
     const prune=read("public-prune-view.intent.json",1048576),activation=read("sync-placement-activation.json",1048576),renewal=read("sync-placement-writer-renewal.json",1048576);
     const families=new Set<Family>();
     if(prune){if(prune.schema!=="agent-mem.public-prune-activation/v1"&&prune.schema!=="agent-mem.public-prune-advance/v1"||prune.home!==canonical||!hex(prune.generation,32))return;families.add("prune");}

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { profileLockRefusal, profileLockRecoveryError, rememberProfileLockError, safeProfileLockMessage } from "../src/memory/profile-lock-diagnostic.ts";
@@ -21,6 +21,10 @@ test("a captured shard marker names resume without reclaiming its retained lock"
   const f=fixture();f.lock();f.write("shards.json",pending);const before=readFileSync(join(f.home,"profile.lock")),s=lstatSync(join(f.home,"profile.lock"));
   expect(profileLockRefusal(f.home)).toContain("amem migrate --shards --resume");expect(profileLockRefusal(f.home)).toContain("person shard migration");
   expect(readFileSync(join(f.home,"profile.lock"))).toEqual(before);expect(lstatSync(join(f.home,"profile.lock")).ino).toBe(s.ino);
+});
+test("owned legacy selector markers may remain readable without being group- or world-writable",()=>{
+  const f=fixture();f.lock();f.write("shards.json",pending);chmodSync(join(f.home,"shards.json"),0o644);
+  expect(profileLockRefusal(f.home)).toContain("amem migrate --shards --resume");
 });
 for(const schema of ["agent-mem.public-prune-activation/v1","agent-mem.public-prune-advance/v1"])test("public-prune resume is named for "+schema,()=>{
   const f=fixture();f.lock();f.write("public-prune-view.intent.json",{schema,home:f.home,generation});

@@ -1,6 +1,7 @@
 import { noteDisplayActor } from "./memory/cli-attribution.ts";
 import { singleLine } from "./memory/style.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
+import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { memoryHome } from "./memory/home.ts";
 import type { ParsedCommand } from "./commands-table.ts";
 
@@ -111,7 +112,8 @@ export async function agentCliRead(
       return shown;
     }
     return output;
-  } catch {
+  } catch (error) {
+    if(safeProfileLockMessage(error))throw error;
     throw new Error(UNAVAILABLE);
   } finally {
     try { memory?.close(); } catch { /* close failures do not expose partial reads */ }
