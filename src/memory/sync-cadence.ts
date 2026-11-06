@@ -88,8 +88,9 @@ export function endLikeSignal(name: string): void {
  */
 function syncRepository(home: string): string | undefined {
   try {
-    if (lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) return join(home, "shard-sync", "objects.git", "config");
     const { selector } = readSelector(home);
+    if (selector?.schema === "agent-mem.profile/v3") return join(home,"shard-sync-placement","objects.git","config");
+    if (lstatSync(join(home, "shards.json"), { throwIfNoEntry: false })) return join(home, "shard-sync", "objects.git", "config");
     if (selector?.kind === "generation") return join(generationDir(home, selector.generation!), ".git", "config");
     return join(home, ".git", "config");
   } catch { return undefined; }
