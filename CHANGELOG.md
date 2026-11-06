@@ -4,6 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## 0.22.1
 
+- Name the interrupted person-migration family when a retained stale profile lock blocks a read, with its exact person-run resume or supported abandon command (#290). Keep lock admission, waits, ownership proof and reclaim behavior unchanged.
 - Handle optional `Bun.TOML.stringify` results explicitly: retain the validated inline fallback and refuse unsupported appended tables before returning configuration. Add a strict host source-typecheck regression pinned to Bun types 1.4.2, including the published 0.22.0 failure control (#297). Defined serialization results are unchanged.
 
 ## 0.22.0
