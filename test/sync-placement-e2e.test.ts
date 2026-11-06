@@ -31,7 +31,8 @@ async function publish(f: PlacementInspectionFixture) {
   return before;
 }
 
-// Several real local-Git publication/import/rebuild cycles run serially; keep this allowance test-local.
+// Several real local-Git publication/import/rebuild cycles run serially: hosted macOS takes 50-52 s and has exceeded 60 s
+// on the release runner (#295), so this test-local allowance keeps 2x headroom; the global --timeout is unchanged.
 test("stage 5: prepared v2 to fixture v3, filtered publication, inspection, second-machine import and later forget/prune", async () => {
   let preparedHomes = 0;
   const prepared = (home: string, result: { activated: false; epochHash: string }) => {
@@ -106,4 +107,4 @@ test("stage 5: prepared v2 to fixture v3, filtered publication, inspection, seco
     if (inspectionGit(source.remote, "cat-file", "-t", oid) !== "blob") continue;
     expect(inspectionGit(source.remote, "cat-file", "blob", oid)).not.toContain("NEVER_PUBLIC_STAGE5_");
   }
-}, 60_000);
+}, 120_000);
