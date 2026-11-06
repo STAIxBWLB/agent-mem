@@ -2,7 +2,7 @@
 
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
-Version: 0.22.0 (unreleased). Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.22.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 
 ## Quick start
 
@@ -557,9 +557,9 @@ The follow-up bound is a benchmark parameter, not a production retry loop. Backl
 Search gives these events the existing 1.25 conversation weight and session grouping. The brief selects up to two newest screened main-session Recap/Compact rows first, then fills from the existing chronological rows, under the same record, byte and token caps. With no summaries the output is unchanged. See [verification evidence](docs/bench/transcript-summaries-201.md).
 
 
-## Initial sync placement activation (unreleased)
+## Initial sync placement activation
 
-This command is not included in the published 0.21.0 package; it describes the unreleased implementation in this checkout.
+Available from 0.22.0. 0.21.0 contains the placement protocol but not this command.
 
 A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
 
@@ -580,4 +580,4 @@ Dry-run shows root versions/pins and safe policy counts, never row text or patte
 
 On an active home, the same dry-run/apply commands explicitly renew the writer inventory on its existing epoch (#282). Declare the complete new 0.22.0-or-later roots after updating host pins and managed setup receipts. Ordinary and cadence sync then locate the new inventory and measure it afresh; original activation data, holds and prior receipts are unchanged. Pending publication or source-recovery work must first be finished with the inventoried install, for example after `dot ai rollback amem` or restoring the host's previous pin.
 
-An interrupted renewal resumes only its exact intent. Before commit append starts, person `--abandon` can discard its unpublished metadata; after the first commit-log byte, only forward resume is supported. Unpublished intent staging requires explicit `--abandon`, then a fresh dry-run; it is never cleaned automatically. Compatible ordinary reads remain available while renewal is pending. Never edit activation files, downgrade markers or start another epoch to discard a hold. See the [renewal contract](docs/contracts.md#same-epoch-writer-inventory-renewal-282). Real-home renewal and release remain separately authorized person operations.
+An interrupted renewal resumes only its exact intent. Before commit append starts, person `--abandon` can discard its unpublished metadata; after the first commit-log byte, only forward resume is supported. Unpublished intent staging requires explicit `--abandon`, then a fresh dry-run; it is never cleaned automatically. Compatible ordinary reads remain available while only renewal metadata is pending. After a crash, a retained `profile.lock` still blocks new reader admission until person `--resume` or, before commit append, `--abandon`. Never edit activation files, downgrade markers or start another epoch to discard a hold. See the [renewal contract](docs/contracts.md#same-epoch-writer-inventory-renewal-282). Real-home renewal and release remain separately authorized person operations.
