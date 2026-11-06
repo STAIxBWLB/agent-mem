@@ -1,6 +1,6 @@
 {
   "name": "@staix/agent-mem",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "description": "Curated, shared memory for coding agents: append-only logs, a derived index, tiers and a typed graph.",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,10 @@
     "@staix/agent-mem-v013": "npm:@staix/agent-mem@0.13.0",
     "@staix/agent-mem-v015": "npm:@staix/agent-mem@0.15.0",
     "@staix/agent-mem-v017": "npm:@staix/agent-mem@0.17.0",
-    "@staix/agent-mem-v018": "npm:@staix/agent-mem@0.18.0"
+    "@staix/agent-mem-v018": "npm:@staix/agent-mem@0.18.0",
+    "bun-types-host-1-4-2": "npm:bun-types@1.4.2",
+    "@staix/agent-mem-v0220": "npm:@staix/agent-mem@0.22.0",
+    "@types/bun-host-1-4-2": "npm:@types/bun@1.4.2"
   },
   "exports": {
     ".": "./src/index.ts",

@@ -37,7 +37,7 @@ function inline(value: unknown): string {
   // Bun emits scalars and many arrays as one assignment. Reuse that literal when it is safe in this scope.
   // Objects/AOTs may become headers; those need the inline form below to avoid changing subsequent table scope.
   let rendered = "";
-  try { rendered = Bun.TOML.stringify({ setup_value: value }); } catch { /* The validated inline encoder covers values the built-in writer cannot emit. */ }
+  try { rendered = Bun.TOML.stringify({ setup_value: value }) ?? ""; } catch { /* The validated inline encoder covers values the built-in writer cannot emit. */ }
   const literal = /^setup_value\s*=\s*([^\r\n]*)\r?\n?$/.exec(rendered)?.[1];
   if (literal !== undefined && isDeepStrictEqual(shape(parse(rendered).setup_value), shape(value))) return literal;
   const encode = (part: unknown): string => {
@@ -255,7 +255,8 @@ function arrayEdit(before: readonly unknown[], after: readonly unknown[]): { kee
 function appendedTables(path: readonly string[], values: readonly unknown[], eol: string): string {
   if (!values.every(plain)) return error();
   const document: Record<string, unknown> = {}; edit(document, path, [...values]);
-  let source: string; try { source = Bun.TOML.stringify(document); } catch { return error(); }
+  let source: string | undefined; try { source = Bun.TOML.stringify(document); } catch { return error(); }
+  if (source === undefined) return error();
   const sourceUnits = statements(source), rows = sourceUnits.filter(unit => prefix(path, unit.path));
   if (rows.filter(unit => unit.header && unit.array && unit.path.length === path.length).length !== values.length) return error();
   return rows.map(unit => source.slice(unit.start, unit.end)).join("").replace(/\r?\n/g, eol);

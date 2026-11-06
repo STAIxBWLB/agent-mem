@@ -3,6 +3,30 @@ import { SETUP_CONFIG_BYTES, insertTomlArrayItems, restoreRemovedItems, setTomlP
 const hook = { event: "SessionEnd", command: "bun --smol '/package with spaces/bin/amem.js' ingest kimi", timeout: 3 };
 const parse = (text: string) => Bun.TOML.parse(text) as Record<string, any>;
 
+/** Fault injection covers the host API's optional result without widening any production type. */
+function withTomlWriter<T>(writer:()=>unknown,run:()=>T):T {
+  const original=Object.getOwnPropertyDescriptor(Bun.TOML,"stringify");
+  if(!original||!("value"in original))throw Error("TOML writer fault fixture is unavailable; update the fixture for this Bun API before running setup tests");
+  Object.defineProperty(Bun.TOML,"stringify",{...original,value:writer});
+  try{return run();}finally{Object.defineProperty(Bun.TOML,"stringify",original);}
+}
+
+test("an undefined TOML writer result uses the same validated inline fallback as a throwing writer",()=>{
+  const other='[trust]\nallow = true # unchanged\n',source='value = 1 # value comment\n'+other,value=["fallback","kept"];
+  const throwing=withTomlWriter(()=>{throw Error("synthetic writer failure");},()=>setTomlPath(source,["value"],value));
+  let calls=0;
+  const missing=withTomlWriter(()=>{calls++;return undefined;},()=>setTomlPath(source,["value"],value));
+  expect(calls).toBeGreaterThan(0);expect(missing).toBe(throwing);expect(Bun.TOML.parse(missing)).toMatchObject({value});
+  expect(missing).toContain(other);expect(missing).toContain("# value comment");
+});
+test("an undefined TOML writer result refuses an appended array of tables before returning configuration",()=>{
+  const source='[[hooks]]\nevent = "Stop"\ncommand = "before"\ntimeout = 3\n[trust]\nallow = true\n';let calls=0;
+  withTomlWriter(()=>{calls++;return undefined;},()=>{
+    expect(()=>updateTomlArray(source,["hooks"],[{event:"Stop",command:"before",timeout:3},hook])).toThrow("setup TOML unavailable or unsupported; no configuration changed");
+  });
+  expect(calls).toBeGreaterThan(0);expect(typeof Bun.TOML.stringify({restored:true})).toBe("string");
+});
+
 test.each(["", 'model = "keep"\n'])("removing the last dotted MCP entry retains its implicit parent beside later tables (%s)", original => {
   const installed = setTomlPath(original, ["mcp_servers", "amem"], { command: "bun", args: ["mcp"] });
   const later = '\n# later configuration\n[projects."/keep"]\ntrust_level = "trusted"\n';
