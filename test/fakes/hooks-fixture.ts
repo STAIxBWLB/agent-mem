@@ -39,7 +39,19 @@ export function hookFixture(remote?: string) {
       }
       return Bun.spawnSync([process.execPath, "--smol", functionalEntry, event], { cwd, env: { ...env, ...extra, AMEM_TEST_HOST_DEADLINE_MS: String(hostDeadlineMs) }, stdin: typeof payload === "string" ? Buffer.from(payload) : Buffer.from(JSON.stringify({ session_id: "p3-fixture", hook_event_name: event, cwd, ...payload as object })), stdout: "pipe", stderr: "pipe", timeout: 3000 + hostDeadlineMs });
     },
-    rows() { const capture = new CaptureStore({ home: root, project }); try { return capture.rows({ project }); } finally { capture.close(); } },
+    rows() {
+      // ponytail: retry schema/lock races for 1 s only; an explicit worker-ready barrier is the upgrade.
+      const deadline = performance.now() + 1000;
+      for (;;) {
+        try {
+          const capture = new CaptureStore({ home: root, project });
+          try { return capture.rows({ project }); } finally { capture.close(); }
+        } catch (error) {
+          if (!/no such table: rows|lock|busy/i.test((error as Error)?.message ?? "") || performance.now() >= deadline) throw error;
+          Bun.sleepSync(20);
+        }
+      }
+    },
     async seed() {
       const store = new MemoryStore({ home: root, screen: () => "keep" });
       try { store.note({ op: "note", project, scope: "project", tier: "long", kind: "contract", peer: "fixture", text: "p3 curated public fixture", about: [], source: "person" }); } finally { store.close(); }
