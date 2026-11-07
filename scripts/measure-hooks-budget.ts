@@ -1,3 +1,5 @@
+import { inspectWorkloadAccounting, readWorkloadDatabase, workloadInvocation, type CaptureEvidenceRow, type WorkloadRow, type DrainAccounting } from "./hook-drain-accounting.ts";
+import { hookCaptureScope } from "../src/hook-spool.ts";
 import { measuredBudgetHookRss } from "./hook-rss-check.ts";
 import { combineRssSources } from "../src/hook-resources.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
@@ -17,7 +19,7 @@ import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
 import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
-import { singleAttemptTiming, workloadBudget } from "./hook-timing-check.ts";
+import { singleAttemptTiming, workloadBudget, reportBudgetAdvisory } from "./hook-timing-check.ts";
 
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
 const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]!;
@@ -32,6 +34,8 @@ interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
 async function measureHooks() {
 const f = hookFixture(), observer = hookProcessObserver(f.root, false, undefined, false, true);
 const stalledAttempts = new Map<string, number>();
+const workload = new Map<number, WorkloadRow>();
+let contendedDrainAdvisory: DrainAccounting | undefined;
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
 const R1_POST_EXIT_WINDOW_MS = 2000;
@@ -63,17 +67,22 @@ function pendingInvocation(event: string, excerpt: string, agent = "claude"): bo
 function invocationExcerpt(event: "PostToolUse" | "SessionStart", response: string): string {
   return event === "PostToolUse" ? `src/public.ts\n${response}` : response;
 }
-function invocationId(event: string, excerpt: string): number {
-  const prefix = event === "PostToolUse" ? "src/public.ts\n" : event === "SessionStart" ? "" : undefined;
-  if (prefix === undefined || !excerpt.startsWith(prefix)) return 0;
-  const match = /^budget public result (\d+)$/.exec(excerpt.slice(prefix.length));
-  return match ? Number(match[1]) : 0;
+function invocationId(event:string,excerpt:string):number {return workloadInvocation({event,excerpt});}
+function snapshotRows(captureDir:string) {
+  return readWorkloadDatabase(captureDir);
+}
+function conservation(database:readonly CaptureEvidenceRow[],captureDir:string,baselineRows:number) {
+  const previousHome=process.env.HOME;let scope:string|undefined;
+  try{process.env.HOME=f.env.HOME;scope=hookCaptureScope(f.cwd,f.base);}finally{if(previousHome===undefined)delete process.env.HOME;else process.env.HOME=previousHome;}
+  if(!scope)throw Error("fixture capture scope is unavailable; inspect the isolated HOME and Git binding");
+  return inspectWorkloadAccounting({expected:invocations,workload,baselineRows,database,base:f.base,captureDir,cwd:f.cwd,project:f.project,scope,countedRetirements});
 }
 // #203: `jcode` runs the real `bin/amem.js hook jcode` with jcode v0.99.1's observer contract: no stdin, every field in the environment.
 // It stages and drains through the PostToolUse pipeline, so the same R1 process and R2 wall/RSS checks apply unchanged.
 function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof deferredWorkers, expectRepoSection = false, jcode = false): Sample {
   const before = readMetrics(f.base).at(-1), beforeWorkers = observer.read().length, beforeEvidence = observer.evidence().length;
   const input = { hook_event_name: event, cwd: f.cwd, session_id: "p3-budget", tool_name: "Read", tool_input: { file_path: "src/public.ts" }, tool_response: `budget public result ${++invocations}` };
+  workload.set(invocations,{event:jcode?"PostToolUseFailure":event,excerpt:invocationExcerpt(event,input.tool_response),agent:jcode?"jcode":"claude"});
   const start = performance.now();
   // Observe each fixed owned child as well as the outer CLI group; native metadata supervisors also own detached groups.
   // The test preload and its append overhead conservatively count inside actual CLI wall/RSS measurements.
@@ -215,12 +224,8 @@ try {
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>("drain", stalledAttempts);
     const completed = await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), attempt => { attempts.push(attempt); record(attempt); });
     drains.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
-    const check = new CaptureStore({ memoryDir: f.base, project: f.project });
-    let rows: number[];
-    try { rows = check.rows().flatMap(row => {
-      const id = invocationId(row.event, row.excerpt);
-      return id >= 1 && id <= acceptedWorkload ? [id] : [];
-    }); } finally { check.close(); }
+    const database=snapshotRows(dir);
+    const rows=database.flatMap(row=>{const id=invocationId(row.event,row.excerpt);return id>=1&&id<=acceptedWorkload?[id]:[];});
     if (new Set(rows).size !== rows.length) throw new Error("capture replay duplicated a workload event");
     if (rows.length === acceptedWorkload) break;
     if (pass === 3) {
@@ -240,38 +245,30 @@ try {
       console.error(JSON.stringify({ diagnostic: "hook-drain-state", observed: rows.length, expected: acceptedWorkload,
         pending, captureSpool: inventory(join(dir, "spool")), identityCache: inventory(join(f.base, "hook-project")),
         workers: observer.read().map(({ pid, kind, detached }) => ({ pid, kind, detached })), evidence: observer.evidence().slice(-16) }));
-      throw new Error(`contended rows did not drain losslessly: observed=${rows.length}, expected=${acceptedWorkload}`);
+      const {pendingRecords:_pendingRecords,...proof}=conservation(database,dir,baseline);
+      const telemetryValid=[...plain,...contended,...drains].every(sample=>Number.isFinite(sample.wallMs)&&sample.wallMs>=0&&Number.isFinite(sample.metricWallMs)&&sample.metricWallMs>=0&&Number.isFinite(sample.rssMB)&&sample.rssMB>0);
+      if(!reportBudgetAdvisory("contended-drain","hooks pass-4 drain",{...proof,drainPass:pass+1,telemetryValid,survivors:leftoverProcesses}))
+        throw new Error(`contended rows did not drain losslessly: ${JSON.stringify(proof)}`);
+      contendedDrainAdvisory=proof;
     }
   }
   if (countedRetirements !== 0) throw new Error("plain or contended workload retired a native capture instead of replaying losslessly");
   const sessionStart = await samples("sessionStart", RUNS.sessionStart, () => invoke("SessionStart", "sessionStart"));
-  const finalStore = new CaptureStore({ memoryDir: f.base, project: f.project });
-  const recorded = new Map<number, string>(), pending = new Map<number, string>();
-  try {
-    for (const row of finalStore.rows()) {
-      const id = invocationId(row.event, row.excerpt); if (!id) continue;
-      if (recorded.has(id)) throw new Error("capture duplicated an accepted invocation");
-      recorded.set(id, row.at);
-    }
-  } finally { finalStore.close(); }
-  const pendingDir = join(f.base, "hook-spool");
-  for (const dir of [pendingDir, join(pendingDir, ".capacity")]) for (const name of existsSync(dir) ? readdirSync(dir) : []) {
-    if (!/^hook-.*\.json(?:\.draining-[a-f0-9]+)?$/.test(name)) continue;
-    const value = JSON.parse(readFileSync(join(dir, name), "utf8")), id = invocationId(value.capture?.event ?? "", value.capture?.excerpt ?? "");
-    if (!id || value.cwd !== f.cwd) throw new Error("pending fixture capture unavailable");
-    if (pending.has(id)) throw new Error("pending fixture capture duplicated");
-    pending.set(id, value.capture.at);
+  // Preserve the later SessionStart quota-retirement/acknowledgement contract. It is not the pass-4 advisory.
+  const database=snapshotRows(dir),proof=conservation(database,dir,baseline),recorded=new Map<number,string>(),pending=new Map<number,string>();
+  if(proof.duplicateItems||proof.unreadableItems)throw Error("capture conservation has conflicting rows or receipts; inspect hook-drain accounting");
+  for(const row of database){const id=invocationId(row.event,row.excerpt);if(!id)continue;
+    if(recorded.has(id))throw Error("capture duplicated an accepted invocation");recorded.set(id,row.at);}
+  for(const row of proof.pendingRecords){if(pending.has(row.id))throw Error("pending fixture capture duplicated");pending.set(row.id,row.at);}
+  const retiredInvocations:number[]=[];
+  for(let id=1;id<=invocations;id++){
+    if(!recorded.has(id)&&!pending.has(id))retiredInvocations.push(id);
+    if(recorded.has(id)&&pending.has(id)&&recorded.get(id)!==pending.get(id))throw Error("pending acknowledgement changed capture identity");
   }
-  const retiredInvocations: number[] = [];
-  for (let id = 1; id <= invocations; id++) {
-    if (!recorded.has(id) && !pending.has(id)) retiredInvocations.push(id);
-    if (recorded.has(id) && pending.has(id) && recorded.get(id) !== pending.get(id)) throw new Error("pending acknowledgement changed capture identity");
-  }
-  const pendingOnly = [...pending.keys()].filter(id => !recorded.has(id)).length;
-  normalAccounting = { invocations, recorded: recorded.size, pending: pending.size, pendingOnly, countedRetirements, retiredInvocations };
-  if (retiredInvocations.length !== countedRetirements || invocations !== recorded.size + pendingOnly + countedRetirements) {
-    throw new Error(`normal workload capture conservation failed: ${JSON.stringify(normalAccounting)}`);
-  }
+  const pendingOnly=[...pending.keys()].filter(id=>!recorded.has(id)).length;
+  normalAccounting={invocations,recorded:recorded.size,pending:pending.size,pendingOnly,countedRetirements,retiredInvocations};
+  if(retiredInvocations.length!==countedRetirements||invocations!==recorded.size+pendingOnly+countedRetirements)
+    throw Error(`normal workload capture conservation failed: ${JSON.stringify(normalAccounting)}`);
   // #15 T4 (after the capture accounting above, which counts PostToolUse and plain SessionStart runs only): the same real `bin/amem.js hook SessionStart`, with a 1 MiB `.amem/log.jsonl` (the repo scope's read cap) in the repository. The repo section must be bounded by the
   // hook's own deadline, so a log at the cap costs the hook no more than the budget it already has. This is a wall-time and RSS guard, not proof of the bounded read:
   // inside the native hook's 140 ms the optional sections are usually dropped before the repo read starts. The bounded read is proven in test/repo-scope.test.ts (1 MiB brief test).
@@ -308,7 +305,7 @@ try {
     const { pending: _pending, ...numeric } = sample;
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
-  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: recorded.size, pendingAcknowledgements: pending.size, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, postExitWindowMs: R1_POST_EXIT_WINDOW_MS, lingeringAtExit: r1Lingering, maxPostExitSurvivalMs: round(r1MaxSurvivalMs), checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
+  const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: normalAccounting.recorded, pendingAcknowledgements: normalAccounting.pending, contendedDrainAdvisory: contendedDrainAdvisory ?? null, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, postExitWindowMs: R1_POST_EXIT_WINDOW_MS, lingeringAtExit: r1Lingering, maxPostExitSurvivalMs: round(r1MaxSurvivalMs), checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
   return report;
 } finally {
