@@ -1,5 +1,6 @@
 import { expect,test } from "bun:test";
 import { completionFit,feasibilityObservation,type FitInterval } from "../scripts/hook-feasibility-fit.ts";
+import { matchesProfileRow } from "./fakes/worker-feasibility-sample.ts";
 
 test("p99 includes every censor, reports its bound, and keeps the actual112ms ceiling",()=>{
   const rows:FitInterval[]=Array.from({length:197},()=>({kind:"complete",ms:110}));
@@ -12,6 +13,11 @@ test("unknown clocks are not zero-cost completed observations",()=>{
   expect(completionFit([{kind:"unknown"}],112)).toMatchObject({complete:0,unknown:1,verdict:"not-established",completedMs:null});
   expect(completionFit([],115).verdict).toBe("not-established");
   expect(()=>completionFit([{kind:"complete",ms:-1}],115)).toThrow("invalid");
+});
+test("a Stop row sharing an excerpt does not duplicate the intended Recap verification",()=>{
+  expect(matchesProfileRow({event:"Recap",excerpt:"marker"},"Stop","marker")).toBe(true);
+  expect(matchesProfileRow({event:"Stop",excerpt:"marker"},"Stop","marker")).toBe(false);
+  expect(matchesProfileRow({event:"PostToolUse",excerpt:"src/public.ts\nmarker"},"PostToolUse","marker")).toBe(true);
 });
 test("joint fit uses boot-to-valid-final-body completion, never sums component p99s",()=>{
   const observation=feasibilityObservation({mode:"light",state:"warm",event:"PostToolUse",sample:1,safe:true,complete:true,expectedRowVerified:true,

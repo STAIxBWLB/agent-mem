@@ -6,6 +6,9 @@ import { hookFixture } from "./hooks-fixture.ts";
 import { createHookWorkerProfile } from "./hooks-worker-profile.ts";
 import { observeOwnedGone, prepareWorkerFeasibilityRecovery, type FeasibilityState } from "./worker-feasibility-recovery.ts";
 export interface WorkerFeasibilityInput { state:FeasibilityState; event:"PostToolUse"|"Stop"; mode:"light"|"detailed"; sample:number; out:string }
+export function matchesProfileRow(row:{event:string;excerpt:string},event:WorkerFeasibilityInput["event"],marker:string){
+  return row.event===(event==="PostToolUse"?"PostToolUse":"Recap")&&row.excerpt===(event==="PostToolUse"?"src/public.ts\n"+marker:marker);
+}
 export async function runWorkerFeasibilitySample(input:WorkerFeasibilityInput) {
   if(!input||Object.keys(input).sort().join()!=="event,mode,out,sample,state"||!["cold","warm","wal-recovery","partial-recovery"].includes(input.state)||!["PostToolUse","Stop"].includes(input.event)||!["light","detailed"].includes(input.mode)||!Number.isSafeInteger(input.sample)||input.sample<1||input.sample>200||typeof input.out!=="string"||!isAbsolute(input.out)||existsSync(input.out))throw Error("Feasibility sample arguments or new output directory are invalid; use one declared owned sample");
   const out=resolve(input.out);mkdirSync(out,{mode:0o700});
@@ -24,7 +27,8 @@ export async function runWorkerFeasibilitySample(input:WorkerFeasibilityInput) {
     const priorArtifacts=process.env.AMEM_TEST_PHASE_ARTIFACTS;
     try{process.env.AMEM_TEST_PHASE_ARTIFACTS=join(out,"receipts");profile.observer.preserveBeforeClose(f);}finally{if(priorArtifacts===undefined)delete process.env.AMEM_TEST_PHASE_ARTIFACTS;else process.env.AMEM_TEST_PHASE_ARTIFACTS=priorArtifacts;}
     const marker=(input.sample%2?"profile sample ":"프로필 표본 ")+input.state+" "+input.event+" "+input.sample;
-    const payload:Record<string,unknown>={cwd:f.cwd,hook_event_name:input.event,session_id:"worker-profile-"+input.sample,tool_name:"Read",tool_input:{file_path:"src/public.ts"},tool_response:marker};
+    const payload:Record<string,unknown>={cwd:f.cwd,hook_event_name:input.event,session_id:"worker-profile-"+input.sample};
+    if(input.event==="PostToolUse")Object.assign(payload,{tool_name:"Read",tool_input:{file_path:"src/public.ts"},tool_response:marker});
     if(input.event==="Stop"){
       const transcript=join(f.root,"profile-transcript.jsonl");
       writeFileSync(transcript,JSON.stringify({type:"system",subtype:"away_summary",timestamp:new Date().toISOString(),content:marker})+"\n",{mode:0o600});payload.transcript_path=transcript;
@@ -50,7 +54,7 @@ export async function runWorkerFeasibilitySample(input:WorkerFeasibilityInput) {
     const metrics=readMetrics(f.base).filter(row=>row.kind==="hook"),last=metrics.at(-1);
     // Read-only SDK inspection happens AFTER the measured command, never as recovery preparation.
     let expectedRowVerified=false,rowVerificationUnavailable=false;
-    if(safe){try{const store=new CaptureStore({memoryDir:f.base,project:f.project,cwd:f.cwd,readOnly:true,maxReadRows:128});try{const count=store.rows({project:f.project,limit:128}).filter(row=>row.excerpt===(input.event==="PostToolUse"?"src/public.ts\n"+marker:marker)).length;expectedRowVerified=count===1;}finally{store.close();}}catch{rowVerificationUnavailable=true;}}
+    if(safe){try{const store=new CaptureStore({memoryDir:f.base,project:f.project,cwd:f.cwd,readOnly:true,maxReadRows:128});try{const count=store.rows({project:f.project,limit:128}).filter(row=>matchesProfileRow(row,input.event,marker)).length;expectedRowVerified=count===1;}finally{store.close();}}catch{rowVerificationUnavailable=true;}}
     const semanticFailure=!last||last.transcriptStopReason==="unavailable"||(last.captureDrops??0)>0||(last.abandonedChildren??0)>0||(last.rssSources?.unavailable??1)>0;
     complete=safe&&result.exitCode===0&&bodyValid&&clocksValid&&!trace.partialTail&&expectedRowVerified&&!semanticFailure;
     const metric=last?Object.fromEntries(Object.entries(last).filter(([key,value])=>key!=="at"&&key!=="kind"&&(typeof value==="number"||key==="rssSources"||key==="transcriptStopReason"))):null;
