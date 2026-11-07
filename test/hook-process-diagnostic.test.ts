@@ -94,3 +94,10 @@ test("the lifecycle observer distinguishes malformed wire telemetry from forced 
     }
   }finally{f.close();}
 });
+
+test("native telemetry validity is the final pipe-drained receipt, not the earlier usage snapshot", () => {
+  const diagnostic=hookProcessDiagnostic(input([row("spawn",100,{kind:"native"}),
+    row("rss-finish",101,{kind:"native",telemetryValid:1,known:1,source:"platform-rusage"}),
+    row("reap-end",102,{kind:"native",reaped:1,telemetryValid:0})]));
+  expect(diagnostic.children[0]!.rss!.telemetryValid).toBe(0);
+});
