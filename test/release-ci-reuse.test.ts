@@ -72,7 +72,7 @@ test("read adapter has fixed GitHub origin, refuses large/error/malformed bodies
 test("workflow dispatch cannot reach publication and release checkouts are pinned",()=>{
   const root=join(import.meta.dir,".."),workflow=readFileSync(join(root,".github/workflows/release.yml"),"utf8");
   expect(workflow).not.toContain("--shard=");expect(workflow).toContain("workflow_dispatch:");expect(workflow).toContain("cancel-in-progress: false");
-  for(const name of ["gate","publish","release-notes"]){const block=workflow.split(`  ${name}:`)[1]!.split(/\n  [a-z][a-z-]*:/)[0]!;expect(block).toContain("if: github.event_name == 'push'");}
+  for(const name of ["gate","publish","release-notes"]){const block=workflow.split(`  ${name}:`)[1]!.split(/\n  [a-z][a-z-]*:/)[0]!;expect(block).toContain("if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')");}
   expect(workflow).toContain("ref: ${{ needs.reuse.outputs.commit }}");expect(workflow).toContain("--verify-tag-only");
   expect(workflow).toContain("npm pack --dry-run");expect(workflow).toContain("id-token: write");
   const check=readFileSync(join(root,".github/workflows/check.yml"),"utf8");expect(check).not.toContain("fetch-depth: 0");expect(check).toContain("--depth=1 origin 6d557ad");
