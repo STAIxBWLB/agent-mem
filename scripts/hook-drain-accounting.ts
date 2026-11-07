@@ -40,11 +40,12 @@ const segment=/^spool-[0-9a-f-]+\.jsonl(?:\.offset-(\d+)(-skip)?)?(?:\.draining-
 /** ponytail: 512 entries, 8 MiB and 2000 rows bound this fixed fixture's read-only proof.
  * A larger fixture needs a reviewed streamed snapshot; an exhausted bound is always a hard failure. */
 interface InspectionOptions { expected:number;workload:ReadonlyMap<number,WorkloadRow>;baselineRows:number;database:readonly WorkloadRow[];base:string;captureDir:string;cwd:string;project:string;scope:string;countedRetirements:number }
-export function inspectWorkloadAccounting(options:InspectionOptions):DrainAccounting {
+export type WorkloadInspection = DrainAccounting & { pendingRecords: {id:number;at:string}[] };
+export function inspectWorkloadAccounting(options:InspectionOptions):WorkloadInspection {
   try {return inspect(options);}catch {return fail();}
 }
-function inspect(options:InspectionOptions):DrainAccounting {
-  const database:number[]=[],hookPending:number[]=[],capturePending:number[]=[];
+function inspect(options:InspectionOptions):WorkloadInspection {
+  const database:number[]=[],hookPending:number[]=[],capturePending:number[]=[],pendingRecords:{id:number;at:string}[]=[];
   let entries=0,bytes=0,lines=0;const dirs:{dir:string;stamp:Stats;names:string[]}[]=[],missingDirs:string[]=[],files:{file:string;stamp:Stats}[]=[];
   const inventory=(dir:string)=>{
     const stamp=lstatSync(dir,{throwIfNoEntry:false});if(!stamp){missingDirs.push(dir);return [];}
@@ -77,7 +78,7 @@ function inspect(options:InspectionOptions):DrainAccounting {
       const decoded=hooks.decoded(file);if(!decoded||decoded.unknown||!hooks.owns(file)||!same(file.initial,lstatSync(file.file)))fail();
       const row=decoded.value;
       if(row.cwd!==options.cwd||hash(row.cwd)!==match![2]||row.scope!==scope||row.scope!==match![3]||row.nonce!==match![4])fail();
-      hookPending.push(identify(row.capture));if(++lines>2000)fail();
+      const id=identify(row.capture);hookPending.push(id);pendingRecords.push({id,at:row.capture.at});if(++lines>2000)fail();
     }finally{closeSync(file.fd);}
   }
   const captureFiles=inventory(join(options.captureDir,"spool")).filter(name=>name!==".writing");
@@ -94,7 +95,7 @@ function inspect(options:InspectionOptions):DrainAccounting {
       const shaped=normalizeCaptureFields(row as unknown as Parameters<typeof normalizeCaptureFields>[0]);
       const expected={...shaped,project:options.project,nonce:row.nonce};
       if(Object.keys(row).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>JSON.stringify(row[key])!==JSON.stringify(value)))fail();
-      const id=identify(row as unknown as WorkloadRow);parsed++;if(pending)capturePending.push(id);
+      const id=identify(row as unknown as WorkloadRow);parsed++;if(pending){capturePending.push(id);pendingRecords.push({id,at:shaped.at});}
     }
     if(!parsed)fail();
   }
@@ -106,5 +107,5 @@ function inspect(options:InspectionOptions):DrainAccounting {
     const scan=opendirSync(snapshot.dir),names:string[]=[];try{for(let row=scan.readSync();row;row=scan.readSync()){if(names.length>=512)fail();names.push(row.name);}}finally{scan.close();}
     if(JSON.stringify(names.sort())!==JSON.stringify(snapshot.names))fail();
   }
-  return accountWorkload(options.expected,database,hookPending,capturePending,options.countedRetirements);
+  return {...accountWorkload(options.expected,database,hookPending,capturePending,options.countedRetirements),pendingRecords};
 }

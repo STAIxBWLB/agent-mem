@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -67,4 +67,22 @@ test("unreadable, unsafe, unknown, wrong-bound or duplicate pending input never 
     (s:Awaited<ReturnType<typeof fixture>>)=>{s.options.workload.set(2,{...row(2),agent:"jcode"});},
   ]) {const state=await fixture(2,[],[1],[2]);try{mutate(state);expect(()=>state.inspect()).toThrow("pending workload evidence");}finally{state.f.close();}}
   const duplicate=await fixture(2,[1],[1],[2]);try{expect(duplicate.inspect().accountingComplete).toBe(false);expect(duplicate.inspect().duplicateItems).toBe(1);}finally{duplicate.f.close();}
+});
+
+
+test("capture pending accepts complete EOF JSON but rejects a torn multi-row tail and hardlinks",async()=>{
+  const state=await fixture(1,[],[],[1]);
+  try {
+    const name=readdirSync(state.spool).find(name=>name.startsWith("spool-"))!,file=join(state.spool,name),data=readFileSync(file);
+    writeFileSync(file,data.subarray(0,data.length-1));expect(state.inspect().accountingComplete).toBe(true);
+    writeFileSync(file,Buffer.concat([data,Buffer.from("{\n")]));expect(()=>state.inspect()).toThrow("pending workload evidence");
+    writeFileSync(file,data);linkSync(file,join(state.spool,"spool-abcd.jsonl"));expect(()=>state.inspect()).toThrow("pending workload evidence");
+  }finally{state.f.close();}
+});
+test("an incomplete directory inventory is never a positive proof",async()=>{
+  const state=await fixture(1,[1],[],[]);
+  try {
+    for(let index=0;index<513;index++)writeFileSync(join(state.spool,`spool-${index.toString(16)}.jsonl`),"{}",{mode:0o600});
+    expect(()=>state.inspect()).toThrow("pending workload evidence");
+  }finally{state.f.close();}
 });

@@ -246,7 +246,7 @@ try {
       console.error(JSON.stringify({ diagnostic: "hook-drain-state", observed: rows.length, expected: acceptedWorkload,
         pending, captureSpool: inventory(join(dir, "spool")), identityCache: inventory(join(f.base, "hook-project")),
         workers: observer.read().map(({ pid, kind, detached }) => ({ pid, kind, detached })), evidence: observer.evidence().slice(-16) }));
-      const proof=conservation(database,dir,baseline);
+      const {pendingRecords:_pendingRecords,...proof}=conservation(database,dir,baseline);
       const telemetryValid=[...plain,...contended,...drains].every(sample=>Number.isFinite(sample.wallMs)&&sample.wallMs>=0&&Number.isFinite(sample.metricWallMs)&&sample.metricWallMs>=0&&Number.isFinite(sample.rssMB)&&sample.rssMB>0);
       if(!reportBudgetAdvisory("contended-drain","hooks pass-4 drain",{...proof,telemetryValid,survivors:leftoverProcesses}))
         throw new Error(`contended rows did not drain losslessly: ${JSON.stringify(proof)}`);
@@ -255,10 +255,20 @@ try {
   }
   if (countedRetirements !== 0) throw new Error("plain or contended workload retired a native capture instead of replaying losslessly");
   const sessionStart = await samples("sessionStart", RUNS.sessionStart, () => invoke("SessionStart", "sessionStart"));
-  const proof=conservation(snapshotRows(),dir,baseline);
-  if(!proof.accountingComplete)throw Error(`normal workload capture conservation failed: ${JSON.stringify(proof)}`);
-  const pendingCount=proof.hookPendingRows+proof.capturePendingRows;
-  normalAccounting={invocations,recorded:proof.databaseRows,pending:pendingCount,pendingOnly:pendingCount,countedRetirements,retiredInvocations:proof.missingInvocations};
+  // Preserve the later SessionStart quota-retirement/acknowledgement contract. It is not the pass-4 advisory.
+  const database=snapshotRows(),proof=conservation(database,dir,baseline),recorded=new Map<number,string>(),pending=new Map<number,string>();
+  for(const row of database){const id=invocationId(row.event,row.excerpt);if(!id)continue;
+    if(recorded.has(id))throw Error("capture duplicated an accepted invocation");recorded.set(id,row.at);}
+  for(const row of proof.pendingRecords){if(pending.has(row.id))throw Error("pending fixture capture duplicated");pending.set(row.id,row.at);}
+  const retiredInvocations:number[]=[];
+  for(let id=1;id<=invocations;id++){
+    if(!recorded.has(id)&&!pending.has(id))retiredInvocations.push(id);
+    if(recorded.has(id)&&pending.has(id)&&recorded.get(id)!==pending.get(id))throw Error("pending acknowledgement changed capture identity");
+  }
+  const pendingOnly=[...pending.keys()].filter(id=>!recorded.has(id)).length;
+  normalAccounting={invocations,recorded:recorded.size,pending:pending.size,pendingOnly,countedRetirements,retiredInvocations};
+  if(retiredInvocations.length!==countedRetirements||invocations!==recorded.size+pendingOnly+countedRetirements)
+    throw Error(`normal workload capture conservation failed: ${JSON.stringify(normalAccounting)}`);
   // #15 T4 (after the capture accounting above, which counts PostToolUse and plain SessionStart runs only): the same real `bin/amem.js hook SessionStart`, with a 1 MiB `.amem/log.jsonl` (the repo scope's read cap) in the repository. The repo section must be bounded by the
   // hook's own deadline, so a log at the cap costs the hook no more than the budget it already has. This is a wall-time and RSS guard, not proof of the bounded read:
   // inside the native hook's 140 ms the optional sections are usually dropped before the repo read starts. The bounded read is proven in test/repo-scope.test.ts (1 MiB brief test).
@@ -295,7 +305,6 @@ try {
     const { pending: _pending, ...numeric } = sample;
     timeoutPaths.push({ ...numeric, stalledAttempts: stalledAttempts.get(`actual-${event}-timeout`) ?? 0, wallMs: round(sample.wallMs), rssMB: round(sample.rssMB) });
   }
-  if(countedRetirements!==0)throw Error("accepted workload capture was retired; inspect the capture-retirement receipts");
   const report = { timeoutPaths, capture: { baselineRows: baseline, replayedWorkload: acceptedWorkload, drainInvocations: drains.length, capturedInvocations: normalAccounting.recorded, pendingAcknowledgements: normalAccounting.pending, contendedDrainAdvisory: contendedDrainAdvisory ?? null, normalWorkload: normalAccounting, allWorkloadCountedRetirements: countedRetirements }, platform: process.platform, bun: Bun.version, executable: "bin/amem.js hook", budgets: { R1: { pass: leftoverProcesses === 0, leftoverProcesses, postExitWindowMs: R1_POST_EXIT_WINDOW_MS, lingeringAtExit: r1Lingering, maxPostExitSurvivalMs: round(r1MaxSurvivalMs), checkedInvocations: invocations, checkedWorkers, checkedOwnedChildren: checkedWorkers, checkedBunWorkers, checkedNativeSupervisors, zeroWorkerDeferrals: deferredWorkers, maxPlainZeroWorkers: MAX_PLAIN_DEFERRED, scope: "outer executable groups plus every observed owned Bun-worker or native-supervisor PID and detached group" }, R2: { pass: Object.values(groups).every(group => group.pass), wallP95BudgetMs: WALL_MS, peakRssBudgetMB: RSS_MB, groups } }, pass: leftoverProcesses === 0 && Object.values(groups).every(group => group.pass) };
   if (!report.budgets.R1.pass) throw Error("hook R1 budget failed");
   return report;
