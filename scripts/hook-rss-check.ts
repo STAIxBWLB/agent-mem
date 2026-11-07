@@ -99,8 +99,8 @@ export function attributedWorkerRssObservation(diagnostic: ProcessDiagnostic): {
   }
   if (complete) {
     try {
-      // Final hooks use the same admitted-one-worker observation contract as PostToolUse.
-      verifyHookProcessObservation("PostToolUse", children.map(child => ({ pid: child.pid, kind: child.kind as "worker" | "native", detached: child.detached === true, argv: [] })),
+      // Preserve each event's early/late worker admission contract.
+      verifyHookProcessObservation(diagnostic.event === "PreToolUse" ? "PostToolUse" : diagnostic.event, children.map(child => ({ pid: child.pid, kind: child.kind as "worker" | "native", detached: child.detached === true, argv: [] })),
         diagnostic.admission.map(row => ({ phase: row.phase, pid: diagnostic.parentPid, loads: row.loads, exact: row.exact ?? undefined,
           native: row.native ?? undefined, childPid: row.childPid ?? undefined, remainingUs: row.remainingUs ?? undefined, host: row.host ?? undefined })), false);
     } catch { complete = false; }

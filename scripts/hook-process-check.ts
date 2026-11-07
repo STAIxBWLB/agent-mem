@@ -7,7 +7,7 @@ export function deferralPendingEligible(workers: readonly HookWorkerProcess[]): 
 }
 
 /** R1 observation contract. A deferred optional worker needs positive branch and durable-intake evidence. */
-export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStart", workers: readonly HookWorkerProcess[], evidence: readonly HookProcessEvidence[], pending: boolean): { deferred: boolean } {
+export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStart" | "Stop" | "SessionEnd", workers: readonly HookWorkerProcess[], evidence: readonly HookProcessEvidence[], pending: boolean): { deferred: boolean } {
   const buns = workers.filter(row => row.kind === "worker"), native = workers.filter(row => row.kind === "native");
   const attempts = evidence.filter(row => row.phase === "attempt"), returned = evidence.filter(row => row.phase === "returned");
   const checks = evidence.filter(row => row.phase === "precheck"), skipped = evidence.filter(row => row.phase === "deadline_skip");
@@ -25,6 +25,13 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
   const late = evidence.filter(row => row.phase === "late_check");
   if (late.length > 1 || late.length === 1 && skipped.length) fail();
   if (buns.length === 1) {
+    if ((event === "Stop" || event === "SessionEnd") && attempts[0]?.native === 0) {
+      // Transcript final hooks boot the worker BEFORE native metadata. The observer's late_check
+      // still runs after metadata, but its remaining time does not govern that earlier admission.
+      if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
+        || late.length !== 1 || !Number.isSafeInteger(late[0]!.remainingUs)) fail();
+      return { deferred: false };
+    }
     if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000) fail();
     if (late.length === 1 && (!Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! < 5000)) fail();
     return { deferred: false };

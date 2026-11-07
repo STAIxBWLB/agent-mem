@@ -1,0 +1,232 @@
+{
+  "diagnostic": "hook-child-reap/v1",
+  "instrumented": true,
+  "event": "Stop",
+  "variant": "baseline",
+  "run": 9,
+  "logicalRun": 9,
+  "parentPid": 3692,
+  "expectedOwnedChildren": 3,
+  "expectation": "observed-spawn-attempts",
+  "observedOwnedChildren": 3,
+  "lifecycleChildren": 3,
+  "expectedWorkerChildren": null,
+  "spawnAttempts": 3,
+  "spawnFailures": 0,
+  "abandonedChildren": 1,
+  "metricPresent": true,
+  "rssCoverage": "images: bun+supervisor; descendants: not measured",
+  "rssScope": "owned-images",
+  "workerExitedWindow": {
+    "boundMs": 10,
+    "startMs": 103.93359375,
+    "observedBoundMs": 10,
+    "present": true
+  },
+  "rssSources": {
+    "vmhwm": 0,
+    "vmpeakBound": 0,
+    "platformRusage": 3,
+    "rawFallback": 0,
+    "unavailable": 2
+  },
+  "cliRawRssMB": 33.296875,
+  "productionRssMB": 49.78125,
+  "rawRssMB": 49.78125,
+  "wallMs": 144.79790040625,
+  "admission": [
+    {
+      "phase": "preload",
+      "loads": 1,
+      "exact": null,
+      "native": null,
+      "childPid": null,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "precheck",
+      "loads": 1,
+      "exact": null,
+      "native": null,
+      "childPid": null,
+      "remainingUs": 83672,
+      "host": 0
+    },
+    {
+      "phase": "attempt",
+      "loads": 1,
+      "exact": 1,
+      "native": 0,
+      "childPid": null,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "returned",
+      "loads": 1,
+      "exact": 1,
+      "native": 0,
+      "childPid": 3693,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "attempt",
+      "loads": 1,
+      "exact": 1,
+      "native": 1,
+      "childPid": null,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "returned",
+      "loads": 1,
+      "exact": 1,
+      "native": 1,
+      "childPid": 3694,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "attempt",
+      "loads": 1,
+      "exact": 1,
+      "native": 1,
+      "childPid": null,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "returned",
+      "loads": 1,
+      "exact": 1,
+      "native": 1,
+      "childPid": 3695,
+      "remainingUs": null,
+      "host": null
+    },
+    {
+      "phase": "late_check",
+      "loads": 1,
+      "exact": null,
+      "native": null,
+      "childPid": null,
+      "remainingUs": -4319,
+      "host": 0
+    }
+  ],
+  "lifecyclePresent": true,
+  "truncated": false,
+  "children": [
+    {
+      "pid": 3693,
+      "kind": "worker",
+      "detached": true,
+      "spawnMs": 0.4736328125,
+      "exitPromiseMs": null,
+      "killRequestMs": 103.812255859375,
+      "reapStartMs": 103.93359375,
+      "reapEndMs": 115.24072265625,
+      "outputEndMs": 115.2490234375,
+      "reaped": false,
+      "outputLate": true,
+      "outputAvailable": false,
+      "rss": {
+        "source": null,
+        "telemetryValid": 1,
+        "known": null,
+        "kb": 0,
+        "rawKB": 0,
+        "observationFailed": null,
+        "counters": {
+          "vmhwm": 0,
+          "vmpeakBound": 0,
+          "platformRusage": 0,
+          "rawFallback": 0,
+          "unavailable": 2
+        }
+      },
+      "relativeToWorkerExitedWindowMs": {
+        "spawn": -103.4599609375,
+        "exitPromise": null,
+        "reapStart": 0,
+        "reapEnd": 11.30712890625
+      },
+      "receiptComplete": false
+    },
+    {
+      "pid": 3694,
+      "kind": "native",
+      "detached": true,
+      "spawnMs": 4.363037109375,
+      "exitPromiseMs": 59.072021484375,
+      "killRequestMs": 58.320556640625,
+      "reapStartMs": 58.7109375,
+      "reapEndMs": 59.380126953125,
+      "outputEndMs": null,
+      "reaped": true,
+      "outputLate": null,
+      "outputAvailable": null,
+      "rss": {
+        "source": "platform-rusage",
+        "telemetryValid": 1,
+        "known": 1,
+        "kb": 8512,
+        "rawKB": 8512,
+        "observationFailed": 0,
+        "counters": {
+          "vmhwm": null,
+          "vmpeakBound": null,
+          "platformRusage": null,
+          "rawFallback": null,
+          "unavailable": null
+        }
+      },
+      "relativeToWorkerExitedWindowMs": {
+        "spawn": -99.570556640625,
+        "exitPromise": -44.861572265625,
+        "reapStart": -45.22265625,
+        "reapEnd": -44.553466796875
+      },
+      "receiptComplete": true
+    },
+    {
+      "pid": 3695,
+      "kind": "native",
+      "detached": true,
+      "spawnMs": 7.03466796875,
+      "exitPromiseMs": 67.530029296875,
+      "killRequestMs": 67.093994140625,
+      "reapStartMs": 67.379638671875,
+      "reapEndMs": 67.570556640625,
+      "outputEndMs": null,
+      "reaped": true,
+      "outputLate": null,
+      "outputAvailable": null,
+      "rss": {
+        "source": "platform-rusage",
+        "telemetryValid": 1,
+        "known": 1,
+        "kb": 8384,
+        "rawKB": 8384,
+        "observationFailed": 0,
+        "counters": {
+          "vmhwm": null,
+          "vmpeakBound": null,
+          "platformRusage": null,
+          "rawFallback": null,
+          "unavailable": null
+        }
+      },
+      "relativeToWorkerExitedWindowMs": {
+        "spawn": -96.89892578125,
+        "exitPromise": -36.403564453125,
+        "reapStart": -36.553955078125,
+        "reapEnd": -36.363037109375
+      },
+      "receiptComplete": true
+    }
+  ]
+}

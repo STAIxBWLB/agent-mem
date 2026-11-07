@@ -119,3 +119,38 @@ test("#287 warning keeps original unknown coverage and cannot admit an extra unk
     await expect(measuredAttributedHookRss(live.metric, 55, live.diagnostic, "R1 live", flags, "darwin")).rejects.toThrow("provenance unknown");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 5000);
+
+
+test("#287 real hosted Stop with negative post-metadata time warns only with complete attributed receipts", async () => {
+  // Exact decoded process record from run 42330589615, baseline:Stop:9 (body/path free).
+  const real = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/hook-rss-baseline-stop-42330589615.json"), "utf8")) as ReturnType<typeof hookProcessDiagnostic>;
+  expect(real.admission.find(row => row.phase === "late_check")!.remainingUs).toBe(-4319);
+  expect(attributedWorkerRssObservation(real)).toEqual({ complete: true, explained: 2 });
+  const flags = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+  const root = mkdtempSync(join(tmpdir(), "amem-real-stop-advisory-"));
+  try {
+    // Historic runner PIDs grant no present liveness evidence. Substitute freshly exited owned
+    // children for the observation-only R1 check, leaving the retained fixture byte-identical.
+    const diagnostic = structuredClone(real), pids = new Map<number, number>();
+    for (const child of diagnostic.children) {
+      const dead = Bun.spawnSync([process.execPath, "-e", ""], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+      expect(dead.exitCode).toBe(0);pids.set(child.pid, dead.pid);child.pid=dead.pid;
+    }
+    for (const row of diagnostic.admission) if (row.childPid !== null) row.childPid=pids.get(row.childPid)!;
+    const metric: MetricSample = { at:new Date().toISOString(),kind:"hook",wallMs:real.wallMs!,rssMB:real.productionRssMB!,rawRssMB:real.rawRssMB!,
+      rssScope:"owned-images",rssSources:real.rssSources as NonNullable<MetricSample["rssSources"]>,abandonedChildren:real.abandonedChildren! };
+    const result=await measuredAttributedHookRss(metric,real.cliRawRssMB!,diagnostic,"baseline:Stop:9 regression",{...flags,GITHUB_STEP_SUMMARY:join(root,"summary.md")},"darwin");
+    expect(result).toMatchObject({rssAdvisory:true,rssProvenanceKnown:false});
+    expect(readFileSync(join(root,"summary.md"),"utf8")).toContain('"unexplainedRssSources":0');
+    for (const mutate of [
+      (d:typeof real)=>{d.admission=d.admission.filter(row=>row.phase!=="returned");},
+      (d:typeof real)=>{d.admission.find(row=>row.phase==="attempt")!.exact=0;},
+      (d:typeof real)=>{d.admission.find(row=>row.phase==="preload")!.loads=2;},
+      (d:typeof real)=>{d.children[0]!.rss!.telemetryValid=0;},
+      (d:typeof real)=>{d.observedOwnedChildren--;},
+      (d:typeof real)=>{d.children.find(row=>row.kind==="native")!.rss!.observationFailed=1;},
+      (d:typeof real)=>{d.event="PreToolUse";},
+    ]) {const changed=structuredClone(real);mutate(changed);expect(attributedWorkerRssObservation(changed).complete).toBe(false);}
+    const end=structuredClone(real);end.event="SessionEnd";expect(attributedWorkerRssObservation(end).complete).toBe(true);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+},5000);
