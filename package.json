@@ -45,6 +45,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "bun x tsc --noEmit && bun scripts/check-boundary.ts && bun scripts/readme-facts.ts && node scripts/check-docs.mjs && bun test --timeout 20000"
+    "check": "bun x tsc --noEmit && bun scripts/check-boundary.ts && bun scripts/readme-facts.ts && bun scripts/check-docs.ts && bun test --timeout 20000"
   }
 }

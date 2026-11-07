@@ -1,23 +1,22 @@
-// Ported from STAIxBWLB/agent-hub scripts/check-docs.mjs (MIT, same owner), without its committed-readback and status-version parts.
+// Ported from STAIxBWLB/agent-hub's documentation stamp checker (MIT, same owner), without its committed-readback and status-version parts.
 import { existsSync, readFileSync, statSync, lstatSync, readlinkSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { memoryGitSync } from "../src/memory/platform.ts";
 import { fileURLToPath } from "node:url";
 
 // Stamps record a human source review, not an automatic proof of the prose.
 const args = process.argv.slice(2);
 const requireFresh = args.includes("--require-fresh");
 const root = resolve(args.find((arg) => arg !== "--require-fresh") ?? fileURLToPath(new URL("..", import.meta.url)));
-const errors = [];
-const reports = [];
+const errors: string[] = [];
+const reports: string[] = [];
 // A readback must not execute repository-configured helpers.
-const safeGitConfig = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
-const git = (...args) => spawnSync("git", ["--no-pager", ...safeGitConfig.flatMap(value => ["-c", value]), ...args], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 2000, maxBuffer: 256 * 1024 });
-const safePath = (path) => typeof path === "string" && path.length > 0 && !path.startsWith("/") && !path.startsWith("-") && !path.split("/").includes("..") && !path.includes("\\") && !path.includes(":");
-const documentExists = (path) => existsSync(join(root, path)) && statSync(join(root, path)).isFile();
+const git = (...args: string[]) => memoryGitSync(args, { cwd: root, encoding: "utf8", timeout: 2000, maxBuffer: 256 * 1024 });
+const safePath = (path: unknown): path is string => typeof path === "string" && path.length > 0 && !path.startsWith("/") && !path.startsWith("-") && !path.split("/").includes("..") && !path.includes("\\") && !path.includes(":");
+const documentExists = (path: string) => existsSync(join(root, path)) && statSync(join(root, path)).isFile();
 /** Never refresh the index through git status: it can run configured clean/process filters. */
-const dirtiness = (paths) => {
+const dirtiness = (paths: string[]) => {
   const unknown = { status: 1, stdout: "" }, dirty = { status: 0, stdout: "dirty" };
   const staged = git("diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--", ...paths);
   if (staged.status === 1) return dirty;
@@ -34,6 +33,7 @@ const dirtiness = (paths) => {
       const match = /^([0-7]{6}) ([0-9a-f]{40}) ([0-3])\t([\s\S]+)$/.exec(entry);
       if (!match) return unknown;
       const [, mode, oid, stage, path] = match;
+      if (!mode || !oid || !stage || !path) return unknown;
       if (stage !== "0") return dirty;
       // ponytail: gitlinks/large or transformed files stay unverified; never invoke a filter to establish equivalence.
       if (!["100644", "100755", "120000"].includes(mode)) return unknown;
@@ -42,7 +42,7 @@ const dirtiness = (paths) => {
       for (let parent = dirname(file); parent !== root; parent = dirname(parent)) if (!lstatSync(parent).isDirectory() || lstatSync(parent).isSymbolicLink()) return unknown;
       if (!existsSync(file) && mode !== "120000") return dirty;
       const info = lstatSync(file);
-      let bytes;
+      let bytes: Buffer;
       if (mode === "120000") { if (!info.isSymbolicLink()) return dirty; bytes = readlinkSync(file, { encoding: "buffer" }); }
       else { if (!info.isFile() || info.isSymbolicLink()) return dirty; if (info.size > 4 * 1024 * 1024) return unknown; bytes = readFileSync(file); }
       const hash = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
@@ -53,7 +53,9 @@ const dirtiness = (paths) => {
 };
 
 try {
-  const manifest = JSON.parse(readFileSync(join(root, "docs/verified.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(root, "docs/verified.json"), "utf8")) as {
+    schemaVersion?: unknown; documents?: Record<string, { verifiedAgainst?: unknown; paths?: string[] }>;
+  };
   if (manifest.schemaVersion !== 1 || !manifest.documents || typeof manifest.documents !== "object" || Array.isArray(manifest.documents)) throw new Error("invalid docs/verified.json schema");
   const required = ["README.md", "docs/contracts.md", "docs/purge.md", "docs/curated-shard-migration.md", "docs/jcode.md", "docs/opencode.md", "docs/gemini-cli.md", "docs/qwen-code.md", "docs/antigravity.md"];
   for (const path of required.sort()) if (!Object.hasOwn(manifest.documents, path)) errors.push(`missing manifest entry: ${path}`);

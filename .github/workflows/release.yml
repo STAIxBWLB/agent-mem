@@ -80,7 +80,7 @@ jobs:
       - run: bun scripts/check-boundary.ts
       - run: bun scripts/readme-facts.ts
       - name: Documentation stamps are fresh
-        run: node scripts/check-docs.mjs --require-fresh
+        run: bun scripts/check-docs.ts --require-fresh
       - run: npm pack --dry-run
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

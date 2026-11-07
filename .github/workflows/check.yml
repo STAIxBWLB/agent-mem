@@ -63,7 +63,7 @@ jobs:
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
             git fetch --no-tags --filter=blob:none --unshallow origin
           fi
-      - run: node scripts/check-docs.mjs
+      - run: bun scripts/check-docs.ts
       - run: npm pack --dry-run
       - name: Console inbox small fixture (timing report-only)
         run: |
