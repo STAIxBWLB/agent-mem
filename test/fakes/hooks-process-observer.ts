@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { realPath } from "../../src/memory/platform.ts";
-import { instrumentHookLifecycle } from "./hooks-process-lifecycle.ts";
+import { instrumentHookLifecycle, instrumentSessionNativeDeadline } from "./hooks-process-lifecycle.ts";
 
 export interface HookLifecycleReceipt {
   phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
@@ -12,10 +12,10 @@ export interface HookLifecycleReceipt {
   vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
 }
 
-export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
+export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "session-native-deadline-skip" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
-export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false) {
+export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, sessionDeadlineEnabled = false) {
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
   const nativePidFile = join(root, "owned-native.pid"), entered = join(root, "owned-native.entered");
   const worker = join(realPath(sourceRoot), "src/session-brief-worker.ts");
@@ -59,6 +59,7 @@ if(stallWorker&&process.argv[1]===worker){
 }
 `;
   if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle);
+  if(sessionDeadlineEnabled)rendered=instrumentSessionNativeDeadline(rendered);
   writeFileSync(preload,rendered,{mode:0o600});
   return { preload, worker, nativePidFile, entered,
     /** Observation only, never signalling authority. A missing exit flush is explicit missing evidence. */
@@ -77,7 +78,7 @@ if(stallWorker&&process.argv[1]===worker){
       if (!existsSync(evidence)) return [];
       return readFileSync(evidence, "utf8").split("\n").filter(Boolean).map(line => {
         const row = JSON.parse(line) as HookProcessEvidence;
-        if (!["preload", "precheck", "deadline_skip", "late_check", "attempt", "returned"].includes(row.phase) || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !Number.isSafeInteger(row.loads) || row.loads <= 0) throw new Error("invalid numeric process evidence");
+        if (!["preload", "precheck", "deadline_skip", "late_check", "session-native-deadline-skip", "attempt", "returned"].includes(row.phase) || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !Number.isSafeInteger(row.loads) || row.loads <= 0) throw new Error("invalid numeric process evidence");
         return row;
       });
     },

@@ -44,3 +44,49 @@ globalThis.__hookProcessNote=note;`);
  if(matched||native)life('spawn',child.pid,native?'native':'worker');`);
   return preload;
 }
+
+const sessionDeadlineHooks = [
+  ["  if (remaining() <= 0) { result.dropped = !pending; return result; }",
+    "  const observedSessionRemaining = remaining(); if (observedSessionRemaining <= 0) { globalThis.__hookSessionNativeSkip(observedSessionRemaining); result.dropped = !pending; return result; }"],
+  ["    const nativeRemaining = () => remaining() - 15;",
+    "    const nativeRemaining = () => remaining() - 15; globalThis.__hookSessionNativeCallbacks.add(nativeRemaining);"],
+];
+const sessionDeadlineNative = [
+  ['  if (!Number.isFinite(remaining) || remaining <= 1) throw new Error("native metadata deadline");',
+    '  if (!Number.isFinite(remaining) || remaining <= 1) { if (Number.isFinite(remaining)) globalThis.__hookSessionNativeSkip(remaining, timeRemaining); throw new Error("native metadata deadline"); }'],
+];
+/** Exact branch observation, not a second deadline read or a production hook port. */
+export function sessionNativeDeadlineSource(source: string, module: "hooks" | "native"): string {
+  for (const [anchor, replacement] of module === "hooks" ? sessionDeadlineHooks : sessionDeadlineNative) {
+    if (source.split(anchor!).length !== 2) throw Error("Session native deadline anchor changed; update the test observer before running the budget");
+    source = source.replace(anchor!, replacement!);
+  }
+  return source;
+}
+/** Add only SessionStart deadline-skip evidence; the ordinary preload and full lifecycle mode remain separate. */
+export function instrumentSessionNativeDeadline(preload: string): string {
+  const replace = (anchor: string, replacement: string) => {
+    if (preload.split(anchor).length !== 2) throw Error("Session deadline preload anchor changed; update the exact observer");
+    preload = preload.replace(anchor, replacement);
+  };
+  replace("note('preload');", `const sessionCallbacks=new WeakSet();
+globalThis.__hookSessionNativeCallbacks=sessionCallbacks;
+globalThis.__hookSessionNativeSkip=(remaining,callback)=>{
+ if(!Number.isFinite(remaining)||callback!==undefined&&!sessionCallbacks.delete(callback))return;
+ note('session-native-deadline-skip',{remainingUs:Math.floor(remaining*1000)});
+};
+const sessionDeadlineSource=(source,anchors)=>{for(const [anchor,replacement] of anchors){if(source.split(anchor).length!==2)throw Error('Session native deadline anchor changed; update the test observer');source=source.replace(anchor,replacement);}return source;};
+const sessionDeadlineHooks=source=>sessionDeadlineSource(source,${JSON.stringify(sessionDeadlineHooks)});
+const sessionDeadlineNative=source=>sessionDeadlineSource(source,${JSON.stringify(sessionDeadlineNative)});
+note('preload');`);
+  const lines=preload.split("\n").filter(line=>line.startsWith(" return {loader:'ts',contents:") && line.includes("source.replace(late,lateObserved)"));
+  if(lines.length!==1)throw Error("Session deadline hook loader anchor changed; update the test observer");
+  const line=lines[0]!;replace(line,line.replace("contents:","contents:sessionDeadlineHooks(").slice(0,-2)+")};");
+  if(preload.includes("name:'observe-native-lifecycle'")) {
+    replace("contents:transformLifecycle(readFileSync(path,'utf8'),", "contents:transformLifecycle(sessionDeadlineNative(readFileSync(path,'utf8')),");
+  } else {
+    replace("globalThis.__hookProcessNote=note;", `Bun.plugin({name:'observe-session-native-deadline',setup(builder){builder.onLoad({filter:/[/]hook-native[.]ts$/},({path})=>({loader:'ts',contents:sessionDeadlineNative(readFileSync(path,'utf8'))}));}});
+globalThis.__hookProcessNote=note;`);
+  }
+  return preload;
+}
