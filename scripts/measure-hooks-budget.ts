@@ -248,7 +248,7 @@ try {
         workers: observer.read().map(({ pid, kind, detached }) => ({ pid, kind, detached })), evidence: observer.evidence().slice(-16) }));
       const {pendingRecords:_pendingRecords,...proof}=conservation(database,dir,baseline);
       const telemetryValid=[...plain,...contended,...drains].every(sample=>Number.isFinite(sample.wallMs)&&sample.wallMs>=0&&Number.isFinite(sample.metricWallMs)&&sample.metricWallMs>=0&&Number.isFinite(sample.rssMB)&&sample.rssMB>0);
-      if(!reportBudgetAdvisory("contended-drain","hooks pass-4 drain",{...proof,telemetryValid,survivors:leftoverProcesses}))
+      if(!reportBudgetAdvisory("contended-drain","hooks pass-4 drain",{...proof,drainPass:pass+1,telemetryValid,survivors:leftoverProcesses}))
         throw new Error(`contended rows did not drain losslessly: ${JSON.stringify(proof)}`);
       contendedDrainAdvisory=proof;
     }

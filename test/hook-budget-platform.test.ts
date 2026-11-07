@@ -86,7 +86,7 @@ test("#287 every unattributed, invalid or R1/observation-failed combination stay
 
 
 import { budgetFailureAdvisory, reportBudgetAdvisory } from "../scripts/hook-timing-check.ts";
-const drainEvidence={telemetryValid:true,survivors:0,expectedInvocations:55,databaseRows:40,hookPendingRows:11,capturePendingRows:4,
+const drainEvidence={telemetryValid:true,survivors:0,drainPass:4,expectedInvocations:55,databaseRows:40,hookPendingRows:11,capturePendingRows:4,
   accountingComplete:true,unreadableItems:0,duplicateItems:0,unaccountedItems:0,countedRetirements:0};
 test("#293 liveness kinds warn only on exact hosted OS markers, without widening the macOS-only classes",()=>{
   for(const RUNNER_OS of ["Linux","macOS"]) {
@@ -103,7 +103,7 @@ test("#293 liveness kinds warn only on exact hosted OS markers, without widening
 test("#293 missing, unreadable, duplicated, retired or invalid accounting never receives the drain exception",()=>{
   for(const RUNNER_OS of ["Linux","macOS"])for(const patch of [{telemetryValid:false},{survivors:1},{accountingComplete:false},
     {unaccountedItems:1},{unreadableItems:1},{duplicateItems:1},{countedRetirements:1},{hookPendingRows:10},{capturePendingRows:5},
-    {expectedInvocations:0},{expectedInvocations:Number.NaN},{databaseRows:55,hookPendingRows:0,capturePendingRows:0},
+    {drainPass:undefined},{drainPass:3},{drainPass:5},{expectedInvocations:0},{expectedInvocations:Number.NaN},{databaseRows:55,hookPendingRows:0,capturePendingRows:0},
     {databaseRows:-1},{hookPendingRows:1.5},{countedRetirements:undefined}])
     expect(budgetFailureAdvisory("contended-drain",{...drainEvidence,...patch},{CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS})).toBe(false);
   for(const reasonOnlyStreak of [undefined,0,1,2,3.5,Number.NaN])

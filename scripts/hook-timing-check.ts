@@ -56,7 +56,7 @@ export function singleAttemptTiming(check: string, passed: boolean, values: Reco
 export interface BudgetFailureEvidence {
   telemetryValid: boolean; survivors: number; abandonedOwnedWorkers?: number;
   unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
-  reasonOnlyStreak?: number; expectedInvocations?: number; databaseRows?: number; hookPendingRows?: number; capturePendingRows?: number;
+  reasonOnlyStreak?: number; drainPass?: number; expectedInvocations?: number; databaseRows?: number; hookPendingRows?: number; capturePendingRows?: number;
   accountingComplete?: boolean; unreadableItems?: number; duplicateItems?: number; unaccountedItems?: number; countedRetirements?: number;
 }
 /** ponytail: #226's four abandonment/timing classes remain hosted-macOS-only. #293 adds only reason-only
@@ -77,7 +77,7 @@ export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvide
   if (kind === "contended-drain") {
     const counts = [evidence.expectedInvocations, evidence.databaseRows, evidence.hookPendingRows, evidence.capturePendingRows,
       evidence.unreadableItems, evidence.duplicateItems, evidence.unaccountedItems, evidence.countedRetirements];
-    return evidence.accountingComplete === true && counts.every(value => Number.isSafeInteger(value) && value! >= 0)
+    return evidence.drainPass === 4 && evidence.accountingComplete === true && counts.every(value => Number.isSafeInteger(value) && value! >= 0)
       && evidence.expectedInvocations! > 0 && evidence.databaseRows! < evidence.expectedInvocations!
       && evidence.expectedInvocations === evidence.databaseRows! + evidence.hookPendingRows! + evidence.capturePendingRows!
       && evidence.unreadableItems === 0 && evidence.duplicateItems === 0 && evidence.unaccountedItems === 0 && evidence.countedRetirements === 0;
