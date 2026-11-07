@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "65b788cd030a861f8650671e0ba3e6fe70eb30a6",
+      "verifiedAgainst": "5a9c578f9fb25ecadb18705b05e9c1df7a63f2a1",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "65b788cd030a861f8650671e0ba3e6fe70eb30a6",
+      "verifiedAgainst": "5a9c578f9fb25ecadb18705b05e9c1df7a63f2a1",
       "paths": [
         "package.json",
         "bin/",
