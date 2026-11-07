@@ -1,5 +1,6 @@
 import { reportAttributedWorkerRssAdvisory, reportBudgetAdvisory } from "./hook-timing-check.ts";
 import { HOOK_RSS_COVERAGE, rssSourcesKnown, validRssSources } from "../src/hook-resources.ts";
+import { verifyHookProcessObservation } from "./hook-process-check.ts";
 import type { MetricSample } from "../src/memory/metrics.ts";
 
 /** Linux wait4 can retain the launcher's pre-exec peak; it stays diagnostic, not a second RSS gate. */
@@ -95,6 +96,14 @@ export function attributedWorkerRssObservation(diagnostic: ProcessDiagnostic): {
       complete &&= child.receiptComplete && child.reaped === true && validRssSources(child.rss?.counters)
         && rssSourcesKnown(child.rss!.counters as import("../src/hook-resources.ts").HookRssSources);
     } else complete = false;
+  }
+  if (complete) {
+    try {
+      // Final hooks use the same admitted-one-worker observation contract as PostToolUse.
+      verifyHookProcessObservation("PostToolUse", children.map(child => ({ pid: child.pid, kind: child.kind as "worker" | "native", detached: child.detached === true, argv: [] })),
+        diagnostic.admission.map(row => ({ phase: row.phase, pid: diagnostic.parentPid, loads: row.loads, exact: row.exact ?? undefined,
+          native: row.native ?? undefined, childPid: row.childPid ?? undefined, remainingUs: row.remainingUs ?? undefined, host: row.host ?? undefined })), false);
+    } catch { complete = false; }
   }
   return { complete: complete && abandonedWorkers === abandoned && abandonedWorkers > 0, explained };
 }

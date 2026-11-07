@@ -62,7 +62,11 @@ function abandonedDiagnostic(workerPid: number, nativePid: number, unknown = 2) 
   const life = (phase: HookLifecycleReceipt["phase"], childPid: number, kind: "worker" | "native", extra: Partial<HookLifecycleReceipt> = {}): HookLifecycleReceipt =>
     ({ phase, childPid, kind, parentPid: 1, atMs: 100, ...extra });
   const diagnostic = hookProcessDiagnostic({ event: "Stop", run: 1, logicalRun: 1, parentPid: 1, expectedOwnedChildren: 2, expectation: "fixture-contract", metric,
-    workers: [{ pid: workerPid, kind: "worker", detached: true, argv: [] }, { pid: nativePid, kind: "native", detached: true, argv: [] }], evidence: [], lifecycle: [
+    workers: [{ pid: workerPid, kind: "worker", detached: true, argv: [] }, { pid: nativePid, kind: "native", detached: true, argv: [] }], evidence: [
+      {phase:"preload",pid:1,loads:1},{phase:"precheck",pid:1,loads:1,host:0,remainingUs:100000},
+      {phase:"attempt",pid:1,loads:1,exact:1,native:0},{phase:"returned",pid:1,loads:1,exact:1,native:0,childPid:workerPid},
+      {phase:"attempt",pid:1,loads:1,exact:1,native:1},{phase:"returned",pid:1,loads:1,exact:1,native:1,childPid:nativePid},
+    ], lifecycle: [
       life("spawn-attempt", 0, "worker"), life("spawn", workerPid, "worker"), life("kill-request", workerPid, "worker"),
       life("reap-start", workerPid, "worker"), life("reap-end", workerPid, "worker", { reaped: 0 }),
       life("rss-finish", workerPid, "worker", { vmhwm: 0, vmpeakBound: 0, platformRusage: 0, rawFallback: 0, unavailable: unknown, telemetryValid: 1 }),
@@ -78,6 +82,9 @@ test("#287 per-child attribution rejects mixed native unknowns and missing or in
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.spawnAttempts = 3; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.truncated = true; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.expectedWorkerChildren = 2; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission = d.admission.filter(row=>row.phase!=="returned"); },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission.find(row=>row.phase==="attempt")!.exact=0; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission.find(row=>row.phase==="preload")!.loads=2; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.abandonedChildren = 2; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.rss = null; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.reaped = true; },
