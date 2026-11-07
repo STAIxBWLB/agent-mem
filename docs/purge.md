@@ -46,7 +46,7 @@ If you cannot accept a loss on that list, stop here and keep the masked row.
    ```
 
    Check each export's withheld counts: a row the privacy screen withholds is not in the file and will not be restored.
-4. In the export that holds the leak, **delete** the leaked note's line. Do not edit it: `amem project import` recomputes each row's id from its content and refuses an edited row. Rows that point at the deleted one (a `supersedes` or `promotedFrom` relation) are refused too, because their target is no longer in the file; note their ids from the import preview and decide whether to delete them as well.
+4. In the export that holds the leak, **delete** the leaked note's line. Do not edit it: `amem project import` recomputes each row's id from its content and skips an edited row. Rows that point at the deleted one (a `supersedes` or `promotedFrom` relation) are skipped too, because their target is no longer in the file; the import preview counts them as `invalid` without ids, so find them by searching the export for the deleted id and decide whether to delete them as well.
 5. **Rename** the old home aside (do not delete it), start from a fresh empty home, and for each exported project recreate its aliases there (`amem alias add <from-key> <to-key>` for each alias in the export header; import refuses without them), then preview and import it:
 
    ```sh
@@ -62,7 +62,7 @@ If you cannot accept a loss on that list, stop here and keep the masked row.
    ```
 
    Check each preview's counts before `--confirm`.
-6. Compare `amem projects --all` and each project's note count in the new home with the old one. Keep the old home, untouched, until every project you need is restored and you have copied out anything on the loss list that you still need. Only then delete the old home and every export and backup (each holds the leak). A deleted file can still sit in filesystem snapshots or backups (step 6).
+6. Compare `amem projects --all` and each project's note count in the new home with the old one. Keep the old home, untouched, until every project you need is restored and you have copied out anything on the loss list that you still need. Only then delete the old home and every export and backup (each holds the leak). A deleted file can still sit in filesystem snapshots or backups (section 6).
 
 ## 4. Machine-local tiers
 

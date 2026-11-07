@@ -54,6 +54,9 @@ jobs:
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
       - run: bun x tsc --noEmit
       - run: bun scripts/check-boundary.ts
+      - run: bun scripts/readme-facts.ts
+      - name: Documentation stamps are fresh
+        run: node scripts/check-docs.mjs --require-fresh
   publish:
     needs: [gate, check]
     runs-on: ubuntu-latest
@@ -93,3 +96,21 @@ jobs:
           # Re-run safe: a Release made earlier (by hand or by a previous attempt) gets its notes replaced.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
           else gh release create "$GITHUB_REF_NAME" --verify-tag --title "@staix/agent-mem $GITHUB_REF_NAME" --notes-file notes.md; fi
+  site-dispatch:
+    needs: release-notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    # The portal (STAIxBWLB/agent-hub-site) re-syncs on each release. Skipped without the secret; never fails a release.
+    env:
+      SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+    steps:
+      - name: Notify agent-hub-site
+        if: env.SITE_DISPATCH_TOKEN != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/STAIxBWLB/agent-hub-site/dispatches --method POST --input - <<EOF
+          {"event_type":"product-release","client_payload":{"product":"amem","tag":"${GITHUB_REF_NAME}"}}
+          EOF
