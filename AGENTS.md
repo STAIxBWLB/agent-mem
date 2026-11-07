@@ -36,7 +36,7 @@
 
 - Count N-1 by minor line: use the latest published plain patch of the preceding minor in the same major; at minor 0, use the highest plain release of the preceding major. State `Compatibility with N-1 (<version>)` per surface only in minor-release CHANGELOG entries. Patch releases keep their minor line's N-1 and add no N-1 line; ship a minor release if that compatibility cannot be kept. Preserve past entries.
 - In `CHANGELOG.md`, use `#N` only for agent-mem issues and PRs, `agent-hub#N` for agent-hub issues and PRs, and `task N` (without `#`) for board tasks.
-- Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`: the workflow checks it before `npm publish` and its `release-notes` job publishes it as the GitHub Release body. Observed: 0.1.1-0.3.0 had no GitHub Releases until 2026-10-17.
+- Publish only through the `v*` tag workflow. Before tagging, write the version's `## <version>` section in `CHANGELOG.md`. Before publication, require the release workflow's successful identical-tree `check` proof with both OS gates. Keep the version, main ancestry, CHANGELOG, manifest, typecheck, boundary and pack gates. Manual release dispatch is proof-only and must never publish. Do not move a release tag while its run is active. Read `docs/contracts.md` §Release gate reuse when changing this workflow or investigating a reuse refusal.
 - After the release, read back the published version with a cache-busting registry request (not `npm view`) and read back the Release body.
 
 ## Storage invariants
