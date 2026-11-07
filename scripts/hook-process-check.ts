@@ -16,7 +16,15 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
   if (!evidence.some(row => row.phase === "preload") || evidence.some(row => row.loads !== 1)) fail();
   if (new Set(workers.map(row => row.pid)).size !== workers.length) fail();
   if (attempts.some(row => row.exact !== 1) || returned.length !== attempts.length || workers.length !== returned.length) fail();
-  if (returned.some(row => !workers.some(worker => worker.pid === row.childPid && Number(worker.kind === "native") === row.native))) fail();
+  if (returned.some(row => row.exact !== 1 || !workers.some(worker => worker.pid === row.childPid && Number(worker.kind === "native") === row.native))) fail();
+  const spawns = evidence.filter(row => row.phase === "attempt" || row.phase === "returned");
+  const seen = new Set<number>();
+  for (let index = 0; index < spawns.length; index += 2) {
+    const attempt = spawns[index]!, result = spawns[index + 1];
+    if (attempt.phase !== "attempt" || result?.phase !== "returned" || attempt.native !== result.native
+      || result.childPid === undefined || seen.has(result.childPid)) fail();
+    seen.add(result!.childPid!);
+  }
   if (event === "SessionStart") {
     if (buns.length !== 0 || native.length < 1 || native.length > 65 || skipped.length) fail();
     return { deferred: false };
@@ -24,16 +32,23 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
   if (native.length > 64 || buns.length > 1 || checks.length !== 1) fail();
   const late = evidence.filter(row => row.phase === "late_check");
   if (late.length > 1 || late.length === 1 && skipped.length) fail();
+  if (event === "Stop" || event === "SessionEnd") {
+    // Transcript final hooks admit their only worker first, before any native metadata.
+    // Their late_check follows all those spawns and cannot govern the earlier admission.
+    if (buns.length !== 1 || skipped.length || checks[0]!.host !== 0
+      || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
+      || attempts[0]?.native !== 0 || late.length !== 1 || !Number.isSafeInteger(late[0]!.remainingUs)
+      || evidence.indexOf(checks[0]!) >= evidence.indexOf(attempts[0]!)
+      || evidence.indexOf(late[0]!) <= evidence.indexOf(returned.at(-1)!)) fail();
+    return { deferred: false };
+  }
   if (buns.length === 1) {
-    if ((event === "Stop" || event === "SessionEnd") && attempts[0]?.native === 0) {
-      // Transcript final hooks boot the worker BEFORE native metadata. The observer's late_check
-      // still runs after metadata, but its remaining time does not govern that earlier admission.
-      if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
-        || late.length !== 1 || !Number.isSafeInteger(late[0]!.remainingUs)) fail();
-      return { deferred: false };
-    }
-    if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000) fail();
-    if (late.length === 1 && (!Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! < 5000)) fail();
+    // Ordinary workers start only after metadata and its positive late admission check.
+    if (skipped.length || checks[0]!.host !== 0 || !Number.isSafeInteger(checks[0]!.remainingUs) || checks[0]!.remainingUs! < 5000
+      || late.length !== 1 || !Number.isSafeInteger(late[0]!.remainingUs) || late[0]!.remainingUs! < 5000
+      || attempts.at(-1)?.native !== 0 || evidence.indexOf(checks[0]!) >= evidence.indexOf(attempts[0]!)
+      || evidence.indexOf(late[0]!) >= evidence.indexOf(attempts.at(-1)!)
+      || returned.filter(row => row.native === 1).some(row => evidence.indexOf(row) >= evidence.indexOf(late[0]!))) fail();
     return { deferred: false };
   }
   // #221: the second pre-spawn exit, after native metadata. Accepted only with positive evidence measured at that guard:
