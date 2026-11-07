@@ -12,7 +12,7 @@ export function instrumentHookLifecycle(preload:string,receipt:string):string {
     ["    exited = true;","    exited = true;globalThis.__hookChildLife('exit',child.pid,'native',{code});"],
     ["    if (exited) return;","    if (exited) return;globalThis.__hookChildLife('kill-request',child.pid,'native');"],
     ["    await exit;","    globalThis.__hookChildLife('reap-start',child.pid,'native');await exit;"],
-    ["    await rssReceipt;","    await rssReceipt;globalThis.__hookChildLife('reap-end',child.pid,'native',{reaped:Number(exited)});"],
+    ["    await rssReceipt;","    await rssReceipt;globalThis.__hookChildLife('reap-end',child.pid,'native',{reaped:Number(exited),telemetryValid:Number(receiptValid)});"],
     ["    if (observationFailed) usage.rssSources.unavailable++;","    if (observationFailed) usage.rssSources.unavailable++;globalThis.__hookChildLife('rss-finish',child.pid,'native',{source:selected.source,known:Number(selected.known),kb:selected.kb,rawKB:selected.rawKB,observationFailed:Number(observationFailed),telemetryValid:Number(receiptValid)});"],
   ];
   const replace=(anchor:string,value:string)=>{
