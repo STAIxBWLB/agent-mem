@@ -42,7 +42,7 @@ type ProcessDiagnostic = ReturnType<typeof import("./hook-process-diagnostic.ts"
 export async function measuredAttributedHookRss(metric: MetricSample, cliRawRssMB: number, diagnostic: ProcessDiagnostic,
   check: string, env: NodeJS.ProcessEnv = process.env, platform = process.platform): Promise<BudgetHookRss> {
   try { return { ...measuredHookRss(metric, cliRawRssMB, platform), rssProvenanceKnown: true, rssAdvisory: false }; }
-  catch (error) {
+  catch {
     const { processGroupLiveness, processLiveness } = await import("../src/memory/platform.ts");
     const observation = attributedWorkerRssObservation(diagnostic);
     // The existing R1 post-exit window is observational only; no signals, no late RSS recollection.
@@ -54,10 +54,13 @@ export async function measuredAttributedHookRss(metric: MetricSample, cliRawRssM
     const telemetryValid = metric.kind === "hook" && metric.abandonedChildren === diagnostic.abandonedChildren && Number.isFinite(cliRawRssMB) && cliRawRssMB > 0
       && Number.isFinite(metric.rssMB) && metric.rssMB! > 0 && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0
       && metric.rssScope === "owned-images" && validRssSources(sources) && sources.vmhwm + sources.vmpeakBound + sources.platformRusage > 0;
-    if (!reportAttributedWorkerRssAdvisory(check, { telemetryValid, survivors: remaining,
+    const evidence = { telemetryValid, survivors: remaining,
       abandonedOwnedWorkers: metric.abandonedChildren, unavailableRssSources: sources?.unavailable,
       rawFallbackRssSources: sources?.rawFallback ?? -1, unexplainedRssSources: (sources?.unavailable ?? -1) - observation.explained,
-      wallMs: metric.wallMs, ownedChildObservationComplete: observation.complete, r1Passed: observation.complete && remaining === 0 }, env)) throw error;
+      wallMs: metric.wallMs, ownedChildObservationComplete: observation.complete, r1Passed: observation.complete && remaining === 0 };
+    if (!reportAttributedWorkerRssAdvisory(check, evidence, env))
+      throw new Error("hook RSS provenance unknown (unattributed, invalid telemetry or failed R1); inspect owned-child receipts: "
+        + JSON.stringify({ check, ...evidence, process: diagnostic }));
     return { rssMB: platform === "linux" ? metric.rssMB! : Math.max(cliRawRssMB, metric.rssMB!),
       cliRssMB: cliRawRssMB, recordedRssMB: metric.rssMB!, rawRssMB: metric.rawRssMB ?? null,
       rssSource: "provenance-unknown-observed-envelope", rssSources: sources!, rssCoverage: HOOK_RSS_COVERAGE,
@@ -73,7 +76,8 @@ export function attributedWorkerRssObservation(diagnostic: ProcessDiagnostic): {
     && diagnostic.expectedOwnedChildren !== null && diagnostic.expectedOwnedChildren > 0
     && diagnostic.expectedOwnedChildren === diagnostic.observedOwnedChildren
     && diagnostic.observedOwnedChildren === diagnostic.lifecycleChildren && children.length === diagnostic.lifecycleChildren
-    && diagnostic.spawnAttempts === children.length && diagnostic.spawnFailures === 0;
+    && diagnostic.spawnAttempts === children.length && diagnostic.spawnFailures === 0
+    && (diagnostic.expectedWorkerChildren === null || diagnostic.expectedWorkerChildren === children.filter(child => child.kind === "worker").length);
   for (const child of children) {
     complete &&= child.detached === true && child.spawnMs !== null && child.rss !== null && child.rss.telemetryValid === 1;
     if (child.kind === "worker" && child.reaped === false) {

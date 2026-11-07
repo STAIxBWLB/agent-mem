@@ -35,9 +35,7 @@ for (const event of ["Stop", "SessionEnd"]) {
       const diagnostic=hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
           expectedOwnedChildren:evidence.some(row=>row.phase==="preload")?evidence.filter(row=>row.phase==="attempt"&&row.exact===1).length:null,expectation:"observed-spawn-attempts",
           workers:observer.read().slice(beforeWorkers),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576});
-      let rss:Awaited<ReturnType<typeof measuredAttributedHookRss>>;
-      try { rss=await measuredAttributedHookRss(metric,result.resourceUsage.maxRSS/1048576,diagnostic,`baseline:${event}:${run}`); }
-      catch { throw Error("hook RSS provenance unknown: "+JSON.stringify(diagnostic)); }
+      const rss=await measuredAttributedHookRss(metric,result.resourceUsage.maxRSS/1048576,diagnostic,`baseline:${event}:${run}`);
       const sample = { event, run, wallMs, ...rss };
       samples.push(sample); console.log(JSON.stringify({ diagnostic: "main-hook-image-sample", ...sample }));
     }

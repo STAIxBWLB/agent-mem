@@ -77,6 +77,7 @@ test("#287 per-child attribution rejects mixed native unknowns and missing or in
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.observedOwnedChildren = 1; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.spawnAttempts = 3; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.truncated = true; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.expectedWorkerChildren = 2; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.abandonedChildren = 2; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.rss = null; },
     (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.reaped = true; },
@@ -101,6 +102,8 @@ test("#287 warning keeps original unknown coverage and cannot admit an extra unk
       { ...metric, wallMs: Number.NaN }, { ...metric, rssScope: undefined }, { ...metric, rssSources: { ...metric.rssSources!, rawFallback: 1 } } ])
       await expect(measuredAttributedHookRss(bad, 55, diagnostic, "strict", flags, "darwin")).rejects.toThrow("provenance unknown");
     await expect(measuredAttributedHookRss(metric, 55, diagnostic, "Linux", { ...flags, RUNNER_OS: "Linux" }, "linux")).rejects.toThrow("provenance unknown");
+    try { await measuredAttributedHookRss(metric, 55, diagnostic, "stage1-receipts", {}, "linux"); throw Error("expected strict refusal"); }
+    catch (error) { expect(String(error)).toContain('"diagnostic":"hook-child-reap/v1"'); expect(String(error)).toContain('"event":"Stop"'); }
     const live = abandonedDiagnostic(process.pid, dead());
     await expect(measuredAttributedHookRss(live.metric, 55, live.diagnostic, "R1 live", flags, "darwin")).rejects.toThrow("provenance unknown");
   } finally { rmSync(root, { recursive: true, force: true }); }
