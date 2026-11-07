@@ -1,4 +1,4 @@
-import { reportBudgetAdvisory } from "./hook-timing-check.ts";
+import { reportAttributedWorkerRssAdvisory, reportBudgetAdvisory } from "./hook-timing-check.ts";
 import { HOOK_RSS_COVERAGE, rssSourcesKnown, validRssSources } from "../src/hook-resources.ts";
 import type { MetricSample } from "../src/memory/metrics.ts";
 
@@ -34,4 +34,63 @@ export function measuredBudgetHookRss(metric: MetricSample, cliRawRssMB: number,
       rssProvenanceKnown: false, rssAdvisory: true,
     };
   }
+}
+
+type ProcessDiagnostic = ReturnType<typeof import("./hook-process-diagnostic.ts").hookProcessDiagnostic>;
+/** Both new #287 callers already have the lifecycle observer. Match every unknown to an unreaped worker,
+ * then observe PID AND detached group disappearance; a leader exit alone is never R1 proof. */
+export async function measuredAttributedHookRss(metric: MetricSample, cliRawRssMB: number, diagnostic: ProcessDiagnostic,
+  check: string, env: NodeJS.ProcessEnv = process.env, platform = process.platform): Promise<BudgetHookRss> {
+  try { return { ...measuredHookRss(metric, cliRawRssMB, platform), rssProvenanceKnown: true, rssAdvisory: false }; }
+  catch (error) {
+    const { processGroupLiveness, processLiveness } = await import("../src/memory/platform.ts");
+    const observation = attributedWorkerRssObservation(diagnostic);
+    // The existing R1 post-exit window is observational only; no signals, no late RSS recollection.
+    const end = performance.now() + 2000;
+    const survivors = () => diagnostic.children.filter(child => processLiveness(child.pid) !== "gone" || processGroupLiveness(child.pid) !== "gone").length;
+    let remaining = observation.complete ? survivors() : diagnostic.children.length;
+    while (observation.complete && remaining && performance.now() < end) { await Bun.sleep(10); remaining = survivors(); }
+    const sources = metric.rssSources;
+    const telemetryValid = metric.kind === "hook" && Number.isFinite(cliRawRssMB) && cliRawRssMB > 0
+      && Number.isFinite(metric.rssMB) && metric.rssMB! > 0 && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0
+      && metric.rssScope === "owned-images" && validRssSources(sources) && sources.vmhwm + sources.vmpeakBound + sources.platformRusage > 0;
+    if (!reportAttributedWorkerRssAdvisory(check, { telemetryValid, survivors: remaining,
+      abandonedOwnedWorkers: metric.abandonedChildren, unavailableRssSources: sources?.unavailable,
+      rawFallbackRssSources: sources?.rawFallback ?? -1, unexplainedRssSources: (sources?.unavailable ?? -1) - observation.explained,
+      ownedChildObservationComplete: observation.complete, r1Passed: observation.complete && remaining === 0 }, env)) throw error;
+    return { rssMB: platform === "linux" ? metric.rssMB! : Math.max(cliRawRssMB, metric.rssMB!),
+      cliRssMB: cliRawRssMB, recordedRssMB: metric.rssMB!, rawRssMB: metric.rawRssMB ?? null,
+      rssSource: "provenance-unknown-observed-envelope", rssSources: sources!, rssCoverage: HOOK_RSS_COVERAGE,
+      rssProvenanceKnown: false, rssAdvisory: true };
+  }
+}
+
+/** Pure receipt accounting. Missing or inconsistent receipts cannot explain an unknown source. */
+export function attributedWorkerRssObservation(diagnostic: ProcessDiagnostic): { complete: boolean; explained: number } {
+  const children = diagnostic.children, abandoned = diagnostic.abandonedChildren;
+  let explained = 0, abandonedWorkers = 0;
+  let complete = !diagnostic.truncated && diagnostic.metricPresent && diagnostic.lifecyclePresent
+    && diagnostic.expectedOwnedChildren !== null && diagnostic.expectedOwnedChildren > 0
+    && diagnostic.expectedOwnedChildren === diagnostic.observedOwnedChildren
+    && diagnostic.observedOwnedChildren === diagnostic.lifecycleChildren && children.length === diagnostic.lifecycleChildren
+    && diagnostic.spawnAttempts === children.length && diagnostic.spawnFailures === 0;
+  for (const child of children) {
+    complete &&= child.detached === true && child.spawnMs !== null && child.rss !== null && child.rss.telemetryValid === 1;
+    if (child.kind === "worker" && child.reaped === false) {
+      abandonedWorkers++;
+      const counters = child.rss?.counters;
+      const count = counters?.unavailable;
+      complete &&= child.killRequestMs !== null && child.reapStartMs !== null && child.reapEndMs !== null
+        && !!counters && validRssSources(counters) && counters.rawFallback === 0
+        && count !== null && count !== undefined && count >= 1 && count <= 2;
+      if (typeof count === "number") explained += count;
+    } else if (child.kind === "native") {
+      complete &&= child.receiptComplete && child.reaped === true && child.rss?.known === 1
+        && child.rss.observationFailed === 0 && child.rss.source !== "unavailable" && child.rss.source !== "raw-fallback";
+    } else if (child.kind === "worker") {
+      complete &&= child.receiptComplete && child.reaped === true && validRssSources(child.rss?.counters)
+        && rssSourcesKnown(child.rss!.counters as import("../src/hook-resources.ts").HookRssSources);
+    } else complete = false;
+  }
+  return { complete: complete && abandonedWorkers === abandoned && abandonedWorkers > 0, explained };
 }

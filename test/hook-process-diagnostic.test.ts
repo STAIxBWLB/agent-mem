@@ -80,3 +80,17 @@ test("the real preload records spawn, native and worker exit/reap receipts witho
     expect(diagnostic.children.every(child=>child.receiptComplete)).toBe(true);
   }finally{f.close();}
 });
+
+test("the lifecycle observer distinguishes malformed wire telemetry from forced abandonment invalidation", () => {
+  const f=hookFixture();
+  try {
+    const observer=hookProcessObserver(f.root,false,undefined,true),file=resolve(import.meta.dir,"../src/hook-rss-wire.ts");
+    for(const malformed of [false,true]) {
+      const code=`import {HookWorkerRss} from ${JSON.stringify(file)};const tracker=new HookWorkerRss(process.pid);tracker.frame([0]);${malformed?"tracker.frame(['bad']);":"tracker.invalidate();"}console.log(JSON.stringify({telemetryValid:globalThis.__hookRssWireValid!==false,sources:tracker.finish(0,'darwin').rssSources}));`;
+      const result=Bun.spawnSync([process.execPath,"--preload",observer.preload,"-e",code],{stdout:"pipe",stderr:"pipe",timeout:3000});
+      expect(result.exitCode,result.stderr.toString()).toBe(0);
+      const parsed=JSON.parse(result.stdout.toString());
+      expect(parsed.telemetryValid).toBe(!malformed);expect(parsed.sources.unavailable).toBe(2);
+    }
+  }finally{f.close();}
+});

@@ -83,3 +83,20 @@ export function reportBudgetAdvisory(kind: string, check: string, evidence: Budg
   console.warn(`::warning title=Hook macOS runner budget::${check}: ${JSON.stringify(record)}`);
   return true;
 }
+
+export interface AttributedWorkerRssEvidence extends BudgetFailureEvidence {
+  rawFallbackRssSources: number; unexplainedRssSources: number;
+  ownedChildObservationComplete: boolean; r1Passed: boolean;
+}
+/** #287 uses the existing marker predicate/record, but never the broader #226 attribution shortcut.
+ * ponytail: at most two unknown counters per abandoned capture-only worker (own RSS and invalidation).
+ * Retire with a lifecycle/reap redesign proved by strict hosted-macOS runs and an owner decision. */
+export function attributedWorkerRssAdvisory(evidence: AttributedWorkerRssEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
+  return budgetFailureAdvisory("rss-unknown", evidence, env)
+    && evidence.rawFallbackRssSources === 0 && evidence.unexplainedRssSources === 0
+    && evidence.ownedChildObservationComplete === true && evidence.r1Passed === true
+    && evidence.unavailableRssSources! <= 2 * evidence.abandonedOwnedWorkers!;
+}
+export function reportAttributedWorkerRssAdvisory(check: string, evidence: AttributedWorkerRssEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
+  return attributedWorkerRssAdvisory(evidence, env) && reportBudgetAdvisory("rss-unknown", check, evidence, env);
+}
