@@ -97,7 +97,11 @@ test("#287 per-child attribution rejects mixed native unknowns and missing or in
 test("#287 warning keeps original unknown coverage and cannot admit an extra unknown or live PID", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-attributed-rss-")), summary = join(root, "summary.md");
   const flags = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS", GITHUB_STEP_SUMMARY: summary };
-  const dead = () => Bun.spawnSync(["/bin/true"]).pid;
+  const dead = () => {
+    const child = Bun.spawnSync([process.execPath, "-e", ""], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    return child.pid;
+  };
   try {
     const { metric, diagnostic } = abandonedDiagnostic(dead(), dead());
     const result = await measuredAttributedHookRss(metric, 55, diagnostic, "attributed baseline", flags, "darwin");
