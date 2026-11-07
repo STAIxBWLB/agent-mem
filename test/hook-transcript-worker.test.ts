@@ -7,6 +7,7 @@ import { rssSourcesKnown, validRssSources } from "../src/hook-resources.ts";
 import { HANDLER_MS } from "../src/hooks.ts";
 import { R2_WALL_MAX_MS } from "../scripts/budget-attempt.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
+import { measuredAttributedHookRss } from "../scripts/hook-rss-check.ts";
 import { hookProcessDiagnostic } from "../scripts/hook-process-diagnostic.ts";
 /** Existing worker-path fixtures below use an explicit functional host deadline where named. Their relative bounds are
  * not native 140/300 ms R2 proof; the hosted budget harness provides that proof. The slow-append regression uses a
@@ -132,11 +133,14 @@ await import(${JSON.stringify(observer.preload)});`);
     // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms
     // behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
     const evidence=observer.evidence().filter(row=>row.pid===result.pid);
-    const diagnostic=JSON.stringify(hookProcessDiagnostic({event,variant:platform,run:1,logicalRun:(platform==="linux"?0:2)+(event==="Stop"?1:2),parentPid:result.pid,expectedWorkerChildren:1,
+    const processDiagnostic=hookProcessDiagnostic({event,variant:platform,run:1,logicalRun:(platform==="linux"?0:2)+(event==="Stop"?1:2),parentPid:result.pid,expectedWorkerChildren:1,
       expectedOwnedChildren:evidence.some(row=>row.phase==="preload")?evidence.filter(row=>row.phase==="attempt"&&row.exact===1).length:null,expectation:"observed-spawn-attempts",
-      workers:observer.read(),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576}));
-    expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); expect(rssSourcesKnown(metric.rssSources!),diagnostic).toBe(true); expect(metric.rssSources!.unavailable,diagnostic).toBe(0);
-    if (platform === "darwin-codepath") expect(metric.rssSources!.platformRusage).toBe(4);
+      workers:observer.read(),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576});
+    const diagnostic=JSON.stringify(processDiagnostic);
+    expect(metric.wallMs).toBeLessThan(2000 + POST_DEADLINE_ALLOWANCE_MS); const rss=await measuredAttributedHookRss(metric,result.resourceUsage.maxRSS/1048576,processDiagnostic,`slow-store:${platform}:${event}`);
+    if (!rss.rssAdvisory) { expect(rssSourcesKnown(metric.rssSources!),diagnostic).toBe(true); expect(metric.rssSources!.unavailable,diagnostic).toBe(0); }
+    else { expect(rss.rssProvenanceKnown).toBe(false); expect(metric.rssSources!.unavailable).toBeGreaterThan(0); }
+    if (platform === "darwin-codepath" && !rss.rssAdvisory) expect(metric.rssSources!.platformRusage).toBe(4);
     // Linux rusage under the emulated Darwin path includes launcher peaks: source proof only, never an R2 pass.
     expect(f.runFunctional("PostToolUse", { prompt: "slow-store recovery" }).exitCode).toBe(0);
     expect(f.rows().filter(row => row.excerpt === "summary before slow store")).toHaveLength(1);

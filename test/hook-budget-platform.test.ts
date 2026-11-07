@@ -66,3 +66,20 @@ test("#226: only the exact hosted GitHub macOS runner makes the transcript stall
     { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, { CI: "true", GITHUB_ACTIONS: "true" }, { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macos" }])
     expect(stallAdvisory(env), JSON.stringify(env)).toBe(false);
 });
+
+import { attributedWorkerRssAdvisory } from "../scripts/hook-timing-check.ts";
+const attributed = { telemetryValid: true, survivors: 0, abandonedOwnedWorkers: 1, unavailableRssSources: 2,
+  rawFallbackRssSources: 0, unexplainedRssSources: 0, ownedChildObservationComplete: true, r1Passed: true };
+test("#287 attribution requires the existing exact hosted-macOS markers", () => {
+  for (const unavailableRssSources of [1, 2]) expect(attributedWorkerRssAdvisory({ ...attributed, unavailableRssSources }, githubMac)).toBe(true);
+  for (const env of [{}, { RUNNER_OS: "macOS" }, { ...githubMac, CI: "false" }, { ...githubMac, GITHUB_ACTIONS: "false" },
+    { ...githubMac, RUNNER_OS: "Linux" }, { ...githubMac, RUNNER_OS: "Windows" }, { ...githubMac, RUNNER_OS: "macos" }])
+    expect(attributedWorkerRssAdvisory(attributed, env)).toBe(false);
+});
+test("#287 every unattributed, invalid or R1/observation-failed combination stays strict", () => {
+  for (const patch of [ { telemetryValid: false }, { survivors: 1 }, { survivors: Number.NaN }, { abandonedOwnedWorkers: 0 },
+    { abandonedOwnedWorkers: undefined }, { abandonedOwnedWorkers: -1 }, { unavailableRssSources: 0 }, { unavailableRssSources: 3 },
+    { unavailableRssSources: Number.NaN }, { unavailableRssSources: 1.5 }, { rawFallbackRssSources: 1 }, { rawFallbackRssSources: Number.NaN },
+    { unexplainedRssSources: 1 }, { unexplainedRssSources: -1 }, { ownedChildObservationComplete: false }, { r1Passed: false }])
+    expect(attributedWorkerRssAdvisory({ ...attributed, ...patch }, githubMac), JSON.stringify(patch)).toBe(false);
+});

@@ -3,7 +3,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture } from "../test/fakes/hooks-fixture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
-import { measuredHookRss } from "./hook-rss-check.ts";
+import { measuredAttributedHookRss } from "./hook-rss-check.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookProcessDiagnostic } from "./hook-process-diagnostic.ts";
 
@@ -31,13 +31,11 @@ for (const event of ["Stop", "SessionEnd"]) {
         stdout: "pipe", stderr: "pipe", timeout: 3000 });
       const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
       if (result.exitCode !== 0 || result.stdout.length || !metric) throw Error("main comparison hook unavailable");
-      let rss:ReturnType<typeof measuredHookRss>;
-      try{rss=measuredHookRss(metric,result.resourceUsage.maxRSS/1048576);}catch{
-        const evidence=observer.evidence().filter(row=>row.pid===result.pid);
-        throw Error("hook RSS provenance unknown: "+JSON.stringify(hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
+      const evidence=observer.evidence().filter(row=>row.pid===result.pid);
+      const diagnostic=hookProcessDiagnostic({event:event as "Stop"|"SessionEnd",variant:"baseline",run,logicalRun:(event==="Stop"?0:20)+run,parentPid:result.pid,
           expectedOwnedChildren:evidence.some(row=>row.phase==="preload")?evidence.filter(row=>row.phase==="attempt"&&row.exact===1).length:null,expectation:"observed-spawn-attempts",
-          workers:observer.read().slice(beforeWorkers),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576})));
-      }
+          workers:observer.read().slice(beforeWorkers),evidence,lifecycle:observer.lifecycle(result.pid),metric,cliRawRssMB:result.resourceUsage.maxRSS/1048576});
+      const rss=await measuredAttributedHookRss(metric,result.resourceUsage.maxRSS/1048576,diagnostic,`baseline:${event}:${run}`);
       const sample = { event, run, wallMs, ...rss };
       samples.push(sample); console.log(JSON.stringify({ diagnostic: "main-hook-image-sample", ...sample }));
     }

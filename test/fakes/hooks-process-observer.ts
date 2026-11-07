@@ -8,7 +8,7 @@ export interface HookLifecycleReceipt {
   parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
   boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
   source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
-  known?: number; kb?: number; rawKB?: number; observationFailed?: number;
+  telemetryValid?: number; known?: number; kb?: number; rawKB?: number; observationFailed?: number;
   vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
 }
 

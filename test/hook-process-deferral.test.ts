@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookProcessObserver } from "./fakes/hooks-process-observer.ts";
+import type { HookProcessEvidence } from "./fakes/hooks-process-observer.ts";
 import { verifyHookProcessObservation, verifyPlainHookDeferrals } from "../scripts/hook-process-check.ts";
 
 function fixture(late: boolean) {
@@ -50,4 +51,40 @@ test("at most ten of forty ordinary samples may take the positively proven deadl
   expect(() => verifyPlainHookDeferrals(0, 40)).not.toThrow();
   expect(() => verifyPlainHookDeferrals(10, 40)).not.toThrow();
   expect(() => verifyPlainHookDeferrals(11, 40)).toThrow("25 percent");
+});
+
+
+function admittedShape(early: boolean, lateUs = 6000) {
+  const row = (phase: HookProcessEvidence["phase"], values: Partial<HookProcessEvidence> = {}): HookProcessEvidence => ({ phase, pid: 10, loads: 1, ...values });
+  const worker = { pid: 30, kind: "worker" as const, detached: true, argv: [] }, native = { pid: 20, kind: "native" as const, detached: true, argv: [] };
+  const pair = (kind: number, pid: number) => [row("attempt", { native: kind, exact: 1 }), row("returned", { native: kind, exact: 1, childPid: pid })];
+  const before = [row("preload"), row("precheck", { host: 0, remainingUs: 60000 })], late = row("late_check", { host: 1, remainingUs: lateUs });
+  return { workers: early ? [worker, native] : [native, worker], evidence: early
+    ? [...before, ...pair(0,30), ...pair(1,20), late]
+    : [...before, ...pair(1,20), late, ...pair(0,30)] };
+}
+test("early final-hook and late PostToolUse admission shapes cannot substitute for one another", () => {
+  for (const event of ["Stop", "SessionEnd"] as const) for (const lateUs of [-4319, 0, 6000]) {
+    const early = admittedShape(true, lateUs), ordinary = admittedShape(false);
+    expect(verifyHookProcessObservation(event, early.workers, early.evidence, false)).toEqual({ deferred: false });
+    expect(() => verifyHookProcessObservation("PostToolUse", early.workers, early.evidence, false)).toThrow("owned-process observation");
+    expect(() => verifyHookProcessObservation(event, ordinary.workers, ordinary.evidence, false)).toThrow("owned-process observation");
+  }
+  const ordinary = admittedShape(false);
+  expect(verifyHookProcessObservation("PostToolUse", ordinary.workers, ordinary.evidence, false)).toEqual({ deferred: false });
+  const below = admittedShape(false, 4999);
+  expect(() => verifyHookProcessObservation("PostToolUse", below.workers, below.evidence, false)).toThrow("owned-process observation");
+});
+test("final-hook admission requires the first worker and exact paired native returns", () => {
+  for (const mutate of [
+    (rows: HookProcessEvidence[]) => { rows.find(row=>row.phase==="returned" && row.native===1)!.exact=0; },
+    (rows: HookProcessEvidence[]) => { rows.find(row=>row.phase==="attempt" && row.native===1)!.exact=0; },
+    (rows: HookProcessEvidence[]) => { rows.splice(rows.findIndex(row=>row.phase==="returned" && row.native===1),1); },
+    (rows: HookProcessEvidence[]) => { const pair=rows.splice(4,2);rows.splice(2,0,...pair); },
+    (rows: HookProcessEvidence[]) => { rows.find(row=>row.phase==="precheck")!.remainingUs=4999; },
+    (rows: HookProcessEvidence[]) => { const late=rows.pop()!;rows.splice(2,0,late); },
+  ]) {
+    const early=admittedShape(true);mutate(early.evidence);
+    expect(() => verifyHookProcessObservation("Stop",early.workers,early.evidence,false)).toThrow("owned-process observation");
+  }
 });

@@ -52,3 +52,106 @@ test("only abandoned hosted-macOS unknown sources retain a visibly incomplete ob
     expect(measuredBudgetHookRss({ ...sample, wallMs: 80 }, 55, { survivors: 0, abandonedOwnedWorkers: 0 }, "known", {}, "darwin").rssProvenanceKnown).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+import { attributedWorkerRssObservation, measuredAttributedHookRss } from "../scripts/hook-rss-check.ts";
+import { hookProcessDiagnostic } from "../scripts/hook-process-diagnostic.ts";
+import type { HookLifecycleReceipt } from "./fakes/hooks-process-observer.ts";
+function abandonedDiagnostic(workerPid: number, nativePid: number, unknown = 2) {
+  const metric: MetricSample = { ...sample, wallMs: 100, abandonedChildren: 1,
+    rssSources: { vmhwm: 0, vmpeakBound: 0, platformRusage: 2, rawFallback: 0, unavailable: unknown } };
+  const life = (phase: HookLifecycleReceipt["phase"], childPid: number, kind: "worker" | "native", extra: Partial<HookLifecycleReceipt> = {}): HookLifecycleReceipt =>
+    ({ phase, childPid, kind, parentPid: 1, atMs: 100, ...extra });
+  const diagnostic = hookProcessDiagnostic({ event: "Stop", run: 1, logicalRun: 1, parentPid: 1, expectedOwnedChildren: 2, expectation: "fixture-contract", metric,
+    workers: [{ pid: workerPid, kind: "worker", detached: true, argv: [] }, { pid: nativePid, kind: "native", detached: true, argv: [] }], evidence: [
+      {phase:"preload",pid:1,loads:1},{phase:"precheck",pid:1,loads:1,host:0,remainingUs:100000},
+      {phase:"attempt",pid:1,loads:1,exact:1,native:0},{phase:"returned",pid:1,loads:1,exact:1,native:0,childPid:workerPid},
+      {phase:"attempt",pid:1,loads:1,exact:1,native:1},{phase:"returned",pid:1,loads:1,exact:1,native:1,childPid:nativePid},
+      {phase:"late_check",pid:1,loads:1,host:1,remainingUs:90000},
+    ], lifecycle: [
+      life("spawn-attempt", 0, "worker"), life("spawn", workerPid, "worker"), life("kill-request", workerPid, "worker"),
+      life("reap-start", workerPid, "worker"), life("reap-end", workerPid, "worker", { reaped: 0 }),
+      life("rss-finish", workerPid, "worker", { vmhwm: 0, vmpeakBound: 0, platformRusage: 0, rawFallback: 0, unavailable: unknown, telemetryValid: 1 }),
+      life("spawn-attempt", 0, "native"), life("spawn", nativePid, "native"), life("exit", nativePid, "native"),
+      life("reap-end", nativePid, "native", { reaped: 1 }), life("rss-finish", nativePid, "native", { source: "platform-rusage", known: 1, observationFailed: 0, telemetryValid: 1 }),
+    ] });
+  return { metric, diagnostic };
+}
+test("#287 per-child attribution rejects mixed native unknowns and missing or invalid receipts", () => {
+  for (const u of [1, 2]) expect(attributedWorkerRssObservation(abandonedDiagnostic(10, 20, u).diagnostic)).toEqual({ complete: true, explained: u });
+  for (const mutate of [
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.observedOwnedChildren = 1; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.spawnAttempts = 3; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.truncated = true; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.expectedWorkerChildren = 2; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission = d.admission.filter(row=>row.phase!=="returned"); },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission.find(row=>row.phase==="attempt")!.exact=0; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.admission.find(row=>row.phase==="preload")!.loads=2; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.abandonedChildren = 2; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.rss = null; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.reaped = true; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.rss!.telemetryValid = 0; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[0]!.rss!.counters.rawFallback = 1; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[1]!.rss!.observationFailed = 1; },
+    (d: ReturnType<typeof abandonedDiagnostic>["diagnostic"]) => { d.children[1]!.rss!.known = 0; },
+  ]) { const { diagnostic } = abandonedDiagnostic(10, 20); mutate(diagnostic); expect(attributedWorkerRssObservation(diagnostic).complete).toBe(false); }
+});
+test("#287 warning keeps original unknown coverage and cannot admit an extra unknown or live PID", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-attributed-rss-")), summary = join(root, "summary.md");
+  const flags = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS", GITHUB_STEP_SUMMARY: summary };
+  const dead = () => {
+    const child = Bun.spawnSync([process.execPath, "-e", ""], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    return child.pid;
+  };
+  try {
+    const { metric, diagnostic } = abandonedDiagnostic(dead(), dead());
+    const result = await measuredAttributedHookRss(metric, 55, diagnostic, "attributed baseline", flags, "darwin");
+    expect(result).toMatchObject({ rssProvenanceKnown: false, rssAdvisory: true, rssMB: 55 });
+    expect(result.rssSources).toEqual(metric.rssSources!);
+    expect(readFileSync(summary, "utf8")).toContain('"unavailableRssSources":2');
+    expect(readFileSync(summary, "utf8")).toContain('"unexplainedRssSources":0');
+    for (const bad of [ { ...metric, rssSources: { ...metric.rssSources!, unavailable: 3 } }, { ...metric, rssMB: Number.NaN },
+      { ...metric, wallMs: Number.NaN }, { ...metric, rssScope: undefined }, { ...metric, rssSources: { ...metric.rssSources!, rawFallback: 1 } } ])
+      await expect(measuredAttributedHookRss(bad, 55, diagnostic, "strict", flags, "darwin")).rejects.toThrow("provenance unknown");
+    await expect(measuredAttributedHookRss(metric, 55, diagnostic, "Linux", { ...flags, RUNNER_OS: "Linux" }, "linux")).rejects.toThrow("provenance unknown");
+    try { await measuredAttributedHookRss(metric, 55, diagnostic, "stage1-receipts", {}, "linux"); throw Error("expected strict refusal"); }
+    catch (error) { expect(String(error)).toContain('"diagnostic":"hook-child-reap/v1"'); expect(String(error)).toContain('"event":"Stop"'); }
+    const live = abandonedDiagnostic(process.pid, dead());
+    await expect(measuredAttributedHookRss(live.metric, 55, live.diagnostic, "R1 live", flags, "darwin")).rejects.toThrow("provenance unknown");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 5000);
+
+
+test("#287 real hosted Stop with negative post-metadata time warns only with complete attributed receipts", async () => {
+  // Exact decoded process record from run 42330589615, baseline:Stop:9 (body/path free).
+  const real = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/hook-rss-baseline-stop-42330589615.json"), "utf8")) as ReturnType<typeof hookProcessDiagnostic>;
+  expect(real.admission.find(row => row.phase === "late_check")!.remainingUs).toBe(-4319);
+  expect(attributedWorkerRssObservation(real)).toEqual({ complete: true, explained: 2 });
+  const flags = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+  const root = mkdtempSync(join(tmpdir(), "amem-real-stop-advisory-"));
+  try {
+    // Historic runner PIDs grant no present liveness evidence. Substitute freshly exited owned
+    // children for the observation-only R1 check, leaving the retained fixture byte-identical.
+    const diagnostic = structuredClone(real), pids = new Map<number, number>();
+    for (const child of diagnostic.children) {
+      const dead = Bun.spawnSync([process.execPath, "-e", ""], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+      expect(dead.exitCode).toBe(0);pids.set(child.pid, dead.pid);child.pid=dead.pid;
+    }
+    for (const row of diagnostic.admission) if (row.childPid !== null) row.childPid=pids.get(row.childPid)!;
+    const metric: MetricSample = { at:new Date().toISOString(),kind:"hook",wallMs:real.wallMs!,rssMB:real.productionRssMB!,rawRssMB:real.rawRssMB!,
+      rssScope:"owned-images",rssSources:real.rssSources as NonNullable<MetricSample["rssSources"]>,abandonedChildren:real.abandonedChildren! };
+    const result=await measuredAttributedHookRss(metric,real.cliRawRssMB!,diagnostic,"baseline:Stop:9 regression",{...flags,GITHUB_STEP_SUMMARY:join(root,"summary.md")},"darwin");
+    expect(result).toMatchObject({rssAdvisory:true,rssProvenanceKnown:false});
+    expect(readFileSync(join(root,"summary.md"),"utf8")).toContain('"unexplainedRssSources":0');
+    for (const mutate of [
+      (d:typeof real)=>{d.admission=d.admission.filter(row=>row.phase!=="returned");},
+      (d:typeof real)=>{d.admission.find(row=>row.phase==="attempt")!.exact=0;},
+      (d:typeof real)=>{d.admission.find(row=>row.phase==="preload")!.loads=2;},
+      (d:typeof real)=>{d.children[0]!.rss!.telemetryValid=0;},
+      (d:typeof real)=>{d.observedOwnedChildren--;},
+      (d:typeof real)=>{d.children.find(row=>row.kind==="native")!.rss!.observationFailed=1;},
+      (d:typeof real)=>{d.event="PreToolUse";},
+    ]) {const changed=structuredClone(real);mutate(changed);expect(attributedWorkerRssObservation(changed).complete).toBe(false);}
+    const end=structuredClone(real);end.event="SessionEnd";expect(attributedWorkerRssObservation(end).complete).toBe(true);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+},5000);
