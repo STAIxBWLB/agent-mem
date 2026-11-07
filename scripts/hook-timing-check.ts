@@ -57,7 +57,7 @@ export interface BudgetFailureEvidence {
   telemetryValid: boolean; survivors: number; abandonedOwnedWorkers?: number;
   unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
   reasonOnlyStreak?: number; drainPass?: number; expectedInvocations?: number; databaseRows?: number; hookPendingRows?: number; capturePendingRows?: number;
-  accountingComplete?: boolean; unreadableItems?: number; duplicateItems?: number; unaccountedItems?: number; countedRetirements?: number;
+  accountedInvocations?: number; acknowledgedPendingRows?: number; pendingAliases?: number; accountingComplete?: boolean; unreadableItems?: number; duplicateItems?: number; unaccountedItems?: number; countedRetirements?: number;
 }
 /** ponytail: #226's four abandonment/timing classes remain hosted-macOS-only. #293 adds only reason-only
  * transcript stalls and exactly-accounted contended drains on exact hosted Linux/macOS markers.
@@ -76,10 +76,12 @@ export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvide
   if (kind === "transcript-stall") return Number.isSafeInteger(evidence.reasonOnlyStreak) && evidence.reasonOnlyStreak! >= 3;
   if (kind === "contended-drain") {
     const counts = [evidence.expectedInvocations, evidence.databaseRows, evidence.hookPendingRows, evidence.capturePendingRows,
-      evidence.unreadableItems, evidence.duplicateItems, evidence.unaccountedItems, evidence.countedRetirements];
+      evidence.unreadableItems, evidence.duplicateItems, evidence.unaccountedItems, evidence.countedRetirements, evidence.accountedInvocations, evidence.acknowledgedPendingRows, evidence.pendingAliases];
     return evidence.drainPass === 4 && evidence.accountingComplete === true && counts.every(value => Number.isSafeInteger(value) && value! >= 0)
       && evidence.expectedInvocations! > 0 && evidence.databaseRows! < evidence.expectedInvocations!
-      && evidence.expectedInvocations === evidence.databaseRows! + evidence.hookPendingRows! + evidence.capturePendingRows!
+      && evidence.accountedInvocations === evidence.expectedInvocations
+      && evidence.acknowledgedPendingRows! <= Math.min(evidence.databaseRows!,evidence.hookPendingRows!+evidence.capturePendingRows!)
+      && evidence.expectedInvocations === evidence.databaseRows! + evidence.hookPendingRows! + evidence.capturePendingRows! - evidence.acknowledgedPendingRows!
       && evidence.unreadableItems === 0 && evidence.duplicateItems === 0 && evidence.unaccountedItems === 0 && evidence.countedRetirements === 0;
   }
   if (kind === "not-durable") return true;

@@ -87,11 +87,12 @@ test("#287 every unattributed, invalid or R1/observation-failed combination stay
 
 import { budgetFailureAdvisory, reportBudgetAdvisory } from "../scripts/hook-timing-check.ts";
 const drainEvidence={telemetryValid:true,survivors:0,drainPass:4,expectedInvocations:55,databaseRows:40,hookPendingRows:11,capturePendingRows:4,
-  accountingComplete:true,unreadableItems:0,duplicateItems:0,unaccountedItems:0,countedRetirements:0};
+  accountingComplete:true,accountedInvocations:55,acknowledgedPendingRows:0,pendingAliases:0,unreadableItems:0,duplicateItems:0,unaccountedItems:0,countedRetirements:0};
 test("#293 liveness kinds warn only on exact hosted OS markers, without widening the macOS-only classes",()=>{
   for(const RUNNER_OS of ["Linux","macOS"]) {
     const env={CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS};
     expect(budgetFailureAdvisory("contended-drain",drainEvidence,env)).toBe(true);
+    expect(budgetFailureAdvisory("contended-drain",{...drainEvidence,hookPendingRows:12,acknowledgedPendingRows:1},env)).toBe(true);
     expect(budgetFailureAdvisory("transcript-stall",{telemetryValid:true,survivors:0,reasonOnlyStreak:3},env)).toBe(true);
     for(const kind of ["rss-unknown","owned-descendant-receipt","not-durable","transcript-wall-max"])
       expect(budgetFailureAdvisory(kind,{telemetryValid:true,survivors:0,abandonedOwnedWorkers:1,unavailableRssSources:2,receiptIncomplete:true,wallMs:301},env)).toBe(RUNNER_OS==="macOS");
@@ -104,7 +105,7 @@ test("#293 missing, unreadable, duplicated, retired or invalid accounting never 
   for(const RUNNER_OS of ["Linux","macOS"])for(const patch of [{telemetryValid:false},{survivors:1},{accountingComplete:false},
     {unaccountedItems:1},{unreadableItems:1},{duplicateItems:1},{countedRetirements:1},{hookPendingRows:10},{capturePendingRows:5},
     {drainPass:undefined},{drainPass:3},{drainPass:5},{expectedInvocations:0},{expectedInvocations:Number.NaN},{databaseRows:55,hookPendingRows:0,capturePendingRows:0},
-    {databaseRows:-1},{hookPendingRows:1.5},{countedRetirements:undefined}])
+    {accountedInvocations:54},{acknowledgedPendingRows:99},{databaseRows:-1},{hookPendingRows:1.5},{countedRetirements:undefined}])
     expect(budgetFailureAdvisory("contended-drain",{...drainEvidence,...patch},{CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS})).toBe(false);
   for(const reasonOnlyStreak of [undefined,0,1,2,3.5,Number.NaN])
     expect(budgetFailureAdvisory("transcript-stall",{telemetryValid:true,survivors:0,reasonOnlyStreak},githubMac)).toBe(false);

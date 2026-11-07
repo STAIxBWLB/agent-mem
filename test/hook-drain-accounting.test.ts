@@ -1,33 +1,43 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, linkSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { hookCaptureScope, stageHookCapture } from "../src/hook-spool.ts";
 import { normalizeCaptureFields } from "../src/memory/capture-input.ts";
-import { accountWorkload, inspectWorkloadAccounting, workloadInvocation } from "../scripts/hook-drain-accounting.ts";
+import { accountWorkload, inspectWorkloadAccounting, readWorkloadDatabase, workloadInvocation } from "../scripts/hook-drain-accounting.ts";
 
 const row=(id:number)=>({agent:"claude",event:"PostToolUse",excerpt:`src/public.ts\nbudget public result ${id}`,tool:"Read",paths:["src/public.ts"]});
 async function fixture(total:number,dbIds:number[],hookIds:number[],captureIds:number[]) {
   const f=hookFixture();await f.seed();const store=new CaptureStore({memoryDir:f.base,project:f.project,busyTimeoutMs:0});const captureDir=store.dir;
-  for(const id of dbIds)store.append({...row(id),project:f.project});
+  for(const id of dbIds)if(!hookIds.includes(id)&&!captureIds.includes(id))store.append({...row(id),project:f.project});
   const previous=process.env.HOME;let scope:string|undefined;
+  const committed=new Set<number>();
   try {process.env.HOME=f.env.HOME;scope=hookCaptureScope(f.cwd,f.base);
-    for(const id of hookIds)await stageHookCapture("PostToolUse",{tool_name:"Read",tool_input:{file_path:"src/public.ts"},tool_response:`budget public result ${id}`},{cwd:f.cwd,base:f.base});
+    for(const id of hookIds){
+      const pending=await stageHookCapture("PostToolUse",{tool_name:"Read",tool_input:{file_path:"src/public.ts"},tool_response:`budget public result ${id}`},{cwd:f.cwd,base:f.base});
+      if(dbIds.includes(id)&&!committed.has(id)){
+        committed.add(id);
+        const raw=readFileSync(join(f.base,"hook-spool",pending!.name)),capture=JSON.parse(raw.toString()).capture;
+        store.append({...capture,project:f.project},{receipt:createHash("sha256").update(raw).digest("hex")});
+      }
+    }
   }finally{if(previous===undefined)delete process.env.HOME;else process.env.HOME=previous;}
   const holder=new Database(join(captureDir,"capture.db"));
   try{holder.run("BEGIN IMMEDIATE");for(const id of captureIds)expect(store.append({...row(id),project:f.project})).toEqual({spooled:true});}
   finally{holder.run("ROLLBACK");holder.close();}
-  const database=store.rows({limit:2000});store.close();expect(scope).toBeDefined();
+  store.close();const database=readWorkloadDatabase(captureDir);expect(scope).toBeDefined();
   const options={expected:total,workload:new Map(Array.from({length:total},(_,i)=>[i+1,row(i+1)])),baselineRows:1,database,base:f.base,captureDir,cwd:f.cwd,project:f.project,scope:scope!,countedRetirements:0};
   return {f,options,inspect:()=>inspectWorkloadAccounting(options),spool:join(captureDir,"spool"),hooks:join(f.base,"hook-spool")};
 }
 
-test("exactly-once accounting rejects loss, every duplicate representation and retirements",()=>{
+test("per-id union accounts retirement-pending overlap but rejects real duplicates, loss and retirements",()=>{
   expect(accountWorkload(3,[1],[2],[3],0).accountingComplete).toBe(true);
-  for(const proof of [accountWorkload(3,[1],[2],[],0),accountWorkload(3,[1,1],[2],[3],0),accountWorkload(3,[1],[1,2],[3],0),
+  for(const proof of [accountWorkload(3,[1],[2],[],0),accountWorkload(3,[1,1],[2],[3],0),accountWorkload(3,[1],[1,2],[1,3],0),
     accountWorkload(3,[1],[2],[2,3],0),accountWorkload(3,[1],[2],[3],1),accountWorkload(3,[1],[2],[4],0)])expect(proof.accountingComplete).toBe(false);
+  expect(accountWorkload(3,[1],[1,2],[3],0)).toMatchObject({accountingComplete:true,accountedInvocations:3,acknowledgedPendingRows:1});
   expect(workloadInvocation({event:"PostToolUse",excerpt:"src/public.ts\nbudget public result 1\n"})).toBe(0);
 });
 
@@ -68,7 +78,7 @@ test("unreadable, unsafe, unknown, wrong-bound or duplicate pending input never 
     (s:Awaited<ReturnType<typeof fixture>>)=>{s.options.scope="0".repeat(64);},
     (s:Awaited<ReturnType<typeof fixture>>)=>{s.options.workload.set(2,{...row(2),agent:"jcode"});},
   ]) {const state=await fixture(2,[],[1],[2]);try{mutate(state);expect(()=>state.inspect()).toThrow("pending workload evidence");}finally{state.f.close();}}
-  const duplicate=await fixture(2,[1],[1],[2]);try{expect(duplicate.inspect().accountingComplete).toBe(false);expect(duplicate.inspect().duplicateItems).toBe(1);}finally{duplicate.f.close();}
+  const ack=await fixture(2,[1],[1],[2]);try{expect(ack.inspect()).toMatchObject({accountingComplete:true,acknowledgedPendingRows:1,duplicateItems:0});}finally{ack.f.close();}
 });
 
 
@@ -99,4 +109,35 @@ test("already-acknowledged baseline prefix is outside the pending workload windo
     writeFileSync(join(state.spool,`spool-abcd.jsonl.offset-${prefix.length}`),Buffer.concat([prefix,tail]),{mode:0o600});
     expect(state.inspect()).toMatchObject({accountingComplete:true,databaseRows:0,capturePendingRows:1});
   }finally{state.f.close();}
+});
+
+
+test("DB commit with the same hook receipt still pending is one accounted capture, including its draining alias",async()=>{
+  const state=await fixture(1,[1],[1],[]);
+  try {
+    expect(state.inspect()).toMatchObject({accountingComplete:true,databaseRows:1,hookPendingRows:1,acknowledgedPendingRows:1});
+    const name=readdirSync(state.hooks).find(name=>name.startsWith("hook-"))!,raw=readFileSync(join(state.hooks,name));
+    writeFileSync(join(state.hooks,name+".draining-"+"a".repeat(24)),raw,{mode:0o600});
+    expect(state.inspect()).toMatchObject({accountingComplete:true,hookPendingRows:1,acknowledgedPendingRows:1,pendingAliases:1});
+    const claimed=join(state.hooks,name+".draining-"+"a".repeat(24)),changed=JSON.parse(raw.toString());changed.capture.status="different";
+    writeFileSync(claimed,JSON.stringify(changed));expect(state.inspect().accountingComplete).toBe(false);writeFileSync(claimed,raw);
+    state.options.database[1]!.spoolId=null;expect(state.inspect().accountingComplete).toBe(false);
+  }finally{state.f.close();}
+});
+test("capture-spool receipt uses its exact raw line hash when a committed row awaits retirement",async()=>{
+  const state=await fixture(1,[],[],[1]);
+  try {
+    const name=readdirSync(state.spool).find(name=>name.startsWith("spool-"))!,raw=readFileSync(join(state.spool,name));
+    const writer=new CaptureStore({memoryDir:state.f.base,project:state.f.project});try{writer.drain();}finally{writer.close();}
+    writeFileSync(join(state.spool,name),raw,{mode:0o600});state.options.database=readWorkloadDatabase(state.options.captureDir);
+    expect(state.inspect()).toMatchObject({accountingComplete:true,acknowledgedPendingRows:1,capturePendingRows:1});
+    const parsed=JSON.parse(raw.toString());writeFileSync(join(state.spool,name),JSON.stringify(parsed,null,0)+" \n");
+    expect(state.inspect().accountingComplete).toBe(false); // Same fields, different raw receipt cannot ACK the DB row.
+  }finally{state.f.close();}
+});
+test("two DB rows, distinct pending captures, and mismatched identities stay hard",async()=>{
+  for(const build of [()=>fixture(1,[1,1],[],[]),()=>fixture(1,[],[1,1],[]),()=>fixture(1,[1],[1,1],[])]){
+    const state=await build();try{expect(state.inspect().accountingComplete).toBe(false);expect(state.inspect().duplicateItems).toBeGreaterThan(0);}finally{state.f.close();}
+  }
+  const state=await fixture(1,[1],[1],[]);try{state.options.database[1]!.status="different";expect(state.inspect().accountingComplete).toBe(false);}finally{state.f.close();}
 });

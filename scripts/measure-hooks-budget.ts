@@ -1,4 +1,4 @@
-import { inspectWorkloadAccounting, workloadInvocation, type WorkloadRow, type DrainAccounting } from "./hook-drain-accounting.ts";
+import { inspectWorkloadAccounting, readWorkloadDatabase, workloadInvocation, type CaptureEvidenceRow, type WorkloadRow, type DrainAccounting } from "./hook-drain-accounting.ts";
 import { hookCaptureScope } from "../src/hook-spool.ts";
 import { measuredBudgetHookRss } from "./hook-rss-check.ts";
 import { combineRssSources } from "../src/hook-resources.ts";
@@ -68,11 +68,10 @@ function invocationExcerpt(event: "PostToolUse" | "SessionStart", response: stri
   return event === "PostToolUse" ? `src/public.ts\n${response}` : response;
 }
 function invocationId(event:string,excerpt:string):number {return workloadInvocation({event,excerpt});}
-function snapshotRows() {
-  const store=new CaptureStore({memoryDir:f.base,project:f.project,readOnly:true,maxReadRows:2000});
-  try{return store.rows({limit:2000});}finally{store.close();}
+function snapshotRows(captureDir:string) {
+  return readWorkloadDatabase(captureDir);
 }
-function conservation(database:readonly WorkloadRow[],captureDir:string,baselineRows:number) {
+function conservation(database:readonly CaptureEvidenceRow[],captureDir:string,baselineRows:number) {
   const previousHome=process.env.HOME;let scope:string|undefined;
   try{process.env.HOME=f.env.HOME;scope=hookCaptureScope(f.cwd,f.base);}finally{if(previousHome===undefined)delete process.env.HOME;else process.env.HOME=previousHome;}
   if(!scope)throw Error("fixture capture scope is unavailable; inspect the isolated HOME and Git binding");
@@ -225,7 +224,7 @@ try {
     const attempts: BudgetAttempt<Sample>[] = [], record = budgetGroupRecorder<Sample>("drain", stalledAttempts);
     const completed = await budgetSample(`drain-${pass + 1}`, () => invoke("PostToolUse", "drain"), attempt => { attempts.push(attempt); record(attempt); });
     drains.push(keepAttemptWall(keepAttemptRss(completed, attempts), attempts));
-    const database=snapshotRows();
+    const database=snapshotRows(dir);
     const rows=database.flatMap(row=>{const id=invocationId(row.event,row.excerpt);return id>=1&&id<=acceptedWorkload?[id]:[];});
     if (new Set(rows).size !== rows.length) throw new Error("capture replay duplicated a workload event");
     if (rows.length === acceptedWorkload) break;
@@ -256,7 +255,8 @@ try {
   if (countedRetirements !== 0) throw new Error("plain or contended workload retired a native capture instead of replaying losslessly");
   const sessionStart = await samples("sessionStart", RUNS.sessionStart, () => invoke("SessionStart", "sessionStart"));
   // Preserve the later SessionStart quota-retirement/acknowledgement contract. It is not the pass-4 advisory.
-  const database=snapshotRows(),proof=conservation(database,dir,baseline),recorded=new Map<number,string>(),pending=new Map<number,string>();
+  const database=snapshotRows(dir),proof=conservation(database,dir,baseline),recorded=new Map<number,string>(),pending=new Map<number,string>();
+  if(proof.duplicateItems||proof.unreadableItems)throw Error("capture conservation has conflicting rows or receipts; inspect hook-drain accounting");
   for(const row of database){const id=invocationId(row.event,row.excerpt);if(!id)continue;
     if(recorded.has(id))throw Error("capture duplicated an accepted invocation");recorded.set(id,row.at);}
   for(const row of proof.pendingRecords){if(pending.has(row.id))throw Error("pending fixture capture duplicated");pending.set(row.id,row.at);}
