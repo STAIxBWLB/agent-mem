@@ -50,6 +50,8 @@ test("acknowledged capture prefixes are not pending, but their suffix must be pa
     const prefix=Buffer.from(JSON.stringify({...normalizeCaptureFields({...row(1),at:prior.at}),project:state.f.project,nonce:"a".repeat(24)})+"\n");
     const file=join(state.spool,`spool-abcd.jsonl.offset-${prefix.length}.draining-abcd`);writeFileSync(file,Buffer.concat([prefix,tail]),{mode:0o600});
     expect(state.inspect()).toMatchObject({accountingComplete:true,databaseRows:1,capturePendingRows:1});
+    const database=state.options.database;state.options.database=database.filter(row=>workloadInvocation(row)!==1);
+    expect(state.inspect()).toMatchObject({accountingComplete:false,missingInvocations:[1]});state.options.database=database;
     renameSync(file,join(state.spool,"spool-abcd.jsonl.offset-1"));expect(()=>state.inspect()).toThrow("pending workload evidence");
   }finally{state.f.close();}
 });
@@ -84,5 +86,17 @@ test("an incomplete directory inventory is never a positive proof",async()=>{
   try {
     for(let index=0;index<513;index++)writeFileSync(join(state.spool,`spool-${index.toString(16)}.jsonl`),"{}",{mode:0o600});
     expect(()=>state.inspect()).toThrow("pending workload evidence");
+  }finally{state.f.close();}
+});
+
+
+test("already-acknowledged baseline prefix is outside the pending workload window",async()=>{
+  const state=await fixture(1,[],[],[1]);
+  try {
+    const name=readdirSync(state.spool).find(name=>name.startsWith("spool-"))!,tail=readFileSync(join(state.spool,name));rmSync(join(state.spool,name));
+    const seed=state.options.database[0]!;
+    const prefix=Buffer.from(JSON.stringify({...normalizeCaptureFields({at:seed.at,agent:seed.agent,event:seed.event,excerpt:seed.excerpt,paths:seed.paths}),project:state.f.project,nonce:"a".repeat(24)})+"\n");
+    writeFileSync(join(state.spool,`spool-abcd.jsonl.offset-${prefix.length}`),Buffer.concat([prefix,tail]),{mode:0o600});
+    expect(state.inspect()).toMatchObject({accountingComplete:true,databaseRows:0,capturePendingRows:1});
   }finally{state.f.close();}
 });

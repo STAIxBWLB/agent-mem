@@ -86,8 +86,8 @@ function inspect(options:InspectionOptions):WorkloadInspection {
     const match=segment.exec(name);if(!match||match[2])fail();
     const data=read(join(options.captureDir,"spool",name),256*1024),offset=Number(match![1]??0);
     if(!data.length||!Number.isSafeInteger(offset)||offset>data.length||offset>0&&data[offset-1]!==10)fail();
-    let start=0,parsed=0;
-    while(start<data.length){const end=data.indexOf(10,start),stop=end<0?data.length:end;const line=data.subarray(start,stop);const pending=start>=offset;start=stop+(end<0?0:1);
+    let start=offset,parsed=0;
+    while(start<data.length){const end=data.indexOf(10,start),stop=end<0?data.length:end;const line=data.subarray(start,stop);start=stop+(end<0?0:1);
       if(!line.length)continue;if(++lines>2000)fail();
       const text=line.toString("utf8");if(!Buffer.from(text,"utf8").equals(line))fail();
       const row=JSON.parse(text) as Record<string,unknown>;
@@ -95,9 +95,9 @@ function inspect(options:InspectionOptions):WorkloadInspection {
       const shaped=normalizeCaptureFields(row as unknown as Parameters<typeof normalizeCaptureFields>[0]);
       const expected={...shaped,project:options.project,nonce:row.nonce};
       if(Object.keys(row).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>JSON.stringify(row[key])!==JSON.stringify(value)))fail();
-      const id=identify(row as unknown as WorkloadRow);parsed++;if(pending){capturePending.push(id);pendingRecords.push({id,at:shaped.at});}
+      const id=identify(row as unknown as WorkloadRow);parsed++;capturePending.push(id);pendingRecords.push({id,at:shaped.at});
     }
-    if(!parsed)fail();
+    if(!parsed&&offset<data.length)fail();
   }
   for(const snapshot of files)if(!same(snapshot.stamp,lstatSync(snapshot.file)))fail();
   for(const dir of missingDirs)if(lstatSync(dir,{throwIfNoEntry:false}))fail();
