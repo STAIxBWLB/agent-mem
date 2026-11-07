@@ -67,7 +67,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v h="## ${version}" '$0==h{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md | grep -q '[^[:space:]]' || { echo "CHANGELOG.md has no section ## ${version}"; exit 1; }
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
