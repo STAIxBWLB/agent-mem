@@ -5,8 +5,9 @@ import { instrumentHookLifecycle } from "./hooks-process-lifecycle.ts";
 import { createHookWorkerPhases } from "./hooks-worker-phases.ts";
 
 export interface HookLifecycleReceipt {
-  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "timer-fired" | "truncated";
+  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "timer-fired" | "truncated" | "profile-body";
   parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
+  complete?: number; valid?: number;
   boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
   source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
   known?: number; kb?: number; rawKB?: number; observationFailed?: number;
@@ -18,9 +19,10 @@ export interface HookLifecycleReceipt {
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
-export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, phaseEnabled = false) {
+export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, phaseEnabled = false, profilingMode = false) {
   if (phaseEnabled && !lifecycleEnabled) throw Error("Worker phases require parent lifecycle observation; enable both diagnostic modes");
-  const phases = phaseEnabled ? createHookWorkerPhases(root, realPath(sourceRoot)) : undefined;
+  if (profilingMode && !lifecycleEnabled) throw Error("Profile body observation requires lifecycle mode; enable lifecycle observation before profiling");
+  const phases = phaseEnabled ? createHookWorkerPhases(root, realPath(sourceRoot), profilingMode) : undefined;
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
   const nativePidFile = join(root, "owned-native.pid"), entered = join(root, "owned-native.entered");
   const worker = join(realPath(sourceRoot), "src/session-brief-worker.ts");
@@ -63,7 +65,7 @@ if(stallWorker&&process.argv[1]===worker){
  await sleeper.exited;
 }
 `;
-  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,phaseEnabled);
+  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,phaseEnabled,profilingMode);
   if(phases){
     const anchor="original(argv,options)";
     if(rendered.split(anchor).length!==2)throw Error("Worker phase launch anchor changed; update the diagnostic observer before running");
@@ -102,9 +104,10 @@ if(stallWorker&&process.argv[1]===worker){
       if(statSync(lifecycle).size>2*1024*1024)throw Error("child lifecycle diagnostic exceeds 2 MiB; retain the fixture and inspect its bounded observer workload");
       return readFileSync(lifecycle,"utf8").split("\n").filter(Boolean).map(line=>{
         const row=JSON.parse(line) as HookLifecycleReceipt;
-        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","timer-fired","truncated"].includes(row.phase)
+        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","timer-fired","truncated","profile-body"].includes(row.phase)
           || !Number.isSafeInteger(row.parentPid)||row.parentPid<=0||!Number.isSafeInteger(row.childPid)||row.childPid<0
           || !["worker","native"].includes(row.kind)||!Number.isFinite(row.atMs)||row.atMs<0)throw Error("child lifecycle diagnostic is malformed; retain the fixture and inspect the observer receipts");
+        if(row.phase === "profile-body" && (row.childPid <= 0 || ![0,1].includes(row.complete!) || ![0,1].includes(row.valid!))) throw Error("Profile body receipt is malformed; retain the fixture and inspect the profile observer");
         return row;
       }).filter(row=>parentPid===undefined||row.parentPid===parentPid);
     },

@@ -1,24 +1,6 @@
 name: hook-worker-attribution
 on:
-  pull_request:
-    paths:
-      - .github/workflows/hook-worker-attribution.yml
-      - test/fakes/hooks-worker-phases.ts
-      - test/fakes/hooks-process-lifecycle.ts
-      - test/fakes/hooks-process-observer.ts
-      - test/hook-worker-phases.test.ts
-      - test/hook-process-diagnostic.test.ts
-      - test/hook-transcript-worker.test.ts
-      - scripts/hook-process-diagnostic.ts
-      - scripts/measure-hooks-budget.ts
-      - scripts/measure-transcript-budget.ts
-      - scripts/measure-hook-baseline.ts
-      - scripts/run-hook-worker-attribution.ts
-      - scripts/run-hook-worker-pairs.ts
-      - scripts/hook-pair-metrics.ts
-      - scripts/hook-phase-durations.ts
-      - test/hook-pair-metrics.test.ts
-      - test/hook-phase-durations.test.ts
+  # Retained stage2 evidence; feasibility revisions must not silently repeat completed C/P batches.
   workflow_dispatch:
 permissions:
   contents: read

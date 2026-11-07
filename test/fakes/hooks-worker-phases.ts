@@ -8,6 +8,8 @@ export enum HookWorkerPhase {
   StoreClose, StoreClosed, OutputBegin, OutputEnd, Stop,
   TransactionEnter, CommitEnter, CommitReturn, TransactionThrow,
   Truncated = 30, AnchorRefused = 31,
+  CursorInitBegin = 40, CursorInitReady, CursorFinishBegin, CursorFinalCommitBegin, CursorFinalCommitReturn, CursorClosed,
+  CaptureDbOpenBegin, CaptureDbOpened, IdentityReady,
 }
 export type HookWorkerPhaseReceipt = { phase: HookWorkerPhase; pid: number; parentPid: number; atMs: number; seq: number };
 export type HookWorkerPhaseReport = { rows: HookWorkerPhaseReceipt[]; partialTail: boolean };
@@ -43,7 +45,40 @@ export function instrumentTranscriptPhaseSource(source: string): string {
   return source.replace(anchor, anchor + "\nglobalThis[Symbol.for('amem.test.worker.phases.installSqlite')](Database);");
 }
 
-export function createHookWorkerPhases(root: string, sourceRoot: string): { preload: string; file: string; read(parentPid?: number): HookWorkerPhaseReceipt[]; readReport(parentPid?: number): HookWorkerPhaseReport } {
+/** Additional IDs40..48 are profiling-only. Default attribution transforms stay unchanged. */
+export function instrumentProfileTranscriptSource(source: string): string {
+  const anchors: [string,string][] = [
+    ['function cursorDatabase(file: string, dev: string, ino: string, size: number): Database {', 'function cursorDatabase(file: string, dev: string, ino: string, size: number): Database {' + mark(HookWorkerPhase.CursorInitBegin)],
+    ['    }).immediate();\n    return db;', '    }).immediate();' + mark(HookWorkerPhase.CursorInitReady) + '\n    return db;'],
+    ['    db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1")', '    ' + mark(HookWorkerPhase.CursorFinishBegin) + 'db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1")'],
+    ['    db.run("COMMIT");\n    return { offset:', '    ' + mark(HookWorkerPhase.CursorFinalCommitBegin) + 'db.run("COMMIT");' + mark(HookWorkerPhase.CursorFinalCommitReturn) + '\n    return { offset:'],
+    ['db.close(); } } finally { closeSync(fd); }', 'db.close();' + mark(HookWorkerPhase.CursorClosed) + ' } } finally { closeSync(fd); }'],
+    ['} catch (error) { db.close(); throw error; }', '} catch (error) { db.close();' + mark(HookWorkerPhase.CursorClosed) + ' throw error; }'],
+  ];
+  for (const [anchor,replacement] of anchors) {
+    if (source.split(anchor).length !== 2) throw Error("Profile cursor anchor changed; update the observer and retain the failed attempt");
+    source=source.replace(anchor,replacement);
+  }
+  return source;
+}
+export function instrumentProfileCaptureSource(source: string): string {
+  const anchors: [string,string][] = [
+    ['import { Database } from "bun:sqlite";', 'import { Database } from "bun:sqlite";\nglobalThis[Symbol.for(\'amem.test.worker.phases.installSqlite\')](Database);'],
+    ['    const db = new Database(file, { create: true });', '    ' + mark(HookWorkerPhase.CaptureDbOpenBegin) + 'const db = new Database(file, { create: true });' + mark(HookWorkerPhase.CaptureDbOpened)],
+  ];
+  for (const [anchor,replacement] of anchors) {
+    if(source.split(anchor).length !== 2) throw Error("Profile capture anchor changed; update the observer and retain the failed attempt");
+    source=source.replace(anchor,replacement);
+  }
+  return source;
+}
+export function instrumentProfileWorkerSource(source: string): string {
+  const anchor='      return { options, expectedScope, project };';
+  if(source.split(anchor).length !== 2) throw Error("Profile identity anchor changed; update the observer and retain the failed attempt");
+  return source.replace(anchor, '      if(project && expectedScope !== undefined) {' + mark(HookWorkerPhase.IdentityReady) + '}' + anchor);
+}
+
+export function createHookWorkerPhases(root: string, sourceRoot: string, profilingMode = false): { preload: string; file: string; read(parentPid?: number): HookWorkerPhaseReceipt[]; readReport(parentPid?: number): HookWorkerPhaseReport } {
   const dir = join(root, "worker-phases"); mkdirSync(dir, { mode: 0o700 });
   const file = join(dir, "receipts.jsonl"), preload = join(dir, "preload.ts");
   const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600); closeSync(fd);
@@ -71,9 +106,11 @@ if(!globalThis[key]){
  };
  const instrument=${instrumentHookWorkerPhases.toString()};
  const instrumentTranscript=${instrumentTranscriptPhaseSource.toString()};
+ const profileTranscript=${instrumentProfileTranscriptSource.toString()},profileCapture=${instrumentProfileCaptureSource.toString()},profileWorker=${instrumentProfileWorkerSource.toString()};
+ const profilingMode=${profilingMode};
  const mark=phase=>\`globalThis[Symbol.for('amem.test.worker.phases.emit')](\${phase});\`;
  const HookWorkerPhase=${JSON.stringify(HookWorkerPhase)};
- Bun.plugin({name:'real-worker-numeric-phases',setup(builder){builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{if(path!==${JSON.stringify(resolve(sourceRoot, 'src/hook-transcript.ts'))})throw Error('Worker transcript source unavailable; retain the artifact and inspect the phase observer');try{return {loader:'ts',contents:instrumentTranscript(readFileSync(path,'utf8'))};}catch(error){emit(${HookWorkerPhase.AnchorRefused});throw error;}});builder.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{if(path!==${JSON.stringify(target)})throw Error('Worker phase source unavailable; retain the artifact and inspect the phase observer');try{return {loader:'ts',contents:instrument(readFileSync(path,'utf8'))};}catch(error){emit(${HookWorkerPhase.AnchorRefused});throw error;}});}});
+ Bun.plugin({name:'real-worker-numeric-phases',setup(builder){if(profilingMode)builder.onLoad({filter:/[/]memory[/]capture\\.ts$/},({path})=>{if(path!==${JSON.stringify(resolve(sourceRoot,'src/memory/capture.ts'))})throw Error('Profile capture source changed; retain the artifact and inspect the observer');try{return {loader:'ts',contents:profileCapture(readFileSync(path,'utf8'))};}catch(error){emit(${HookWorkerPhase.AnchorRefused});throw error;}});builder.onLoad({filter:/[/]hook-transcript\\.ts$/},({path})=>{if(path!==${JSON.stringify(resolve(sourceRoot, 'src/hook-transcript.ts'))})throw Error('Worker transcript source unavailable; retain the artifact and inspect the phase observer');try{return {loader:'ts',contents:profilingMode?profileTranscript(instrumentTranscript(readFileSync(path,'utf8'))):instrumentTranscript(readFileSync(path,'utf8'))};}catch(error){emit(${HookWorkerPhase.AnchorRefused});throw error;}});builder.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{if(path!==${JSON.stringify(target)})throw Error('Worker phase source unavailable; retain the artifact and inspect the phase observer');try{return {loader:'ts',contents:profilingMode?profileWorker(instrument(readFileSync(path,'utf8'))):instrument(readFileSync(path,'utf8'))};}catch(error){emit(${HookWorkerPhase.AnchorRefused});throw error;}});}});
 }
 `;
   writeFileSync(preload, body, { flag: "wx", mode: 0o600 });
@@ -95,7 +132,7 @@ if(!globalThis[key]){
       const lines = text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean), rows: HookWorkerPhaseReceipt[] = [];
       for (const line of lines) {
         let value: HookWorkerPhaseReceipt; try { value = JSON.parse(line); } catch { throw Error("Worker phase receipt invalid; retain the artifact and inspect the phase observer"); }
-        if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== "atMs,parentPid,phase,pid,seq" || ![1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,30,31].includes(value.phase) || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Number.isSafeInteger(value.parentPid) || value.parentPid <= 0 || !Number.isFinite(value.atMs) || value.atMs <= 0 || !Number.isSafeInteger(value.seq) || value.seq < 1 || value.seq > 513) throw Error("Worker phase receipt invalid; retain the artifact and inspect the phase observer");
+        if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== "atMs,parentPid,phase,pid,seq" || ![1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,30,31,40,41,42,43,44,45,46,47,48].includes(value.phase) || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Number.isSafeInteger(value.parentPid) || value.parentPid <= 0 || !Number.isFinite(value.atMs) || value.atMs <= 0 || !Number.isSafeInteger(value.seq) || value.seq < 1 || value.seq > 513) throw Error("Worker phase receipt invalid; retain the artifact and inspect the phase observer");
         if (parentPid === undefined || value.parentPid === parentPid) rows.push(value);
       }
       return { rows, partialTail: text.length > 0 && !text.endsWith("\n") };

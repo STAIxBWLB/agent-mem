@@ -1,0 +1,45 @@
+name: hook-worker-feasibility
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hook-worker-feasibility.yml
+      - scripts/run-hook-worker-feasibility.ts
+      - scripts/hook-feasibility-fit.ts
+      - test/fakes/hooks-worker-profile.ts
+      - test/fakes/worker-feasibility-sample.ts
+      - test/fakes/worker-feasibility-recovery.ts
+      - test/hook-feasibility-fit.test.ts
+      - test/hook-worker-profile.test.ts
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        state: [cold, warm, wal-recovery, partial-recovery]
+        event: [PostToolUse, Stop]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Longer-window profiling only (not native acceptance)
+        env:
+          PROFILE_STATE: ${{ matrix.state }}
+          PROFILE_EVENT: ${{ matrix.event }}
+        run: bun scripts/run-hook-worker-feasibility.ts "$RUNNER_TEMP/worker-feasibility" "$PROFILE_STATE" "$PROFILE_EVENT"
+      - name: Retain every completion, timeout, censor and fixture failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-feasibility-${{ matrix.state }}-${{ matrix.event }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/worker-feasibility/
+          retention-days: 14

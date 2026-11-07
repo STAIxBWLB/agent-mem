@@ -1,5 +1,5 @@
 /** Nonshipping source observation only. This never edits a target file or changes its branch/timer expressions. */
-export function instrumentHookLifecycle(preload:string,receipt:string,timerLagEnabled=false):string {
+export function instrumentHookLifecycle(preload:string,receipt:string,timerLagEnabled=false,profilingMode=false):string {
   const worker=[
     ["exit = child.exited.then(code => { exited = true; return code; });","exit = child.exited.then(code => { exited = true;globalThis.__hookChildLife('exit',child.pid,'worker',{code}); return code; });"],
     ["    killed = true;","    killed = true;globalThis.__hookChildLife('kill-request',owned.pid,'worker');"],
@@ -7,6 +7,10 @@ export function instrumentHookLifecycle(preload:string,receipt:string,timerLagEn
     ["      const body = reaped ? await boundedWait(output!) : { late: true };","      const body = reaped ? await boundedWait(output!) : { late: true };globalThis.__hookChildLife('output-end',owned.pid,'worker',{late:Number(body.late),outputAvailable:Number(body.value!==undefined)});"],
     ["      const accounting = tracker!.finish(workerRawKB);","      const accounting = tracker!.finish(workerRawKB);globalThis.__hookChildLife('rss-finish',owned.pid,'worker',{...accounting.rssSources,kb:accounting.rssKB,rawKB:workerRawKB});"],
   ];
+  if(profilingMode)worker.push([
+    'else { if (body) throw new Error("worker output bound"); body = text; }',
+    'else { if (body) throw new Error("worker output bound"); globalThis.__hookProfileBody(Number((value as any).complete===true),Number((value as any).valid===true)); body = text; }',
+  ]);
   const native=[
     ["    exited = true;","    exited = true;globalThis.__hookChildLife('exit',child.pid,'native',{code});"],
     ["    if (exited) return;","    if (exited) return;globalThis.__hookChildLife('kill-request',child.pid,'native');"],
@@ -19,6 +23,9 @@ export function instrumentHookLifecycle(preload:string,receipt:string,timerLagEn
     preload=preload.replace(anchor,value);
   };
   // ponytail:512 metadata receipts per CLI, with explicit truncation; larger invocations need a reviewed streaming observer.
+  const profileState=profilingMode?`let profileWorkerPid=0;`:"";
+  const profileTracker=profilingMode?`if(kind==='worker'&&phase==='spawn')profileWorkerPid=childPid;`:"";
+  const profileBody=profilingMode?`globalThis.__hookProfileBody=(complete,valid)=>life('profile-body',profileWorkerPid,'worker',{complete,valid});`:"";
   const timerState=timerLagEnabled?`let activeReapChild=0,lastTimer=null,timerSequence=0;`:"";
   const snapshots=timerLagEnabled?`if(kind==='worker'&&phase==='reap-start')activeReapChild=childPid;
 if(kind==='worker'&&(phase==='reap-start'||phase==='reap-end'))values={...values,timerId:lastTimer?.timerId??null,timerDueMs:lastTimer?.timerDueMs??null,timerLagMs:lastTimer?.timerLagMs??null,timerCallbackAtMs:lastTimer?.timerCallbackAtMs??null,timerDelayMs:lastTimer?.timerDelayMs??null,timerWindowChildPid:lastTimer?.timerWindowChildPid??null};
@@ -29,9 +36,9 @@ const timerId=++timerSequence,timerWindowChildPid=activeReapChild,timerDelayMs=t
 const observed=function(...values){const timerCallbackAtMs=performance.timeOrigin+performance.now();lastTimer={timerId,timerWindowChildPid,timerDelayMs,timerDueMs,timerCallbackAtMs,timerLagMs:timerCallbackAtMs-timerDueMs};life('timer-fired',timerWindowChildPid,'worker',lastTimer);return Reflect.apply(callback,this,values);};
 return Reflect.apply(target,self,[observed,...args.slice(1)]);}});`:"";
   replace("note('preload');",`const receipts=[];let truncated=false;
-${timerState}
-const life=(phase,childPid,kind,values={})=>{${snapshots}if(receipts.length>=512){truncated=true;return;}receipts.push({phase,parentPid:process.pid,childPid,kind,atMs:performance.timeOrigin+performance.now(),...values});};
-globalThis.__hookChildLife=life;
+${timerState}${profileState}
+const life=(phase,childPid,kind,values={})=>{${profileTracker}${snapshots}if(receipts.length>=512){truncated=true;return;}receipts.push({phase,parentPid:process.pid,childPid,kind,atMs:performance.timeOrigin+performance.now(),...values});};
+globalThis.__hookChildLife=life;${profileBody ? "\n"+profileBody : ""}
 ${timerObserver}
 process.once('exit',()=>{if(truncated)receipts.push({phase:'truncated',parentPid:process.pid,childPid:0,kind:'worker',atMs:performance.timeOrigin+performance.now()});if(receipts.length)appendFileSync(${JSON.stringify(receipt)},receipts.map(row=>JSON.stringify(row)+'\\n').join(''),{mode:0o600});});
 const transformLifecycle=(source,anchors)=>{for(const [anchor,replacement]of anchors){if(source.split(anchor).length!==2)throw Error('Child lifecycle observation anchor changed; update the exact test preload and rerun observer controls');source=source.replace(anchor,replacement);}return source;};
