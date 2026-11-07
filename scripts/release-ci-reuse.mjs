@@ -74,6 +74,7 @@ export async function proveRelease(api,input,{now=Date.now,sleep=ms=>new Promise
     let active=false;const visited=new Set();
     for(const candidate of inventory){
       if(!eligible(candidate,workflow.id,repository,commit,tag)||visited.has(candidate.id))continue;visited.add(candidate.id);
+      if(!ACTIVE.has(candidate.status)&&!(candidate.status==="completed"&&candidate.conclusion==="success"))continue;
       if(await treeOf(candidate.head_sha)!==tree)continue;
       const run=await read(`actions/runs/${candidate.id}`);
       if(!eligible(run,workflow.id,repository,commit,tag)||run.id!==candidate.id||run.head_sha!==candidate.head_sha||!integer(run.run_attempt))refuse("changed","CI run identity changed during proof");
