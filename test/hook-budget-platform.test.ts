@@ -59,11 +59,11 @@ test("within-budget workloads pass on either runner and locally without a warnin
   }
 });
 
-test("#226: only the exact hosted GitHub macOS runner makes the transcript stall clause advisory", async () => {
+test("#293: only exact hosted Linux or macOS markers make the transcript stall clause advisory", async () => {
   const { stallAdvisory } = await import("../scripts/hook-timing-check.ts");
-  expect(stallAdvisory({ CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" })).toBe(true);
+  for(const RUNNER_OS of ["Linux","macOS"])expect(stallAdvisory({CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS})).toBe(true);
   for (const env of [{}, { RUNNER_OS: "macOS" }, { CI: "true", RUNNER_OS: "macOS" }, { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" },
-    { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, { CI: "true", GITHUB_ACTIONS: "true" }, { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macos" }])
+    { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Windows" }, { CI: "true", GITHUB_ACTIONS: "true" }, { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "macos" }])
     expect(stallAdvisory(env), JSON.stringify(env)).toBe(false);
 });
 
@@ -82,4 +82,46 @@ test("#287 every unattributed, invalid or R1/observation-failed combination stay
     { unavailableRssSources: Number.NaN }, { unavailableRssSources: 1.5 }, { rawFallbackRssSources: 1 }, { rawFallbackRssSources: Number.NaN },
     { unexplainedRssSources: 1 }, { unexplainedRssSources: -1 }, { ownedChildObservationComplete: false }, { r1Passed: false }])
     expect(attributedWorkerRssAdvisory({ ...attributed, ...patch }, githubMac), JSON.stringify(patch)).toBe(false);
+});
+
+
+import { budgetFailureAdvisory, reportBudgetAdvisory } from "../scripts/hook-timing-check.ts";
+const drainEvidence={telemetryValid:true,survivors:0,expectedInvocations:55,databaseRows:40,hookPendingRows:11,capturePendingRows:4,
+  accountingComplete:true,unreadableItems:0,duplicateItems:0,unaccountedItems:0,countedRetirements:0};
+test("#293 liveness kinds warn only on exact hosted OS markers, without widening the macOS-only classes",()=>{
+  for(const RUNNER_OS of ["Linux","macOS"]) {
+    const env={CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS};
+    expect(budgetFailureAdvisory("contended-drain",drainEvidence,env)).toBe(true);
+    expect(budgetFailureAdvisory("transcript-stall",{telemetryValid:true,survivors:0,reasonOnlyStreak:3},env)).toBe(true);
+    for(const kind of ["rss-unknown","owned-descendant-receipt","not-durable","transcript-wall-max"])
+      expect(budgetFailureAdvisory(kind,{telemetryValid:true,survivors:0,abandonedOwnedWorkers:1,unavailableRssSources:2,receiptIncomplete:true,wallMs:301},env)).toBe(RUNNER_OS==="macOS");
+  }
+  for(const env of [{},{CI:"true"},{GITHUB_ACTIONS:"true"},{CI:"true",RUNNER_OS:"Linux"},{GITHUB_ACTIONS:"true",RUNNER_OS:"Linux"},
+    {CI:"true",GITHUB_ACTIONS:"true"},{CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS:"linux"},{CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS:"Windows"}])
+    for(const kind of ["contended-drain","transcript-stall"])expect(budgetFailureAdvisory(kind,{...drainEvidence,reasonOnlyStreak:3},env)).toBe(false);
+});
+test("#293 missing, unreadable, duplicated, retired or invalid accounting never receives the drain exception",()=>{
+  for(const RUNNER_OS of ["Linux","macOS"])for(const patch of [{telemetryValid:false},{survivors:1},{accountingComplete:false},
+    {unaccountedItems:1},{unreadableItems:1},{duplicateItems:1},{countedRetirements:1},{hookPendingRows:10},{capturePendingRows:5},
+    {expectedInvocations:0},{expectedInvocations:Number.NaN},{databaseRows:55,hookPendingRows:0,capturePendingRows:0},
+    {databaseRows:-1},{hookPendingRows:1.5},{countedRetirements:undefined}])
+    expect(budgetFailureAdvisory("contended-drain",{...drainEvidence,...patch},{CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS})).toBe(false);
+  for(const reasonOnlyStreak of [undefined,0,1,2,3.5,Number.NaN])
+    expect(budgetFailureAdvisory("transcript-stall",{telemetryValid:true,survivors:0,reasonOnlyStreak},githubMac)).toBe(false);
+});
+test("#293 uses the existing record and summary with numeric evidence and preserves prior failures",()=>{
+  const root=mkdtempSync(join(tmpdir(),"amem-liveness-advisory-"));
+  try {
+    for(const RUNNER_OS of ["Linux","macOS"]) {
+      const summary=join(root,RUNNER_OS+".md"),env={CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS,GITHUB_STEP_SUMMARY:summary};
+      expect(reportBudgetAdvisory("contended-drain","pass4 fixture",drainEvidence,env)).toBe(true);
+      expect(reportBudgetAdvisory("transcript-stall","reason-only fixture",{telemetryValid:true,survivors:0,reasonOnlyStreak:3},env)).toBe(true);
+      const body=readFileSync(summary,"utf8");expect(body).toContain('"diagnostic":"hosted-macos-budget-advisory"');
+      expect(body).toContain('"expectedInvocations":55');expect(body).toContain('"databaseRows":40');expect(body).toContain('"reasonOnlyStreak":3');
+    }
+    const file=resolve(import.meta.dir,"../scripts/hook-timing-check.ts"),summary=join(root,"exit.md");
+    const code=`import {reportBudgetAdvisory} from ${JSON.stringify(file)};process.exitCode=7;reportBudgetAdvisory('contended-drain','prior failure',${JSON.stringify(drainEvidence)},${JSON.stringify({CI:"true",GITHUB_ACTIONS:"true",RUNNER_OS:"Linux",GITHUB_STEP_SUMMARY:summary})});`;
+    const result=Bun.spawnSync([process.execPath,"-e",code],{stdout:"pipe",stderr:"pipe",timeout:3000});
+    expect(result.exitCode).toBe(7);expect(result.stderr.toString()).toContain("::warning");expect(result.stdout.toString()).toContain('"capturePendingRows":4');
+  }finally{rmSync(root,{recursive:true,force:true});}
 });

@@ -12,7 +12,6 @@ import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { stallAdvisory, budgetFailureAdvisory, reportBudgetAdvisory } from "./hook-timing-check.ts";
 import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
 
-let stallWarned = false;
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 /** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
  * leaving uninterruptible I/O may exist; after it any survivor fails R1. Per invocation the harness records the count of
@@ -161,13 +160,11 @@ async function measure() {
         }
         if (reasonOnlyStreak >= 3) {
           const message = "transcript summary progress stalled after three reason-only invocations: " + JSON.stringify(sample);
-          // ponytail: on hosted macOS only, this one clause (#221 finding B, worker start cost) is advisory (owner decision
-          // 2026-11-02, #226; restored after the #226 redesign still stalled on the 3-vCPU hosted macOS runner, run 41489559964).
-          // Ceiling: that runner and this clause; every other progress, no-loss, RSS and wall clause, and this clause on dgx02,
-          // local runs and hosted ubuntu, stay hard failures. Upgrade path: the post-0.20.0 early-receipt follow-up (send the
-          // drain receipt early when a cached identity exists, Refs #226), then delete this branch.
-          if (!stallAdvisory(process.env)) throw Error(message);
-          if (!stallWarned) { console.warn(`::warning title=Transcript stall (advisory on hosted macOS, #226)::${message}`); stallWarned = true; }
+          // ponytail: #293 accepts only this reason-only liveness clause on hosted Linux/macOS.
+          // Every progress/no-loss/RSS/R1 check above remains strict; retire after strict redesign evidence and a person ruling.
+          if (!stallAdvisory(process.env) || !reportBudgetAdvisory("transcript-stall", `${event}:${logicalRun}:${followUp}`, {
+            telemetryValid: Number.isFinite(sample.wallMs) && Number.isFinite(sample.rssMB), survivors: 0, reasonOnlyStreak,
+          })) throw Error(message);
           console.log(JSON.stringify({ diagnostic: "transcript-budget-stall-advisory", ...sample }));
           reasonOnlyStreak = 0;
         }

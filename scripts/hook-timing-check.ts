@@ -4,7 +4,7 @@ import { r2Verdict, type R2Baseline } from "./budget-attempt.ts";
 /** Only shared GitHub macOS wall-time p95 variance is advisory; malformed samples and the R2 verdict (150 MB ceiling, baseline
  * regression, 300 ms per-invocation maximum; #228 reset) always fail. `group` keys the committed baseline. */
 export function workloadBudget(check: string, values: { group: string; wallP95Ms: number; rssSamplesMB: readonly number[]; wallSamplesMs: readonly number[]; wallLimitMs: number; wallMaxEnforced?: boolean; baseline?: R2Baseline }, env: NodeJS.ProcessEnv = process.env) {
-  const wallAdvisory = env.CI === "true" && env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "macOS";
+  const wallAdvisory = hostedTimingRunner(env) === "macOS";
   const validWall = Number.isFinite(values.wallP95Ms) && values.wallP95Ms >= 0;
   const wallTimingPass = validWall && values.wallP95Ms < values.wallLimitMs;
   const r2 = r2Verdict(values.group, { rssMB: values.rssSamplesMB, wallMs: values.wallSamplesMs }, { env, ...(values.baseline ? { baseline: values.baseline } : {}), wallEnforced: values.wallMaxEnforced ?? true });
@@ -17,7 +17,7 @@ export function workloadBudget(check: string, values: { group: string; wallP95Ms
     regressionEnforced: r2.regression.enforced, regressionPass: r2.regression.pass, ...(r2.regression.message ? { regressionMessage: r2.regression.message } : {}),
     wallMaxMs: r2.wallMax.maxMs, wallMaxLimitMs: r2.wallMax.limitMs, wallMaxEnforced: r2.wallMax.enforced, overWallMax: r2.wallMax.overMax };
   console.log(JSON.stringify({ diagnostic: "workload-R2", check, status, ...shown, ...result }));
-  if (wallAdvisory && !env.GITHUB_STEP_SUMMARY) throw new Error("GitHub macOS budget step summary is unavailable");
+  if (wallAdvisory && !env.GITHUB_STEP_SUMMARY) throw new Error(`GitHub ${env.RUNNER_OS} budget step summary is unavailable; set GITHUB_STEP_SUMMARY to retain warning receipts`);
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY,
     `**${check}: ${status}**\n\n\`${JSON.stringify({ ...shown, ...result })}\`\n\n`);
   if (!wallTimingPass && validWall && wallAdvisory) console.warn(`::warning title=Hook macOS runner p95::${check}: ${JSON.stringify(shown)}`);
@@ -27,10 +27,13 @@ export function workloadBudget(check: string, values: { group: string; wallP95Ms
   return { ...result, r2 };
 }
 
-/** #226 owner decision 2026-11-02: only the transcript reason-only stall clause, and only on hosted GitHub macOS, is
- * advisory. All three markers must match exactly, as for the macOS wall advisory. */
+/** One exact marker classifier; per-kind exceptions decide which hosted OS is allowed. */
+function hostedTimingRunner(env: NodeJS.ProcessEnv): "Linux" | "macOS" | undefined {
+  if (env.CI === "true" && env.GITHUB_ACTIONS === "true" && (env.RUNNER_OS === "Linux" || env.RUNNER_OS === "macOS")) return env.RUNNER_OS;
+}
+/** #293 person ruling: only reason-only stalls and accounted drain liveness use both hosted OSes. */
 export function stallAdvisory(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CI === "true" && env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "macOS";
+  return hostedTimingRunner(env) !== undefined;
 }
 
 /** Gate diagnostics only. This module is never imported by the shipped hook path. */
@@ -53,18 +56,32 @@ export function singleAttemptTiming(check: string, passed: boolean, values: Reco
 export interface BudgetFailureEvidence {
   telemetryValid: boolean; survivors: number; abandonedOwnedWorkers?: number;
   unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
+  reasonOnlyStreak?: number; expectedInvocations?: number; databaseRows?: number; hookPendingRows?: number; capturePendingRows?: number;
+  accountingComplete?: boolean; unreadableItems?: number; duplicateItems?: number; unaccountedItems?: number; countedRetirements?: number;
 }
-/** ponytail: only the four accepted #226 abandonment/timing classes (rss-unknown, not-durable,
- * transcript-wall-max, owned-descendant-receipt) are exempted, only on exact hosted GitHub macOS markers;
- * every other failure kind stays strict, with existing p95/stall advisories unchanged.
+/** ponytail: #226's four abandonment/timing classes remain hosted-macOS-only. #293 adds only reason-only
+ * transcript stalls and exactly-accounted contended drains on exact hosted Linux/macOS markers.
+ * Every other verdict stays strict. Read the main red rate after one week; retire #293's exception after
+ * a liveness redesign passes 20 strict runs on each affected hosted OS and the person approves retirement.
  * Retirement: remove this exception only when a #226 redesign passes 20 strict uninstrumented hosted-macOS
  * runs and the owner decides to retire it. */
 export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (!stallAdvisory(env) || evidence.telemetryValid !== true || !Number.isSafeInteger(evidence.survivors) || evidence.survivors !== 0) return false;
+  const runner = hostedTimingRunner(env), both = kind === "transcript-stall" || kind === "contended-drain";
+  if (!(both ? runner !== undefined : runner === "macOS") || evidence.telemetryValid !== true
+    || !Number.isSafeInteger(evidence.survivors) || evidence.survivors !== 0) return false;
   for (const count of [evidence.abandonedOwnedWorkers, evidence.unavailableRssSources])
     if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) return false;
   if (evidence.receiptIncomplete !== undefined && typeof evidence.receiptIncomplete !== "boolean") return false;
   if (evidence.wallMs !== undefined && (!Number.isFinite(evidence.wallMs) || evidence.wallMs < 0)) return false;
+  if (kind === "transcript-stall") return Number.isSafeInteger(evidence.reasonOnlyStreak) && evidence.reasonOnlyStreak! >= 3;
+  if (kind === "contended-drain") {
+    const counts = [evidence.expectedInvocations, evidence.databaseRows, evidence.hookPendingRows, evidence.capturePendingRows,
+      evidence.unreadableItems, evidence.duplicateItems, evidence.unaccountedItems, evidence.countedRetirements];
+    return evidence.accountingComplete === true && counts.every(value => Number.isSafeInteger(value) && value! >= 0)
+      && evidence.expectedInvocations! > 0 && evidence.databaseRows! < evidence.expectedInvocations!
+      && evidence.expectedInvocations === evidence.databaseRows! + evidence.hookPendingRows! + evidence.capturePendingRows!
+      && evidence.unreadableItems === 0 && evidence.duplicateItems === 0 && evidence.unaccountedItems === 0 && evidence.countedRetirements === 0;
+  }
   if (kind === "not-durable") return true;
   if (kind === "transcript-wall-max") return evidence.wallMs !== undefined && evidence.wallMs > 300;
   if (kind !== "rss-unknown" && kind !== "owned-descendant-receipt") return false;
@@ -78,9 +95,9 @@ export function reportBudgetAdvisory(kind: string, check: string, evidence: Budg
   if (!budgetFailureAdvisory(kind, evidence, env)) return false;
   const record = { diagnostic: "hosted-macos-budget-advisory", kind, check, status: "warning", ...evidence };
   console.log(JSON.stringify(record));
-  if (!env.GITHUB_STEP_SUMMARY) throw new Error("GitHub macOS budget step summary is unavailable");
+  if (!env.GITHUB_STEP_SUMMARY) throw new Error(`GitHub ${env.RUNNER_OS} budget step summary is unavailable; set GITHUB_STEP_SUMMARY to retain warning receipts`);
   appendFileSync(env.GITHUB_STEP_SUMMARY, `**${check}: warning (${kind})**\n\n\`${JSON.stringify(record)}\`\n\n`);
-  console.warn(`::warning title=Hook macOS runner budget::${check}: ${JSON.stringify(record)}`);
+  console.warn(`::warning title=Hook ${env.RUNNER_OS} runner budget::${check}: ${JSON.stringify(record)}`);
   return true;
 }
 
