@@ -34,7 +34,7 @@ export function accountWorkload(expected: number, database: readonly number[], h
 }
 const hash=(value:string|Buffer)=>createHash("sha256").update(value).digest("hex");
 const same=(a:Stats,b:Stats)=>a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.nlink===b.nlink&&a.uid===b.uid&&a.mode===b.mode&&a.ctimeMs===b.ctimeMs;
-const fail=():never=>{throw Error("pending workload evidence is unreadable, changed, unsupported or outside its bound; retain the fixture and inspect hook-drain accounting");};
+function fail():never {throw Error("pending workload evidence is unreadable, changed, unsupported or outside its bound; retain the fixture and inspect hook-drain accounting");}
 const privateFile=(s:Stats)=>s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&s.uid===process.getuid?.()&&(s.mode&0o077)===0;
 const segment=/^spool-[0-9a-f-]+\.jsonl(?:\.offset-(\d+)(-skip)?)?(?:\.draining-[0-9a-f]+)?$/;
 /** ponytail: 512 entries, 8 MiB and 2000 rows bound this fixed fixture's read-only proof.
