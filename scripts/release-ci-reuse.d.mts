@@ -4,4 +4,4 @@ export function frozenTag(api: ReadAPI, tag: string, commit: string, expectedObj
 export interface ReleaseInput { repository: string; commit: string; tag?: string; tagObject?: string }
 export interface ReleaseProof { commit: string; tree: string; tagObject?: string; runId: number; runCommit: string; runAttempt: number; url: string; requests: number }
 export function proveRelease(api: ReadAPI, input: ReleaseInput, options?: { now?: () => number; sleep?: (ms: number) => Promise<void>; waitMs?: number; pollMs?: number }): Promise<ReleaseProof>;
-export function githubReader(repository: string, token: string, options?: { fetcher?: typeof fetch; deadline?: number }): ReadAPI;
+export function githubReader(repository: string, token: string, options?: { fetcher?: (url: string, init?: RequestInit) => Promise<Response>; deadline?: number }): ReadAPI;

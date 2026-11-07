@@ -62,9 +62,9 @@ test("annotated tag and exact tag-dispatched check still require main ancestry a
 });
 test("read adapter has fixed GitHub origin, refuses large/error/malformed bodies and does not echo credentials",async()=>{
   const fetcher=async(url:unknown,init?:RequestInit)=>{expect(String(url)).toBe("https://api.github.com/repos/acme/memory/git/ref/heads/main");expect(init?.headers).toMatchObject({authorization:"Bearer TEST_ONLY_TOKEN"});return new Response('{"ok":true}');};
-  expect(await githubReader(repository,"TEST_ONLY_TOKEN",{fetcher:fetcher as typeof fetch})("git/ref/heads/main")).toEqual({ok:true});
+  expect(await githubReader(repository,"TEST_ONLY_TOKEN",{fetcher})("git/ref/heads/main")).toEqual({ok:true});
   for(const response of [new Response("PRIVATE_PROVIDER_ERROR",{status:403}),new Response("{broken"),new Response("x".repeat(2*1024*1024+1))]){
-    const read=githubReader(repository,"TEST_ONLY_TOKEN",{fetcher:(async()=>response) as typeof fetch});
+    const read=githubReader(repository,"TEST_ONLY_TOKEN",{fetcher:async()=>response});
     await expect(read("git/ref/heads/main")).rejects.toThrow("retry the release");
   }
   expect(()=>githubReader("../memory","TEST_ONLY_TOKEN")).toThrow("read access");
