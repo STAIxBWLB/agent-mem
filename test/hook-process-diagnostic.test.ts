@@ -56,7 +56,7 @@ test("diagnostic overflow is explicit and bounded rather than silently claiming 
   value.workers=Array.from({length:129},(_,i)=>({pid:i+20,kind:"worker",detached:true,argv:[]}));
   const diagnostic=hookProcessDiagnostic(value);expect(diagnostic.truncated).toBe(true);expect(diagnostic.children).toHaveLength(128);expect(diagnostic.observedOwnedChildren).toBe(129);
 });
-test("the ordinary workload retains the exact pre-diagnostic preload template",()=>{
+test("the default observer retains the exact pre-diagnostic preload template",()=>{
   const before=Bun.spawnSync(["git","show","265f509557b1aca4f08f015724595c94641de47e:test/fakes/hooks-process-observer.ts"],
     {cwd:resolve(import.meta.dir,".."),stdout:"pipe",stderr:"pipe",env:{...process.env,GIT_CONFIG_GLOBAL:"/dev/null",GIT_CONFIG_SYSTEM:"/dev/null"}});
   expect(before.exitCode,before.stderr.toString()).toBe(0);

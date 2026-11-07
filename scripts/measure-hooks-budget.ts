@@ -30,7 +30,7 @@ interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
 async function measureHooks() {
-const f = hookFixture(), observer = hookProcessObserver(f.root);
+const f = hookFixture(), observer = hookProcessObserver(f.root, false, undefined, false, true);
 const stalledAttempts = new Map<string, number>();
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
@@ -98,7 +98,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     }
   } catch (error) {
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
-    throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, rssSources: metric?.rssSources ?? null, deferred: deferredWorkers, plainCap: MAX_PLAIN_DEFERRED })}`);
+    throw new Error(`${(error as Error).message}; ${JSON.stringify({ event, invocation: invocations, group, wallMs: round(wallMs), exit: result.exitCode, signal: Number(!!result.signalCode), stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length, metricWallMs: metric?.wallMs ?? null, rssSources: metric?.rssSources ?? null, deferred: deferredWorkers, sessionDeadlineSkips: evidence.filter(row => row.phase === "session-native-deadline-skip").map(row => row.remainingUs ?? null), plainCap: MAX_PLAIN_DEFERRED })}`);
   }
   // #226 ruling (Q1): R1 judges owned groups after a fixed 2 s post-exit window; a SIGKILLed child may still be leaving
   // uninterruptible I/O inside it. Survival time is recorded; after the window any survivor fails.

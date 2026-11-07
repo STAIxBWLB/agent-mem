@@ -88,3 +88,21 @@ test("final-hook admission requires the first worker and exact paired native ret
     expect(() => verifyHookProcessObservation("Stop",early.workers,early.evidence,false)).toThrow("owned-process observation");
   }
 });
+
+test("zero-native SessionStart needs one bounded deadline receipt and durable pending intake", () => {
+  const row = (phase: HookProcessEvidence["phase"], remainingUs?: number): HookProcessEvidence => ({ phase,pid:10,loads:1,...(remainingUs===undefined?{}:{remainingUs}) });
+  const valid = (remainingUs: number) => [row("preload"),row("session-native-deadline-skip",remainingUs)];
+  for (const remainingUs of [-10000,0,1000]) expect(verifyHookProcessObservation("SessionStart",[],valid(remainingUs),true)).toEqual({deferred:true});
+  for (const evidence of [[row("preload")], [...valid(0),row("session-native-deadline-skip",0)], valid(1001),valid(0.5),valid(Number.NaN),valid(Infinity),
+    [row("preload"),row("session-native-deadline-skip")], [...valid(0),row("precheck",0)], [...valid(0),row("late_check",0)]])
+    expect(()=>verifyHookProcessObservation("SessionStart",[],evidence,true)).toThrow("owned-process observation");
+  expect(()=>verifyHookProcessObservation("SessionStart",[],valid(0),false)).toThrow("owned-process observation");
+  expect(()=>verifyHookProcessObservation("PostToolUse",[],valid(0),true)).toThrow("owned-process observation");
+  const one=admittedShape(true);
+  expect(()=>verifyHookProcessObservation("SessionStart",one.workers,one.evidence,true)).toThrow("owned-process observation");
+  expect(()=>verifyHookProcessObservation("SessionStart",[],[...valid(0),{phase:"attempt",pid:10,loads:1,exact:1,native:1}],true)).toThrow("owned-process observation");
+  const native={pid:20,kind:"native" as const,detached:true,argv:[]};
+  const positive:HookProcessEvidence[]=[row("preload"),{phase:"attempt",pid:10,loads:1,exact:1,native:1},{phase:"returned",pid:10,loads:1,exact:1,native:1,childPid:20}];
+  expect(verifyHookProcessObservation("SessionStart",[native],positive,false)).toEqual({deferred:false});
+  expect(()=>verifyHookProcessObservation("SessionStart",[native],positive.slice(0,-1),true)).toThrow("owned-process observation");
+});

@@ -25,8 +25,16 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
       || result.childPid === undefined || seen.has(result.childPid)) fail();
     seen.add(result!.childPid!);
   }
+  const sessionSkipped = evidence.filter(row => row.phase === "session-native-deadline-skip");
+  if (sessionSkipped.length && (event !== "SessionStart" || sessionSkipped.length !== 1
+    || !Number.isSafeInteger(sessionSkipped[0]!.remainingUs) || sessionSkipped[0]!.remainingUs! > 1000)) fail();
   if (event === "SessionStart") {
-    if (buns.length !== 0 || native.length < 1 || native.length > 65 || skipped.length) fail();
+    if (buns.length !== 0 || native.length > 65 || skipped.length) fail();
+    if (native.length === 0) {
+      if (workers.length || attempts.length || returned.length || checks.length || evidence.some(row => row.phase === "late_check")
+        || sessionSkipped.length !== 1 || pending !== true) fail();
+      return { deferred: true };
+    }
     return { deferred: false };
   }
   if (native.length > 64 || buns.length > 1 || checks.length !== 1) fail();
