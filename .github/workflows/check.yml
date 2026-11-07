@@ -56,6 +56,14 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun x tsc --noEmit
       - run: bun scripts/check-boundary.ts
+      - run: bun scripts/readme-facts.ts
+      # Stale documentation stamps are warnings here; the release gate requires fresh ones.
+      - name: Fetch ancestry for documentation stamps
+        run: |
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --filter=blob:none --unshallow origin
+          fi
+      - run: bun scripts/check-docs.ts
       - run: npm pack --dry-run
       - name: Console inbox small fixture (timing report-only)
         run: |

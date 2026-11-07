@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "documents": {
+    "README.md": {
+      "verifiedAgainst": "65b788cd030a861f8650671e0ba3e6fe70eb30a6",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
+    },
+    "docs/contracts.md": {
+      "verifiedAgainst": "65b788cd030a861f8650671e0ba3e6fe70eb30a6",
+      "paths": [
+        "package.json",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        "test/contract/",
+        "test/fixtures/",
+        "docs/bench/"
+      ]
+    },
+    "docs/purge.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/memory/forget-nearby.ts",
+        "src/memory/commands.ts",
+        "src/memory/doctor.ts",
+        "src/memory/project-export.ts",
+        "src/memory/project-import.ts",
+        "src/memory/shard.ts",
+        "src/memory/candidates.ts",
+        "src/memory/work-lists.ts",
+        "src/memory/gc.ts",
+        "src/memory/shard-sync.ts",
+        "src/memory/generation-sync.ts",
+        "src/cli.ts",
+        "src/commands-table.ts"
+      ]
+    },
+    "docs/curated-shard-migration.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/memory/shard-migration.ts",
+        "src/memory/migrate.ts",
+        "src/memory/reader-lease.ts",
+        "src/memory/profile-lock-diagnostic.ts",
+        "src/memory/mutation.ts",
+        "src/memory/store.ts",
+        "src/memory/catalog.ts",
+        "src/memory/status-text.ts",
+        "src/cli.ts",
+        "src/commands-table.ts",
+        "scripts/measure-shard-ac8.ts"
+      ]
+    },
+    "docs/jcode.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/hook-jcode.ts",
+        "src/hooks.ts",
+        "src/hook-spool.ts",
+        "src/setup-jcode.ts",
+        "src/setup.ts",
+        "src/setup-paths.ts",
+        "src/setup-toml.ts",
+        "src/setup-json.ts",
+        "src/commands-table.ts"
+      ]
+    },
+    "docs/opencode.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/setup-opencode.ts",
+        "src/setup.ts",
+        "src/setup-paths.ts",
+        "src/setup-json.ts",
+        "src/commands-table.ts"
+      ]
+    },
+    "docs/gemini-cli.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/setup-gemini.ts",
+        "src/setup.ts",
+        "src/setup-paths.ts",
+        "src/commands-table.ts"
+      ]
+    },
+    "docs/qwen-code.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/ingest.ts",
+        "src/setup.ts",
+        "src/setup-paths.ts"
+      ]
+    },
+    "docs/antigravity.md": {
+      "verifiedAgainst": "c83cefbc6a609e10d0787a012884cf1dc08161df",
+      "paths": [
+        "src/setup-agy.ts",
+        "src/setup-json.ts",
+        "src/setup.ts",
+        "scripts/smoke-installed-package.ts"
+      ]
+    }
+  }
+}
