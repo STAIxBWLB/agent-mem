@@ -66,6 +66,7 @@ function abandonedDiagnostic(workerPid: number, nativePid: number, unknown = 2) 
       {phase:"preload",pid:1,loads:1},{phase:"precheck",pid:1,loads:1,host:0,remainingUs:100000},
       {phase:"attempt",pid:1,loads:1,exact:1,native:0},{phase:"returned",pid:1,loads:1,exact:1,native:0,childPid:workerPid},
       {phase:"attempt",pid:1,loads:1,exact:1,native:1},{phase:"returned",pid:1,loads:1,exact:1,native:1,childPid:nativePid},
+      {phase:"late_check",pid:1,loads:1,host:1,remainingUs:90000},
     ], lifecycle: [
       life("spawn-attempt", 0, "worker"), life("spawn", workerPid, "worker"), life("kill-request", workerPid, "worker"),
       life("reap-start", workerPid, "worker"), life("reap-end", workerPid, "worker", { reaped: 0 }),
