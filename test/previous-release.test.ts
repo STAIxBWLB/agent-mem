@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
+import { drainHookCaptures, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
@@ -315,6 +315,22 @@ const repo=await readRepoScope(${JSON.stringify(f.cwd)},createStandalonePolicy()
 console.log(JSON.stringify({local,repo:repo.views.map(e=>e.about)}));`)) as { local: string[]; repo: string[][] };
     expect(observed.local).toEqual(about);
     expect(observed.repo).toEqual([["doi:10.1000/xyz", "arxiv:2401.01234"]]);
+  });
+
+  test("#216: jcode Title and Compact rows staged by this build are drained once or left pending for it by the previous release", async () => {
+    const f = fixture();
+    const title = (await stageTranscriptCapture({ agent: "jcode", event: "Title", excerpt: "n1 jcode title", at: "2026-11-08T05:00:00.000Z", session: "0123456789abcdef" }, f.options, "title:n1"))!;
+    const compact = (await stageTranscriptCapture({ agent: "jcode", event: "Compact", excerpt: "n1 jcode compact", at: "2026-11-08T05:00:01.000Z", session: "0123456789abcdef" }, f.options, "compact:n1"))!;
+    expect(title && compact).toBeTruthy();
+    const appended = prevHook(f, "old barrier 216");
+    const left = pending(f.base);
+    for (const [record, text] of [[title, "jcode:n1 jcode title"], [compact, "jcode:n1 jcode compact"]] as const) {
+      expect(appended.includes(text) || left.includes(record.name), `${text} drained or still pending`).toBe(true);
+      expect(appended.includes(text) && left.includes(record.name)).toBe(false);
+    }
+    const rows = await drain(f);
+    for (const [record, text] of [[title, "jcode:n1 jcode title"], [compact, "jcode:n1 jcode compact"]] as const) if (left.includes(record.name)) expect(rows).toContain(text);
+    expect(pending(f.base)).toEqual([]);
   });
 
 });

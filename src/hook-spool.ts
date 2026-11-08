@@ -704,7 +704,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
 
 /** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
 export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string, onRecordDrop?: (reason: RecordDropReason) => void): Promise<PendingHookCapture | undefined> {
-  if (options.policy?.host || belowFloor(options.base) || input.agent !== "claude" || !TRANSCRIPT_CAPTURE_EVENTS.includes(input.event)) return;
+  if (options.policy?.host || belowFloor(options.base) || !TRANSCRIPT_CAPTURE_EVENTS.includes(input.event) || input.agent !== "claude" && !(input.agent === "jcode" && (input.event === "Title" || input.event === "Compact"))) return;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   const record = input.event === "Record";
