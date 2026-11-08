@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 
 test("read-only context measurement reuses native cap, opt-out and notice formatting without private output", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "amem-record-measure-test-")), copy = join(scratch, "copy"), project = "record-measure-control";
+  const scratch = mkdtempSync(join(tmpdir(), "amem-record-measure-test-")), parent = join(scratch, "copy"), copy = join(parent, "memory"), project = "record-measure-control";
   const capture = new CaptureStore({ memoryDir: copy, project });
   try { capture.append({ project, agent: "claude", event: "Record", paths: [], excerpt: "amem: decision | - | private-copy-canary" }); } finally { capture.close(); }
   writeFileSync(join(copy, "amem.config.json"), JSON.stringify({ records: false, briefBytes: 500 }));
@@ -17,7 +17,7 @@ test("read-only context measurement reuses native cap, opt-out and notice format
   const configBefore = readFileSync(join(copy, "amem.config.json"), "utf8"), metricsBefore = readFileSync(join(copy, "metrics.jsonl"), "utf8");
   try {
     const child = Bun.spawnSync([process.execPath, join(runtime, "scripts/measure-record-context.ts"), "--baseline", runtime, "--candidate", runtime,
-      "--output", reportFile, "--copy", copy, "--project", project, "--cwd", scratch], { cwd: runtime, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
+      "--output", reportFile, "--copy", parent, "--project", project, "--cwd", scratch], { cwd: runtime, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
     expect(child.exitCode, child.stderr.toString()).toBe(0);
     const text = readFileSync(reportFile, "utf8"), report = JSON.parse(text);
     expect(text).not.toContain("private-copy-canary"); expect(text).not.toContain(copy);

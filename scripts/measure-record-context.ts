@@ -112,7 +112,7 @@ async function main() {
   const values: Record<string, string> = {};
   for (let n = 2; n < process.argv.length; n += 2) {
     const key = process.argv[n], value = process.argv[n + 1];
-    if (!key || !["--baseline", "--candidate", "--output", "--copy", "--project", "--cwd"].includes(key) || !value || values[key]) throw Error("invalid Record measurement arguments; supply --baseline ROOT --candidate ROOT --output FILE and optionally --copy HOME --project KEY --cwd DIR");
+    if (!key || !["--baseline", "--candidate", "--output", "--copy", "--project", "--cwd"].includes(key) || !value || values[key]) throw Error("invalid Record measurement arguments; supply --baseline ROOT --candidate ROOT --output FILE and optionally --copy PARENT-OF-MEMORY --project KEY --cwd DIR");
     values[key] = value;
   }
   if (!values["--baseline"] || !values["--candidate"] || !values["--output"]) throw Error("missing Record measurement inputs; supply --baseline ROOT --candidate ROOT --output FILE");
