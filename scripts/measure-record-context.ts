@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertCopyHome } from "./ac4-recheck.ts";
+import { HOOK_EVENTS } from "../src/hook-contract.ts";
 
 const MAXIMUM = 1200;
+const PUBLIC_EVENTS = new Set<string>([...HOOK_EVENTS, "Record", "Title", "Recap", "Compact"]);
 async function runtime(root: string) {
   const load = (file: string) => import(pathToFileURL(join(root, "src", file)).href);
   return {
@@ -33,7 +35,7 @@ async function projectBytes(api: Awaited<ReturnType<typeof runtime>>, base: stri
   const events: Record<string, number> = {};
   for (const line of brief.context.split("\n")) if (line.startsWith("{")) {
     const row = JSON.parse(line) as { section: string; data: { event?: string } };
-    if (row.section === "capture") { const event = row.data.event ?? "unknown"; events[event] = (events[event] ?? 0) + 1; }
+    if (row.section === "capture") { const event = row.data.event && PUBLIC_EVENTS.has(row.data.event) ? row.data.event : "other"; events[event] = (events[event] ?? 0) + 1; }
   }
   return { dataBytes: Buffer.byteLength(brief.context), instructionBytes, instructionEstimatedTokens: Math.ceil(instructionBytes / 4),
     totalBytes: Buffer.byteLength(brief.context) + instructionBytes, maximum: MAXIMUM,

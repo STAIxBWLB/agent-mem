@@ -106,3 +106,18 @@ test("an unlabelled turn metric remains null, never an invented zero", () => {
   if (!result.complete) throw Error("expected complete fixture");
   expect(result.rows.filter(row => row.metric === "turnRecallAt10").every(row => row.baseline === null && row.candidate === null && row.delta === null && row.n === 0)).toBe(true);
 });
+
+
+test("refusals give fixed safe causes and next steps without a fixture escape for full-set failure", () => {
+  const baseline = report();
+  const incomplete = compareRecordRecall(baseline, { ...baseline, complete: false }, fixture);
+  expect(incomplete).toMatchObject({ complete: false, pass: false, reason: "incomplete-or-incompatible-reports",
+    cause: "Baseline or candidate evidence is incomplete or its strict comparison controls do not match.",
+    nextStep: "Finish full baseline and candidate runs with the same input, harness and controls, then rerun the comparison." });
+  const subset = compareRecordRecall(baseline, structuredClone(baseline));
+  expect(subset).toMatchObject({ reason: "full-set-required", nextStep: "Run unfiltered 500-question S and M baseline and candidate measurements, then compare each dataset pair." });
+  expect(JSON.stringify(subset)).not.toContain("allow-fixture");
+  const metadata = compareRecordRecall(baseline, { ...baseline, questionTimeoutMs: 60000 }, fixture);
+  expect(metadata).toMatchObject({ reason: "invalid-metadata", nextStep: "Regenerate baseline and candidate reports with the same supported harness and timeout, then rerun the comparison." });
+  expect(JSON.stringify([incomplete, subset, metadata])).not.toContain("private-question-canary");
+});

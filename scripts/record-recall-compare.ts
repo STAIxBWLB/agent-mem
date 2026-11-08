@@ -9,12 +9,30 @@ export interface RecordRecallDelta {
   type: string; backend: typeof BACKENDS[number]; metric: keyof RetrievalMetrics; n: number;
   baseline: number | null; candidate: number | null; delta: number | null; pass: boolean;
 }
-export type RecordRecallComparison = { complete: false; pass: false; reason: "incomplete-or-incompatible-reports" | "full-set-required" | "invalid-metadata" | "report-unavailable" }
+export type RecordRecallComparison = { complete: false; pass: false; reason: "incomplete-or-incompatible-reports" | "full-set-required" | "invalid-metadata" | "report-unavailable"; cause: string; nextStep: string }
   | { complete: true; pass: boolean; scope: "full-longmemeval" | "fixture"; rule: "strict-no-loss";
       dataset: { sha256: string; bytes: number }; questions: number; eligible: number; abstentions: number; questionTimeoutMs: number;
       ordering: Record<typeof BACKENDS[number], { equal: boolean; changedQuestions: number; eligibleQuestions: number }>;
       rows: RecordRecallDelta[] };
-const refused = (reason: Extract<RecordRecallComparison, { complete: false }>["reason"]): RecordRecallComparison => ({ complete: false, pass: false, reason });
+const REFUSAL = {
+  "incomplete-or-incompatible-reports": {
+    cause: "Baseline or candidate evidence is incomplete or its strict comparison controls do not match.",
+    nextStep: "Finish full baseline and candidate runs with the same input, harness and controls, then rerun the comparison.",
+  },
+  "full-set-required": {
+    cause: "The reports do not cover the full unfiltered 500-question LongMemEval set.",
+    nextStep: "Run unfiltered 500-question S and M baseline and candidate measurements, then compare each dataset pair.",
+  },
+  "invalid-metadata": {
+    cause: "The reports contain unsupported or inconsistent comparison metadata.",
+    nextStep: "Regenerate baseline and candidate reports with the same supported harness and timeout, then rerun the comparison.",
+  },
+  "report-unavailable": {
+    cause: "The explicit report inputs or comparison arguments could not be read or validated.",
+    nextStep: "Check --baseline and --candidate inputs are readable complete report files and use valid comparison arguments, then rerun.",
+  },
+} as const;
+const refused = (reason: Extract<RecordRecallComparison, { complete: false }>["reason"]): RecordRecallComparison => ({ complete: false, pass: false, reason, ...REFUSAL[reason] });
 const equalOrdering = (left: readonly RankedTurn[], right: readonly RankedTurn[]) => left.length === right.length
   && left.every((turn, index) => turn.sessionId === right[index]!.sessionId && turn.turnIndex === right[index]!.turnIndex);
 
