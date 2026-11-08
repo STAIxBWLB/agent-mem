@@ -783,7 +783,7 @@ Plain `amem sync` and cadence sync use the effective committed inventory and re-
 
 ### Host library writer attestation (#317)
 
-The package root exports `createPlacementAttestation(home)`, a lazy `SyncOptions.placementAttestation` callback bound to the executing amem installation. Its root comes only from that module's `import.meta.url`; there is no caller root override. The person must already have declared that exact pinned installation through `amem migrate --sync-placement --dry-run|--apply --writer-root <package-root>` (or renewed the active inventory). Declaring a different compatible package does not admit this writer. A relocated or bundled layout that no longer identifies a measurable amem install refuses rather than borrowing another root's authority.
+The package root exports `createPlacementAttestation(home)`, a lazy `SyncOptions.placementAttestation` callback bound to the executing amem installation. Pass the same home used to open the store, and use store/sync/attestation functions from that same installed package instance. Its root comes only from that module's `import.meta.url`; there is no caller root override. The person must already have declared that exact pinned installation through `amem migrate --sync-placement --dry-run|--apply --writer-root <package-root>` (or renewed the active inventory). Declaring a different compatible package does not admit this writer. A relocated or bundled layout that no longer identifies a measurable amem install refuses rather than borrowing another root's authority.
 
 ```ts
 import { createPlacementAttestation, syncMemory } from "@staix/agent-mem";

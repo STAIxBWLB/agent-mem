@@ -139,6 +139,20 @@ test("public factory is lazy and ordinary legacy sync ignores its placement call
 }, 120_000);
 
 
+test("prepared v2 sync ignores the host port and keeps its whole-segment policy refusal", async () => {
+  const f = await placementActivationFixture(); clean.push(f.close);
+  const { api } = await copiedHost(f.root), attest = api.createPlacementAttestation(f.base);
+  const remote = createInspectionRemote(f.root), store = api.openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
+  let called = 0;
+  try {
+    const result = await api.syncMemory(store, { remote, visibility: async () => "private", placementAttestation: () => { called++; return attest(); } });
+    expect(called).toBe(0); expect(result.ok).toBe(false);
+    expect(reachableInspectionRowIds(remote)).toEqual([]);
+    expect(store.get(f.allowed, f.project)).toBeDefined(); expect(store.get(f.declined, f.project)).toBeDefined();
+    expect(existsSync(join(f.base, "sync-placement-writer-roots.json"))).toBe(false);
+  } finally { store.close(); }
+}, 120_000);
+
 test("an existing host callback follows a genuinely committed effective-inventory renewal", async () => {
   const f = await active(), attest = f.api.createPlacementAttestation(f.base), first = await attest();
   appendFileSync(join(f.install, "src", "index.ts"), "\n// isolated host upgrade approved by the next person renewal\n");
