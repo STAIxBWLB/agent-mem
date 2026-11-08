@@ -29,5 +29,10 @@ test("read-only context measurement reuses native cap, opt-out and notice format
     }
     expect(readFileSync(join(copy, "amem.config.json"), "utf8")).toBe(configBefore);
     expect(readFileSync(join(copy, "metrics.jsonl"), "utf8")).toBe(metricsBefore);
+    const bad = Bun.spawnSync([process.execPath, join(runtime, "scripts/measure-record-context.ts"), "--baseline", runtime, "--candidate", runtime,
+      "--output", reportFile, "--copy", join(scratch, "private-path-canary"), "--project", project, "--cwd", scratch], { cwd: runtime, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
+    expect(bad.exitCode).toBe(1);
+    expect(JSON.parse(bad.stdout.toString())).toMatchObject({ complete: false, stage: "copy", cause: "copied-home input or projection was refused" });
+    expect(bad.stdout.toString() + bad.stderr.toString()).not.toContain("private-path-canary");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

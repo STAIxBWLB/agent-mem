@@ -8,6 +8,8 @@ import { assertCopyHome } from "./ac4-recheck.ts";
 import { HOOK_EVENTS } from "../src/hook-contract.ts";
 
 const PUBLIC_EVENTS = new Set<string>([...HOOK_EVENTS, "Record", "Title", "Recap", "Compact"]);
+type Phase = "arguments" | "runtime" | "fixture" | "copy" | "index";
+let phase: Phase = "arguments";
 interface NativeFormatter {
   sessionNoticeAndLimit(base: string, cwd: string, options: { cwd: string; base: string }, currentDropped: boolean): { dropNotice: string; contextLimit: number; instruction: string };
   joinedContext(body: string, notice: string, maximum: number): string;
@@ -123,12 +125,14 @@ async function main() {
     values[key] = value;
   }
   if (!values["--baseline"] || !values["--candidate"] || !values["--output"]) throw Error("missing Record measurement inputs; supply --baseline ROOT --candidate ROOT --output FILE");
+  phase = "runtime";
   const baseRoot = resolve(values["--baseline"]), candidateRoot = resolve(values["--candidate"]);
   exposeNativeFormatters([baseRoot, candidateRoot]);
   const baseline = await runtime(baseRoot), candidate = await runtime(candidateRoot);
   const sources = { baseline: sourcePin(baseRoot, baseline), candidate: sourcePin(candidateRoot, candidate) };
   const scratch = mkdtempSync(join(tmpdir(), "amem-record-context-"));
   try {
+    phase = "fixture";
     for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/fixture/record-context.git"]]) {
       const git = candidate.platform.memoryGitSync(args, { cwd: scratch, encoding: "utf8", timeout: 2000, maxBuffer: 256 * 1024 });
       if (git.status !== 0) throw Error("fixture repository setup failed; check local Git availability before rerunning");
@@ -139,11 +143,14 @@ async function main() {
     const unchanged = await projectBytes(candidate, raw, scratch, project);
     let realCopy: unknown;
     if (values["--copy"]) {
+      phase = "copy";
       if (!values["--project"] || !values["--cwd"]) throw Error("copied-home inputs incomplete; supply its --project and --cwd");
       const copy = assertCopyHome(values["--copy"]);
       realCopy = { before: await projectBytes(baseline, copy, values["--cwd"], values["--project"]), after: await projectBytes(candidate, copy, values["--cwd"], values["--project"]) };
     }
+    phase = "runtime";
     if (sourcePin(baseRoot, baseline).commit !== sources.baseline.commit || sourcePin(candidateRoot, candidate).commit !== sources.candidate.commit) throw Error("measurement runtime changed during projection; rerun on immutable checkouts");
+    phase = "index";
     const report = { schema: "agent-mem.record-context/v1", sources, fixture: { before, after, noRecordsCandidate: unchanged,
       bytesDelta: after.totalBytes - before.totalBytes, noLarger: after.totalBytes <= before.totalBytes },
       ...(realCopy ? { realCopy } : {}), indexCost: await indexCost(candidate, join(scratch, "large"), project), rawPrivateContentPublished: false };
@@ -152,4 +159,17 @@ async function main() {
     if (!report.fixture.noLarger) process.exitCode = 1;
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
-if (import.meta.main) await main();
+if (import.meta.main) {
+  try { await main(); }
+  catch {
+    const remedies: Record<Phase, { cause: string; nextStep: string }> = {
+      arguments: { cause: "measurement arguments are missing or invalid", nextStep: "Supply --baseline ROOT --candidate ROOT --output FILE; copied inputs also need --copy PARENT-OF-MEMORY --project KEY --cwd DIR." },
+      runtime: { cause: "runtime source is unavailable, unpinned or incompatible with the formatter preload", nextStep: "Use clean Part-1-capable Git checkouts and verify the preload's three native formatter anchors." },
+      fixture: { cause: "synthetic seeding or context projection did not complete", nextStep: "Run the synthetic-canary regression and inspect its fixture policy and byte cap." },
+      copy: { cause: "copied-home input or projection was refused", nextStep: "Provide the parent of a separate memory copy with its project/cwd, then check the copied profile, policy and byte cap; never pass a live home." },
+      index: { cause: "the synthetic derived-index measurement did not complete", nextStep: "Check the isolated large-store fixture and retain this failure rather than treating it as a passed measurement." },
+    };
+    console.log(JSON.stringify({ schema: "agent-mem.record-context/v1", complete: false, stage: phase, ...remedies[phase] }));
+    process.exitCode = 1;
+  }
+}
