@@ -129,6 +129,13 @@ function sameControls(base: Report, candidate: Report, bm25Control: Bm25Control)
   }
 }
 
+/** Reuse the full report/strict-control checks without running a statistical adoption test. */
+export function validateLongMemEvalPair(baseValue: unknown, candidateValue: unknown): { baseline: Report; candidate: Report } {
+  const baseline = validateReport(baseValue, "baseline"), candidate = validateReport(candidateValue, "candidate");
+  sameControls(baseline, candidate, "strict");
+  return { baseline, candidate };
+}
+
 export function compareLongMemEval(baseValue: unknown, candidateValue: unknown, targetTypes: readonly string[] = [], options: CompareOptions = {}): LongMemEvalComparison {
   const bm25Control = options.bm25Control ?? "strict";
   assert(bm25Control === "strict" || bm25Control === "reported", "invalid bm25Control");
