@@ -4,7 +4,8 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
-import { CAPTURE_MAX_EXCERPT, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
+import { parseRecordLines, type ParsedRecord, type RecordDropReason } from "./hook-record.ts";
+import { CAPTURE_MAX_EXCERPT, TRANSCRIPT_CAPTURE_EVENTS, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -33,7 +34,12 @@ export const hookReplayBudget = (): HookReplayBudget => ({ files: HOOK_REPLAY_MA
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
-const summaryEvent = (event: string) => ["Title", "Recap", "Compact"].includes(event);
+const summaryEvent = (event: string) => TRANSCRIPT_CAPTURE_EVENTS.includes(event);
+function recordCapture(input: CaptureFields): ParsedRecord | undefined {
+  const parsed = parseRecordLines(input.excerpt ?? ""), record = parsed.records[0];
+  return record !== undefined && parsed.records.length === 1 && !Object.keys(parsed.drops).length && record.line === input.excerpt
+    && JSON.stringify(record.anchors) === JSON.stringify(input.paths ?? []) ? record : undefined;
+}
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
 export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
@@ -379,9 +385,10 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
-      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude" && !["Title", "Recap", "Compact"].includes(c.event)) === v3 || ![...HOOK_EVENTS, "Title", "Recap", "Compact"].includes(c.event)
+      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude" && !TRANSCRIPT_CAPTURE_EVENTS.includes(c.event)) === v3 || ![...HOOK_EVENTS, ...TRANSCRIPT_CAPTURE_EVENTS].includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
+    if (c.event === "Record" && (c.subagent === true || !recordCapture(c))) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
       ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }),
       ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) });
@@ -689,23 +696,33 @@ export async function stageHookCapture(event: string, input: unknown, options: O
 }
 
 /** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
-export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string): Promise<PendingHookCapture | undefined> {
-  if (options.policy?.host || belowFloor(options.base) || input.agent !== "claude" || !["Title", "Recap", "Compact"].includes(input.event)) return;
+export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string, onRecordDrop?: (reason: RecordDropReason) => void): Promise<PendingHookCapture | undefined> {
+  if (options.policy?.host || belowFloor(options.base) || input.agent !== "claude" || !TRANSCRIPT_CAPTURE_EVENTS.includes(input.event)) return;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
-  if (!await policy.screen({ cwd, input })) return;
+  const record = input.event === "Record";
+  if (!record && !await policy.screen({ cwd, input })) return;
   const configured = loadAmemConfig(base, repoConfigRoot(cwd)).config;
+  if (record && (configured.records === false || input.subagent === true)) return;
+  if (record) {
+    const line = recordCapture(input);
+    if (!line) { onRecordDrop?.("record_invalid"); return; }
+    if (stripPrivateSpans(line.line) !== line.line
+      || !await policy.screen({ cwd, input, paths: line.anchors.map(anchor => anchor.split("#")[0]!) })) { onRecordDrop?.("record_policy"); return; }
+    if (Buffer.byteLength(line.line) > Math.min(CAPTURE_MAX_EXCERPT, configured.excerptBytes ?? CAPTURE_MAX_EXCERPT)) { onRecordDrop?.("record_length"); return; }
+  }
   const capture = normalizeCaptureFields({ ...input, excerpt: clipCaptureUtf8(stripPrivateSpans(input.excerpt ?? ""), Math.min(CAPTURE_MAX_EXCERPT, configured.excerptBytes ?? CAPTURE_MAX_EXCERPT)) }, undefined,
     text => looksSecret(text) || configured.piiPatterns.some(pattern => fold(text).includes(fold(pattern))),
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, denyPaths: configured.denyPaths });
-  if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) return;
+  if (record && (capture.excerpt !== input.excerpt || JSON.stringify(capture.paths) !== JSON.stringify(input.paths ?? []))) { onRecordDrop?.("record_policy"); return; }
+  if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) { if (record) onRecordDrop?.("record_policy"); return; }
   return publishCapture(input.event, capture, { ...options, cwd, base }, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
 }
 
 function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {
   const { cwd, base } = options;
   const scope = hookCaptureScope(cwd, base) ?? null;
-  const v3 = capture.agent !== "claude" || ["Title", "Recap", "Compact"].includes(event);
+  const v3 = capture.agent !== "claude" || TRANSCRIPT_CAPTURE_EVENTS.includes(event);
   const record: Record = { schema: FAMILY, format: v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
@@ -715,7 +732,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
   const withinShare = (rows: ReturnType<typeof entries>, maximum: number) => rows.filter(row => namePattern.exec(row.name)?.[2] === cwdHash).length < maximum / 4;
   const name = `${v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
   let activeInventory: ReturnType<typeof entries> | undefined, reserveInventory: ReturnType<typeof entries> | undefined;
-  if (["Title", "Recap", "Compact"].includes(event)) {
+  if (TRANSCRIPT_CAPTURE_EVENTS.includes(event)) {
     // Transcript cursor recovery can repeat a deterministic publication. An already
     // durable identical body needs no new slot, including when a drainer owns it.
     for (const capacity of [false, true]) {

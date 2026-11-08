@@ -4,6 +4,8 @@ import { stripPrivateSpans } from "./private-spans.ts";
 
 export const CAPTURE_MAX_EXCERPT = 2000;
 export const CAPTURE_MAX_PATHS = 32;
+/** Claude transcript-only events use the existing format-3 transport, never native hook argv. */
+export const TRANSCRIPT_CAPTURE_EVENTS: readonly string[] = ["Title", "Recap", "Compact", "Record"];
 export const TOOL_INPUT_LINE_BYTES = 512;
 const TOOL_INPUT_ORDER = ["command", "pattern", "query", "url", "description", "prompt", "skill", "subject"] as const;
 const TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]);
@@ -66,7 +68,7 @@ export function normalizeCaptureFields(input: CaptureFields, now: () => number =
   const at = new Date(input.at === undefined ? now() : Date.parse(input.at)).toISOString();
   const tool = str(input.tool, 64) ? input.tool! : null;
   const status = str(input.status, 64) ? input.status! : null;
-  const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(p, caps.denyPaths ? [...caps.denyPaths] : [])).slice(0, maxPaths).map((p) => p.slice(0, 400));
+  const paths = (input.paths ?? []).map(String).filter((p) => p && !isDenied(input.event === "Record" ? p.split("#")[0]! : p, caps.denyPaths ? [...caps.denyPaths] : [])).slice(0, maxPaths).map((p) => p.slice(0, 400));
   // `<private>` spans go first: they are never screened, counted or stored. The cap applies to what is left.
   let excerpt = stripPrivateSpans(input.excerpt ?? "").slice(0, maxExcerpt);
   if (excerpt && screen(excerpt)) excerpt = "[secret-screened]";
