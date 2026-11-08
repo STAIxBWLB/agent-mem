@@ -100,11 +100,11 @@ function captureDisplay(row: CaptureRow): { data: unknown; partial: boolean } {
     partial: excerpt.partial || event.partial || row.paths.length > paths.length || paths.some(path => path.partial) };
 }
 
-/** Keep the canonical Record whole; an unanchored or malformed capture is not a repository record. */
+/** Keep the canonical Record whole; '-' is valid only for project-bound decisions/contracts. */
 function recordDisplay(row: CaptureRow): { data: unknown; partial: boolean } | undefined {
   const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
   if (!record || parsed.records.length !== 1 || Object.keys(parsed.drops).length || record.line !== row.excerpt
-    || !record.anchors.length || JSON.stringify(record.anchors) !== JSON.stringify(row.paths)) return;
+    || JSON.stringify(record.anchors) !== JSON.stringify(row.paths)) return;
   return { data: { event: "Record", paths: record.anchors, excerpt: record.line }, partial: false };
 }
 

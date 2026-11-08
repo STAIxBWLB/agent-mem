@@ -32,15 +32,19 @@ test("five recent anchored main-session records lead summaries and raw rows, wit
   expect(result.coverage.capture).toBe("partial");
 });
 
-test("subagent, unanchored, malformed and mismatched-anchor records never enter the brief", async () => {
+test("project-bound anchorless decisions/contracts enter the brief but invalid or subagent records stay out", async () => {
   const f = fixture();
   f.append("amem: finding | src/a.ts | allowed");
   f.append("amem: finding | src/a.ts | subagent", "Record", { subagent: true });
-  f.append("amem: decision | - | not repository anchored", "Record", { paths: [] });
+  f.append("amem: decision | - | project decision", "Record", { paths: [] });
+  f.append("amem: contract | - | project contract", "Record", { paths: [] });
+  f.append("amem: fix | - | invalid anchorless -> fix", "Record", { paths: [] });
   f.append("amem: finding | src/a.ts | mismatched", "Record", { paths: ["src/b.ts"] });
   f.append("unstructured excerpt"); f.append("raw allowed", "PostToolUse");
   const result = await sessionStartBrief(f.options);
-  expect(lines(result.context).map(row => row.excerpt)).toEqual(["amem: finding | src/a.ts | allowed", "raw allowed"]);
+  expect(lines(result.context).map(row => row.excerpt)).toEqual([
+    "amem: contract | - | project contract", "amem: decision | - | project decision", "amem: finding | src/a.ts | allowed", "raw allowed",
+  ]);
 });
 
 test("whole-row policy is applied before a Record receives brief priority", async () => {
