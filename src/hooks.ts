@@ -12,7 +12,7 @@ import { jcodeHookCapture, jcodeJournalTarget } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
-import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { configuredPolicyOptions, loadAmemConfig, recordsEnabled, repoConfigRoot } from "./memory/config.ts";
 
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
@@ -244,7 +244,7 @@ function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, 
   const configuredBrief = config.briefBytes;
   const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
   const prefix = `${RECORD_INSTRUCTION}\n`;
-  const instruction = config.records !== false && Buffer.byteLength(prefix) + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
+  const instruction = recordsEnabled(base, cwd) && Buffer.byteLength(prefix) + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
   return { dropNotice, contextLimit: contextLimit - Buffer.byteLength(instruction), instruction };
 }
 

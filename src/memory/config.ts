@@ -160,6 +160,11 @@ export function loadAmemConfig(base: string, repoRoot?: string): LoadedConfig {
   return { config, source: { machine: machineRaw === undefined ? null : machinePath, repo: repoPath } };
 }
 
+/** Effective Record instruction/capture opt-in. Either configuration may disable it; malformed configuration throws. */
+export function recordsEnabled(base: string, cwd?: string): boolean {
+  return loadAmemConfig(base, cwd === undefined ? undefined : repoConfigRoot(cwd)).config.records !== false;
+}
+
 /**
  * The standalone policy as configured. A host policy passed through the library still wins: it is composed in, never replaced, so the result
  * declines whatever either declines (`createStandalonePolicy` screens the config, then asks the host).

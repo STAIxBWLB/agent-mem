@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalPath, realPath } from "./memory/platform.ts";
-import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { HookSpoolFull, stageTranscriptCapture, type PendingHookCapture } from "./hook-spool.ts";
 import { appendMetrics } from "./memory/metrics.ts";
@@ -124,7 +124,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return;
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   if (!await policy.screen(value)) return;
-  const recordsEnabled = loadAmemConfig(base, repoConfigRoot(cwd)).config.records !== false
+  const captureRecords = recordsEnabled(base, cwd)
     && !(typeof value.agent_id === "string" && value.agent_id.length > 0);
   const session = hash(`amem-session\0${value.session_id}`).slice(0, 16);
   if (lstatSync(value.transcript_path).isSymbolicLink()) throw new Error("transcript unavailable");
@@ -184,7 +184,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       try { line = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(start, newline)); }
       catch { start = newline + 1; continue; }
       let records: ReturnType<typeof transcriptRecords>;
-      if (recordsEnabled) try { records = transcriptRecords(line, due); } catch { /* Malformed native JSON is not a record source. */ }
+      if (captureRecords) try { records = transcriptRecords(line, due); } catch { /* Malformed native JSON is not a record source. */ }
       // Privacy flags and policy metadata belong to the source row, not just its extracted text.
       if (records && !await policy.screen(JSON.parse(line))) { dropRecord("record_policy", Math.max(1, records.parsed.records.length)); records = undefined; }
       let recordPublication: PendingHookCapture | undefined;
