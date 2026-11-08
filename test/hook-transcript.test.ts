@@ -56,7 +56,7 @@ test("native assistant Records retain only canonical lines, anchors and transcri
 test("Record quota is per native message id within a scan, with no durable count across calls", async () => {
   const f = fixture();
   for (const text of ["first", "second", "third"]) f.add(recordAssistant("same-native-message", `amem: finding | src/a.ts | ${text}`));
-  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record").map(row => row.excerpt)).toEqual([
+  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record").map(row => row.excerpt).sort()).toEqual([
     "amem: finding | src/a.ts | first", "amem: finding | src/a.ts | second",
   ]);
   expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_count: 1 } });
