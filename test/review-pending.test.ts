@@ -1,3 +1,4 @@
+import { recordContextData } from "../src/hook-record.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -186,7 +187,7 @@ test("the real SessionStart hook shows the line but NEVER stamps a candidate as 
   const a = store.put({ project: f.project, kind: "memory", text: "wait for the person" }, "public");
   const stamp = () => { const db = new Database(join(f.base, "candidates.db"), { readonly: true }); try { return (db.query("SELECT shown_at FROM candidates WHERE id = ?").get(a) as { shown_at: number | null }).shown_at; } finally { db.close(); } };
   const shown = await runHook("SessionStart", { prompt: "y" }, options, { deadlineMs: 2000 });
-  expect(shown.output!.hookSpecificOutput.additionalContext.split("\n")[1]).toMatch(/^1 candidate pending, oldest expires in \d+ days?$/);   // the person is told
+  expect(recordContextData(shown.output!.hookSpecificOutput.additionalContext).split("\n")[1]).toMatch(/^1 candidate pending, oldest expires in \d+ days?$/);   // the person is told
   expect(stamp()).toBeNull();                                                          // but the hook wrote nothing: a line in a context nobody read is not "shown"
   const again = await runHook("SessionStart", { prompt: "z" }, options, { deadlineMs: 2000 });
   expect(again.output!.hookSpecificOutput.additionalContext).toContain("candidate pending"); expect(stamp()).toBeNull();
