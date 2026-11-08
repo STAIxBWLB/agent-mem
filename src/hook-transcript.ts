@@ -1,3 +1,4 @@
+import { parseRecordLines, type ParsedRecordTurn } from "./hook-record.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -38,6 +39,23 @@ export function transcriptSummary(line: string): { event: SummaryEvent; text: st
   if (typeof text !== "string" || !text.trim()) return undefined;
   const visibleText = event === "Recap" ? text.replace(/\s*\(disable recaps in \/config\)\s*$/, "") : text;
   return { event, text: visibleText, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), ...(row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0 ? { subagent: true as const } : {}) };
+}
+
+/** Only Claude main-session assistant text is a record source. Check the marker before parsing JSON. */
+export function transcriptRecords(line: string, shouldStop?: () => boolean): { messageId?: string; at?: string; parsed: ParsedRecordTurn } | undefined {
+  if (!line.includes("amem:")) return;
+  const row = object(JSON.parse(line));
+  if (!row || row.type !== "assistant" || row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0) return;
+  const message = object(row.message);
+  if (!message || message.role !== undefined && message.role !== "assistant") return;
+  const content = message.content;
+  const text = typeof content === "string" ? content : Array.isArray(content)
+    ? content.flatMap(part => { const value = object(part); return value?.type === "text" && typeof value.text === "string" ? [value.text] : []; }).join("\n") : undefined;
+  if (text === undefined || !text.includes("amem:")) return;
+  const messageId = typeof message.id === "string" && message.id.length > 0 && message.id.length <= 256 && message.id.trim() === message.id
+    && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(message.id) ? message.id : undefined;
+  if (!messageId) return { parsed: { records: [], drops: { record_identity: 1 } } };
+  return { messageId, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), parsed: parseRecordLines(text, shouldStop) };
 }
 
 /** Read only a top-level timestamp token, without parsing ordinary message bodies. */

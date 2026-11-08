@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { parseRecordLines, RECORD_INSTRUCTION } from "../src/hook-record.ts";
+import { transcriptRecords } from "../src/hook-transcript.ts";
 
 test("records are canonical, bounded main-answer lines with explicit anchors", () => {
   for (const kind of ["decision", "fix", "fail", "contract", "finding"]) {
@@ -41,4 +42,32 @@ test("fenced, quoted, indented and inline examples are ignored, including lazy q
 test("the package instruction fits its fixed three-line byte ceiling", () => {
   expect(RECORD_INSTRUCTION.split("\n")).toHaveLength(3);
   expect(Buffer.byteLength(RECORD_INSTRUCTION)).toBeLessThanOrEqual(400);
+});
+
+test("only native main-session assistant text is eligible, with a stable native message id", () => {
+  const text = "amem: finding | src/a.ts | settled", message = { id: "msg_native_1", role: "assistant", content: [{ type: "text", text }] };
+  expect(transcriptRecords(JSON.stringify({ type: "assistant", message }))?.parsed.records).toHaveLength(1);
+  for (const row of [
+    { type: "user", message }, { type: "system", message }, { type: "assistant", message, isSidechain: true },
+    { type: "assistant", message, agentId: "subagent" }, { type: "assistant", message: { ...message, role: "user" } },
+    { type: "assistant", message: { ...message, content: [{ type: "tool_result", text }] } },
+  ]) expect(transcriptRecords(JSON.stringify(row))).toBeUndefined();
+  for (const id of [undefined, "", " ", "x".repeat(257)]) {
+    expect(transcriptRecords(JSON.stringify({ type: "assistant", message: { ...message, id } }))?.parsed).toEqual({ records: [], drops: { record_identity: 1 } });
+  }
+});
+
+test("the marker prefilter avoids JSON.parse for ordinary assistant or malformed rows", () => {
+  const parse = spyOn(JSON, "parse");
+  try {
+    expect(transcriptRecords('{"type":"assistant","message":{"content":"ordinary"}}')).toBeUndefined();
+    expect(transcriptRecords("not even JSON")).toBeUndefined();
+    expect(parse).not.toHaveBeenCalled();
+  } finally { parse.mockRestore(); }
+});
+
+test("the record line loop yields an incomplete result at the caller's unchanged scan boundary", () => {
+  let checks = 0;
+  const parsed = parseRecordLines("ordinary\namem: decision | - | first\namem: decision | - | second", () => ++checks > 2);
+  expect(parsed).toMatchObject({ records: [{ text: "first" }], incomplete: true });
 });
