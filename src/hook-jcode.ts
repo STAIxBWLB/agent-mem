@@ -23,6 +23,19 @@ function insideRepository(cwd: string): boolean {
   return false;
 }
 
+const SESSION_STEM = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/;
+/** #216: where this turn's session journal is and which project directory owns its rows. No scan of the sessions directory:
+ * the journal is `<JCODE_HOME or ~/.jcode>/sessions/<JCODE_HOOK_SESSION_ID>.journal.jsonl`. Undefined skips the scan. */
+export function jcodeJournalTarget(env: Env, home: string): { cwd: string; session: string; journal: string } | undefined {
+  const cwd = env.JCODE_HOOK_CWD, session = env.JCODE_HOOK_SESSION_ID;
+  if (env.JCODE_HOOK_EVENT !== "turn_end" || !bounded(cwd) || !cwd || !isAbsolute(cwd) || /[\x00-\x1f]/.test(cwd) || !session || !SESSION_STEM.test(session) || session.includes("..")) return undefined;
+  try { if (!lstatSync(cwd).isDirectory()) return undefined; } catch { return undefined; }
+  if (!insideRepository(cwd)) return undefined;
+  const root = env.JCODE_HOME !== undefined ? env.JCODE_HOME : join(home, ".jcode");
+  if (!isAbsolute(root) || /[\x00-\x1f]/.test(root)) return undefined;
+  return { cwd, session, journal: join(root, "sessions", `${session}.journal.jsonl`) };
+}
+
 /** Maps one jcode observer environment onto the Claude-shaped hook input the spool already screens and normalizes.
  * Anything missing, oversized or inconsistent returns undefined: the event is skipped, never guessed. */
 export function jcodeHookCapture(env: Env): JcodeHookCapture | undefined {
