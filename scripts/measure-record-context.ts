@@ -43,6 +43,13 @@ async function runtime(root: string) {
     formatter: await load("hooks.ts") as NativeFormatter,
   };
 }
+function sourcePin(root: string, api: Awaited<ReturnType<typeof runtime>>) {
+  const options = { cwd: root, encoding: "utf8" as const, timeout: 2000, maxBuffer: 256 * 1024 };
+  const head = api.platform.memoryGitSync(["rev-parse", "HEAD"], options), status = api.platform.memoryGitSync(["status", "--porcelain"], options);
+  const commit = head.stdout.toString().trim();
+  if (head.status !== 0 || status.status !== 0 || !/^[a-f0-9]{40}$/.test(commit) || status.stdout.toString().trim()) throw Error("measurement runtime is not a clean pinned Git checkout; commit the intended code and rerun on that revision");
+  return { commit };
+}
 async function projectBytes(api: Awaited<ReturnType<typeof runtime>>, base: string, cwd: string, project: string) {
   const budget = api.formatter.sessionNoticeAndLimit(base, cwd, { cwd, base }, false);
   const started = performance.now();
@@ -119,6 +126,7 @@ async function main() {
   const baseRoot = resolve(values["--baseline"]), candidateRoot = resolve(values["--candidate"]);
   exposeNativeFormatters([baseRoot, candidateRoot]);
   const baseline = await runtime(baseRoot), candidate = await runtime(candidateRoot);
+  const sources = { baseline: sourcePin(baseRoot, baseline), candidate: sourcePin(candidateRoot, candidate) };
   const scratch = mkdtempSync(join(tmpdir(), "amem-record-context-"));
   try {
     for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/fixture/record-context.git"]]) {
@@ -135,7 +143,8 @@ async function main() {
       const copy = assertCopyHome(values["--copy"]);
       realCopy = { before: await projectBytes(baseline, copy, values["--cwd"], values["--project"]), after: await projectBytes(candidate, copy, values["--cwd"], values["--project"]) };
     }
-    const report = { schema: "agent-mem.record-context/v1", fixture: { before, after, noRecordsCandidate: unchanged,
+    if (sourcePin(baseRoot, baseline).commit !== sources.baseline.commit || sourcePin(candidateRoot, candidate).commit !== sources.candidate.commit) throw Error("measurement runtime changed during projection; rerun on immutable checkouts");
+    const report = { schema: "agent-mem.record-context/v1", sources, fixture: { before, after, noRecordsCandidate: unchanged,
       bytesDelta: after.totalBytes - before.totalBytes, noLarger: after.totalBytes <= before.totalBytes },
       ...(realCopy ? { realCopy } : {}), indexCost: await indexCost(candidate, join(scratch, "large"), project), rawPrivateContentPublished: false };
     writeFileSync(values["--output"], JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
