@@ -78,3 +78,5 @@ export { readSyncPlacementWriterRoots } from "./memory/sync-placement-writer-roo
 export { readEffectiveSyncPlacementWriters, readEffectiveSyncPlacementWriterRoots } from "./memory/sync-placement-effective-writers.ts";
 export type { EffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 export { readSetupWriterRoots, SetupWriterRootsError } from "./setup.ts";
+
+export { parseRecordLines, RECORD_INSTRUCTION, type ParsedRecord, type ParsedRecordTurn, type RecordKind, type RecordDropReason } from "./hook-record.ts";

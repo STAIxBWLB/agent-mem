@@ -44,9 +44,16 @@ test("the package instruction fits its fixed three-line byte ceiling", () => {
   expect(Buffer.byteLength(RECORD_INSTRUCTION)).toBeLessThanOrEqual(400);
 });
 
+test("hosts reuse the parser and instruction from the public library entry", async () => {
+  const library = await import("../src/index.ts");
+  expect(library.RECORD_INSTRUCTION).toBe(RECORD_INSTRUCTION);
+  expect(library.parseRecordLines("amem: decision | - | settled")).toEqual(parseRecordLines("amem: decision | - | settled"));
+  expect(parseRecordLines("x".repeat(256 * 1024 + 1))).toEqual({ records: [], drops: { record_length: 1 } });
+});
+
 test("only native main-session assistant text is eligible, with a stable native message id", () => {
   const text = "amem: finding | src/a.ts | settled", message = { id: "msg_native_1", role: "assistant", content: [{ type: "text", text }] };
-  expect(transcriptRecords(JSON.stringify({ type: "assistant", message }))?.parsed.records).toHaveLength(1);
+  expect(transcriptRecords(JSON.stringify({ type: "assistant", message, timestamp: "2026-11-08T00:00:00Z" }))?.parsed.records).toHaveLength(1);
   for (const row of [
     { type: "user", message }, { type: "system", message }, { type: "assistant", message, isSidechain: true },
     { type: "assistant", message, agentId: "subagent" }, { type: "assistant", message: { ...message, role: "user" } },

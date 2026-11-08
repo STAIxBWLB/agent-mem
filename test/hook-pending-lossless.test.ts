@@ -1,3 +1,4 @@
+import { recordContextData } from "../src/hook-record.ts";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -66,7 +67,7 @@ test("both protected future-schema full tiers preserve unknown events and report
   expect(result).toMatchObject({ captured: false, dropped: true, dropReason: "spool_full", dropCount: 1 });
   expect(result.output?.hookSpecificOutput.additionalContext).toContain("capture dropped: spool full (1)");
   expect(result.output?.hookSpecificOutput.additionalContext).toContain("p3-work-marker");
-  expect(result.output?.hookSpecificOutput.additionalContext.split("\n")[0]).toStartWith("Untrusted project memory data");
+  expect(recordContextData(result.output?.hookSpecificOutput.additionalContext ?? "").split("\n")[0]).toStartWith("Untrusted project memory data");
   expect(a.pending()).toHaveLength(288); expect(a.pending().some(row => row.capture.excerpt === "over capacity")).toBe(false);
   expect(readMetrics(a.base).filter(row => row.captureDrops).map(row => row.captureDrops)).toEqual([1]);
   for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"]) {
@@ -78,7 +79,7 @@ test("both protected future-schema full tiers preserve unknown events and report
   const output = JSON.parse(cli.stdout.toString());
   expect(Object.keys(output)).toEqual(["hookSpecificOutput"]);
   expect(Object.keys(output.hookSpecificOutput).sort()).toEqual(["additionalContext", "hookEventName"]);
-  expect(output.hookSpecificOutput.additionalContext.split("\n")[0]).toStartWith("Untrusted project memory data");
+  expect(recordContextData(output.hookSpecificOutput.additionalContext).split("\n")[0]).toStartWith("Untrusted project memory data");
   expect(output.hookSpecificOutput.additionalContext).toContain("capture dropped: spool full");
   expect(readMetrics(a.base).filter(row => row.captureDropReason === "spool_full").map(row => row.captureDrops)).toEqual(Array(8).fill(1));
   expect(existsSync(join(a.base, "hook-spool", ".quarantine"))).toBe(false);
@@ -142,7 +143,7 @@ test("null scope never rebinds, stays pending before seven days and expires with
   expect((await drain(f)).some(row => row.excerpt === "unknown old identity")).toBe(false);
 });
 
-test("a stale non-null scope expires with a numeric receipt and the brief keeps its untrusted header first", async () => {
+test("a stale non-null scope expires with a numeric receipt and the data section keeps its untrusted header first", async () => {
   const f = fixture(); await f.seed();
   await stageHookCapture("PostToolUse", { prompt: "old scoped body" }, f.options); agePending(f, 8);
   const config = join(f.cwd, ".git", "config");
@@ -153,7 +154,7 @@ test("a stale non-null scope expires with a numeric receipt and the brief keeps 
   expect(losses(f, "undrainable_expired")).toBe(1);
   const shown = await runHook("SessionStart", { prompt: "notice brief" }, f.options, { deadlineMs: 2000 });
   const context = shown.output!.hookSpecificOutput.additionalContext;
-  expect(context.split("\n")[0]).toStartWith("Untrusted project memory data");
+  expect(recordContextData(context).split("\n")[0]).toStartWith("Untrusted project memory data");
   expect(context).toContain("capture dropped: undrainable expired (1)");
   expect(context).not.toContain("old scoped body");
 });
@@ -226,7 +227,7 @@ for (const oversized of [false, true]) test(`unavailable brief preserves the unt
   expect(answer.exitCode).toBe(0); expect(answer.stdout.length).toBeGreaterThan(0);
   expect(existsSync(marker)).toBe(true);
   const shown = JSON.parse(answer.stdout.toString()).hookSpecificOutput.additionalContext;
-  expect(shown.split("\n")[0]).toStartWith("Untrusted project memory data");
+  expect(recordContextData(shown).split("\n")[0]).toStartWith("Untrusted project memory data");
   expect(shown).toContain("capture dropped: scope unknown (1)");
   expect(Buffer.byteLength(shown)).toBeLessThanOrEqual(1200);
 });

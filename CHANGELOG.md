@@ -2,6 +2,11 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Add native Claude assistant `Record` extraction and a bounded, package-owned SessionStart instruction (#313). Export `parseRecordLines` and `RECORD_INSTRUCTION`; home/repository `records: false` disables instruction emission and new extraction, with false winning. Records reuse the existing transcript summary staging/dedupe/replay path and native row timestamps, remain capture-only, and retain the accepted crash-before-cursor duplicate window. Instruction cost is 332 emitted bytes including its separator and approximately 83 tokens, within the unchanged context budget. No SQL schema, R2/R3 baseline, brief/search ranking, candidate conversion or other-client ingest change; AC2/AC3/AC6 and real-home proof remain separate.
+- **Compatibility with N-1 (0.22.1):** curated/capture storage schemas and existing event bytes are unchanged, but old hook drains silently discard the new Record format-3 event without counted loss. Old config parsers also refuse `records`, including false. Upgrade every amem sharing the home before relying on Record capture, or have the person append the existing `home` floor at 0.23.0 to exclude old installs. Set `records: false` only after all participating installs are upgraded. Core never writes `formats.json`.
+
 ## 0.22.1
 
 - Name the interrupted person-migration family when a retained stale profile lock blocks a read, with its exact person-run resume or supported abandon command (#290). Keep lock admission, waits, ownership proof and reclaim behavior unchanged.

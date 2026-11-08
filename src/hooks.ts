@@ -60,7 +60,7 @@ function joinedContext(context: string, notice: string, maximum: number): string
 }
 
 function instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number } {
-  const bytes = context.startsWith(`${RECORD_INSTRUCTION}\n`) ? Buffer.byteLength(RECORD_INSTRUCTION) : 0;
+  const bytes = context.startsWith(`${RECORD_INSTRUCTION}\n`) ? Buffer.byteLength(RECORD_INSTRUCTION) + 1 : 0;
   // Approximation only: the UTF-8 byte count is exact; tokens depend on the host tokenizer.
   return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4) };
 }
