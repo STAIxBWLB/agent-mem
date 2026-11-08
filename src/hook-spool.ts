@@ -35,7 +35,7 @@ const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
 const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const summaryEvent = (event: string) => TRANSCRIPT_CAPTURE_EVENTS.includes(event);
-function recordCapture(input: CaptureFields): ParsedRecord | undefined {
+function recordCapture(input: Pick<CaptureFields, "excerpt" | "paths">): ParsedRecord | undefined {
   const parsed = parseRecordLines(input.excerpt ?? ""), record = parsed.records[0];
   return record !== undefined && parsed.records.length === 1 && !Object.keys(parsed.drops).length && record.line === input.excerpt
     && JSON.stringify(record.anchors) === JSON.stringify(input.paths ?? []) ? record : undefined;
