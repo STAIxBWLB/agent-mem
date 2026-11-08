@@ -3,7 +3,7 @@ import { parseRecordLines, RECORD_INSTRUCTION } from "../src/hook-record.ts";
 import { transcriptRecords } from "../src/hook-transcript.ts";
 
 test("records are canonical, bounded main-answer lines with explicit anchors", () => {
-  for (const kind of ["decision", "fix", "fail", "contract", "finding"]) {
+  for (const kind of ["decision", "fix", "fail", "contract", "finding"] as const) {
     const parsed = parseRecordLines(`amem: ${kind} | src/a.ts#read,src/b.ts | symptom -> retry`);
     expect(parsed.records).toEqual([{ kind, anchors: ["src/a.ts#read", "src/b.ts"], text: "symptom -> retry",
       line: `amem: ${kind} | src/a.ts#read, src/b.ts | symptom -> retry` }]);
