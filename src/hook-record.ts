@@ -5,9 +5,17 @@ export const RECORD_INSTRUCTION = [
   "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII.",
 ].join("\n");
 
+/** Data remains untrusted after the one exact package-owned instruction prefix. */
+export function recordContextData(context: string): string {
+  const prefix = `${RECORD_INSTRUCTION}\n`;
+  return context.startsWith(prefix) ? context.slice(prefix.length) : context;
+}
+
+export const RECORD_INPUT_BYTES = 256 * 1024;
+
 const KINDS = ["decision", "fix", "fail", "contract", "finding"] as const;
 export type RecordKind = typeof KINDS[number];
-export type RecordDropReason = "record_invalid" | "record_count" | "record_length" | "record_policy" | "record_identity";
+export type RecordDropReason = "record_invalid" | "record_count" | "record_length" | "record_policy" | "record_identity" | "record_timestamp";
 export interface ParsedRecord { kind: RecordKind; anchors: string[]; text: string; line: string }
 export interface ParsedRecordTurn { records: ParsedRecord[]; drops: Partial<Record<RecordDropReason, number>>; incomplete?: true }
 const controls = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
@@ -39,6 +47,8 @@ function recordLine(line: string): ParsedRecord | RecordDropReason {
 /** One complete assistant text, including its text blocks; no JSON/model/network/store work. */
 export function parseRecordLines(text: string, shouldStop?: () => boolean): ParsedRecordTurn {
   const result: ParsedRecordTurn = { records: [], drops: {} };
+  // ponytail: share the native 256 KiB ceiling; larger answers need a bounded streaming parser.
+  if (text.length > RECORD_INPUT_BYTES || Buffer.byteLength(text) > RECORD_INPUT_BYTES) return { records: [], drops: { record_length: 1 } };
   const drop = (reason: RecordDropReason) => { result.drops[reason] = (result.drops[reason] ?? 0) + 1; };
   let fence: { character: string; length: number } | undefined, quote = false;
   for (const line of text.split(/\r?\n/)) {

@@ -29,6 +29,9 @@ function fixture() {
   return { ...f, transcript, id, input, scan, add, drain };
 }
 const at = new Date().toISOString();
+const recordAssistant = (id: string | undefined, text: string, extra: Record<string, unknown> = {}) => ({
+  type: "assistant", timestamp: at, message: { id, role: "assistant", content: [{ type: "text", text }] }, ...extra,
+});
 
 test("only native title, recap and compact fields are extracted", () => {
   expect(transcriptSummary('{"type":"assistant","content":"ordinary"}')).toBeUndefined();
@@ -36,6 +39,86 @@ test("only native title, recap and compact fields are extracted", () => {
     .toEqual({ event: "Compact", text: "first\nnext", at });
   expect(transcriptSummary(JSON.stringify({ type: "system", subtype: "away_summary", content: "state (disable recaps in /config)" }))).toEqual({ event: "Recap", text: "state" });
   expect(transcriptSummary(JSON.stringify({ type: "assistant", isCompactSummary: true, content: "wrong envelope" }))).toBeUndefined();
+});
+
+test("native assistant Records retain only canonical lines, anchors and transcript times", async () => {
+  const f = fixture(), id = "native-record-message-private", line = "amem: fix | src/a.ts#read,src/b.ts | schema race -> retry";
+  f.add(recordAssistant(id, line), recordAssistant("fenced", `\`\`\`\namem: decision | - | example\n\`\`\``), recordAssistant("quoted", "> amem: decision | - | example"),
+    recordAssistant("sidechain", "amem: decision | - | hidden", { isSidechain: true }), recordAssistant("agent", "amem: decision | - | hidden", { agentId: "subagent" }));
+  await f.scan();
+  const rows = (await f.drain()).filter(row => row.event === "Record");
+  expect(rows).toMatchObject([{ excerpt: "amem: fix | src/a.ts#read, src/b.ts | schema race -> retry", paths: ["src/a.ts#read", "src/b.ts"], at, agent: "claude" }]);
+  expect(JSON.stringify(rows)).not.toContain(id);
+  const cursor = new Database(join(f.base, "hook-transcripts", readdirSync(join(f.base, "hook-transcripts")).find(name => name.endsWith(".db"))!), { readonly: true });
+  try { expect(cursor.query("SELECT COUNT(*) AS n FROM fallback").get()).toEqual({ n: 0 }); } finally { cursor.close(); }
+});
+
+test("Record quota is per native message id within a scan, with no durable count across calls", async () => {
+  const f = fixture();
+  for (const text of ["first", "second", "third"]) f.add(recordAssistant("same-native-message", `amem: finding | src/a.ts | ${text}`));
+  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record").map(row => row.excerpt)).toEqual([
+    "amem: finding | src/a.ts | first", "amem: finding | src/a.ts | second",
+  ]);
+  expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_count: 1 } });
+  f.add(recordAssistant("same-native-message", "amem: finding | src/a.ts | later scan"));
+  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record")).toHaveLength(3);
+});
+
+test("native Record drops are counted by safe reason, with missing identity/time failing closed", async () => {
+  const f = fixture();
+  const lines = ["amem: other | src/a.ts | invalid", "amem: fix | src/a.ts | no direction", `amem: decision | - | ${"x".repeat(301)}`,
+    "amem: fix | id_rsa#load | leak -> remove", `amem: decision | - | ghp_${"a".repeat(40)}`, "amem: decision | - | alice@example.com",
+    "amem: decision | - | <private>hidden</private>"];
+  lines.forEach((line, index) => f.add(recordAssistant(`message-${index}`, line)));
+  f.add(recordAssistant(undefined, "amem: decision | - | missing id"), recordAssistant("missing-time", "amem: decision | - | missing time", { timestamp: undefined }));
+  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record")).toEqual([]);
+  expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_invalid: 2, record_length: 1, record_policy: 4, record_identity: 1, record_timestamp: 1 } });
+});
+
+test("records false disables extraction before JSON.parse while existing summaries still progress", async () => {
+  const f = fixture(), line = "amem: decision | - | disabled marker";
+  mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: false }));
+  f.add(recordAssistant("disabled-native-id", line), { type: "ai-title", timestamp: at, aiTitle: "existing summary" });
+  const parse = spyOn(JSON, "parse");
+  try {
+    await f.scan(); expect(parse.mock.calls.filter(args => typeof args[0] === "string" && args[0].includes("disabled-native-id"))).toHaveLength(0);
+  } finally { parse.mockRestore(); }
+  expect((await f.drain()).map(row => row.event)).toEqual(["Title"]);
+  expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: {} });
+});
+
+test("Record retries after publication failure reuse native time and the existing summary receipt", async () => {
+  const f = fixture(), line = "amem: decision | - | stable record";
+  f.add(recordAssistant("retry-native-message", line));
+  const stage = spool.stageTranscriptCapture;
+  const fault = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args: Parameters<typeof stage>) => {
+    const result = await stage(...args); if (args[0].event === "Record" && result) throw Error("after publication before cursor"); return result;
+  });
+  try { await expect(f.scan()).rejects.toThrow("after publication before cursor"); } finally { fault.mockRestore(); }
+  await f.drain(); await f.scan(); await f.scan();
+  expect((await f.drain()).filter(row => row.event === "Record")).toMatchObject([{ at, excerpt: line }]);
+});
+
+test("outer subagent attribution suppresses native Record extraction", async () => {
+  const f = fixture(); f.add(recordAssistant("main-looking-row", "amem: decision | - | hidden"));
+  await scanHookTranscriptTail({ ...f.input, agent_id: "subagent" }, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000 });
+  expect(await f.drain()).toEqual([]);
+});
+
+test("a failed Record staging leaves its cursor pending and retries without inventing a new time", async () => {
+  const f = fixture(); f.add(recordAssistant("stage-failure", "amem: decision | - | retry native row"));
+  const fail = spyOn(spool, "stageTranscriptCapture").mockImplementation(async () => { throw new spool.HookSpoolFull(); });
+  try { expect(await f.scan()).toMatchObject({ offset: 0, stopReason: "spool_full" }); } finally { fail.mockRestore(); }
+  expect((await f.drain()).filter(row => row.event === "Record")).toEqual([]);
+  await f.scan(); expect((await f.drain()).filter(row => row.event === "Record")).toMatchObject([{ at, excerpt: "amem: decision | - | retry native row" }]);
+});
+
+test("Stop and SessionEnd reach the Record extractor in the existing owned worker", async () => {
+  for (const event of ["Stop", "SessionEnd"]) {
+    const f = fixture(); f.add(recordAssistant(`worker-${event}`, `amem: decision | - | worker ${event}`));
+    expect(f.runFunctional(event, { session_id: f.id, transcript_path: f.transcript }).exitCode).toBe(0);
+    expect((await f.drain()).some(row => row.event === "Record" && row.excerpt === `amem: decision | - | worker ${event}`)).toBe(true);
+  }
 });
 
 test("incremental summaries use native times, title predecessor, dedup and private attribution", async () => {

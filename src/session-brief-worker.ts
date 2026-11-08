@@ -121,7 +121,7 @@ if (import.meta.main) {
         else try {
           const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
           const scanned = await scanHookTranscriptTail(scan.transcript, {
-            cwd: scan.cwd, base: scan.base, policy: scan.policy, deadline: performance.now() + (scanEnd - now()),
+            cwd: scan.cwd, base: scan.base, policy: scan.policy, workBudgetMs: 60, deadline: performance.now() + (scanEnd - now()),
             // Same existing oldest-first drain and one shared budget, never a new 32-file allowance per publication.
             onPublication: async () => { await replay(scanEnd, false); },
             onBackpressure: () => replay(scanEnd, false),

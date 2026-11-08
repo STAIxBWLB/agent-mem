@@ -15,7 +15,7 @@ function fixture(config?: object) {
   return { ...f, options: { cwd: f.cwd, base: f.base } };
 }
 const context = (result: Awaited<ReturnType<typeof runHook>>) => result.output?.hookSpecificOutput.additionalContext;
-const cost = () => Buffer.byteLength(RECORD_INSTRUCTION);
+const cost = () => Buffer.byteLength(RECORD_INSTRUCTION) + 1;
 
 for (const source of ["startup", "resume"]) test(`record instruction precedes valid ${source} context and metrics count only emitted instruction`, async () => {
   const f = fixture(); await f.seed();
