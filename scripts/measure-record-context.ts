@@ -15,6 +15,38 @@ interface NativeFormatter {
   joinedContext(body: string, notice: string, maximum: number): string;
   instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number };
 }
+export interface RecordContextProjection {
+  totalBytes: number; maximum: number;
+  coverage: { work: string; capture: string };
+  sections: { work: number; capture: number };
+  events: Record<string, number>;
+}
+type Qualification = { complete: true } | { complete: false; cause: string; nextStep: string };
+/** Check observed data selection, never qualify a shorter unavailable header as a successful projection. */
+export function qualifyRecordContext(projection: RecordContextProjection, expectation: "raw" | "records" | "observed" = "observed"): Qualification {
+  const counts = [projection.sections.work, projection.sections.capture, ...Object.values(projection.events)];
+  const measurable = [projection.coverage.work, projection.coverage.capture].every(value => value === "complete" || value === "partial")
+    && Number.isSafeInteger(projection.totalBytes) && projection.totalBytes > 0
+    && Number.isSafeInteger(projection.maximum) && projection.maximum > 0 && projection.totalBytes <= projection.maximum
+    && counts.every(value => Number.isSafeInteger(value) && value >= 0)
+    && Object.values(projection.events).reduce((sum, value) => sum + value, 0) === projection.sections.capture;
+  const selected = expectation === "observed" || projection.sections.work > 0 && (expectation === "records"
+    ? (projection.events.Record ?? 0) >= 1
+    : projection.sections.capture > 0 && (projection.events.Record ?? 0) === 0 && (projection.events.PostToolUse ?? 0) > 0);
+  return measurable && selected ? { complete: true } : {
+    complete: false, cause: "Context sources are unavailable or the expected synthetic work/capture selection is missing.",
+    nextStep: "Inspect the isolated fixture or reviewer-owned copy's source coverage and policy, then rerun; do not count header-only savings as success.",
+  };
+}
+export function qualifyRecordContextFixture(before: RecordContextProjection, after: RecordContextProjection, unchanged: RecordContextProjection) {
+  for (const [projection, expectation] of [[before, "raw"], [after, "records"], [unchanged, "raw"]] as const) {
+    const qualified = qualifyRecordContext(projection, expectation);
+    if (!qualified.complete) return { ...qualified, pass: false as const, noLarger: false as const };
+  }
+  const noLarger = after.totalBytes <= before.totalBytes;
+  return { complete: true as const, pass: noLarger, noLarger, bytesDelta: after.totalBytes - before.totalBytes,
+    ...(!noLarger ? { cause: "The qualified Record projection exceeds the baseline context bytes.", nextStep: "Retain this failed comparison and review selection and byte budgets before repeating the measurement." } : {}) };
+}
 /** Test-only export access, not a formatter copy or a shipping API/body change. */
 function exposeNativeFormatters(roots: string[]) {
   const files = new Set(roots.map(root => join(root, "src/hooks.ts")));
@@ -64,15 +96,19 @@ async function projectBytes(api: Awaited<ReturnType<typeof runtime>>, base: stri
   const body = api.formatter.joinedContext(brief.context, budget.dropNotice, budget.contextLimit);
   const context = body ? budget.instruction + body : "", cost = api.formatter.instructionCost(context);
   if (!context) throw Error("native context formatter could not fit this projection; report the copied-home ceiling separately");
-  const events: Record<string, number> = {};
+  const events: Record<string, number> = {}, sections = { work: 0, capture: 0 };
   for (const line of brief.context.split("\n")) if (line.startsWith("{")) {
     const row = JSON.parse(line) as { section: string; data: { event?: string } };
-    if (row.section === "capture") { const event = row.data.event && PUBLIC_EVENTS.has(row.data.event) ? row.data.event : "other"; events[event] = (events[event] ?? 0) + 1; }
+    if (row.section === "work") sections.work++;
+    if (row.section === "capture") { sections.capture++; const event = row.data.event && PUBLIC_EVENTS.has(row.data.event) ? row.data.event : "other"; events[event] = (events[event] ?? 0) + 1; }
   }
-  return { dataBytes: Buffer.byteLength(brief.context), instructionBytes: cost.recordInstructionBytes, instructionEstimatedTokens: cost.recordInstructionEstimatedTokens,
+  const projection = { dataBytes: Buffer.byteLength(brief.context), instructionBytes: cost.recordInstructionBytes, instructionEstimatedTokens: cost.recordInstructionEstimatedTokens,
     dropNoticeBytes: Buffer.byteLength(budget.dropNotice), totalBytes: Buffer.byteLength(context), maximum: budget.contextLimit + Buffer.byteLength(budget.instruction),
-    coverage: brief.coverage, partial: brief.partial, events, projectionMs: performance.now() - started,
+    coverage: brief.coverage, partial: brief.partial, sections, events, projectionMs: performance.now() - started,
     mode: "read-only-native-formatter-projection-not-R2", intakeAttempted: false, formatterExportsOnly: true };
+  const qualified = qualifyRecordContext(projection);
+  if (!qualified.complete) throw Error(`${qualified.cause} ${qualified.nextStep}`);
+  return projection;
 }
 async function seed(api: Awaited<ReturnType<typeof runtime>>, base: string, project: string, records: boolean) {
   const store = new api.store.MemoryStore({ memoryDir: base, screen: () => "keep" });
@@ -141,6 +177,8 @@ async function main() {
     await seed(candidate, raw, project, false); await seed(candidate, recorded, project, true);
     const before = await projectBytes(baseline, raw, scratch, project), after = await projectBytes(candidate, recorded, scratch, project);
     const unchanged = await projectBytes(candidate, raw, scratch, project);
+    const qualified = qualifyRecordContextFixture(before, after, unchanged);
+    if (!qualified.complete) throw Error(`${qualified.cause} ${qualified.nextStep}`);
     let realCopy: unknown;
     if (values["--copy"]) {
       phase = "copy";
@@ -151,8 +189,7 @@ async function main() {
     phase = "runtime";
     if (sourcePin(baseRoot, baseline).commit !== sources.baseline.commit || sourcePin(candidateRoot, candidate).commit !== sources.candidate.commit) throw Error("measurement runtime changed during projection; rerun on immutable checkouts");
     phase = "index";
-    const report = { schema: "agent-mem.record-context/v1", sources, fixture: { before, after, noRecordsCandidate: unchanged,
-      bytesDelta: after.totalBytes - before.totalBytes, noLarger: after.totalBytes <= before.totalBytes },
+    const report = { schema: "agent-mem.record-context/v1", complete: true, pass: qualified.pass, sources, fixture: { before, after, noRecordsCandidate: unchanged, ...qualified },
       ...(realCopy ? { realCopy } : {}), indexCost: await indexCost(candidate, join(scratch, "large"), project), rawPrivateContentPublished: false };
     writeFileSync(values["--output"], JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
     console.log(JSON.stringify(report));
