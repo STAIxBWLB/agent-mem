@@ -237,7 +237,8 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
 function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, currentDropped: boolean, header = unavailable): { dropNotice: string; contextLimit: number; instruction: string } {
   const losses = captureDropSummary(base);
   if (currentDropped) losses.spool_full = (losses.spool_full ?? 0) + 1;
-  const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
+  // Record parsing refusals remain observable metrics, but are not lost captures.
+  const dropNotice = Object.entries(losses).filter(([reason]) => !reason.startsWith("record_")).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
   const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
   const configuredBrief = config.briefBytes;
   const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
