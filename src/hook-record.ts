@@ -1,3 +1,5 @@
+import { stripPrivateSpans } from "./memory/private-spans.ts";
+
 /** Package-owned instruction, never assembled from captured or configured text. */
 export const RECORD_INSTRUCTION = [
   "Only when a turn settles a decision, fix, fail or contract, end the final answer with at most 2 records; otherwise none:",
@@ -50,10 +52,25 @@ export function parseRecordLines(text: string, shouldStop?: () => boolean): Pars
   // ponytail: share the native 256 KiB ceiling; larger answers need a bounded streaming parser.
   if (text.length > RECORD_INPUT_BYTES || Buffer.byteLength(text) > RECORD_INPUT_BYTES) return { records: [], drops: { record_length: 1 } };
   const drop = (reason: RecordDropReason) => { result.drops[reason] = (result.drops[reason] ?? 0) + 1; };
-  let fence: { character: string; length: number } | undefined, quote = false;
-  for (const line of text.split(/\r?\n/)) {
+  const privateRanges: { start: number; end: number }[] = [];
+  stripPrivateSpans(text, (start, end) => privateRanges.push({ start, end }));
+  let fence: { character: string; length: number } | undefined, quote = false, offset = 0, rangeIndex = 0;
+  for (const chunk of text.split("\n")) {
     if (shouldStop?.()) { result.incomplete = true; break; }
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const newline = offset + chunk.length < text.length, line = newline && chunk.endsWith("\r") ? chunk.slice(0, -1) : chunk;
+    const start = offset, end = start + line.length; offset += chunk.length + 1;
+    while (privateRanges[rangeIndex] && privateRanges[rangeIndex]!.end <= start) rangeIndex++;
+    let safeLine = "", cursor = start, hasPrivate = false, privatePrefix = false, endsPrivate = false;
+    for (let index = rangeIndex; privateRanges[index] && privateRanges[index]!.start < end; index++) {
+      const range = privateRanges[index]!;
+      hasPrivate = true; privatePrefix ||= range.start <= start && range.end > start;
+      safeLine += text.slice(cursor, Math.max(cursor, Math.min(range.start, end)));
+      cursor = Math.min(end, Math.max(cursor, range.end));
+      endsPrivate = range.end <= end;
+    }
+    safeLine += text.slice(cursor, end);
+    if (hasPrivate && !safeLine.trim() && !endsPrivate) continue;
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(safeLine);
     if (fence) {
       if (marker && marker[1]![0] === fence.character && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = undefined;
       continue;
@@ -61,8 +78,9 @@ export function parseRecordLines(text: string, shouldStop?: () => boolean): Pars
     if (marker && (marker[1]![0] !== "`" || !marker[2]!.includes("`"))) {
       fence = { character: marker[1]![0]!, length: marker[1]!.length }; quote = false; continue;
     }
-    if (/^\s*>/.test(line)) { quote = true; continue; }
-    if (quote) { if (!line.trim()) quote = false; continue; }
+    if (/^\s*>/.test(safeLine)) { quote = true; continue; }
+    if (quote) { if (!safeLine.trim()) quote = false; continue; }
+    if (hasPrivate) { if (!privatePrefix && line.startsWith("amem:")) drop("record_policy"); continue; }
     if (!line.startsWith("amem:")) continue;
     const record = recordLine(line);
     if (typeof record === "string") drop(record);
