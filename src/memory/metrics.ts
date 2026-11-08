@@ -1,10 +1,11 @@
 import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import type { RecordDropReason } from "../hook-record.ts";
 import type { HookRssSources } from "../hook-resources.ts";
 import type { HookTranscriptStopReason } from "../hook-contract.ts";
 import { join } from "node:path";
 
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
-export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample { at: string; kind: "hook" | "search"; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
 
 export function metricsPath(base: string): string {
@@ -38,8 +39,8 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
 }
 
 
-export type CaptureDropReason = "summary_capacity" | "scope_capacity" | "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten" | "unknown_schema_expired" | "transcript_line_bound";
-const DROP_REASONS: readonly CaptureDropReason[] = ["summary_capacity", "scope_capacity", "spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired", "transcript_line_bound"];
+export type CaptureDropReason = "summary_capacity" | "scope_capacity" | "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten" | "unknown_schema_expired" | "transcript_line_bound" | RecordDropReason;
+const DROP_REASONS: readonly CaptureDropReason[] = ["summary_capacity", "scope_capacity", "spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired", "transcript_line_bound", "record_invalid", "record_count", "record_length", "record_policy", "record_identity", "record_timestamp"];
 /** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. Fails open to no counts: hooks never deny over metrics. */
 export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
   const read = readCaptureDrops(base);

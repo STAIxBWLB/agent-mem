@@ -9,17 +9,20 @@
  */
 const TAG = /<\s*(\/?)\s*private(?=[\s/>])[^<>]*>/gi;
 
-export function stripPrivateSpans(text: string): string {
+/** The optional range observer receives only omitted offsets, never private text. */
+export function stripPrivateSpans(text: string, omitted?: (start: number, end: number) => void): string {
   if (!/<\s*\/?\s*private(?=[\s/>])/i.test(text)) return text;
-  let out = "", depth = 0, last = 0, match: RegExpExecArray | null;
+  let out = "", depth = 0, last = 0, privateStart = 0, match: RegExpExecArray | null;
   TAG.lastIndex = 0;
   while ((match = TAG.exec(text))) {
     const closing = match[1] === "/", stray = closing && depth === 0;
     if (depth === 0) out += text.slice(last, stray ? match.index + match[0].length : match.index);   // a stray closer is plain text: keep it
-    if (closing) { if (depth > 0) depth--; } else depth++;
+    if (closing) { if (depth > 0 && --depth === 0) omitted?.(privateStart, match.index + match[0].length); }
+    else { if (depth === 0) privateStart = match.index; depth++; }
     last = match.index + match[0].length;
   }
   if (depth === 0) out += text.slice(last);
+  else omitted?.(privateStart, text.length);
   return out;
 }
 

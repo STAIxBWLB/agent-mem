@@ -1,3 +1,4 @@
+import { recordContextData } from "../src/hook-record.ts";
 import { expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ let changed=false;globalThis.__nativeScreenDrift=()=>{if(changed)return;changed=
     expect(existsSync(marker), result.stderr.toString()).toBe(true);
     const context = JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext;
     expect(context).not.toContain(workMarker);
-    expect(context).toStartWith("Untrusted project memory data");
+    expect(recordContextData(context)).toStartWith("Untrusted project memory data");
     expect(context).toContain("work=unavailable");
   } finally { f.close(); }
 });

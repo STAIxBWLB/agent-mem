@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
+import { recordContextData } from "../src/hook-record.ts";
 import { runHook } from "../src/hooks.ts";
 import { seedHookBacklog } from "./fakes/hooks-backlog.ts";
 
@@ -14,9 +15,9 @@ function fixture() {
   const f = hookFixture(); clean.push(f.close); process.env.HOME = f.env.HOME;
   return { ...f, options: { cwd: f.cwd, base: f.base } };
 }
-const context = (result: Awaited<ReturnType<typeof runHook>>) => result.output?.hookSpecificOutput.additionalContext;
+const context = (result: Awaited<ReturnType<typeof runHook>>) => recordContextData(result.output?.hookSpecificOutput.additionalContext ?? "");
 
-test("resume emits only the untrusted-data header, no brief body", async () => {
+test("resume data contains only the untrusted header after the package instruction", async () => {
   const f = fixture(); await f.seed();
   const result = await runHook("SessionStart", { source: "resume" }, f.options, { deadlineMs: 2000 });
   expect(context(result)).toBe(RESUME);
@@ -51,9 +52,9 @@ test("resume still captures the SessionStart event and never stores source", asy
   for (const text of [...spool, JSON.stringify(rows)]) expect(text).not.toContain("\"source\":\"resume\"");
 });
 
-test("native bin resume output carries the header only", async () => {
+test("native bin resume data carries the header only after the package instruction", async () => {
   const f = fixture(); await f.seed();
   const result = f.runFunctional("SessionStart", { source: "resume" });
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toBe(RESUME);
+  expect(recordContextData(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext)).toBe(RESUME);
 });

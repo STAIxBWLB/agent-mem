@@ -20,6 +20,7 @@ import { isAbsolute, join } from "node:path";
 import { hookCaptureScope, hookLegacyCaptureScope, hookSpoolReplayInternals as spool, type HookSpoolOwnedFile } from "./hook-spool.ts";
 import { aliasedKeys, resolveAlias } from "./memory/aliases.ts";
 import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
+import { RecordNormalizationRefusal } from "./memory/capture-input.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -316,7 +317,15 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
         if (!decoded || decoded.unknown || hash(decoded.bytes) !== record.digest) { retain("decode_changed"); closeSync(claim.fd); held = undefined; continue; }
         // One CaptureStore at a time: close the previous project's store before opening the next one.
         if (storeProject !== record.project) { store?.close(); store = new CaptureStore({ memoryDir: home, project: record.project!, cwd: realPath(record.cwd) }); storeProject = record.project!; }
-        const result = store!.append(captureInput(decoded.value.capture as never, record.project!), { receipt: hash(decoded.bytes) });
+        let result: ReturnType<CaptureStore["append"]>;
+        try { result = store!.append(captureInput(decoded.value.capture as never, record.project!), { receipt: hash(decoded.bytes) }); }
+        catch (error) {
+          if (!(error instanceof RecordNormalizationRefusal) || decoded.value.capture.event !== "Record") throw error;
+          if (spool.retireRecordPolicy(home, claim)) {
+            receipt.retired++; receipt.outcomes.push({ name: record.name, outcome: "skipped", reason: "Record declined by current normalization policy; stage a complete compatible Record before replaying again" });
+          } else retain("claim changed before policy retirement; preview again before applying");
+          closeSync(claim.fd); held = undefined; continue;
+        }
         const spooled = "spooled" in result;
         if (spooled) receipt.spooled++; else receipt.applied++;
         const retired = spool.retireOwned(claim);

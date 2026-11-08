@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
-import { captureAttribution, normalizeCaptureFields, SESSION_KEY, type CaptureFields } from "./capture-input.ts";
+import { captureAttribution, normalizeCaptureFields, RecordNormalizationRefusal, SESSION_KEY, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
 import { captureShardDir, ensureShardDescriptor, readShardDescriptor, resolveAlias, shardKeyHash } from "./shard.ts";
@@ -437,6 +437,11 @@ export class CaptureStore {
     const receipt = options.receipt;
     if (receipt !== undefined && (typeof receipt !== "string" || !/^[a-f0-9]{64}$/.test(receipt) || input.at === undefined)) throw new Error("capture receipt needs a stable time and a 64-hex digest");
     const row = this.normalize(input);
+    // Pending hook Records must stay whole when caps or screening change before replay.
+    // Check before receipt derivation or any spool/DB write; drainers retire this policy refusal whole.
+    if (input.event === "Record" && (row.excerpt !== input.excerpt || JSON.stringify(row.paths) !== JSON.stringify(input.paths ?? []))) {
+      throw new RecordNormalizationRefusal();
+    }
     // Reuse the immutable spool format and its existing unique index: a crash between capture and cursor
     // advance replays exactly the same screened line, whether first written directly or under contention.
     const spoolId = receipt === undefined ? null : createHash("sha256").update(this.spoolLine(row, receipt)).digest("hex");

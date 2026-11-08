@@ -1,16 +1,18 @@
+import { parseRecordLines, RECORD_INPUT_BYTES, type ParsedRecordTurn, type RecordDropReason } from "./hook-record.ts";
+import { stripPrivateSpans } from "./memory/private-spans.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalPath, realPath } from "./memory/platform.ts";
-import { configuredPolicyOptions } from "./memory/config.ts";
+import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { HookSpoolFull, stageTranscriptCapture, type PendingHookCapture } from "./hook-spool.ts";
 import { appendMetrics } from "./memory/metrics.ts";
 import type { HookTranscriptProgress } from "./hook-contract.ts";
 
-export const HOOK_TRANSCRIPT_BYTES = 256 * 1024;
+export const HOOK_TRANSCRIPT_BYTES = RECORD_INPUT_BYTES;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 type SummaryEvent = "Title" | "Recap" | "Compact";
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
@@ -38,6 +40,25 @@ export function transcriptSummary(line: string): { event: SummaryEvent; text: st
   if (typeof text !== "string" || !text.trim()) return undefined;
   const visibleText = event === "Recap" ? text.replace(/\s*\(disable recaps in \/config\)\s*$/, "") : text;
   return { event, text: visibleText, ...(timestamp(row.timestamp) ? { at: timestamp(row.timestamp)! } : {}), ...(row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0 ? { subagent: true as const } : {}) };
+}
+
+/** Only Claude main-session assistant text is a record source. Check the marker before parsing JSON. */
+export function transcriptRecords(line: string, shouldStop?: () => boolean): { messageId?: string; at?: string; parsed: ParsedRecordTurn } | undefined {
+  if (!line.includes("amem:")) return;
+  const row = object(JSON.parse(line));
+  if (!row || row.type !== "assistant" || row.isSidechain === true || typeof row.agentId === "string" && row.agentId.length > 0) return;
+  const message = object(row.message);
+  if (!message || message.role !== undefined && message.role !== "assistant") return;
+  const content = message.content;
+  const text = typeof content === "string" ? content : Array.isArray(content)
+    ? content.flatMap(part => { const value = object(part); return value?.type === "text" && typeof value.text === "string" ? [value.text] : []; }).join("\n") : undefined;
+  if (text === undefined || !stripPrivateSpans(text).includes("amem:")) return;
+  const messageId = typeof message.id === "string" && message.id.length > 0 && message.id.length <= 256 && message.id.trim() === message.id
+    && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(message.id) ? message.id : undefined;
+  if (!messageId) return { parsed: { records: [], drops: { record_identity: 1 } } };
+  const at = timestamp(row.timestamp);
+  if (!at) return { parsed: { records: [], drops: { record_timestamp: 1 } } };
+  return { messageId, at, parsed: parseRecordLines(text, shouldStop) };
 }
 
 /** Read only a top-level timestamp token, without parsing ordinary message bodies. */
@@ -103,6 +124,8 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return;
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   if (!await policy.screen(value)) return;
+  const recordsEnabled = loadAmemConfig(base, repoConfigRoot(cwd)).config.records !== false
+    && !(typeof value.agent_id === "string" && value.agent_id.length > 0);
   const session = hash(`amem-session\0${value.session_id}`).slice(0, 16);
   if (lstatSync(value.transcript_path).isSymbolicLink()) throw new Error("transcript unavailable");
   const transcript = realPath(value.transcript_path);
@@ -133,6 +156,11 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
     let start = 0, stopReason: HookTranscriptProgress["stopReason"];
+    // ponytail: the two-record cap is per native message.id within this scan only; no durable count.
+    // A crash after staging but before cursor save has the summaries' duplicate window.
+    // Upgrade to a msgid+ordinal receipt if the AC6 live week demonstrates duplicates.
+    const recordCounts = new Map<string, number>(), recordDrops: Partial<Record<RecordDropReason, number>> = {};
+    const dropRecord = (reason: RecordDropReason, count = 1) => { recordDrops[reason] = (recordDrops[reason] ?? 0) + count; };
     const workStart = performance.now();
     // The caller's deadline is read live (a caller may move it); the work budget only adds an earlier end after setup.
     const due = () => performance.now() >= options.deadline || options.workBudgetMs !== undefined && performance.now() - workStart >= options.workBudgetMs;
@@ -155,6 +183,36 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       let line: string;
       try { line = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(start, newline)); }
       catch { start = newline + 1; continue; }
+      let records: ReturnType<typeof transcriptRecords>;
+      if (recordsEnabled) try { records = transcriptRecords(line, due); } catch { /* Malformed native JSON is not a record source. */ }
+      // Privacy flags and policy metadata belong to the source row, not just its extracted text.
+      if (records && !await policy.screen(JSON.parse(line))) { dropRecord("record_policy", Math.max(1, records.parsed.records.length)); records = undefined; }
+      let recordPublication: PendingHookCapture | undefined;
+      if (records) {
+        for (const [reason, count] of Object.entries(records.parsed.drops)) dropRecord(reason as RecordDropReason, count!);
+        if (records.parsed.incomplete) { stopReason = "deadline"; break; }
+        if (records.messageId && records.at) for (const record of records.parsed.records) {
+          const count = recordCounts.get(records.messageId) ?? 0;
+          if (count >= 2) { dropRecord("record_count"); continue; }
+          recordCounts.set(records.messageId, count + 1);
+          if (due()) { stopReason = "deadline"; break; }
+          const publish = () => stageTranscriptCapture({ agent: "claude", event: "Record", excerpt: record.line, paths: record.anchors,
+            at: records!.at, session }, { cwd, base, policy: options.policy, deferAtCapacity: true }, undefined, dropRecord);
+          try {
+            let staged: PendingHookCapture | undefined;
+            try { staged = await publish(); }
+            catch (error) {
+              if (!(error instanceof HookSpoolFull) || due() || !options.onBackpressure || !await options.onBackpressure() || due()) throw error;
+              staged = await publish();
+            }
+            if (staged) recordPublication = staged;
+          } catch (error) {
+            if (error instanceof HookSpoolFull) { stopReason = "spool_full"; break; }
+            throw error;
+          }
+        }
+        if (stopReason) break;
+      }
       let summary: ReturnType<typeof transcriptSummary>;
       try { summary = transcriptSummary(line); } catch { /* Malformed native JSON is not capture. */ }
       if (summary && !await policy.screen(JSON.parse(line))) summary = undefined;
@@ -192,9 +250,15 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       // Carry timestamps without parsing ordinary messages (including across invocation boundaries).
       const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
+      // Stage the whole row before optional replay. A slow replay must not restart
+      // its first Record forever; the remaining durable publications replay later.
+      if (recordPublication && !due()) await options.onPublication?.(recordPublication);
     }
     if (!stopReason && start < length && due()) stopReason = "deadline";
     if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";
+    if (Object.keys(recordDrops).length) appendMetrics(base, Object.entries(recordDrops).map(([reason, count]) => ({
+      at: new Date().toISOString(), kind: "hook", captureDrops: count!, captureDropReason: reason as RecordDropReason,
+    })));
     assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
     db.run("COMMIT");
