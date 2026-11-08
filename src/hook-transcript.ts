@@ -185,6 +185,9 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       catch { start = newline + 1; continue; }
       let records: ReturnType<typeof transcriptRecords>;
       if (recordsEnabled) try { records = transcriptRecords(line, due); } catch { /* Malformed native JSON is not a record source. */ }
+      // Privacy flags and policy metadata belong to the source row, not just its extracted text.
+      if (records && !await policy.screen(JSON.parse(line))) { dropRecord("record_policy", Math.max(1, records.parsed.records.length)); records = undefined; }
+      let recordPublication: PendingHookCapture | undefined;
       if (records) {
         for (const [reason, count] of Object.entries(records.parsed.drops)) dropRecord(reason as RecordDropReason, count!);
         if (records.parsed.incomplete) { stopReason = "deadline"; break; }
@@ -202,7 +205,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
               if (!(error instanceof HookSpoolFull) || due() || !options.onBackpressure || !await options.onBackpressure() || due()) throw error;
               staged = await publish();
             }
-            if (staged) await options.onPublication?.(staged);
+            if (staged) recordPublication = staged;
           } catch (error) {
             if (error instanceof HookSpoolFull) { stopReason = "spool_full"; break; }
             throw error;
@@ -247,6 +250,9 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       // Carry timestamps without parsing ordinary messages (including across invocation boundaries).
       const at = transcriptTimestamp(line); if (at) cursor.at = at;
       start = newline + 1;
+      // Stage the whole row before optional replay. A slow replay must not restart
+      // its first Record forever; the remaining durable publications replay later.
+      if (recordPublication && !due()) await options.onPublication?.(recordPublication);
     }
     if (!stopReason && start < length && due()) stopReason = "deadline";
     if (!stopReason && cursor.offset + start < stat.size && length === HOOK_TRANSCRIPT_BYTES) stopReason = "cap";

@@ -437,6 +437,11 @@ export class CaptureStore {
     const receipt = options.receipt;
     if (receipt !== undefined && (typeof receipt !== "string" || !/^[a-f0-9]{64}$/.test(receipt) || input.at === undefined)) throw new Error("capture receipt needs a stable time and a 64-hex digest");
     const row = this.normalize(input);
+    // Pending hook Records must stay whole when caps or screening change before replay.
+    // Check before receipt derivation or any spool/DB write; retained publications can retry after restoration.
+    if (input.event === "Record" && (row.excerpt !== input.excerpt || JSON.stringify(row.paths) !== JSON.stringify(input.paths ?? []))) {
+      throw new Error("Record capture would be truncated, redacted or lose anchors under the current capture settings; restore its compatible excerptBytes, capturePaths and screening settings before retrying");
+    }
     // Reuse the immutable spool format and its existing unique index: a crash between capture and cursor
     // advance replays exactly the same screened line, whether first written directly or under contention.
     const spoolId = receipt === undefined ? null : createHash("sha256").update(this.spoolLine(row, receipt)).digest("hex");

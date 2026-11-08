@@ -64,6 +64,33 @@ test("Record quota is per native message id within a scan, with no durable count
   await f.scan(); expect((await f.drain()).filter(row => row.event === "Record")).toHaveLength(3);
 });
 
+test("Record extraction screens privacy flags on the complete native source row", async () => {
+  const f = fixture(), line = "amem: finding | src/a.ts | source metadata protected";
+  for (const flag of ["isPrivate", "isPII", "privateTurn", "private", "pii"]) f.add(recordAssistant(`private-${flag}`, line, { [flag]: true }));
+  const nested = recordAssistant("nested-private", line);
+  f.add({ ...nested, message: { ...nested.message, metadata: { is_private: true } } },
+    recordAssistant("public-flags", "amem: finding | src/a.ts | public metadata", { isPrivate: false, isPII: false }));
+  await f.scan();
+  expect((await f.drain()).filter(row => row.event === "Record").map(row => row.excerpt)).toEqual(["amem: finding | src/a.ts | public metadata"]);
+  expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_policy: 6 } });
+});
+
+test("a slow replay opportunity cannot strand the second Record or later transcript rows", async () => {
+  const f = fixture(), first = "amem: finding | src/a.ts | first", second = "amem: finding | src/a.ts | second";
+  f.add(recordAssistant("two-record-row", `${first}\n${second}`), { type: "system", subtype: "away_summary", timestamp: at, content: "later recap" });
+  let callbacks = 0;
+  const scan = () => scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, workBudgetMs: 60,
+    onPublication: async () => { callbacks++; await Bun.sleep(65); } });
+  const one = await scan();
+  expect(one?.offset).toBeGreaterThan(0); expect(one?.stopReason).toBe("deadline");
+  await scan();
+  expect(await scan()).toMatchObject({ offset: Buffer.byteLength(readFileSync(f.transcript)) });
+  const rows = await f.drain();
+  expect(rows.filter(row => row.event === "Record").map(row => row.excerpt).sort()).toEqual([first, second]);
+  expect(rows.filter(row => row.event === "Recap").map(row => row.excerpt)).toEqual(["later recap"]);
+  expect(callbacks).toBe(2);
+});
+
 test("native Record drops are counted by safe reason, with missing identity/time failing closed", async () => {
   const f = fixture();
   const lines = ["amem: other | src/a.ts | invalid", "amem: fix | src/a.ts | no direction", `amem: decision | - | ${"x".repeat(301)}`,

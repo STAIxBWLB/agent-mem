@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stageTranscriptCapture, drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { parseRecordLines, type RecordDropReason } from "../src/hook-record.ts";
@@ -32,6 +32,41 @@ test("a canonical Record uses format 3 and replays its line and anchors exactly 
     expect(capture.rows({ project: f.project })).toMatchObject([{ event: "Record", excerpt: line, paths: ["src/a.ts#read"], session: "a".repeat(16) }]);
   } finally { capture.close(); }
   expect(f.drops).toEqual([]);
+});
+
+test("replay refuses whole Records under changed caps and retains their original pending bytes", async () => {
+  for (const config of [{ excerptBytes: 35 }, { capturePaths: 1 }, { piiPatterns: ["replay whole"] }]) {
+    const f = fixture(), line = "amem: fix | src/a.ts, src/b.ts | replay whole -> retain canonical text";
+    const pending = (await f.stage(line))!, spool = join(f.base, "hook-spool"), original = readFileSync(join(spool, pending.name), "utf8");
+    writeFileSync(join(f.base, "amem.config.json"), JSON.stringify(config), { mode: 0o600 });
+    const capture = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+    try {
+      await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt }));
+      expect(capture.rows({ project: f.project })).toEqual([]);
+    } finally { capture.close(); }
+    if (!("piiPatterns" in config)) {
+      const retained = readdirSync(spool).find(name => name.startsWith(pending.name));
+      expect(retained).toBeDefined();
+      expect(readFileSync(join(spool, retained!), "utf8")).toBe(original);
+    }
+    writeFileSync(join(f.base, "amem.config.json"), "{}", { mode: 0o600 });
+    const restored = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+    try {
+      await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => restored.append(row, { receipt }));
+      const rows = restored.rows({ project: f.project });
+      if ("piiPatterns" in config) expect(rows).toEqual([]); // Current policy retains its existing explicit refusal/retirement rule.
+      else expect(rows).toMatchObject([{ excerpt: line, paths: ["src/a.ts", "src/b.ts"] }]);
+    } finally { restored.close(); }
+  }
+});
+
+test("CaptureStore refuses Record normalization changes before creating a receipt or capture spool", () => {
+  const f = fixture(), line = "amem: fix | src/a.ts, src/b.ts | replay whole -> retain canonical text";
+  const capture = new CaptureStore({ memoryDir: f.base, project: f.project, capturePaths: 1 });
+  try {
+    expect(() => capture.append({ project: f.project, agent: "claude", event: "Record", at: "2026-11-08T00:00:00.000Z", excerpt: line, paths: ["src/a.ts", "src/b.ts"] }, { receipt: "a".repeat(64) })).toThrow("restore its compatible");
+    expect(capture.rows({ project: f.project })).toEqual([]);
+  } finally { capture.close(); }
 });
 
 test("denied anchors, secrets, PII and private spans refuse the whole canonical Record", async () => {
