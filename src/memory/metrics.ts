@@ -40,7 +40,7 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
 
 
 export type CaptureDropReason = "summary_capacity" | "scope_capacity" | "spool_full" | "cwd_removed" | "undrainable_expired" | "scope_unknown" | "project_archived" | "project_forgotten" | "unknown_schema_expired" | "transcript_line_bound" | RecordDropReason;
-const DROP_REASONS: readonly CaptureDropReason[] = ["summary_capacity", "scope_capacity", "spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired", "transcript_line_bound", "record_invalid", "record_count", "record_length", "record_policy"];
+const DROP_REASONS: readonly CaptureDropReason[] = ["summary_capacity", "scope_capacity", "spool_full", "cwd_removed", "undrainable_expired", "scope_unknown", "project_archived", "project_forgotten", "unknown_schema_expired", "transcript_line_bound", "record_invalid", "record_count", "record_length", "record_policy", "record_identity"];
 /** Numeric notice only, bounded to the rolling metric tail; never an all-time counter. Fails open to no counts: hooks never deny over metrics. */
 export function captureDropSummary(base: string): Partial<Record<CaptureDropReason, number>> {
   const read = readCaptureDrops(base);
