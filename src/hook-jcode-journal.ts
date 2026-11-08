@@ -60,11 +60,11 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
       || ![0, 1].includes(cursor.skipping) || !/^(?:[a-f0-9]{64})?$/.test(cursor.title)) throw new Error("jcode journal cursor unavailable");
     // A new inode, or a file shorter than what was read, is a checkpoint replacement: start over; seen title/compactions suppress repeats.
     if (cursor.dev !== String(stat.dev) || cursor.ino !== String(stat.ino) || stat.size < cursor.size || stat.size < cursor.offset) { cursor.offset = 0; cursor.skipping = 0; }
-    // First sight or a long gap: every line repeats the current meta, so only the newest window matters; resume mid-line after it.
-    let from = cursor.offset, partial = cursor.skipping === 1;
+    // #216 review (codex P2): read a bounded window FORWARD from the cursor. Jumping to the tail would discard earlier compactions that a
+    // later summary superseded, so a backlog is worked off over successive turns (256 KiB each) and no complete record is dropped.
+    const from = cursor.offset, partial = cursor.skipping === 1;
     let oversized = 0;
-    if (stat.size - from > HOOK_TRANSCRIPT_BYTES) { from = stat.size - HOOK_TRANSCRIPT_BYTES; partial = true; oversized++; }   // the line cut by the window is skipped and counted
-    const bytes = Buffer.alloc(Math.max(0, stat.size - from));
+    const bytes = Buffer.alloc(Math.min(HOOK_TRANSCRIPT_BYTES, Math.max(0, stat.size - from)));
     const length = readSync(fd, bytes, 0, bytes.length, from);
     const after = fstatSync(fd), live = lstatSync(target.journal);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(target.journal) !== journal) return;
@@ -125,7 +125,9 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
         db.query("INSERT OR IGNORE INTO fallback VALUES (?,?)").run(digest, cursor.readAt);
       }
       const title = typeof newest?.title === "string" ? newest.title.trim() : "";
-      const titleDue = !!title && ownsDir(newest?.working_dir) && Buffer.byteLength(title) <= TITLE_BYTES * 4 && hash(title) !== cursor.title;
+      // The newest line decides the title only once the scan has reached the end of the file; mid-backlog it would stage stale titles.
+      const atEnd = from + start >= stat.size && !skipping;
+      const titleDue = atEnd && !!title && ownsDir(newest?.working_dir) && Buffer.byteLength(title) <= TITLE_BYTES * 4 && hash(title) !== cursor.title;
       if (unpublished) { /* the title waits for the next call with the compactions */ }
       else if (titleDue && due()) { stopReason = "deadline"; unpublished = true; }   // keep the cursor behind the title line too
       else if (titleDue) {

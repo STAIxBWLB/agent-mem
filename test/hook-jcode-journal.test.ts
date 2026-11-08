@@ -159,3 +159,15 @@ test("review P2: a row whose own meta.working_dir names another project is not s
   r.turn(); r.turn(); r.settle(() => false);
   expect(r.rows().filter(x => x.event === "Title").map(x => x.excerpt)).toEqual(["This project title"]);
 });
+
+test("review P2: a backlog larger than one window is read forward from the cursor, so a compaction superseded by a later one is still captured", () => {
+  const r = rig();
+  // Compaction A, then ~600 KiB of ordinary journal lines (more than two 256 KiB windows), then compaction B and the final title.
+  const filler = JSON.stringify({ meta: { title: "old title", updated_at: "2026-11-08T05:00:00.000Z", compaction: null, working_dir: r.f.cwd }, append_messages: ["f".repeat(4000)] }) + "\n";
+  writeFileSync(r.journal, r.line({ title: "old title", working_dir: r.f.cwd, compaction: { summary_text: "summary A superseded later", covers_up_to_turn: 1 } })
+    + filler.repeat(150) + r.line({ title: "final title", working_dir: r.f.cwd, compaction: { summary_text: "summary B newest", covers_up_to_turn: 2 } }));
+  for (let i = 0; i < 6; i++) r.turn();
+  const rows = r.settle(x => x.filter(y => y.event === "Compact").length >= 2 && x.some(y => y.event === "Title"));
+  expect(rows.filter(x => x.event === "Compact").map(x => x.excerpt).sort()).toEqual(["summary A superseded later", "summary B newest"]);
+  expect(rows.filter(x => x.event === "Title").map(x => x.excerpt)).toEqual(["final title"]);
+});
