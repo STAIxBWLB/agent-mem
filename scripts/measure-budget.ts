@@ -11,7 +11,7 @@
  * Every sample is also appended to the seeded home's rolling `metrics.jsonl` (#13 R7): the format the capacity
  * advisor reads, written here until the P3 hooks become the steady-state writers.
  */
-import { budgetGroup } from "./budget-attempt.ts";
+import { budgetGroup, R2_WALL_MAX_MS } from "./budget-attempt.ts";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -103,11 +103,16 @@ try {
   const leftover = ps.split("\n").filter((line) => /budget-(hook|search)-child/.test(line)).length;
 
   const wallTimingPass = plainWall < R2_WALL_P95_MS && spoolWall < R2_WALL_P95_MS && evictWall < R2_WALL_P95_MS;
+  // #302 review (codex P2): with 20 eviction samples one child over the hard maximum no longer reaches the p95, and this script never judged the
+  // maximum at all. Every invocation of the three hook-like groups must stay within the unchanged 300 ms maximum; a miss is its own outcome and
+  // is never re-measured away (budgetGroup's wall-max-miss).
+  const wallMaxMs = Math.max(...plain.map((r) => r.wallMs), ...spooled.map((r) => r.wallMs), ...evictRuns.map((r) => r.wallMs));
+  const wallMaxPass = [...plain, ...spooled, ...evictRuns].every((r) => r.wallMs <= R2_WALL_MAX_MS);
   const peakPass = plainRss > 0 && spoolRss > 0 && evictRss > 0 && plainRss < RSS_HOOK_MB && spoolRss < RSS_HOOK_MB && evictRss < RSS_HOOK_MB;
   const budgets = {
     R1: { pass: leftover === 0, leftoverProcesses: leftover },
     R2: {
-      wallTimingPass, peakPass, pass: wallTimingPass && peakPass,
+      wallTimingPass, wallMaxPass, wallMaxLimitMs: R2_WALL_MAX_MS, wallMaxObservedMs: round(wallMaxMs), peakPass, pass: wallTimingPass && wallMaxPass && peakPass,
       budgetMs: R2_WALL_P95_MS, budgetRssMB: RSS_HOOK_MB,
       append: { runs: HOOK_RUNS, wallP95Ms: round(plainWall), wallMaxMs: round(Math.max(...plain.map((r) => r.wallMs))), peakRssMB: round(plainRss) },
       spoolAndExit: { runs: CONTENTION_RUNS, wallP95Ms: round(spoolWall), wallMaxMs: round(Math.max(...spooled.map((r) => r.wallMs))), peakRssMB: round(spoolRss), drainedRows: captureRows, drainWallMs: round(drain.wallMs) },
@@ -129,6 +134,7 @@ try {
 // A fresh suite restores the original contention, drain and over-cap eviction workloads on retry.
 const measured = await budgetGroup("capture-workloads", measureCapture, report => ({
   wallPass: report.budgets.R2.wallTimingPass,
+  wallMaxPass: report.budgets.R2.wallMaxPass,
   rssPass: report.budgets.R3.pass && report.budgets.R2.peakPass,
 }));
 

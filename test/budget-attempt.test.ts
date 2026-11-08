@@ -456,3 +456,20 @@ test("#302 ruling B and D: eviction measures 20 children so p95 is the 19th valu
   expect(child).toContain("longestTxMs");
   expect(child).toContain("evict: { ms:");
 });
+
+test("#302 review: measure-budget judges the 300 ms maximum for every hook-like group, so one stalled eviction child fails without remeasurement", () => {
+  const source = readFileSync(new URL("../scripts/measure-budget.ts", import.meta.url), "utf8");
+  expect(source).toContain("R2_WALL_MAX_MS");
+  expect(source).toContain("[...plain, ...spooled, ...evictRuns].every((r) => r.wallMs <= R2_WALL_MAX_MS)");
+  expect(source).toContain("wallMaxPass: report.budgets.R2.wallMaxPass");
+});
+
+test("#302 review: 19 fast samples and one over-maximum sample pass p95 but the group still fails as a wall-max miss, once", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  const walls = [...Array.from({ length: 19 }, () => 80), 500], p95 = [...walls].sort((a, b) => a - b)[Math.ceil(walls.length * 0.95) - 1]!;
+  expect(p95).toBe(80);
+  let runs = 0;
+  await expect(budgetGroup("capture-workloads", () => { runs++; return walls; }, w => ({ wallPass: p95 < 150, wallMaxPass: Math.max(...w) <= 300, rssPass: true }),
+    { env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("wall-max-miss");
+  expect(runs).toBe(1);
+});
