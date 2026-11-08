@@ -295,4 +295,26 @@ console.log(JSON.stringify({read,written,ok:synced.ok}));
     try{expect(current.list({project:f.project}).map(value=>value.id).sort()).toEqual([initial!,observed.written].sort());}finally{current.close();}
   },30_000);
 
+  test("#185 AC3: the previous release reads local doi:/arxiv:/run: nodes and a repo line carrying doi:/arxiv: nodes", async () => {
+    const f = fixture();
+    const about = ["doi:10.1000/xyz", "arxiv:2401.01234", "run:abc"];
+    const store = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+    let id: string;
+    try { id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", text: "n1 identifier nodes", about, source: "person" }); } finally { store.close(); }
+    const { planRepoPromotion } = await import("../src/memory/repo-scope.ts");
+    const view = (() => { const s = new MemoryStore({ memoryDir: f.base }); try { return s.get(id, f.project)!; } finally { s.close(); } })();
+    const plan = await planRepoPromotion(f.cwd, view);
+    expect(plan.line.about).toEqual(["doi:10.1000/xyz", "arxiv:2401.01234"]);
+    mkdirSync(join(f.cwd, ".amem"), { recursive: true }); writeFileSync(join(f.cwd, ".amem", "log.jsonl"), plan.text + "\n");
+    const observed = JSON.parse(run(f, `const {MemoryStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const {readRepoScope}=await import(${JSON.stringify(prev("src/memory/repo-scope.ts"))});
+const {createStandalonePolicy}=await import(${JSON.stringify(prev("src/memory/policy.ts"))});
+const s=new MemoryStore({memoryDir:${JSON.stringify(f.base)}});
+let local;try{local=s.get(${JSON.stringify(id)},${JSON.stringify(f.project)})?.about;}finally{s.close();}
+const repo=await readRepoScope(${JSON.stringify(f.cwd)},createStandalonePolicy());
+console.log(JSON.stringify({local,repo:repo.views.map(e=>e.about)}));`)) as { local: string[]; repo: string[][] };
+    expect(observed.local).toEqual(about);
+    expect(observed.repo).toEqual([["doi:10.1000/xyz", "arxiv:2401.01234"]]);
+  });
+
 });

@@ -807,3 +807,19 @@ test("planRepoPromotion asks no remote and writes nothing; the plan's line id is
     expect(existsSync(join(r.repo, ".amem"))).toBe(false);
   } finally { store.close(); }
 });
+
+test("#185 AC1/AC2: public doi:/arxiv: nodes enter repo scope, run: and malformed identifiers are dropped and reported, and all stay local", async () => {
+  const r = rig(); const store = new MemoryStore({ home: r.dir, deferPromotions: true });
+  try {
+    const about = ["doi:10.1000/xyz", "arxiv:2401.01234", "arxiv:2401.01234v2", "arxiv:hep-th/9901001", "run:abc", "doi:10.1000", "doi:11.1000/x", "doi:10.1000/a b", "arxiv:2413.01234", "arxiv:2401.123", "arxiv:"];
+    const id = store.note({ op: "note", project: r.project, scope: "project", tier: "long", kind: "decision", peer: "person", text: "literature strategy", about, source: "person" });
+    const view = store.get(id, r.project)!;
+    expect(view.about).toEqual(about);
+    const plan = await planRepoPromotion(r.repo, view);
+    expect(plan.refusals).toEqual([]);
+    expect(plan.line.about).toEqual(["doi:10.1000/xyz", "arxiv:2401.01234", "arxiv:2401.01234v2", "arxiv:hep-th/9901001"]);
+    expect(plan.droppedNodes).toEqual(["run:abc", "doi:10.1000", "doi:11.1000/x", "doi:10.1000/a b", "arxiv:2413.01234", "arxiv:2401.123", "arxiv:"]);
+    const parsed = parseRepoLine(plan.text);
+    expect("view" in parsed && parsed.view.about).toEqual(plan.line.about);
+  } finally { store.close(); }
+});

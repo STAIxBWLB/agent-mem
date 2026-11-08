@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Keep well-formed public `doi:` and `arxiv:` identifier nodes when promoting a note to repo scope; host-local nodes such as `run:` and malformed identifiers are dropped and listed as before. Hashed entries and both log schemas are unchanged. `docs/contracts.md` names the reserved node prefixes and the host rule (#185).
+
 ## 0.22.1
 
 - Name the interrupted person-migration family when a retained stale profile lock blocks a read, with its exact person-run resume or supported abandon command (#290). Keep lock admission, waits, ownership proof and reclaim behavior unchanged.
