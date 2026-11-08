@@ -46,7 +46,7 @@ test("subagent, unanchored, malformed and mismatched-anchor records never enter 
 test("whole-row policy is applied before a Record receives brief priority", async () => {
   const f = fixture();
   f.append("amem: finding | src/a.ts | permitted"); f.append("amem: finding | src/a.ts | refused");
-  const result = await sessionStartBrief({ ...f.options, policy: { host: { screen: value => !JSON.stringify(value).includes("refused") } } });
+  const result = await sessionStartBrief({ ...f.options, policy: { host: { screen: async value => !JSON.stringify(value).includes("refused") } } });
   expect(lines(result.context).map(row => row.excerpt)).toEqual(["amem: finding | src/a.ts | permitted"]);
 });
 
