@@ -6,6 +6,13 @@ export const CAPTURE_MAX_EXCERPT = 2000;
 export const CAPTURE_MAX_PATHS = 32;
 /** Claude transcript-only events use the existing format-3 transport, never native hook argv. */
 export const TRANSCRIPT_CAPTURE_EVENTS: readonly string[] = ["Title", "Recap", "Compact", "Record"];
+/** A whole-Record policy refusal, distinct from transient storage failures. No receipt or row was written. */
+export class RecordNormalizationRefusal extends Error {
+  constructor() {
+    super("Record capture would be changed by current caps or screening; check amem.config.json or CaptureStore options, then stage a complete Record that fits the current policy");
+    this.name = "RecordNormalizationRefusal";
+  }
+}
 export const TOOL_INPUT_LINE_BYTES = 512;
 const TOOL_INPUT_ORDER = ["command", "pattern", "query", "url", "description", "prompt", "skill", "subject"] as const;
 const TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]);

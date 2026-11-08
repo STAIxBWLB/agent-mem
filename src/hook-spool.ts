@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
 import { parseRecordLines, type ParsedRecord, type RecordDropReason } from "./hook-record.ts";
-import { CAPTURE_MAX_EXCERPT, TRANSCRIPT_CAPTURE_EVENTS, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
+import { CAPTURE_MAX_EXCERPT, TRANSCRIPT_CAPTURE_EVENTS, RecordNormalizationRefusal, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -454,6 +454,13 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
   return true;
 }
 
+/** Reuse the existing body-free policy quarantine; refused Records must not monopolize replay slots. */
+function retireRecordPolicy(base: string, file: OwnedFile): boolean {
+  if (!retireClaim(base, file, true)) return false;
+  appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "record_policy" }]);
+  return true;
+}
+
 const RETIRE_AFTER_MS = 7 * 24 * 3600_000, MISSING_CWD_AFTER_MS = 3600_000;
 interface MaintenanceBudget { files: number; bytes: number }
 const maintenanceBudget = (): MaintenanceBudget => ({ files: DRAIN_FILES, bytes: DRAIN_BYTES });
@@ -875,7 +882,11 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }
       if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp || value.scope === legacyStamp && captureScope(cwd, base, false, undefined, true) !== legacyStamp) { blocked++; continue; }
-      append(input, hash(record.bytes));
+      try { append(input, hash(record.bytes)); }
+      catch (error) {
+        if (!(error instanceof RecordNormalizationRefusal) || input.event !== "Record") throw error;
+        retireRecordPolicy(base, claim); blocked++; continue;
+      }
       if (owns(claim)) { rmSync(claim.file); captured.push(name); }
       else blocked++;
     } catch { blocked++; } // Transient failure keeps the unique claim for a later idempotent retry.
@@ -894,6 +905,7 @@ export const hookSpoolReplayInternals = {
   owns: (file: OwnedFile) => owns(file),
   decoded: (file: OwnedFile) => decoded(file),
   belowFloor: (base: string) => belowFloor(base),
+  retireRecordPolicy: (base: string, file: OwnedFile) => retireRecordPolicy(base, file),
   /** Claim under a caller-chosen deterministic suffix (#217 decision B: hash(plan digest, publication)), never a random one. */
   claimAs(file: OwnedFile, name: string, suffix: string): OwnedFile | undefined {
     const match = namePattern.exec(name);
