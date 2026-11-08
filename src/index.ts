@@ -41,7 +41,7 @@ export * from "./memory/shard-migration.ts";
 export * from "./mcp.ts";
 export * from "./mcp-memory.ts";
 export * from "./memory/policy.ts";
-export { configuredPolicy } from "./memory/config.ts";
+export { configuredPolicy, recordsEnabled } from "./memory/config.ts";
 export * from "./memory/work-lists.ts";
 export * from "./memory/vault.ts";
 
