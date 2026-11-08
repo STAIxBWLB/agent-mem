@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { RECORD_INSTRUCTION } from "./hook-record.ts";
 import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync, type HookProjectReceipt } from "./hook-project.ts";
@@ -7,7 +8,7 @@ import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, 
 import { HookWorkerRss } from "./hook-rss-wire.ts";
 import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
 import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
-import { jcodeHookCapture } from "./hook-jcode.ts";
+import { jcodeHookCapture, jcodeJournalTarget } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
@@ -384,6 +385,13 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     if (args[0] === "jcode") {
       // #203: jcode observers have no stdin and discard stdout; the event and its cwd arrive in the environment.
       const jcode = jcodeHookCapture(process.env);
+      // #216: title and compaction summaries from the session journal's meta, before the turn's own capture so its drain commits them.
+      // Bounded (256 KiB, 40 ms work, never past the handler deadline) and fail open: a fault here never drops ordinary capture.
+      const target = jcodeJournalTarget(process.env, homedir());
+      if (target) try {
+        const { scanJcodeJournal } = await import("./hook-jcode-journal.ts");
+        transcriptProgress = await scanJcodeJournal(target, { base: canonicalPath(memoryHome()), workBudgetMs: 40, deadline: startedAt + deadlineMs - 50 }) ?? transcriptProgress;
+      } catch { transcriptProgress = { stopReason: "unavailable" }; }
       if (!jcode) return "";
       const result = await captureAndWork(jcode.event, jcode.input, { cwd: jcode.cwd, agent: "jcode" }, canonicalPath(memoryHome()), startedAt + deadlineMs - 3);
       if (result) { childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true; }

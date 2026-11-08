@@ -83,13 +83,13 @@ function transcriptTimestamp(line: string): string | undefined {
   return at;
 }
 
-function privateDirectory(dir: string): void {
+export function privateDirectory(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("transcript cursor unavailable");
   chmodSync(dir, 0o700);
 }
-function cursorDatabase(file: string, dev: string, ino: string, size: number): Database {
+export function cursorDatabase(file: string, dev: string, ino: string, size: number): Database {
   const fd = openSync(file, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const stat = fstatSync(fd), named = lstatSync(file);
