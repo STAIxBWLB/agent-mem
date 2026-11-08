@@ -388,7 +388,7 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
       || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude" && !TRANSCRIPT_CAPTURE_EVENTS.includes(c.event)) === v3 || ![...HOOK_EVENTS, ...TRANSCRIPT_CAPTURE_EVENTS].includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
-    if (c.event === "Record" && (c.subagent === true || !recordCapture(c))) return undefined;
+    if (c.event === "Record" && (c.agent !== "claude" || c.subagent === true || !recordCapture(c))) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
       ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }),
       ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) });

@@ -68,13 +68,15 @@ test("opt-out and subagent attribution suppress Record without suppressing exist
 });
 
 test("replay refuses a forged Record with otherwise valid normalized capture bytes", async () => {
-  const f = fixture(), staged = (await f.stage("amem: decision | - | settled"))!, file = join(f.base, "hook-spool", staged.name);
-  const body = JSON.parse(readFileSync(file, "utf8"));
-  body.capture = normalizeCaptureFields({ ...body.capture, excerpt: "not a canonical record" });
-  writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
-  const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
-  try {
-    await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt }));
-    expect(capture.rows({ project: f.project })).toEqual([]);
-  } finally { capture.close(); }
+  for (const changed of [{ excerpt: "not a canonical record" }, { agent: "jcode" }]) {
+    const f = fixture(), staged = (await f.stage("amem: decision | - | settled"))!, file = join(f.base, "hook-spool", staged.name);
+    const body = JSON.parse(readFileSync(file, "utf8"));
+    body.capture = normalizeCaptureFields({ ...body.capture, ...changed });
+    writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
+    const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+    try {
+      await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt }));
+      expect(capture.rows({ project: f.project })).toEqual([]);
+    } finally { capture.close(); }
+  }
 });
