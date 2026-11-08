@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RECORD_INSTRUCTION } from "../src/hook-record.ts";
+import { RECORD_INSTRUCTION, type RecordDropReason } from "../src/hook-record.ts";
 import { HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, runHook } from "../src/hooks.ts";
-import { readMetrics } from "../src/memory/metrics.ts";
+import { appendMetrics, captureDropSummary, readMetrics } from "../src/memory/metrics.ts";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 
 const clean: (() => void)[] = [];
@@ -16,6 +16,21 @@ function fixture(config?: object) {
 }
 const context = (result: Awaited<ReturnType<typeof runHook>>) => result.output?.hookSpecificOutput.additionalContext;
 const cost = () => Buffer.byteLength(RECORD_INSTRUCTION) + 1;
+
+test("record refusals stay in metrics without adding SessionStart capture-loss notices", async () => {
+  const f = fixture(); await f.seed();
+  const reasons: RecordDropReason[] = ["record_invalid", "record_count", "record_length", "record_policy", "record_identity", "record_timestamp"];
+  appendMetrics(f.base, reasons.map(captureDropReason => ({ at: new Date().toISOString(), kind: "hook", captureDrops: 2, captureDropReason })));
+  const result = await runHook("SessionStart", { source: "resume" }, f.options, { deadlineMs: 2000 });
+  expect(context(result)).toStartWith(`${RECORD_INSTRUCTION}\nUntrusted project memory data`);
+  expect(context(result)).not.toContain("capture dropped:");
+  expect(captureDropSummary(f.base)).toEqual(Object.fromEntries(reasons.map(reason => [reason, 2])));
+
+  appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "spool_full" }]);
+  const withLoss = await runHook("SessionStart", { source: "resume" }, f.options, { deadlineMs: 2000 });
+  expect(context(withLoss)).toContain("capture dropped: spool full (1)");
+  expect(context(withLoss)).not.toContain("capture dropped: record");
+});
 
 for (const source of ["startup", "resume"]) test(`record instruction precedes valid ${source} context and metrics count only emitted instruction`, async () => {
   const f = fixture(); await f.seed();
