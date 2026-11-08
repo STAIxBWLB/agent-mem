@@ -284,8 +284,14 @@ export function namesPrivatePath(text: string): boolean {
   return HOME_PATH.some(re => re.test(folded)) || (home.length > 3 && folded.includes(home));
 }
 const SAFE_NODE = /^(?:path|symbol|issue):/;
-/** A graph node that may be committed: a repository-relative path or symbol, or an issue. Private task, goal and memory references and absolute or escaping paths stay out. */
+// Offline syntax only (#185): no lookup. DOI `10.<registrant>/<suffix>` with printable, space-free ASCII suffix; arXiv new (`YYMM.NNNN[N]`) and old (`archive[.XX]/YYMMNNN`) ids, optional `vN`.
+const DOI_NODE = /^doi:10\.\d{4,9}(?:\.\d+)*\/[\x21-\x7e]+$/;
+const ARXIV_NODE = /^arxiv:(?:\d{2}(?:0[1-9]|1[0-2])\.\d{4,5}|[a-z]+(?:-[a-z]+)*(?:\.[A-Z]{2})?\/\d{2}(?:0[1-9]|1[0-2])\d{3})(?:v[1-9]\d*)?$/;
+/** A public literature identifier (`doi:` or `arxiv:`) that is well formed and so may be committed to repo scope. */
+export function publicIdentifierNode(node: string): boolean { return DOI_NODE.test(node) || ARXIV_NODE.test(node); }
+/** A graph node that may be committed: a repository-relative path or symbol, an issue, or a well-formed public `doi:`/`arxiv:` identifier. Private task, goal, memory and host-local (`run:`) references, malformed identifiers and absolute or escaping paths stay out. */
 function committableNode(node: string): boolean {
+  if (node.startsWith("doi:") || node.startsWith("arxiv:")) return publicIdentifierNode(node);
   if (!SAFE_NODE.test(node)) return false;
   const where = node.startsWith("path:") ? node.slice(5) : node.startsWith("symbol:") && node.includes("@") ? node.slice(node.lastIndexOf("@") + 1) : "";
   if (!where) return !node.startsWith("path:") && !node.startsWith("symbol:");
