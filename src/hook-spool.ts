@@ -882,7 +882,9 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }
       if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp || value.scope === legacyStamp && captureScope(cwd, base, false, undefined, true) !== legacyStamp) { blocked++; continue; }
-      try { append(input, hash(record.bytes)); }
+      try {
+        append(input, hash(record.bytes));
+      }
       catch (error) {
         if (!(error instanceof RecordNormalizationRefusal) || input.event !== "Record") throw error;
         retireRecordPolicy(base, claim); blocked++; continue;
