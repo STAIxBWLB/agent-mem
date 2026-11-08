@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Export `recordsEnabled(base, cwd?)` for hosts to check the effective home/repository Record policy before instruction emission or capture (#332). SessionStart and Stop transcript capture share the accessor; absent values stay enabled, either false disables Records, and malformed configuration still throws. Existing exports and storage formats are unchanged.
+
 ## 0.23.0
 
 - Add `createPlacementAttestation(home)` for installed host library writers (#317, #319), sharing the CLI's fresh floor, effective-inventory, receipt and pin checks. The lazy callback derives its executing package root without an override and leaves legacy sync, person-only activation and placement state unchanged; safe typed refusals include the person-run remedy.
