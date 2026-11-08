@@ -9,6 +9,13 @@ import { PLACEMENT_PROFILE_SCHEMA, validatePlacementBaseV2, type PlacementBaseV2
 
 export const PLACEMENT_ACTIVATION_MIN_READER = "0.21.0";
 const preview = "amem migrate --sync-placement --dry-run";
+/** Typed only for safe adapter diagnostics; the floor predicate and remedy stay shared. */
+export class PlacementHomeFloorError extends Error {
+  constructor(minReader: string) {
+    super(`Sync placement requires a person-authored home floor of ${minReader} or later in formats.json; have the person append that record, then rerun ${preview}.`);
+    this.name = "PlacementHomeFloorError";
+  }
+}
 function requireHomeFloor(home: string,minReader:string): string {
   assertFormatFloor(home, "curated"); assertFormatFloor(home, "sync");
   const floors = readFormatFloors(home), minimum = minReader.split(".").map(Number);
@@ -18,7 +25,7 @@ function requireHomeFloor(home: string,minReader:string): string {
     for (let i = 0; i < 3; i++) if (parts[i] !== minimum[i]) return parts[i]! > minimum[i]!;
     return true;
   });
-  if (!adequate) throw Error(`Sync placement requires a person-authored home floor of ${minReader} or later in formats.json; have the person append that record, then rerun ${preview}.`);
+  if (!adequate) throw new PlacementHomeFloorError(minReader);
   return hashJSON(floors);
 }
 export function requirePlacementHomeFloor(home:string):string{return requireHomeFloor(home,PLACEMENT_ACTIVATION_MIN_READER);}

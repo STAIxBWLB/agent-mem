@@ -1,15 +1,17 @@
-/** CLI adapter only. Expected locators are never returned as fresh writer facts. */
+/** CLI/host adapter. Expected locators are never returned as fresh writer facts. */
 import { types } from "node:util";
-import { realPath } from "./memory/platform.ts";
+import { fileURLToPath } from "node:url";
+import { canonicalPath, realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
 import { readSetupWriterRoots } from "./setup.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
-import { requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
+import { PlacementHomeFloorError, requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
+import { FormatFloorError } from "./memory/formats.ts";
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 import { SharedWriterRevisionError } from "./memory/sync-placement-writer-revision-format.ts";
 
-export type PlacementWriterRootCategory = "running CLI" | "setup receipt" | "declared writer" | "active locator" | "home floor" | "writer renewal";
+export type PlacementWriterRootCategory = "running CLI" | "host package" | "setup receipt" | "declared writer" | "active locator" | "home floor" | "writer renewal";
 export type PlacementWriterContextPhase = "initial" | "active";
 const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
   "below-minimum":"release is below 0.21.0", "wrong-package":"package is not @staix/agent-mem", "writable-runtime":"runtime code is group- or world-writable", unreadable:"runtime files are unreadable or missing",
@@ -30,11 +32,12 @@ export class PlacementWriterContextError extends Error {
   }
 }
 function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
+  if (error && typeof error === "object" && !types.isProxy(error) && (error instanceof PlacementHomeFloorError || error instanceof FormatFloorError)) return new PlacementWriterContextError("home floor","unavailable",phase);
   if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="pending"||code==="staging")return new PlacementWriterContextError("writer renewal","unavailable",phase,undefined,code);}
   if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementWriterContextError) {
     const fields=Object.getOwnPropertyDescriptors(error),root=fields.category,cause=fields.causeClass,detail=fields.detail;
     const category:unknown=root&&"value"in root?root.value:undefined,causeClass:unknown=cause&&"value"in cause?cause.value:undefined;
-    if (typeof category==="string" && ["running CLI","setup receipt","declared writer","active locator","home floor","writer renewal"].includes(category)
+    if (typeof category==="string" && ["running CLI","host package","setup receipt","declared writer","active locator","home floor","writer renewal"].includes(category)
       && typeof causeClass==="string" && ["missing","changed","unavailable"].includes(causeClass)) {
       const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
       const state=fields.renewalState?.value;
@@ -93,8 +96,9 @@ export function initialPlacementWriterContext(home: string, roots: readonly stri
 /** Active callbacks re-read the bound locator AND measure every package anew. No activation or renewal occurs. */
 export function activePlacementWriterContext(home: string, ownRoot: string): PlacementWriterContext {
   const read = () => {
-    requirePlacementHomeFloor(home);
-    const effective=readEffectiveSyncPlacementWriters(home);
+    try { requirePlacementHomeFloor(home); } catch (error) { throw safeRefusal(error,"home floor"); }
+    let effective: ReturnType<typeof readEffectiveSyncPlacementWriters>;
+    try { effective=readEffectiveSyncPlacementWriters(home); } catch (error) { throw safeRefusal(error,"active locator"); }
     const roots=effective.roots;if(!roots)return fail("active locator","unavailable");
     const needed = required(home,ownRoot);
     if(!roots.includes(needed.own))return fail("running CLI","missing");
@@ -111,6 +115,26 @@ export function activePlacementWriterContext(home: string, ownRoot: string): Pla
     try { return { writers: read().writers, legacySyncQuiesced: true }; }
     catch (error) { context.lastRefusal = safeRefusal(error,"active locator"); throw context.lastRefusal; }
   } }; return context;
+}
+
+/**
+ * Host sync port bound to this executing installation, never a caller-selected root.
+ * Legacy sync ignores the lazy port. Each invoked v3 check re-reads all expected
+ * inventory and measures every root again; the cached context is not fresh proof.
+ */
+export function createPlacementAttestation(home: string): PlacementCapturePort["attest"] {
+  const base = canonicalPath(home), ownRoot = fileURLToPath(new URL("..", import.meta.url));
+  let context: PlacementWriterContext | undefined;
+  return () => {
+    try {
+      context ??= activePlacementWriterContext(base, ownRoot);
+      return context.attest();
+    } catch (error) {
+      const refusal = safeRefusal(error, "active locator");
+      if (refusal.category === "running CLI") throw new PlacementWriterContextError("host package", refusal.causeClass, refusal.phase, refusal.detail, refusal.renewalState);
+      throw refusal;
+    }
+  };
 }
 
 /** Person preview only: incomplete measurements remain explicit and never become an attestation. */
