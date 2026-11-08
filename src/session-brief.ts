@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow } from "./memory/capture.ts";
+import { parseRecordLines } from "./hook-record.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -97,6 +98,14 @@ function captureDisplay(row: CaptureRow): { data: unknown; partial: boolean } {
   const paths = row.paths.slice(0, 2).map(path => displayText(path, 80));
   return { data: { id: row.id, at: row.at, event: event.text, paths: paths.map(path => path.text), excerpt: excerpt.text },
     partial: excerpt.partial || event.partial || row.paths.length > paths.length || paths.some(path => path.partial) };
+}
+
+/** Keep the canonical Record whole; an unanchored or malformed capture is not a repository record. */
+function recordDisplay(row: CaptureRow): { data: unknown; partial: boolean } | undefined {
+  const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
+  if (!record || parsed.records.length !== 1 || Object.keys(parsed.drops).length || record.line !== row.excerpt
+    || !record.anchors.length || JSON.stringify(record.anchors) !== JSON.stringify(row.paths)) return;
+  return { data: { event: "Record", paths: record.anchors, excerpt: record.line }, partial: false };
 }
 
 /** A short-lived, model-free projection. The hook host supplies the hard process deadline; this function owns no timer or child. */
@@ -204,6 +213,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
             if (section === "capture" && skipCaptureIds.has((row as { id: number }).id)) continue;
             // #173: subagent capture stays searchable but never enters the session brief.
             if (section === "capture" && (row as { subagent?: unknown }).subagent === true) continue;
+            // Records have their own five-row, whole-line selection before raw captures.
+            if (section === "capture" && (row as { event?: unknown }).event === "Record") continue;
             if (!await screen(row)) continue;
             if (selected++ >= SECTION_RECORDS) { coverage[section] = "partial"; return; }
             await add(section, display(row), section === "curated");
@@ -250,6 +261,16 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
         const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession || options.measureOnly ? { readOnly: true, busyTimeoutMs: options.measureOnly ? 1000 : 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
         if (capture.recentReadTruncated) coverage.capture = "partial";
+        const records = capture.readBriefRecords();
+        if (records.partial) coverage.capture = "partial";
+        let selectedRecords = 0;
+        for (const row of records.rows) {
+          if (row.project !== project || row.subagent === true) continue;
+          if (selectedRecords >= 5) { coverage.capture = "partial"; break; }
+          if (!await screen(row)) continue;
+          const shown = recordDisplay(row);
+          if (shown && await add("capture", shown, false)) selectedRecords++;
+        }
         const summaries = capture.readBriefSummaries(), summaryIds = new Set<number>();
         if (summaries.partial) coverage.capture = "partial";
         let selectedSummaries = 0;

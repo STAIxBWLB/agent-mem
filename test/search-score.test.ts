@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rankedScore, rankedScoreDetails } from "../src/memory/search-score.ts";
-import { ftsTerms, fts5Available, ScreenedSearchIndex, setFts5AvailableForTest } from "../src/memory/search-fts.ts";
+import { captureEventWeight, captureEventWeightSql, captureWeightedScore, rankedScore, rankedScoreDetails, rankedScoreSql } from "../src/memory/search-score.ts";
+import { captureSearch, ftsTerms, fts5Available, ScreenedSearchIndex, setFts5AvailableForTest } from "../src/memory/search-fts.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 
@@ -77,4 +77,41 @@ test("library FTS-unavailable fallback reports unapplied factors as null", () =>
     const result = store.search("needle", { project, explain: true });
     expect(result.hits[0]!.scoreDetails).toEqual({ source: "curated", rawBm25Rank: null, tierFactor: null, recencyFactor: null, finalScore: 0, matchMode: "substring" });
   } finally { store.close(); }
+});
+
+
+test("Record weight is 1.5 with numeric/SQL parity while every previous event keeps its weight", () => {
+  const db = new Database(":memory:");
+  try {
+    const events = ["Record", "Stop", "UserPromptSubmit", "Title", "Recap", "Compact", "PostToolUse", "SessionStart", "unknown"];
+    const weight = db.query(`WITH row(event) AS (VALUES (?)) SELECT ${captureEventWeightSql("event")} AS weight FROM row`);
+    for (const event of events) {
+      const expected = event === "Record" ? 1.5 : ["Stop", "UserPromptSubmit", "Title", "Recap", "Compact"].includes(event) ? 1.25 : 1;
+      expect(captureEventWeight(event)).toBe(expected);
+      expect(weight.get(event)).toEqual({ weight: expected });
+      for (const days of [-2, 0, 30, 300]) {
+        const at = new Date(now - days * day).toISOString();
+        const value = db.query(`WITH row(event,at,tier) AS (VALUES (?,?,'capture')) SELECT ${rankedScoreSql("-0.125")} * ${captureEventWeightSql("event")} AS score FROM row`).get(event, at, new Date(now).toISOString()) as { score: number };
+        expect(value.score).toBeCloseTo(captureWeightedScore(-0.125, event, at, now), 12);
+      }
+    }
+    expect(captureWeightedScore(-0.125, "Record", new Date(now).toISOString(), now)).toBeGreaterThan(captureWeightedScore(-0.125, "Recap", new Date(now).toISOString(), now));
+  } finally { db.close(); }
+});
+
+
+test.skipIf(!fts5Available())("Record weighting changes only the capture representative order, not raw rank or session grouping", () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-record-rank-")); roots.push(root);
+  const capture = new CaptureStore({ home: root, project: "record-rank", now: () => now });
+  const text = "amem: finding | src/record.ts | recordrankneedle", at = new Date(now).toISOString(), ids: number[] = [];
+  try {
+    for (const [event, session] of [["PostToolUse", undefined], ["Recap", "a".repeat(16)], ["Record", "a".repeat(16)], ["Recap", "b".repeat(16)]] as const) {
+      const row = capture.append({ project: "record-rank", agent: "claude", event, at, excerpt: text, paths: ["src/record.ts"], ...(session ? { session } : {}) });
+      if (!("id" in row)) throw Error("fixture unexpectedly spooled"); ids.push(row.id);
+    }
+    const hits = captureSearch(capture.dir, "recordrankneedle", 10, undefined, { now });
+    expect(hits.map(hit => hit.row.id)).toEqual([ids[2]!, ids[3]!, ids[0]!]);
+    expect(hits.every(hit => hit.rank === hits[0]!.rank)).toBe(true);
+    expect(captureSearch(capture.dir, "recordrankneedle", 1, undefined, { now }).map(hit => hit.row.id)).toEqual([ids[2]!]);
+  } finally { capture.close(); }
 });

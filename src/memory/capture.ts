@@ -292,6 +292,7 @@ export class CaptureStore {
       // #173: additive nullable columns. Older readers use explicit or `SELECT *` column names and ignore extras.
       addAttributionColumns(db);
       this.ensureBriefSummaryIndex(true);
+      this.ensureBriefRecordIndex(true);
       this.ensureFts();
     } catch (error) {
       if (!lockError(error)) { db.close(); throw error; }
@@ -390,7 +391,7 @@ export class CaptureStore {
   private briefReady = false;
   private prepareBriefSummaryIndex(): void {
     if (this.readOnly || this.briefReady) return;
-    try { this.ensureBriefSummaryIndex(false); this.briefReady = true; }
+    try { this.ensureBriefSummaryIndex(false); this.ensureBriefRecordIndex(false); this.briefReady = true; }
     catch { /* Optional summary coverage remains partial; query engines remain independent. */ }
   }
   /** One-time MCP read cost only: hooks neither create this derived index nor scan history to fill it. */
@@ -664,6 +665,40 @@ export class CaptureStore {
     };
     // Keep the small-store decision and build atomic against a concurrent older writer.
     if (bounded) this.db.transaction(build).immediate(); else build();
+  }
+
+  /** Share the summary index's atomic small-store and off-hook preparation rules. */
+  private ensureBriefRecordIndex(bounded: boolean): void {
+    if (this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_records_v1' AND type='index'").get()) return;
+    const build = () => {
+      if (bounded) {
+        const count = (this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT 129)").get() as { n: number }).n;
+        if (count > 128) return;
+      }
+      this.db.run("CREATE INDEX IF NOT EXISTS rows_brief_records_v1 ON rows(project,at,id) WHERE event='Record' AND (subagent IS NULL OR subagent != 1)");
+    };
+    if (bounded) this.db.transaction(build).immediate(); else build();
+  }
+
+  /** A separate derived index leaves the released summary predicate unchanged. */
+  readBriefRecords(limit = BRIEF_SUMMARY_CANDIDATES): { rows: CaptureRow[]; partial: boolean } {
+    this.checkReadBinding();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_SUMMARY_CANDIDATES) throw new Error("invalid brief Record limit; use an integer from 1 to 32");
+    const indexed = !!this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_records_v1' AND type='index'").get();
+    let rows: RawRow[], partial = false;
+    if (indexed) {
+      rows = this.db.query("SELECT * FROM rows INDEXED BY rows_brief_records_v1 WHERE project=? AND event='Record' AND (subagent IS NULL OR subagent != 1) ORDER BY at DESC,id DESC LIMIT ?")
+        .all(this.key, limit + 1) as RawRow[];
+    } else {
+      // ponytail: inspect only 128 recent legacy rows until off-hook search prepares
+      // the index; an explicit bounded index-preparation command is the upgrade.
+      const hasSubagent = (this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).some(column => column.name === "subagent");
+      const subagent = hasSubagent ? " AND (subagent IS NULL OR subagent != 1)" : "";
+      rows = this.db.query(`SELECT * FROM (SELECT * FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 128) WHERE project=? AND event='Record'${subagent} ORDER BY at DESC,id DESC LIMIT ?`)
+        .all(this.key, limit + 1) as RawRow[];
+      partial = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all().length > 128;
+    }
+    return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
   }
 
   /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */

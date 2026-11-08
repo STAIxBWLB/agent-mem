@@ -14,16 +14,18 @@ type ScoreExpr = { op: "rank" | "tier" | "age" } | { op: "constant"; value: numb
 const MONTH_DAYS = 30;
 const TIER_WEIGHTS: Readonly<Record<string, number>> = { long: 1, capture: 0.5 };
 const DEFAULT_TIER_WEIGHT = 0.9;
-// ponytail: fixed 1.25x ceiling for conversational capture, not a learned relevance model.
+// ponytail: fixed 1.25x conversation and 1.5x Record weights, not a learned relevance model.
 // Raise it only with fresh S/M no-loss and private-capture evidence; curated tier factors stay unchanged.
 export const CAPTURE_CONVERSATION_WEIGHT = 1.25;
+const CAPTURE_RECORD_WEIGHT = 1.5;
 const CONVERSATIONAL_CAPTURE_EVENTS = ["Stop", "UserPromptSubmit", "Title", "Recap", "Compact"] as const;
 export function captureEventWeight(event: string): number {
+  if (event === "Record") return CAPTURE_RECORD_WEIGHT;
   return (CONVERSATIONAL_CAPTURE_EVENTS as readonly string[]).includes(event) ? CAPTURE_CONVERSATION_WEIGHT : 1;
 }
 /** Only fixed internal SQL identifiers are supplied by callers; event values remain stored data. */
 export function captureEventWeightSql(eventColumn: string): string {
-  return `(CASE WHEN ${eventColumn} IN (${CONVERSATIONAL_CAPTURE_EVENTS.map(event => `'${event}'`).join(", ")}) THEN ${CAPTURE_CONVERSATION_WEIGHT} ELSE 1.0 END)`;
+  return `(CASE WHEN ${eventColumn} = 'Record' THEN ${CAPTURE_RECORD_WEIGHT} WHEN ${eventColumn} IN (${CONVERSATIONAL_CAPTURE_EVENTS.map(event => `'${event}'`).join(", ")}) THEN ${CAPTURE_CONVERSATION_WEIGHT} ELSE 1.0 END)`;
 }
 const TIER_FACTOR: ScoreExpr = { op: "tier" };
 const DENOMINATOR: ScoreExpr = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
