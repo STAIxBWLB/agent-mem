@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stageHookCapture, stageTranscriptCapture, drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { applyHookSpoolReplay, planHookSpoolReplay } from "../src/hook-spool-replay.ts";
@@ -95,6 +95,24 @@ test("off-hook replay uses the same whole-Record retirement on current cap refus
   const receipt = await applyHookSpoolReplay({ base: f.base, plan });
   expect(receipt).toMatchObject({ applied: 0, spooled: 0, retired: 1, retained: 0, outcomes: [{ outcome: "skipped" }] });
   expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_policy: 1 } });
+});
+
+test("a failed refusal count preserves the owned Record body until counting can precede retirement", async () => {
+  const f = fixture(), pending = (await f.stage("amem: fix | src/a.ts, src/b.ts | cap drift -> decline the whole record"))!;
+  const spool = join(f.base, "hook-spool"), original = readFileSync(join(spool, pending.name), "utf8"), metrics = join(f.base, "metrics.jsonl");
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ capturePaths: 1 }), { mode: 0o600 }); mkdirSync(metrics);
+  const capture = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.cwd });
+  const drain = () => drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, expectedScope: hookCaptureScope(f.cwd, f.base), timeRemaining: () => 2000 }, (row, receipt) => capture.append(row, { receipt }));
+  try {
+    expect(await drain()).toMatchObject({ captured: [], blocked: 1 });
+    const retained = readdirSync(spool).find(name => name.startsWith(pending.name));
+    expect(retained).toBeDefined(); expect(readFileSync(join(spool, retained!), "utf8")).toBe(original);
+    expect(capture.rows({ project: f.project })).toEqual([]);
+    rmSync(metrics, { recursive: true });
+    await drain();
+    expect(readdirSync(spool).some(name => name.startsWith(pending.name))).toBe(false);
+    expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: { record_policy: 1 } });
+  } finally { capture.close(); }
 });
 
 test("denied anchors, secrets, PII and private spans refuse the whole canonical Record", async () => {

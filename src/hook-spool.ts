@@ -456,9 +456,9 @@ function retireClaim(base: string, file: OwnedFile, preserve: boolean, batch?: Q
 
 /** Reuse the existing body-free policy quarantine; refused Records must not monopolize replay slots. */
 function retireRecordPolicy(base: string, file: OwnedFile): boolean {
-  if (!retireClaim(base, file, true)) return false;
+  if (!owns(file)) return false;
   appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "record_policy" }]);
-  return true;
+  return retireClaim(base, file, true);
 }
 
 const RETIRE_AFTER_MS = 7 * 24 * 3600_000, MISSING_CWD_AFTER_MS = 3600_000;
