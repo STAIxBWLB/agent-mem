@@ -20,6 +20,7 @@ async function runtime(root: string) {
     platform: await load("memory/platform.ts") as typeof import("../src/memory/platform.ts"),
     record: await load("hook-record.ts") as typeof import("../src/hook-record.ts"),
     config: await load("memory/config.ts") as typeof import("../src/memory/config.ts"),
+    project: await load("memory/project.ts") as typeof import("../src/memory/project.ts"),
   };
 }
 async function projectBytes(api: Awaited<ReturnType<typeof runtime>>, base: string, cwd: string, project: string) {
@@ -96,7 +97,11 @@ async function main() {
   const baseline = await runtime(resolve(values["--baseline"])), candidate = await runtime(resolve(values["--candidate"]));
   const scratch = mkdtempSync(join(tmpdir(), "amem-record-context-"));
   try {
-    const raw = join(scratch, "raw"), recorded = join(scratch, "recorded"), project = "record-context-fixture";
+    for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/fixture/record-context.git"]]) {
+      const git = candidate.platform.memoryGitSync(args, { cwd: scratch, encoding: "utf8", timeout: 2000, maxBuffer: 256 * 1024 });
+      if (git.status !== 0) throw Error("fixture repository setup failed; check local Git availability before rerunning");
+    }
+    const raw = join(scratch, "raw"), recorded = join(scratch, "recorded"), project = candidate.project.memoryProjectKey(scratch, { repositoryIsolation: true });
     await seed(candidate, raw, project, false); await seed(candidate, recorded, project, true);
     const before = await projectBytes(baseline, raw, scratch, project), after = await projectBytes(candidate, recorded, scratch, project);
     const unchanged = await projectBytes(candidate, raw, scratch, project);
