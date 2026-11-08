@@ -40,6 +40,12 @@ function child(script: string, home: string, extraEnv: Record<string, string> = 
   return { wallMs, out: JSON.parse(r.stdout.trim().split("\n").at(-1)!) as Record<string, unknown> };
 }
 
+const EVICT_RUNS = 20;
+const evictPhase = (run: { out: Record<string, unknown> }, key: "ms" | "batches" | "longestTxMs"): number => {
+  const phases = run.out.evict as Record<string, unknown> | undefined, value = phases?.[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error("budget child returned no eviction phase timing");
+  return value;
+};
 async function measureCapture() {
 const home = mkdtempSync(join(tmpdir(), "amem-budget-"));
 const memory = new MemoryStore({ home, screen: () => "keep" });
@@ -80,7 +86,8 @@ try {
     for (let i = 0; i < 6000; i++) big.append({ project: "budget-evict", agent: "measure", event: "PostToolUse", excerpt: `eviction row ${i} ${"z".repeat(1100)}` });
     big.close();
   }
-  const evictRuns = Array.from({ length: 10 }, () => child("budget-hook-child.ts", home, { AMEM_BUDGET_CAP_MB: "1", AMEM_BUDGET_PROJECT: "budget-evict" }));
+  // #302 (owner ruling B): 20 runs, so the nearest-rank p95 is the 19th value and one stalled child no longer decides the group.
+  const evictRuns = Array.from({ length: EVICT_RUNS }, () => child("budget-hook-child.ts", home, { AMEM_BUDGET_CAP_MB: "1", AMEM_BUDGET_PROJECT: "budget-evict" }));
   const evictWall = p95(evictRuns.map((r) => r.wallMs)), evictRss = Math.max(...evictRuns.map((r) => rssMB(Number(r.out.maxRSS))));
   for (const r of evictRuns) samples.push({ at: new Date().toISOString(), kind: "hook", wallMs: round(r.wallMs), rssMB: round(rssMB(Number(r.out.maxRSS))) });
 
@@ -104,7 +111,9 @@ try {
       budgetMs: R2_WALL_P95_MS, budgetRssMB: RSS_HOOK_MB,
       append: { runs: HOOK_RUNS, wallP95Ms: round(plainWall), wallMaxMs: round(Math.max(...plain.map((r) => r.wallMs))), peakRssMB: round(plainRss) },
       spoolAndExit: { runs: CONTENTION_RUNS, wallP95Ms: round(spoolWall), wallMaxMs: round(Math.max(...spooled.map((r) => r.wallMs))), peakRssMB: round(spoolRss), drainedRows: captureRows, drainWallMs: round(drain.wallMs) },
-      evictionAfterShrink: { runs: evictRuns.length, wallP95Ms: round(evictWall), wallMaxMs: round(Math.max(...evictRuns.map((r) => r.wallMs))), peakRssMB: round(evictRss) },
+      // Ruling D: per-phase eviction timing from the child, so a red run names its phase (eviction ms, batches, longest transaction ms).
+      evictionAfterShrink: { runs: evictRuns.length, wallP95Ms: round(evictWall), wallMaxMs: round(Math.max(...evictRuns.map((r) => r.wallMs))), peakRssMB: round(evictRss),
+        phases: { evictMsMax: round(Math.max(...evictRuns.map((r) => evictPhase(r, "ms")))), batchesMax: Math.max(...evictRuns.map((r) => evictPhase(r, "batches"))), longestTxMsMax: round(Math.max(...evictRuns.map((r) => evictPhase(r, "longestTxMs")))), evictMsPerRun: evictRuns.map((r) => round(evictPhase(r, "ms"))) } },
     },
     R3: { pass: idleRss < RSS_IDLE_MB && searchRss < RSS_SEARCH_MB, idleRssMB: round(idleRss), peakRssMB: round(searchRss), budgetIdleMB: RSS_IDLE_MB, budgetPeakMB: RSS_SEARCH_MB, engine: search.out.engine },
   };

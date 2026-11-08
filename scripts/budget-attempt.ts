@@ -122,7 +122,7 @@ export interface BudgetGroupAttempt<T> {
 }
 /** One re-measure: slow-runner wall misses by default, or the existing MCP single-stall rule. */
 export async function budgetGroup<T>(check: string, run: () => T | Promise<T>, judge: (result: T) => { wallPass: boolean; rssPass: boolean; wallMaxPass?: boolean },
-  options: { probe?: () => RunnerProbe | Promise<RunnerProbe>; baseline?: RunnerBaseline; record?: (attempt: BudgetGroupAttempt<T>) => void; retryPolicy?: "slow-wall" | "stall" } = {}): Promise<{ result: T; attempts: BudgetGroupAttempt<T>[] }> {
+  options: { probe?: () => RunnerProbe | Promise<RunnerProbe>; baseline?: RunnerBaseline; record?: (attempt: BudgetGroupAttempt<T>) => void; retryPolicy?: "slow-wall" | "stall"; env?: NodeJS.ProcessEnv } = {}): Promise<{ result: T; attempts: BudgetGroupAttempt<T>[] }> {
   const probe = options.probe ?? probeRunnerSpeed, baseline = options.baseline ?? RUNNER_BASELINES[process.platform];
   if (!baseline) throw Error("runner baseline unavailable for this platform");
   const record = options.record ?? (attempt => console.log(JSON.stringify(attempt))), attempts: BudgetGroupAttempt<T>[] = [], retryPolicy = options.retryPolicy ?? "slow-wall";
@@ -142,7 +142,11 @@ export async function budgetGroup<T>(check: string, run: () => T | Promise<T>, j
       ...(!failed ? { result } : { error: failure instanceof Error ? failure.message : String(failure), ...(failure instanceof BudgetStall ? { values: failure.values } : {}) }) };
     attempts.push(receipt); record(receipt);
     if (outcome === "pass") return { result: result!, attempts };
-    if (outcome === "wall-miss" && attempt === 1 && (retryPolicy === "stall" ? failure instanceof BudgetStall : slow)) continue;
+    // #302 (owner ruling C, 2026-11-08): on a GitHub-hosted runner a wall miss is re-measured once whatever the probe says, because the probe
+    // (three small durable writes outside the group) did not flag several real storage stalls. The second attempt faces the same limits and
+    // its result stands; there is no best-run selection. Local and dgx02 runs keep the probe-gated rule.
+    const hosted = ["hosted-linux", "hosted-macos"].includes(runnerKind(options.env));
+    if (outcome === "wall-miss" && attempt === 1 && (retryPolicy === "stall" ? failure instanceof BudgetStall : slow || hosted)) continue;
     if (failed) throw failure;
     throw Error(`${check}: ${outcome}`);
   }

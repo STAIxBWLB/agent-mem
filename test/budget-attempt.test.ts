@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 import { budgetSample, BudgetStall, budgetGroupRecorder, type BudgetAttempt } from "../scripts/budget-attempt.ts";
 for (const check of ["hook-SessionStart", "mcp-session"] as const) {
@@ -140,7 +141,7 @@ test("a slow-probed group remeasures a single wall miss once and retains every r
   const receipts: import("../scripts/budget-attempt.ts").BudgetGroupAttempt<{ wallMs: number; rssMB: number }>[] = [];
   let runs = 0, probes = 0;
   const result = await budgetGroup("injected", () => ({ wallMs: ++runs === 1 ? 184 : 81, rssMB: 50 }), judgeGroup,
-    { baseline, probe: () => { probes++; return probes === 2 ? slow : normal; }, record: row => receipts.push(row) });
+    { env: {}, baseline, probe: () => { probes++; return probes === 2 ? slow : normal; }, record: row => receipts.push(row) });
   expect(runs).toBe(2); expect(probes).toBe(4); expect(result.result.wallMs).toBe(81);
   expect(result.attempts).toEqual(receipts);
   expect(receipts.map(row => [row.attempt, row.outcome, row.slow])).toEqual([[1, "wall-miss", true], [2, "pass", false]]);
@@ -151,7 +152,7 @@ test("two slow-probed group misses fail with two complete attempts and no third 
   const { budgetGroup } = await import("../scripts/budget-attempt.ts");
   const receipts: unknown[] = []; let runs = 0, probes = 0;
   await expect(budgetGroup("injected", () => { runs++; return { wallMs: 184, rssMB: 50 }; }, judgeGroup,
-    { baseline, probe: () => { probes++; return slow; }, record: row => receipts.push(row) })).rejects.toThrow("wall-miss");
+    { env: {}, baseline, probe: () => { probes++; return slow; }, record: row => receipts.push(row) })).rejects.toThrow("wall-miss");
   expect(runs).toBe(2); expect(probes).toBe(4); expect(receipts).toHaveLength(2);
 });
 
@@ -159,7 +160,7 @@ test("a normal-speed group wall miss fails immediately without remeasurement", a
   const { budgetGroup } = await import("../scripts/budget-attempt.ts");
   let runs = 0, probes = 0; const receipts: unknown[] = [];
   await expect(budgetGroup("injected", () => { runs++; return { wallMs: 150, rssMB: 50 }; }, judgeGroup,
-    { baseline, probe: () => { probes++; return normal; }, record: row => receipts.push(row) })).rejects.toThrow("wall-miss");
+    { env: {}, baseline, probe: () => { probes++; return normal; }, record: row => receipts.push(row) })).rejects.toThrow("wall-miss");
   expect(runs).toBe(1); expect(probes).toBe(2); expect(receipts).toHaveLength(1);
 });
 
@@ -173,7 +174,7 @@ test("40217188778 capture I/O spike permits one fresh remeasure despite a normal
   expect(runnerIsSlow(before, after, reference)).toBe(true);
   let runs = 0, probes = 0;
   const result = await budgetGroup("capture-workloads", () => ({ wallMs: ++runs === 1 ? 310.52 : 63.3, rssMB: 75 }), judgeGroup,
-    { baseline: reference, probe: () => ++probes === 1 ? before : after, record: () => {} });
+    { env: {}, baseline: reference, probe: () => ++probes === 1 ? before : after, record: () => {} });
   expect(runs).toBe(2); expect(probes).toBe(4);
   expect(result.attempts.map(row => [row.attempt, row.outcome, row.slow])).toEqual([[1, "wall-miss", true], [2, "pass", false]]);
   expect(result.attempts[0]!.result!.wallMs).toBe(310.52);
@@ -184,7 +185,7 @@ test("an RSS miss never remeasures, including a simultaneous wall miss on a slow
   for (const wallMs of [80, 184]) {
     let runs = 0; const receipts: import("../scripts/budget-attempt.ts").BudgetGroupAttempt<{ wallMs: number; rssMB: number }>[] = [];
     await expect(budgetGroup("injected", () => { runs++; return { wallMs, rssMB: 100 }; }, judgeGroup,
-      { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("rss-miss");
+      { env: {}, baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("rss-miss");
     expect(runs).toBe(1); expect(receipts.map(row => row.outcome)).toEqual(["rss-miss"]);
   }
 });
@@ -226,7 +227,7 @@ test("correctness errors never remeasure even on a slow runner", async () => {
   const { budgetGroup } = await import("../scripts/budget-attempt.ts");
   let runs = 0;
   await expect(budgetGroup("injected", () => { runs++; throw Error("owned process survived"); }, () => ({ wallPass: true, rssPass: true }),
-    { baseline, probe: () => slow, record: () => {} })).rejects.toThrow("owned process survived");
+    { env: {}, baseline, probe: () => slow, record: () => {} })).rejects.toThrow("owned process survived");
   expect(runs).toBe(1);
 });
 
@@ -252,7 +253,7 @@ test("I/O-only slowdown remeasures the observed 40204205266 wall-miss values wit
   for (const wallMs of [181.54, 206.15, 186.77]) {
     let runs = 0;
     const result = await budgetGroup("observed-wall-shape", () => ({ wallMs: ++runs === 1 ? wallMs : 80, rssMB: 75 }), judgeGroup,
-      { baseline: reference, probe: () => reading, record: () => {} });
+      { env: {}, baseline: reference, probe: () => reading, record: () => {} });
     expect(runs).toBe(2); expect(result.attempts[0]!.slow).toBe(true); expect(result.attempts[0]!.outcome).toBe("wall-miss");
   }
 });
@@ -377,7 +378,7 @@ test("#228 reset: a hard 300 ms per-invocation miss is never re-measured away by
   let runs = 0;
   // The runner probes slow, which would normally permit one re-measure of a p95 wall miss; a wall-max miss must not get it.
   await expect(budgetGroup("injected", () => { runs++; return { wallMs: 81, rssMB: 50 }; }, () => ({ wallPass: false, rssPass: true, wallMaxPass: false }),
-    { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
+    { env: {}, baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
   expect(runs).toBe(1);
   expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
 });
@@ -390,7 +391,7 @@ test("#228 ruling: after a slow-runner re-measure of a p95 wall miss, any second
   await expect(budgetGroup("injected", () => ({ run: ++runs }), result => result.run === 1
     ? { wallPass: false, rssPass: true, wallMaxPass: true }
     : { wallPass: true, rssPass: true, wallMaxPass: false },
-    { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
+    { env: {}, baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("wall-max-miss");
   expect(runs).toBe(2);
   expect(receipts.map(row => [row.attempt, row.outcome])).toEqual([[1, "wall-miss"], [2, "wall-max-miss"]]);
 });
@@ -400,13 +401,58 @@ test("codex P2 (#231): a stall whose handler wall exceeded 300 ms is a wall-max 
   for (const values of [{ wallMs: 450, metricWallMs: 412 }, { wallMs: 450 }, { wallMs: 450, metricWallMs: Number.NaN }] as Record<string, number>[]) {
     const receipts: { outcome: string }[] = []; let runs = 0;
     await expect(budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", values); return { ok: true }; },
-      () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("injected stall");
+      () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { env: {}, baseline, probe: () => slow, record: row => receipts.push(row) })).rejects.toThrow("injected stall");
     expect(runs, JSON.stringify(values)).toBe(1);
     expect(receipts.map(row => row.outcome)).toEqual(["wall-max-miss"]);
   }
   // Control: a stall within the maximum keeps the existing single slow-runner re-measure.
   let runs = 0;
   const passed = await budgetGroup("injected", () => { if (++runs === 1) throw new BudgetStall("injected stall", { wallMs: 180, metricWallMs: 120 }); return { ok: true }; },
-    () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { baseline, probe: () => slow, record: () => {} });
+    () => ({ wallPass: true, rssPass: true, wallMaxPass: true }), { env: {}, baseline, probe: () => slow, record: () => {} });
   expect(passed.attempts.map(row => row.outcome)).toEqual(["wall-miss", "pass"]);
+});
+
+const hostedLinux = { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, hostedMac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+
+test("#302 ruling C: a hosted wall miss is re-measured once even when both probes look normal, and the second attempt stands", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  for (const env of [hostedLinux, hostedMac]) {
+    let runs = 0; const receipts: import("../scripts/budget-attempt.ts").BudgetGroupAttempt<{ wallMs: number; rssMB: number }>[] = [];
+    const result = await budgetGroup("injected", () => ({ wallMs: ++runs === 1 ? 184 : 81, rssMB: 50 }), judgeGroup, { env, baseline, probe: () => normal, record: row => receipts.push(row) });
+    expect(runs).toBe(2); expect(result.result.wallMs).toBe(81);
+    expect(receipts.map(row => [row.attempt, row.outcome, row.slow])).toEqual([[1, "wall-miss", false], [2, "pass", false]]);
+  }
+});
+
+test("#302 ruling C: two hosted wall misses fail with exactly two attempts, never a third run or a best-run pick", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  let runs = 0;
+  await expect(budgetGroup("injected", () => { runs++; return { wallMs: runs === 1 ? 150 : 184, rssMB: 50 }; }, judgeGroup, { env: hostedLinux, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("wall-miss");
+  expect(runs).toBe(2);
+});
+
+test("#302 ruling C changes nothing else: hosted RSS misses and hard wall-max misses are never re-measured, and local or dgx02 runs stay probe-gated", async () => {
+  const { budgetGroup } = await import("../scripts/budget-attempt.ts");
+  let runs = 0;
+  await expect(budgetGroup("injected", () => { runs++; return { wallMs: 80, rssMB: 100 }; }, judgeGroup, { env: hostedLinux, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("rss-miss");
+  expect(runs).toBe(1);
+  runs = 0;
+  await expect(budgetGroup("injected", () => { runs++; return { wallMs: 80, rssMB: 50 }; }, () => ({ wallPass: false, rssPass: true, wallMaxPass: false }), { env: hostedLinux, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("wall-max-miss");
+  expect(runs).toBe(1);
+  for (const env of [{}, { AMEM_RUNNER: "dgx02" }]) {
+    runs = 0;
+    await expect(budgetGroup("injected", () => { runs++; return { wallMs: 184, rssMB: 50 }; }, judgeGroup, { env, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("wall-miss");
+    expect(runs).toBe(1);
+  }
+});
+
+test("#302 ruling B and D: eviction measures 20 children so p95 is the 19th value, and the child receipt carries eviction phase timing", () => {
+  const source = readFileSync(new URL("../scripts/measure-budget.ts", import.meta.url), "utf8");
+  expect(source).toContain("const EVICT_RUNS = 20;");
+  expect(source).toContain("length: EVICT_RUNS");
+  const values = Array.from({ length: 20 }, (_, index) => index + 1);
+  expect([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]).toBe(19);
+  const child = readFileSync(new URL("../scripts/budget-hook-child.ts", import.meta.url), "utf8");
+  expect(child).toContain("longestTxMs");
+  expect(child).toContain("evict: { ms:");
 });
