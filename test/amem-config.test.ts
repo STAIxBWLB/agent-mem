@@ -477,3 +477,21 @@ test("<private> in a work-list NAME is never stored: MCP write, direct write, re
   walk(r.base);
   expect(files.join("\n")).not.toContain(HID);
 });
+
+test("records defaults enabled and repository configuration can only disable it", () => {
+  expect(loadAmemConfig(rig().base).config.records ?? true).toBe(true);
+  for (const machine of [undefined, true, false]) for (const repo of [undefined, true, false]) {
+    const r = rig(machine === undefined ? {} : { records: machine });
+    if (repo !== undefined) r.repoConfig({ records: repo });
+    expect(loadAmemConfig(r.base, r.cwd).config.records ?? true).toBe(machine !== false && repo !== false);
+  }
+});
+
+test("records rejects nonboolean machine and repository values without silently enabling", () => {
+  for (const records of [null, 0, 1, "false", [], {}]) {
+    const machine = rig({ records });
+    expect(() => loadAmemConfig(machine.base)).toThrow("records is not a boolean");
+    const repo = rig(); repo.repoConfig({ records });
+    expect(() => loadAmemConfig(repo.base, repo.cwd)).toThrow("records is not a boolean");
+  }
+});

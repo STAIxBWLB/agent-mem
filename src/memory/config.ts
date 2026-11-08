@@ -17,10 +17,12 @@ export const CONFIG_FILE = "amem.config.json";
 export const REPO_CONFIG_DIR = ".amem";
 export const REPO_CONFIG_FILE = "config";
 const MAX_CONFIG_BYTES = 64 * 1024;
-const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture"] as const;
-const REPO_KEYS = ["denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths"] as const;
+const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture", "records"] as const;
+const REPO_KEYS = ["denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "records"] as const;
 
 export interface AmemConfig {
+  /** Static SessionStart record instruction; absent means enabled. Repository false only narrows. */
+  records?: boolean;
   /** The memory home, when the file moves it (a pointer file: see `configuredHome`). `AMEM_HOME` still wins. Machine file only. */
   home?: string;
   denyPaths: string[];
@@ -77,6 +79,10 @@ function parseFile(raw: unknown, label: string, keys: readonly string[]): Partia
   const out: Partial<AmemConfig> & { capture?: AmemConfig["capture"] } = {
     denyPaths: listOf(body.denyPaths, "denyPaths", label), piiPatterns: listOf(body.piiPatterns, "piiPatterns", label),
   };
+  if (Object.hasOwn(body, "records")) {
+    if (typeof body.records !== "boolean") return fail(label, "records is not a boolean");
+    out.records = body.records;
+  }
   const briefBytes = countOf(body.briefBytes, "briefBytes", label, 1_000_000); if (briefBytes !== undefined) out.briefBytes = briefBytes;
   const excerptBytes = countOf(body.excerptBytes, "excerptBytes", label, 100_000); if (excerptBytes !== undefined) out.excerptBytes = excerptBytes;
   const capturePaths = countOf(body.capturePaths, "capturePaths", label, 1000); if (capturePaths !== undefined) out.capturePaths = capturePaths;
@@ -149,6 +155,7 @@ export function loadAmemConfig(base: string, repoRoot?: string): LoadedConfig {
   if (piiPatterns.length > 64) fail(machinePath, "piiPatterns and the repository's piiPatterns name more than 64 entries together");
   const config: AmemConfig = { denyPaths, piiPatterns, capture: { ...(machine?.capture ?? {}) } };
   if (machine?.home !== undefined) config.home = machine.home;
+  if (machine?.records !== undefined || repo?.records !== undefined) config.records = machine?.records !== false && repo?.records !== false;
   for (const key of ["briefBytes", "excerptBytes", "capturePaths"] as const) { const value = lower(machine?.[key], repo?.[key]); if (value !== undefined) config[key] = value; }
   return { config, source: { machine: machineRaw === undefined ? null : machinePath, repo: repoPath } };
 }

@@ -1,3 +1,4 @@
+import { RECORD_INSTRUCTION } from "./hook-record.ts";
 import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync, type HookProjectReceipt } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
@@ -56,6 +57,12 @@ function joinedContext(context: string, notice: string, maximum: number): string
   if (Buffer.byteLength(joined) <= maximum) return joined;
   const fallback = `${unavailable}${notice ? `\n${notice}` : ""}`;
   return Buffer.byteLength(fallback) <= maximum ? fallback : "";
+}
+
+function instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number } {
+  const bytes = context.startsWith(`${RECORD_INSTRUCTION}\n`) ? Buffer.byteLength(RECORD_INSTRUCTION) : 0;
+  // Approximation only: the UTF-8 byte count is exact; tokens depend on the host tokenizer.
+  return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4) };
 }
 
 async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefined> {
@@ -227,13 +234,16 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
 }
 
 /** SessionStart shared pieces: the numeric capture-loss notice and the native byte ceiling. */
-function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, currentDropped: boolean): { dropNotice: string; contextLimit: number } {
+function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, currentDropped: boolean, header = unavailable): { dropNotice: string; contextLimit: number; instruction: string } {
   const losses = captureDropSummary(base);
   if (currentDropped) losses.spool_full = (losses.spool_full ?? 0) + 1;
   const dropNotice = Object.entries(losses).map(([reason, count]) => `capture dropped: ${reason.replaceAll("_", " ")} (${count})`).join("; ");
-  const configuredBrief = loadAmemConfig(base, repoConfigRoot(cwd)).config.briefBytes;
+  const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
+  const configuredBrief = config.briefBytes;
   const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
-  return { dropNotice, contextLimit };
+  const prefix = `${RECORD_INSTRUCTION}\n`;
+  const instruction = config.records !== false && Buffer.byteLength(prefix) + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
+  return { dropNotice, contextLimit: contextLimit - Buffer.byteLength(instruction), instruction };
 }
 
 /** SessionStart spends one Bun boot on context. Capture remains durable/pending;
@@ -249,8 +259,9 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
   if (remaining() <= 0) { result.dropped = !pending; return result; }
   if (sessionSource(input) === "resume") {
     try {
-      const { dropNotice, contextLimit } = sessionNoticeAndLimit(base, cwd, options, !pending);
-      result.context = joinedContext(RESUME_HEADER, dropNotice, contextLimit);
+      const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending, RESUME_HEADER);
+      const context = joinedContext(RESUME_HEADER, dropNotice, contextLimit);
+      result.context = context ? instruction + context : "";
       result.valid = result.context.length > 0;
     } catch { /* fail open: no context */ }
     result.dropped = !pending;
@@ -278,12 +289,13 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     if (remaining() <= 0) return result;
     // The current SessionStart is durable in its bounded reserve. All replay and
     // retirement belong to a later non-SessionStart hook, never this brief deadline.
-    const { dropNotice, contextLimit } = sessionNoticeAndLimit(base, cwd, options, !pending);
+    const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending);
     const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, contextLimit - Buffer.byteLength(dropNotice) - (dropNotice ? 1 : 0)), cwd, base, project, nativeSession: { signature }, projectFromCwd: true, timeRemaining: remaining });
     result.pending = !!pending && !result.captured;
     result.dropped = !pending;
     if (hookCaptureScope(cwd, base) !== scope || !await createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy)).screen({ context: brief.context })) return result;
-    result.context = joinedContext(brief.context, dropNotice, contextLimit);
+    const context = joinedContext(brief.context, dropNotice, contextLimit);
+    result.context = context ? instruction + context : "";
     result.valid = result.context.length > 0;
     return result;
   } catch { result.dropped = !pending; return result; }
@@ -333,6 +345,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   let base: string | undefined, captured = false, childRssKB = 0, childRawRssKB = 0, pending = false, dropped = false;
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
+  let emittedCost = instructionCost("");
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
@@ -346,10 +359,11 @@ export async function runHook(event: string, input: unknown, options: HookOption
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
+    emittedCost = instructionCost(result.context);
     return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } } };
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
-    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started,
+    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started, ...emittedCost,
       rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
       ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
@@ -363,6 +377,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
+  let emittedCost = instructionCost("");
   try {
     if (args.length !== 1) return "";
     if (args[0] === "jcode") {
@@ -392,6 +407,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
       transcriptProgress = "transcript" in result ? result.transcript : undefined;
       if (!result.valid || args[0] !== "SessionStart") return "";
+      emittedCost = instructionCost(result.context);
       return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
     return "";
@@ -400,7 +416,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     await cleanup?.();
     try {
       const self = hookRssReading();
-      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt,
+      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt, ...emittedCost,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
         ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
