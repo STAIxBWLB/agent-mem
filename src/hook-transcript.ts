@@ -1,4 +1,5 @@
 import { parseRecordLines, RECORD_INPUT_BYTES, type ParsedRecordTurn, type RecordDropReason } from "./hook-record.ts";
+import { stripPrivateSpans } from "./memory/private-spans.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -51,7 +52,7 @@ export function transcriptRecords(line: string, shouldStop?: () => boolean): { m
   const content = message.content;
   const text = typeof content === "string" ? content : Array.isArray(content)
     ? content.flatMap(part => { const value = object(part); return value?.type === "text" && typeof value.text === "string" ? [value.text] : []; }).join("\n") : undefined;
-  if (text === undefined || !text.includes("amem:")) return;
+  if (text === undefined || !stripPrivateSpans(text).includes("amem:")) return;
   const messageId = typeof message.id === "string" && message.id.length > 0 && message.id.length <= 256 && message.id.trim() === message.id
     && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(message.id) ? message.id : undefined;
   if (!messageId) return { parsed: { records: [], drops: { record_identity: 1 } } };

@@ -121,6 +121,17 @@ test("Stop and SessionEnd reach the Record extractor in the existing owned worke
   }
 });
 
+test("enclosing private spans across assistant text blocks never become stored Record lines", async () => {
+  const f = fixture(), hidden = "amem: decision | - | hidden native finding", visible = "amem: decision | - | public native finding";
+  f.add(recordAssistant("enclosed-private", `<private>\n${hidden}\n</private>`), recordAssistant("unclosed-private", `<PRIVATE class='x'>\n${hidden}`),
+    { ...recordAssistant("cross-block-private", ""), message: { id: "cross-block-private", role: "assistant", content: [
+      { type: "text", text: "< private attr='x'>" }, { type: "text", text: hidden }, { type: "text", text: `</ private>\n${visible}` },
+    ] } });
+  await f.scan();
+  expect((await f.drain()).filter(row => row.event === "Record")).toMatchObject([{ excerpt: visible }]);
+  expect(readCaptureDrops(f.base)).toMatchObject({ readable: true, counts: {} });
+});
+
 test("incremental summaries use native times, title predecessor, dedup and private attribution", async () => {
   const f = fixture();
   f.add({ type: "assistant", timestamp: at }, { type: "ai-title", aiTitle: "public title" }, { type: "ai-title", aiTitle: "public title" },

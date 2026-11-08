@@ -706,6 +706,7 @@ export async function stageTranscriptCapture(input: CaptureFields, options: Opti
   if (record && (configured.records === false || input.subagent === true)) return;
   if (record) {
     if (typeof input.at !== "string" || !Number.isFinite(Date.parse(input.at))) { onRecordDrop?.("record_timestamp"); return; }
+    if (stripPrivateSpans(input.excerpt ?? "") !== input.excerpt) { onRecordDrop?.("record_policy"); return; }
     const line = recordCapture(input);
     if (!line) { onRecordDrop?.("record_invalid"); return; }
     if (stripPrivateSpans(line.line) !== line.line

@@ -40,13 +40,16 @@ test("denied anchors, secrets, PII and private spans refuse the whole canonical 
     [undefined, "amem: fix | id_rsa#load | leak -> remove"],
     [undefined, `amem: decision | - | ghp_${"a".repeat(40)}`],
     [undefined, "amem: decision | - | alice@example.com"],
-    [undefined, "amem: decision | - | before <private>hidden</private> after"],
     [{ denyPaths: ["internal/"] }, "amem: fix | src/a.ts, internal/b.ts#load | leak -> remove"],
     [{ piiPatterns: ["PERSONAL_CANARY"] }, "amem: decision | - | PERSONAL_CANARY"],
   ] as const) {
     const f = fixture(config);
     expect(await f.stage(line)).toBeUndefined(); expect(f.drops).toEqual(["record_policy"]);
   }
+  const f = fixture();
+  expect(await stageTranscriptCapture({ agent: "claude", event: "Record", at: "2026-11-08T00:00:00.000Z", paths: [],
+    excerpt: "amem: decision | - | before <private>hidden</private> after" }, { cwd: f.cwd, base: f.base }, undefined, reason => f.drops.push(reason))).toBeUndefined();
+  expect(f.drops).toEqual(["record_policy"]);
 });
 
 test("lower configured caps never truncate a Record into a different line or anchor set", async () => {

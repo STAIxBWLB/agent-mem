@@ -78,3 +78,14 @@ test("the record line loop yields an incomplete result at the caller's unchanged
   const parsed = parseRecordLines("ordinary\namem: decision | - | first\namem: decision | - | second", () => ++checks > 2);
   expect(parsed).toMatchObject({ records: [{ text: "first" }], incomplete: true });
 });
+
+test("whole private-span context is excluded before record or Markdown interpretation", () => {
+  const hidden = "amem: decision | - | hidden finding", visible = "amem: decision | - | visible finding";
+  for (const text of [
+    `<private>\n${hidden}\n</private>`, `<PRIVATE class='x'>\n${hidden}\n</ PRIVATE>`,
+    `< private/>\n${hidden}`, `<private>\n<private>nested</private>\n${hidden}\n</private>`,
+  ]) expect(parseRecordLines(text)).toEqual({ records: [], drops: {} });
+  expect(parseRecordLines(`<private>\n> hidden quote\n\`\`\`\n${hidden}\n</private>\n${visible}`).records).toMatchObject([{ text: "visible finding" }]);
+  expect(parseRecordLines(`amem: decision | - | before <private>hidden</private> after`)).toEqual({ records: [], drops: { record_policy: 1 } });
+  expect(parseRecordLines(`\`\`\`text <private>hidden</private>\n${hidden}\n\`\`\`\n${visible}`).records).toMatchObject([{ text: "visible finding" }]);
+});
