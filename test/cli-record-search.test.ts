@@ -42,7 +42,7 @@ test("malformed historical Record cannot inject extra lines or headers through a
   const output = await runCli(["search", "--all-projects", "recordclibad"], f.person);
   expect(output.split("\n")).toHaveLength(4);
   expect(output).not.toContain("coverage work=complete"); expect(output).not.toContain("\rheader");
-  expect(output.split("[invalid Record]")).toHaveLength(4);
+  expect(output.split("[invalid Record format or anchors; inspect --json output]")).toHaveLength(4);
 });
 
 test("other capture event text retains its existing 100-character first-line display", async () => {

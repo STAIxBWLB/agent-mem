@@ -907,7 +907,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const parsed = parseRecordLines(capture.excerpt), record = parsed.records[0];
     // Historical capture can contain arbitrary event text. Never render it as a canonical Record or inject another display line.
     return record && parsed.records.length === 1 && Object.keys(parsed.drops).length === 0 && record.line === capture.excerpt
-      && JSON.stringify(record.anchors) === JSON.stringify(capture.paths) ? record.line : "[invalid Record]";
+      && JSON.stringify(record.anchors) === JSON.stringify(capture.paths) ? record.line : "[invalid Record format or anchors; inspect --json output]";
   };
   if (sub === "search" && options["--all-projects"] === true) {
     if (options["--explain"] === true) throw new Error("--explain applies to current-project ranked search, not --all-projects");
