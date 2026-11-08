@@ -315,6 +315,7 @@ const repo=await readRepoScope(${JSON.stringify(f.cwd)},createStandalonePolicy()
 console.log(JSON.stringify({local,repo:repo.views.map(e=>e.about)}));`)) as { local: string[]; repo: string[][] };
     expect(observed.local).toEqual(about);
     expect(observed.repo).toEqual([["doi:10.1000/xyz", "arxiv:2401.01234"]]);
+  });
 
   test("#216: jcode Title and Compact rows staged by this build are drained once or left pending for it by the previous release", async () => {
     const f = fixture();
