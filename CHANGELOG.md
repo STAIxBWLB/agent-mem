@@ -2,9 +2,9 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.23.1
 
-- Export `recordsEnabled(base, cwd?)` for hosts to check the effective home/repository Record policy before instruction emission or capture (#332). SessionStart and Stop transcript capture share the accessor; absent values stay enabled, either false disables Records, and malformed configuration still throws. Existing exports and storage formats are unchanged.
+- Export `recordsEnabled(base, cwd?)` for hosts to check the effective home/repository Record policy before instruction emission or capture (#332, consumer agent-hub#1320). SessionStart and Stop transcript capture share the accessor; absent values stay enabled, either false disables Records, and malformed configuration still throws. Existing exports and storage formats are unchanged.
 
 ## 0.23.0
 
