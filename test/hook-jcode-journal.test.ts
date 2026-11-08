@@ -6,6 +6,7 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { jcodeJournalTarget } from "../src/hook-jcode.ts";
 import { scanJcodeJournal } from "../src/hook-jcode-journal.ts";
+import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [];
@@ -115,4 +116,46 @@ test("AC2: a jcode Compact row is preferred in the SessionStart brief like Claud
     const { rows } = c.readBriefSummaries(4);
     expect(rows.map(x => `${x.agent}:${x.event}`)).toEqual(["jcode:Compact", "claude:Compact"]);
   } finally { c.close(); }
+});
+
+test("review P1: the work budget covers publication, so many compactions stop early and the next call publishes only the rest, exactly once", async () => {
+  const r = rig(); const N = 12;   // below the existing summary intake cap, so every row can be drained
+  writeFileSync(r.journal, Array.from({ length: N }, (_, i) => r.line({ title: "Many compactions", compaction: { summary_text: `compaction summary ${i}`, covers_up_to_turn: i + 1 } })).join(""));
+  // A fake clock that advances 1 per read: the 12-line parse fits the budget, the publication phase does not.
+  let now = 0; const clock = () => (now += 1);
+  const first = await scanJcodeJournal(r.target, { base: r.f.base, deadline: 1e9, workBudgetMs: 30, clock });
+  expect(first?.stopReason).toBe("deadline");
+  // Count what the first call staged without running a hook turn (a real turn would scan with a full budget and finish the journal).
+  const spool = (dir: string) => existsSync(dir) ? readdirSync(dir).filter(name => name.startsWith("hook-")).length : 0;
+  const stagedFirst = spool(join(r.f.base, "hook-spool")) + spool(join(r.f.base, "hook-spool", ".capacity"));
+  expect(stagedFirst).toBeGreaterThan(0); expect(stagedFirst).toBeLessThan(N);
+  // The cursor did not pass the unpublished lines, so repeated bounded calls finish the job and never duplicate a row.
+  const outcomes: unknown[] = [];
+  for (let i = 0; i < 40; i++) { now = 0; outcomes.push(await scanJcodeJournal(r.target, { base: r.f.base, deadline: 1e9, workBudgetMs: 30, clock })); }
+  expect(outcomes.at(-1)).toMatchObject({ offset: expect.any(Number) });
+  // Staging is complete here. Drain the durable spool directly with a generous time limit.
+  const capture = new CaptureStore({ home: r.f.root, project: r.project });
+  try { for (let i = 0; i < 5; i++) await drainHookCaptures({ cwd: r.f.cwd, base: r.f.base, project: r.project, expectedScope: hookCaptureScope(r.f.cwd, r.f.base), timeRemaining: () => 5000 }, (row, receipt) => capture.append(row, { receipt })); }
+  finally { capture.close(); }
+  const rows = r.rows();
+  const compacts = rows.filter(x => x.event === "Compact").map(x => x.excerpt).sort();
+  expect(compacts).toEqual(Array.from({ length: N }, (_, i) => `compaction summary ${i}`).sort());
+  expect(rows.filter(x => x.event === "Title")).toHaveLength(1);
+});
+
+test("review P2: a row whose own meta.working_dir names another project is not staged under this hook's cwd; a missing working_dir keeps it", async () => {
+  const r = rig(); const other = join(r.f.root, "other-project"); mkdirSync(other, { recursive: true });
+  writeFileSync(r.journal,
+    r.line({ title: "Other project title", working_dir: other, compaction: { summary_text: "belongs to the other project", covers_up_to_turn: 1 } })
+    + r.line({ title: "This project title", working_dir: r.f.cwd, compaction: { summary_text: "belongs to this project", covers_up_to_turn: 2 } })
+    + r.line({ title: "This project title", working_dir: undefined as never, compaction: { summary_text: "no working dir recorded", covers_up_to_turn: 3 } }));
+  r.turn(); r.turn();
+  const rows = r.settle(x => x.length >= 3);
+  expect(rows.filter(x => x.event === "Compact").map(x => x.excerpt).sort()).toEqual(["belongs to this project", "no working dir recorded"]);
+  expect(rows.map(x => x.excerpt)).not.toContain("belongs to the other project");
+  // The newest line decides the title: it is this project's, so exactly one Title; a newest line from another project stages none.
+  expect(rows.filter(x => x.event === "Title").map(x => x.excerpt)).toEqual(["This project title"]);
+  appendFileSync(r.journal, r.line({ title: "Moved elsewhere", working_dir: other }));
+  r.turn(); r.turn(); r.settle(() => false);
+  expect(r.rows().filter(x => x.event === "Title").map(x => x.excerpt)).toEqual(["This project title"]);
 });

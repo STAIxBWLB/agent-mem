@@ -19,7 +19,8 @@ const META = '{"meta":', BODIES = ',"append_messages"', TITLE_BYTES = 512;
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const timestamp = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
-export interface JcodeJournalOptions { base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions }
+/** `clock` is a test seam (default `performance.now`): the deadline and the work budget are both read from it. */
+export interface JcodeJournalOptions { base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions; clock?: () => number }
 
 /** The meta object of one journal line, parsed without touching the message bodies. */
 export function journalMeta(line: string): Record<string, unknown> | undefined {
@@ -37,7 +38,8 @@ export function journalMeta(line: string): Record<string, unknown> | undefined {
  */
 export async function scanJcodeJournal(target: { cwd: string; session: string; journal: string }, options: JcodeJournalOptions): Promise<HookTranscriptProgress | undefined> {
   if (options.policy?.host) return;
-  if (performance.now() >= options.deadline) return { stopReason: "deadline" };
+  const clock = options.clock ?? (() => performance.now());
+  if (clock() >= options.deadline) return { stopReason: "deadline" };
   const cwd = realPath(target.cwd), base = canonicalPath(options.base);
   assertFormatFloor(base, "hook-spool");
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
@@ -66,10 +68,20 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     const length = readSync(fd, bytes, 0, bytes.length, from);
     const after = fstatSync(fd), live = lstatSync(target.journal);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(target.journal) !== journal) return;
-    const due = () => performance.now() >= options.deadline || options.workBudgetMs !== undefined && performance.now() - workStart >= options.workBudgetMs;
-    const workStart = performance.now();
-    let start = 0, skipping = partial, stopReason: HookTranscriptProgress["stopReason"], newestLine: string | undefined;
-    const compactions: { covers: unknown; text: string; at: string | undefined; subagent: boolean }[] = [];
+    const workStart = clock();
+    const due = () => clock() >= options.deadline || options.workBudgetMs !== undefined && clock() - workStart >= options.workBudgetMs;
+    let unpublished = false, start = 0, skipping = partial, stopReason: HookTranscriptProgress["stopReason"], newestLine: string | undefined;
+    const compactions: { covers: unknown; text: string; at: string | undefined; subagent: boolean; dir: unknown }[] = [];
+    // #216 review (codex P2): a row belongs to the project of its own line. A journal of a session that moved between projects carries other
+    // `meta.working_dir` values; those rows are not staged under this hook's cwd. A missing working_dir keeps the hook's cwd (unchanged).
+    const owned = new Map<string, boolean>();
+    const ownsDir = (dir: unknown): boolean => {
+      if (dir === undefined || dir === null) return true;
+      if (typeof dir !== "string" || !dir) return false;
+      let known = owned.get(dir);
+      if (known === undefined) { try { known = realPath(dir) === cwd; } catch { known = false; } owned.set(dir, known); }
+      return known;
+    };
     const seen = (digest: string) => !!db!.query("SELECT 1 FROM fallback WHERE digest=?").get(digest);
     while (start < length && !due()) {
       const newline = bytes.indexOf(10, start);
@@ -87,7 +99,7 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
       if (head.includes('"compaction":{')) {
         const meta = journalMeta(line), compaction = object(meta?.compaction);
         if (meta && compaction && typeof compaction.summary_text === "string" && compaction.summary_text.trim()) {
-          compactions.push({ covers: compaction.covers_up_to_turn, text: compaction.summary_text, at: timestamp(meta.updated_at), subagent: typeof meta.parent_id === "string" });
+          compactions.push({ covers: compaction.covers_up_to_turn, text: compaction.summary_text, at: timestamp(meta.updated_at), subagent: typeof meta.parent_id === "string", dir: meta.working_dir });
         }
       }
       newestLine = line;   // every line repeats the current meta: only the newest one decides the title
@@ -102,14 +114,21 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     };
     try {
       for (const compaction of compactions) {
+        // #216 review (codex P1): the work budget covers publication too. Stop before the next publish; the cursor does not pass the
+        // unpublished lines (see the offset below) and the seen digests make the next call publish only the rest, exactly once.
+        if (!ownsDir(compaction.dir)) continue;
         const digest = hash(JSON.stringify(["jcode-compact", compaction.covers ?? null, compaction.text]));
-        if (seen(digest)) continue;
+        if (seen(digest)) continue;   // already published: costs a lookup, never budget, so a long journal cannot starve its own tail
+        if (due()) { stopReason = "deadline"; unpublished = true; break; }
         await stage("Compact", compaction.text, compaction.at, compaction.subagent, `compact:${digest}`);
         // A refused row (secret, deny, policy) is final; a full spool throws before this point and is retried next turn.
         db.query("INSERT OR IGNORE INTO fallback VALUES (?,?)").run(digest, cursor.readAt);
       }
       const title = typeof newest?.title === "string" ? newest.title.trim() : "";
-      if (title && Buffer.byteLength(title) <= TITLE_BYTES * 4 && hash(title) !== cursor.title) {
+      const titleDue = !!title && ownsDir(newest?.working_dir) && Buffer.byteLength(title) <= TITLE_BYTES * 4 && hash(title) !== cursor.title;
+      if (unpublished) { /* the title waits for the next call with the compactions */ }
+      else if (titleDue && due()) { stopReason = "deadline"; unpublished = true; }   // keep the cursor behind the title line too
+      else if (titleDue) {
         await stage("Title", title, timestamp(newest?.updated_at), typeof newest?.parent_id === "string", `title:${hash(title)}`);
         cursor.title = hash(title);
       }
@@ -119,7 +138,7 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     }
     if (oversized) appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: oversized, captureDropReason: "transcript_line_bound" }]);
     assertFormatFloor(base, "hook-spool");
-    const offset = stopReason === "spool_full" ? cursor.offset : from + start;
+    const offset = stopReason === "spool_full" || unpublished ? cursor.offset : from + start;
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1")
       .run(offset, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, skipping ? 1 : 0);
     db.run("COMMIT");
