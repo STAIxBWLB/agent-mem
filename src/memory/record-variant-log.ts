@@ -28,7 +28,9 @@ function readTail(fd: number, size: number): string {
 }
 /**
  * ponytail: bounded observational retention may lose concurrent appends/competing trims
- * between snapshot and rename (or writes to the replaced inode). Readers see a whole file.
+ * between snapshot and rename. An already-open old fd appends to the unlinked inode:
+ * its line is lost, not misplaced. Each hook opens/closes its fd, so this window is one write.
+ * Readers see a whole file.
  * Upgrade: coordinate append and trim under one lock, or use dated per-day files.
  * Count observed trim markers, never infer a number of lost observations.
  */
