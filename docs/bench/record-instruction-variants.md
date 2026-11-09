@@ -35,6 +35,21 @@ The person writes the private `record-instruction.json` selection file; `amem.co
 
 Run `bun scripts/report-record-variants.ts --metrics FILE` against retained observations. Output includes numeric denominators, missing-counter coverage, invalid-selection counts and actual mean brief bytes. The rolling metrics tail cannot guarantee the entire seven-day week at 35 sessions per day; retain non-overlapping observations independently. Retention and all native resource limits are unchanged.
 
-## Evidence status
+## Evidence
 
-The source S/M hashes have been verified against the documented originals. Full regression and variant-effect runs are pending; the implementation PR reports their final results and retained failures.
+Measured implementation and harness: `d983635b771a39985d972de6434efcd4f68d2150`; frozen main control: `9a1792a0a05903afe23482329dcd83cc81cc9a31`, on Linux with Bun 1.4.2. All eight full-set arms completed 500 questions, with 470 successful retrieval paths and 30 excluded abstentions each. Each derived set contains 766 synthetic Records; no fixture candidate was skipped.
+
+Original S and M regression comparisons both pass strict no-loss: all 98 deltas per set are zero, with identical MCP/library ordering. The Record-present A/B effect comparisons both fail. Full precision, all per-type rows, actual seed hashes, raw-report hashes and decreasing public question ids/scores are in [the aggregate evidence](record-instruction-variants-results.json). Raw reports and inputs remain outside the repository.
+
+A-to-B overall deltas, rounded here to six decimals; the strict verdict uses full precision:
+
+| Set | Backend | all@10 | nDCG@10 | MRR | turn recall@10 | Strict effect |
+|---|---|---:|---:|---:|---:|---|
+| S | MCP | 0 | -0.000222 | 0 | 0 | fail |
+| S | library | 0 | -0.000049 | -0.001071 | 0 | fail |
+| M | MCP | -0.002128 | -0.000309 | -0.000216 | 0 | fail |
+| M | library | 0 | -0.000348 | -0.001664 | 0 | fail |
+
+S has 14 decreasing aggregate rows and 21 public questions with a per-question decrease. M has 21 decreasing aggregate rows and 33 such questions. M question `73d42213` loses MCP all@10 (1 to 0); library question `6b7dfb22` loses MRR from 1 to 1/3. The common-input, gold, row, harness and fixed-BM25 guards passed.
+
+AC3 is unmet. A remains the default, and no text, fixture or threshold tuning followed these results. This evidence does not establish live-week writing effectiveness or release readiness. Typecheck, boundary (162 source files), the 227 focused tests and pack (172 files) passed at the measured head. The final full suite finished with 3506 pass, 21 skip, two default 5-second sync-placement timeouts and one subsequent async error. Both timeout cases also occur on the source-identical, data-only control branch; their mechanism remains unattributed. The separate main/candidate/candidate/main GC diagnostic timed out on all four arms. No deadline, limit or assertion was widened. The aggregate evidence retains outcomes and log hashes.
