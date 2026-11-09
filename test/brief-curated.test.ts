@@ -73,7 +73,7 @@ test("cache selection and earliest expiry match the real MemoryStore readPage", 
   await migrate({ memoryDir: root, generation, mode: "apply", authorizedPerson: true, tty: true });
   const now = Date.now(), store = new MemoryStore({ memoryDir: root, deferPromotions: true, now: () => now });
   try {
-    const expiryTimes = [now + 30_000, now + 10_000, null, null, null, null];
+    const expiryTimes = [now + 30_000, now + 10_000, now + 60_000, now + 70_000, null, null];
     for (let index = 0; index < 6; index++) store.note({ op: "note", project, scope: "project", tier: expiryTimes[index] === null ? "long" : "short", kind: "decision", peer: "person", source: "person",
       text: `row ${index}`, about: [], ...(expiryTimes[index] === null ? {} : { expires: new Date(expiryTimes[index]!).toISOString() }) });
     const expected: View[] = [];

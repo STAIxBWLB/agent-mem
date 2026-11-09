@@ -9,7 +9,7 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "amem-curated-write-")); roots.push(home);
-  const store = new MemoryStore({ home, deferPromotions: true });
+  const store = new MemoryStore({ home, deferPromotions: true, screen: () => "promote" });
   const base = join(home, "memory"), project = "curated-write";
   const cache = () => readBriefCache({ directory: captureShardDir(base, project, machineId(base).id), project, section: "curated" });
   return { home, store, base, project, cache };
@@ -53,5 +53,24 @@ test("promotion, demotion and settlement publish the current library projection"
     f.store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "finding", peer: "fixture", source: "person", text: "another public task observation", task: `${f.project}#2`, about: [] });
     f.store.settle(`${f.project}#2`, "fixture");
     expect(display()).toEqual(projection());
+  } finally { f.store.close(); }
+});
+
+test("review acceptance invalidates inside its outer writer fence and publishes only after release", () => {
+  const f = fixture();
+  const note = (text: string) => ({ op: "note" as const, project: f.project, scope: "project" as const, tier: "long" as const,
+    kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [] });
+  try {
+    f.store.note(note("old accepted note"));
+    expect(f.cache()?.rows).toHaveLength(1);
+    f.store.withAcceptedNote(note("new accepted note"), append => {
+      append();
+      expect(f.cache()).toBeUndefined();
+    });
+    expect(f.cache()?.rows).toHaveLength(2);
+    expect(() => f.store.withAcceptedNote(note("durable callback failure note"), append => {
+      append(); expect(f.cache()).toBeUndefined(); throw Error("fixture failure after durable append");
+    })).toThrow("fixture failure after durable append");
+    expect(f.cache()?.rows.map(row => (row.data as { text: string }).text)).toContain("durable callback failure note");
   } finally { f.store.close(); }
 });
