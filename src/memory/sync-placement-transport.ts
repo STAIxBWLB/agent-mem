@@ -50,6 +50,7 @@ export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions 
 class PlacementTransport {
   readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly testOnlyError?: (error:unknown)=>void; readonly home: string; readonly root: string; readonly cache: string;
   readonly releases: (() => void)[] = []; readonly temporary: string[] = []; readonly refs: string[] = [];
+  releaseCurated?: () => void;
   targets: Target[] = []; homeMutation?: MutationHandle; rootMutation?: MutationHandle; cacheIdentity?: {dev:number;ino:number}; cacheConfigIdentity?: string; epochHash = ""; journal!: PlacementJournalRead; capture?: PlacementCapture;
   machineId = ""; url = ""; revision = ""; accepted = false; factual = false; attempted = false; lastPolicyCheckUnixMs?: number; lastPolicyHash?: string; policyCheckSource?: "live"|"durable-intent"; attemptHash?: string;
   evaluator?: ReturnType<typeof outboundPolicyEvaluator>; applications?: ShardSyncApplications; current?: Materialized; recovered = false;
@@ -136,6 +137,7 @@ class PlacementTransport {
       const handle = acquireMutation(dir); if (!handle) refuse(); this.releases.push(handle); if (dir === this.home) this.homeMutation = handle;
       for (const target of this.targets) if (target.store.dir === dir) target.mutation = handle;
     }
+    this.releaseCurated = this.store.beginCuratedCacheUpdate();
     this.journal = readPlacementJournal(this.home, this.epochHash); this.revision = readSelector(this.home).revision; this.attest();
     if (!existing) await this.required(["init", "--bare", "--template=", "--object-format=sha1", "-q", this.cache]);
     if (!await this.independent()) refuse();
@@ -495,6 +497,7 @@ class PlacementTransport {
         for(const file of this.temporary)try{this.metadata();rmSync(file,{force:true});}catch{}
       }
       for(const release of this.releases.reverse())try{release();}catch{}
+      this.releaseCurated?.();
     }
   }
 }

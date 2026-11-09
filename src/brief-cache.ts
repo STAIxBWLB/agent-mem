@@ -6,9 +6,11 @@ import { join } from "node:path";
 export const BRIEF_CACHE_BYTES = 32 * 1024;
 export interface BriefCacheBinding { directory: string; project: string; section: "capture" | "curated" }
 export interface BriefCacheRow { source: unknown; data: unknown; partial: boolean }
+export interface CuratedBriefMetadata { builtAt: number; binding: string; expiresAt: number | null }
 export interface BriefCache {
   schema: "agent-mem.brief-cache/v1"; project: string; section: BriefCacheBinding["section"];
   builtThrough: number; partial: boolean; rows: BriefCacheRow[];
+  curated?: CuratedBriefMetadata;
 }
 export function briefCacheFile(binding: BriefCacheBinding): string { return join(binding.directory, `brief-${binding.section}.json`); }
 
@@ -25,6 +27,9 @@ export function readBriefCache(binding: BriefCacheBinding): BriefCache | undefin
     const cache = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size))) as BriefCache;
     if (cache.schema !== "agent-mem.brief-cache/v1" || cache.project !== binding.project || cache.section !== binding.section
       || !Number.isSafeInteger(cache.builtThrough) || cache.builtThrough < 1 || typeof cache.partial !== "boolean"
+      || (cache.curated !== undefined && (cache.section !== "curated" || !cache.curated || !Number.isFinite(cache.curated.builtAt)
+        || typeof cache.curated.binding !== "string" || !cache.curated.binding
+        || !(cache.curated.expiresAt === null || Number.isFinite(cache.curated.expiresAt))))
       || !Array.isArray(cache.rows) || cache.rows.length > 8
       || cache.rows.some(row => !row || typeof row.partial !== "boolean" || row.source === undefined || row.data === undefined)) return;
     return cache;

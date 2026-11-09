@@ -12,6 +12,7 @@ import { assertNoLiveReaders } from "./reader-lease.ts";
 import { aliasLogPath } from "./aliases.ts";
 import { realPath } from "./platform.ts";
 import { buildPublicPruneIndex } from "./store.ts";
+import { invalidateCuratedCaches } from "./curated-cache-state.ts";
 import { reducePublicPruneInputs } from "./public-prune-inputs.ts";
 import { PUBLIC_PRUNE_INTENT, publicPruneViewHash, readPublicPruneViewForActivation, validatePublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
 
@@ -224,7 +225,8 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
     }
     return { mode: options.mode, generation: intent.generation, active: true, ...(alreadyActive ? {alreadyActive:true} : {}), realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "verified" };
   }
-  return withProfileLock(home, async () => {
+  let previousProjects: string[] | undefined;
+  const result = await withProfileLock(home, async () => {
     const releases: (() => void)[] = [];
     try {
       guard(lstatSync(home).dev === rootStat.dev && lstatSync(home).ino === rootStat.ino);
@@ -249,6 +251,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
       if (!pending && profile === intent.finalProfile && shards === intent.finalShards) return { mode: options.mode, generation: intent.generation, active: true, alreadyActive: true, realms: intent.realms.length, viewHash, maskBuildCheck: "verified" };
       writeImmutableActivationMetadata(intentFile, canonicalJSON(intent) + "\n");
       await options.checkpoint?.("after-intent"); verify(intent, profile, shards);
+      previousProjects = invalidateCuratedCaches(home);
       if (shards !== intent.finalShards) { writeProfileJSON(join(home, "shards.json"), JSON.parse(intent.finalShards)); shards = intent.finalShards; }
       await options.checkpoint?.("after-shards"); verify(intent, profile, shards);
       if (profile !== intent.finalProfile) { writeProfileJSON(join(home, "profile.json"), JSON.parse(intent.finalProfile)); profile = intent.finalProfile; }
@@ -258,4 +261,9 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
       return { mode: options.mode, generation: intent.generation, active: true, realms: intent.realms.length, viewHash, maskBuildCheck: "verified" };
     } finally { for (const release of releases.reverse()) release(); }
   });
+  if (previousProjects) {
+    try { await (await import("./curated-cache-maintenance.ts")).rebuildCuratedCachesAfterProfileChange(home, previousProjects); }
+    catch { /* Derived cache work never changes a committed activation result. */ }
+  }
+  return result;
 }

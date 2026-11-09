@@ -77,6 +77,7 @@ function validatePublic(bytes: string, generation: string, path: string, checkPr
 export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
   const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
+  let releaseCurated: (() => void) | undefined;
   let pushed = false, releaseMutation: (() => void) | undefined, releaseSync: (() => void) | undefined;
   const result = (error: string): SyncResult => ({ ok: false, pushed, entries: 0, error });
   const profile = store.profile, generation = profile.generation, dir = store.dir;
@@ -98,6 +99,7 @@ export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions
     if (opts.signal?.aborted) return result("stopped");
     releaseMutation = acquireMutation(dir);
     if (!releaseMutation) return result("another generation mutation is running");
+    releaseCurated = store.beginCuratedCacheUpdate();
     releaseSync = lockSync(dir);
     if (!releaseSync) return result("another generation sync is running or its owner is unknown");
     validateGeneration(profile.home, generation);
@@ -250,5 +252,6 @@ export async function syncGenerationMemory(store: MemoryStore, opts: SyncOptions
     for (const transient of transientRefs) { try { await syncGit(dir, [...(transient.cache ? ["--git-dir", transient.cache] : []), "update-ref", "-d", transient.ref]); } catch { /* local refs remain non-public if cleanup itself fails */ } }
     try { releaseSync?.(); } catch { /* cleanup cannot turn an observed sync result into an uncaught error */ }
     try { releaseMutation?.(); } catch { /* closed/broken derived lock is a local recovery concern */ }
+    releaseCurated?.();
   }
 }

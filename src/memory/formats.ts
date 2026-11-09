@@ -63,3 +63,9 @@ export function assertFormatFloor(home: string, surface: FormatSurface): void {
     throw new FormatFloorError("format_floor", `amem ${reader} is below the ${surface} format floor ${floor.minReader} (since ${floor.since}) recorded in ${join(home, FORMATS_FILE)}; nothing was read or written. Upgrade amem to ${floor.minReader} or later.`, { ...floor, reader });
   }
 }
+
+/** A person opts into a capability only by an applicable floor, never by this code writing one. */
+export function formatFloorAtLeast(home: string, surface: FormatSurface, minimum: string): boolean {
+  if (!SEMVER.test(minimum)) return false;
+  return (readFormatFloors(home) ?? []).some(floor => (floor.surface === surface || floor.surface === "home") && !below(floor.minReader, minimum));
+}
