@@ -33,7 +33,7 @@ bun scripts/record-recall-compare.ts --baseline "$OUT/s-a.json" --candidate "$OU
 
 The person writes the private `record-instruction.json` selection file; `amem.config.json` retains its existing boolean-only `records` schema. Older readers ignore the separate file. See [the Record contract](../contracts.md) for selection and native metric units.
 
-Run `bun scripts/report-record-variants.ts --metrics FILE` against retained observations. Output includes numeric denominators, missing-counter coverage, invalid-selection counts and actual mean brief bytes. The rolling metrics tail cannot guarantee the entire seven-day week at 35 sessions per day; retain non-overlapping observations independently. Retention and all native resource limits are unchanged.
+Run `bun scripts/report-record-variants.ts --input /path/to/memory/record-variants.jsonl` against the eight-day journal. Output includes numeric denominators, missing-counter coverage, invalid-selection counts and actual mean brief bytes. The journal has a 4 MiB hard cap; `window.capForcedTrim` reports a cap-forced loss of observations and makes coverage incomplete. The general resource-metrics tail and all native resource limits are unchanged. Selection accepts a current-uid, regular, single-link file with no group/other write bit, including 0644.
 
 ## Evidence
 

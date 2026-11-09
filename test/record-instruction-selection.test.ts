@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, chmodSync, chownSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRecordInstruction, RECORD_INSTRUCTION_FILE } from "../src/memory/record-instruction.ts";
 import { loadAmemConfig } from "../src/memory/config.ts";
 import { runHook } from "../src/hooks.ts";
-import { readMetrics } from "../src/memory/metrics.ts";
+const readVariantMetrics = (base: string) => readFileSync(join(base, "record-variants.jsonl"), "utf8").trim().split("\n").map(line => { const row = JSON.parse(line); return { ...row, recordVariant: row.variant }; });
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 const clean: (() => void)[] = [];
 afterEach(() => { for (const close of clean.splice(0)) close(); });
@@ -24,6 +24,7 @@ for (const text of ["{", "{}", '{"instruction":"other"}', '{"instruction":"b","e
 test("non-private, linked and non-regular selection files fail open without following links", () => {
   const base = directory(), file = join(base, RECORD_INSTRUCTION_FILE), other = join(base, "other");
   writeFileSync(file, '{"instruction":"b"}', { mode: 0o644 });
+  chmodSync(file, 0o664);
   expect(readRecordInstruction(base)).toEqual({ mode: "a", invalid: true });
   chmodSync(file, 0o600); linkSync(file, other);
   expect(readRecordInstruction(base)).toEqual({ mode: "a", invalid: true });
@@ -32,14 +33,30 @@ test("non-private, linked and non-regular selection files fail open without foll
   rmSync(file); mkdirSync(file);
   expect(readRecordInstruction(base)).toEqual({ mode: "a", invalid: true });
 });
+test("selection accepts 0644 and rejects group/other writable modes", () => {
+  const base = directory(), file = join(base, RECORD_INSTRUCTION_FILE);
+  writeFileSync(file, '{"instruction":"b"}', { mode: 0o644 });
+  expect(readRecordInstruction(base)).toEqual({ mode: "b", invalid: false });
+  for (const mode of [0o664, 0o666]) {
+    chmodSync(file, mode);
+    expect(readRecordInstruction(base)).toEqual({ mode: "a", invalid: true });
+  }
+});
+test.skipIf(process.getuid?.() !== 0)("selection rejects files owned by another uid and restores ownership", () => {
+  const base = directory(), file = join(base, RECORD_INSTRUCTION_FILE), uid = process.getuid!(), gid = process.getgid!();
+  writeFileSync(file, '{"instruction":"b"}', { mode: 0o644 });
+  clean.unshift(() => { try { chownSync(file, uid, gid); } catch { /* Best effort before removing the isolated fixture. */ } });
+  chownSync(file, uid + 1, gid);
+  expect(readRecordInstruction(base)).toEqual({ mode: "a", invalid: true });
+});
 test("invalid selection emits A and a numeric flag, while records=false still wins", async () => {
   const f = hookFixture(); clean.push(f.close); mkdirSync(f.base, { recursive: true });
   writeFileSync(join(f.base, RECORD_INSTRUCTION_FILE), '{"instruction":"bad"}', { mode: 0o600 });
   const input = { source: "resume", session_id: "selection" }, options = { cwd: f.cwd, base: f.base };
   const result = await runHook("SessionStart", input, options, { deadlineMs: 2000 });
   expect(result.output?.hookSpecificOutput.additionalContext).toStartWith("Only when a turn settles");
-  expect(readMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "a", recordInstructionInvalid: 1, recordInstructionEmitted: 1 });
+  expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "a", recordInstructionInvalid: 1, recordInstructionEmitted: 1 });
   writeFileSync(join(f.base, "amem.config.json"), '{"records":false}');
   await runHook("SessionStart", input, options, { deadlineMs: 2000 });
-  expect(readMetrics(f.base).at(-1)).toMatchObject({ recordEnabled: 0, recordInstructionEmitted: 0, recordInstructionInvalid: 1 });
+  expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordEnabled: 0, recordInstructionEmitted: 0, recordInstructionInvalid: 1 });
 });

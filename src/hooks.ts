@@ -1,3 +1,4 @@
+import { appendRecordVariant } from "./memory/record-variant-log.ts";
 import { types } from "node:util";
 import { readRecordInstruction } from "./memory/record-instruction.ts";
 import { homedir } from "node:os";
@@ -406,7 +407,8 @@ export async function runHook(event: string, input: unknown, options: HookOption
     return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } } };
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
-    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started, ...recordMetric, ...emittedCost,
+    if (base) appendRecordVariant(base, event, { at: new Date().toISOString(), kind: "hook", ...recordMetric, ...emittedCost });
+    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
       rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
       ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
@@ -469,9 +471,10 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   } catch { return ""; }
   finally {
     await cleanup?.();
+    try { appendRecordVariant(canonicalPath(memoryHome()), args[0] ?? "", { at: new Date().toISOString(), kind: "hook", ...recordMetric, ...emittedCost }); } catch { /* Observations never change tool outcomes. */ }
     try {
       const self = hookRssReading();
-      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt, ...recordMetric, ...emittedCost,
+      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
         ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }

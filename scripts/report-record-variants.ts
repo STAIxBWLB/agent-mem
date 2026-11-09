@@ -1,8 +1,9 @@
+import { RECORD_VARIANTS_FILE, RECORD_VARIANTS_MAX_BYTES, RECORD_VARIANTS_DAYS } from "../src/memory/record-variant-log.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const MAX_BYTES = 16 * 1024 * 1024;
+const MAX_BYTES = RECORD_VARIANTS_MAX_BYTES;
 const VARIANTS = ["a", "b"] as const;
 type Variant = typeof VARIANTS[number];
 type Row = Record<string, unknown>;
@@ -23,7 +24,11 @@ export function aggregateRecordVariants(samples: unknown[]) {
   });
   const totals = { a: empty(), b: empty() };
   let ignoredRows = 0, unknownRows = 0, malformedRows = 0, hookRows = 0, attributedRows = 0;
-  for (const value of samples) {
+  let capForcedTrim = false;
+  for (const original of samples) {
+    const value = isObject(original) && (original.variant === "a" || original.variant === "b") && ["SessionStart", "Stop", "SessionEnd"].includes(original.event as string)
+      ? { ...original, kind: "hook", recordVariant: original.variant } : original;
+    if (isObject(value) && value.capTrimmed === 1) capForcedTrim = true;
     if (!isObject(value)) { malformedRows++; continue; }
     if (value.kind !== "hook") { ignoredRows++; continue; }
     hookRows++;
@@ -127,8 +132,9 @@ export function aggregateRecordVariants(samples: unknown[]) {
   const incompleteRows = totals.a.incompleteRows + totals.b.incompleteRows;
   const totalRows = samples.length;
   return { variants, ignoredRows, unknownRows, malformedRows, incompleteRows,
-    scanCoverage: { totalRows, hookRows, attributedRows, complete: totalRows > 0 && unknownRows === 0 && malformedRows === 0 && incompleteRows === 0, unknownRows, malformedRows, incompleteRows, ignoredRows },
-    retention: "Metrics use a 64KiB trim trigger, newest 200 on trim; this cannot ensure 7 days at 35 sessions/day." };
+    window: { file: RECORD_VARIANTS_FILE, retentionDays: RECORD_VARIANTS_DAYS, capBytes: RECORD_VARIANTS_MAX_BYTES, capForcedTrim },
+    scanCoverage: { totalRows, hookRows, attributedRows, complete: !capForcedTrim && totalRows > 0 && unknownRows === 0 && malformedRows === 0 && incompleteRows === 0, unknownRows, malformedRows, incompleteRows, ignoredRows },
+    retention: "Record observations retain 8 days within a 4 MiB cap; capForcedTrim means the supplied window lost observations." };
 }
 
 function readMetrics(file: string): unknown[] {
@@ -156,7 +162,7 @@ function readMetrics(file: string): unknown[] {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw new Error("Cannot read metrics file. Next step: provide an existing metrics file.");
     const reason = (error as Error).message;
-    if (reason === "too-large") throw new Error("Metrics file exceeds the 16 MiB limit. Next step: provide a smaller archived metrics file.");
+    if (reason === "too-large") throw new Error("Record variant journal exceeds the 4 MiB limit. Next step: inspect the writer cap and supply a bounded journal.");
     if (reason === "symlink") throw new Error("Metrics path is a symlink. Next step: provide a regular metrics file.");
     if (reason === "not-file") throw new Error("Metrics path is not a regular file. Next step: provide a regular metrics file.");
     throw new Error("Metrics file cannot be read. Next step: check file permissions and encoding.");
@@ -164,8 +170,8 @@ function readMetrics(file: string): unknown[] {
 }
 
 function main(args: string[]): void {
-  if (args.length !== 2 || args[0] !== "--metrics" || !args[1]) {
-    console.error("Usage: bun scripts/report-record-variants.ts --metrics FILE"); process.exitCode = 2; return;
+  if (args.length !== 2 || !["--input", "--metrics"].includes(args[0]!) || !args[1]) {
+    console.error("Invalid report arguments; use bun scripts/report-record-variants.ts --input record-variants.jsonl"); process.exitCode = 2; return;
   }
   try {
     const samples = readMetrics(args[1]);

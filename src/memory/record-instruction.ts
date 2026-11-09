@@ -14,7 +14,7 @@ export function readRecordInstruction(base: string): { mode: RecordInstructionMo
       return { mode: "a", invalid: true };
     }
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES || (stat.mode & 0o077) !== 0) return { mode: "a", invalid: true };
+    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.size > MAX_BYTES || (stat.mode & 0o022) !== 0) return { mode: "a", invalid: true };
     const bytes = Buffer.alloc(MAX_BYTES + 1), length = readSync(fd, bytes, 0, bytes.length, 0);
     if (length > MAX_BYTES) return { mode: "a", invalid: true };
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));

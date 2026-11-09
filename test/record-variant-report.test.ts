@@ -52,7 +52,7 @@ test("validates binary counters and requires a complete Stop counter group", () 
   expect(report.variants.a).toMatchObject({ sessions: null, turnShare: null, observedShare: null, denominatorCounts: { sessions: null, allStopTurns: 1, observedStopTurns: 0, validRecords: 1, briefSamples: 0 } });
   expect(report.variants.b).toMatchObject({ turnShare: 1, denominatorCounts: { allStopTurns: 1, observedStopTurns: 1 } });
   expect(report.scanCoverage).toMatchObject({ complete: false, malformedRows: 2, incompleteRows: 1 });
-  expect(report.retention).toContain("64KiB trim trigger, newest 200 on trim");
+  expect(report.retention).toContain("retain 8 days within a 4 MiB cap");
 });
 
 test("report JSON excludes arbitrary text, identifiers and paths", () => {
@@ -94,4 +94,15 @@ test("invalid selection is numeric and invalid flag values refuse the whole metr
   ]);
   expect(report.variants.a).toMatchObject({ sessions: 1, invalidInstructionSelections: 1 });
   expect(report.malformedRows).toBe(1);
+});
+
+
+test("week journal event/variant rows report cap-limited coverage", () => {
+  const report = aggregateRecordVariants([
+    { at: "2026-11-10T00:00:00.000Z", event: "SessionStart", variant: "b", recordSessions: 1, recordBriefBytes: 432 },
+    { at: "2026-11-10T00:01:00.000Z", event: "Stop", variant: "b", recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0, capTrimmed: 1 },
+  ]);
+  expect(report.variants.b).toMatchObject({ sessions: 1, validRecords: 1, turnShare: 1, meanBriefBytes: 432 });
+  expect(report.window).toMatchObject({ file: "record-variants.jsonl", retentionDays: 8, capBytes: 4194304, capForcedTrim: true });
+  expect(report.scanCoverage.complete).toBe(false);
 });

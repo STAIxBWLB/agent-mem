@@ -3112,12 +3112,6 @@
       }
     ]
   },
-  "retention": {
-    "triggerBytes": 65536,
-    "keepRowsOnTrim": 200,
-    "guaranteesSevenDaysAt35SessionsPerDay": false,
-    "changed": false
-  },
   "phaseExitCodes": [
     {
       "phase": "gc-1-main",
@@ -3187,5 +3181,18 @@
       "phase": "final-full",
       "exit": 1
     }
-  ]
+  ],
+  "historicalGeneralMetricsRetention": {
+    "triggerBytes": 65536,
+    "keepRowsOnTrim": 200,
+    "guaranteesSevenDaysAt35SessionsPerDay": false,
+    "changed": false,
+    "note": "Frozen d983635 general metrics tail; I1 follow-up moves Record observations to a separate journal."
+  },
+  "currentVariantJournalRetention": {
+    "days": 8,
+    "hardCapBytes": 4194304,
+    "capTrimReported": true,
+    "validation": "follow-up checks pending"
+  }
 }
