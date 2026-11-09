@@ -20,10 +20,10 @@ test("inserts only source facts after eligible originals and preserves gold labe
   expect(out.records).toBe(2);
   const session = out.question.haystack_sessions[1]!;
   expect(session).toEqual([
-    original.haystack_sessions[1]![0],
+    original.haystack_sessions[1]![0]!,
     { role: "assistant", content: "amem: finding | fixtures/longmemeval.txt#s1t0 | source fact 1 with controls", has_answer: false },
-    original.haystack_sessions[1]![1],
-    original.haystack_sessions[1]![2],
+    original.haystack_sessions[1]![1]!,
+    original.haystack_sessions[1]![2]!,
     { role: "assistant", content: "amem: finding | fixtures/longmemeval.txt#s1t2 | source fact 3", has_answer: false },
   ]);
   expect(out.question.haystack_sessions[0]).toEqual(original.haystack_sessions[0]);

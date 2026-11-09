@@ -430,7 +430,7 @@ if (import.meta.main) {
     const runtime = runtimeAt(sourceRoot!); requireBench(runtime.commit === expected, "question worker runtime changed");
     let result: QuestionRun | undefined;
     process.once("exit", () => { if (result) writeCheckpoint(output!, result, true); });
-    result = await runQuestion(validateQuestion(JSON.parse(readFileSync(input!, "utf8"))), runtime, home!, value => writeCheckpoint(output!, value, false), recordVariant === "off" ? undefined : recordVariant);
+    result = await runQuestion(validateQuestion(JSON.parse(readFileSync(input!, "utf8"))), runtime, home!, value => writeCheckpoint(output!, value, false), recordVariant === "a" || recordVariant === "b" ? recordVariant : undefined);
   } else if (values.length === 1 && values[0] === "--help") {
     console.log("bun scripts/longmemeval.ts --input FILE --output REPORT.json [--source-root MAIN_CHECKOUT] [--question-timeout-ms 30000] [--max-questions N] [--variant S|M] [--record-variant a|b] [--question-types knowledge-update,multi-session]");
   } else await runLongMemEval(args(values));

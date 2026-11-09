@@ -85,3 +85,13 @@ test("CLI reads bounded regular files without writing input and reports fixed er
   expect(emptyResult.status).not.toBe(0);
   expect(emptyResult.stderr).toContain("nonempty");
 });
+
+
+test("invalid selection is numeric and invalid flag values refuse the whole metric row", () => {
+  const report = aggregateRecordVariants([
+    { kind: "hook", recordVariant: "a", recordSessions: 1, recordInstructionInvalid: 1 },
+    { kind: "hook", recordVariant: "a", recordSessions: 1, recordInstructionInvalid: 2 },
+  ]);
+  expect(report.variants.a).toMatchObject({ sessions: 1, invalidInstructionSelections: 1 });
+  expect(report.malformedRows).toBe(1);
+});
