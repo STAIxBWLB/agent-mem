@@ -1,0 +1,1 @@
+temporary hosted CI scope probe
