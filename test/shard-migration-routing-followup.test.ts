@@ -353,8 +353,14 @@ test("#119 malformed UTF-8 legacy line is counted once without shifting its byte
 });
 
 
-test("#119 interrupted active resume deactivates every split reader until idempotent completion", async () => {
-  const dir = home(), source = seed(dir);
+for (const aliasHome of [false, true]) test(`#119 interrupted active resume deactivates every split reader until idempotent completion${aliasHome ? " through a home alias" : ""}`, async () => {
+  const root = home();
+  let dir = root;
+  if (aliasHome) {
+    const actual = join(root, "actual"); mkdirSync(actual);
+    dir = join(root, "alias"); symlinkSync(actual, dir, "dir");
+  }
+  const source = seed(dir);
   await migrateShards(options(dir, "apply"));
   const existing = openShardStore({ home: dir, project: A });
   try {
