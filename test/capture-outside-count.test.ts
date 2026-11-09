@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { CaptureStore } from "../src/memory/capture.ts";
+import { CaptureStore, outsideCountPlanIsBounded } from "../src/memory/capture.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const cleanup: (() => void)[] = [];
@@ -103,4 +103,28 @@ test("outside counts need a read-only store opened with the recent window", () =
   const capture = reader(f);
   for (const event of ["", " ", "x".repeat(65)]) expect(() => capture.countOutsideRecent({ event })).toThrow("invalid capture event filter");
   for (const since of ["", "x".repeat(65)]) expect(() => capture.countOutsideRecent({ event: "Record", since })).toThrow("invalid capture since bound");
+});
+
+test("a plan that is not the bounded seek answers unavailable, without throwing", () => {
+  const f = fixture({ records: 5, tools: 400 });
+  // The derived index's name, the wrong shape: the planner can only seek the project, so the walk is unbounded.
+  const db = new Database(f.file);
+  try {
+    db.run("DROP INDEX rows_brief_records_v1");
+    db.run("CREATE INDEX rows_brief_records_v1 ON rows(project)");
+  } finally { db.close(); }
+  const capture = reader(f);
+  expect(() => capture.countOutsideRecent({ event: "Record" })).not.toThrow();
+  expect(capture.countOutsideRecent({ event: "Record" })).toEqual({ rows: 0, capped: false, available: false });
+});
+
+test("the plan guard reads the bounded seek and refuses a scan, a temp sort or a project-only walk", () => {
+  const open = { detail: "CO-ROUTINE (subquery-1)" }, read = { detail: "SCAN (subquery-1)" };
+  expect(outsideCountPlanIsBounded([open, { detail: "SEARCH rows USING INDEX rows_brief_records_v1 (project=? AND at<?)" }, read])).toBe(true);
+  expect(outsideCountPlanIsBounded([open, { detail: "SEARCH rows USING INDEX rows_brief_records_v1 (project=? AND at>? AND at<?)" }, read])).toBe(true);
+  expect(outsideCountPlanIsBounded([open, { detail: "SEARCH rows USING INDEX rows_brief_records_v1 (project=?)" }, read])).toBe(false);
+  expect(outsideCountPlanIsBounded([open, { detail: "SCAN rows USING INDEX rows_brief_records_v1" }, read])).toBe(false);
+  expect(outsideCountPlanIsBounded([open, { detail: "SCAN rows" }, read])).toBe(false);
+  expect(outsideCountPlanIsBounded([open, { detail: "SEARCH rows USING INDEX rows_brief_records_v1 (project=? AND at<?)" }, { detail: "USE TEMP B-TREE FOR ORDER BY" }])).toBe(false);
+  expect(outsideCountPlanIsBounded([])).toBe(false);
 });

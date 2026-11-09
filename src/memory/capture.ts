@@ -105,8 +105,17 @@ export interface CaptureOutsideCount {
   rows: number;
   /** True when the true count is at least one more than `rows` reports. */
   capped: boolean;
-  /** False when no derived index answers this event: nothing was counted and no table was scanned. */
+  /** False when nothing could answer this event safely: no derived index, or a plan that is not the bounded seek. */
   available: boolean;
+}
+/**
+ * #331: true when an `EXPLAIN QUERY PLAN` result is the bounded Record seek `countOutsideRecent` requires, meaning the
+ * derived index is searched with the project and an upper `at` bound, with no table scan and no temporary sort.
+ * Exported for its own unit test because a bundled SQLite may render the seek differently; not a host API.
+ */
+export function outsideCountPlanIsBounded(plan: readonly { detail: string }[]): boolean {
+  return plan.some(row => /^SEARCH rows USING INDEX rows_brief_records_v1 \(project=\?[^)]*at<\?/.test(row.detail))
+    && !plan.some(row => /^SCAN rows\b/.test(row.detail) || row.detail.includes("TEMP B-TREE"));
 }
 export interface CaptureAppendOptions {
   /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */
@@ -744,11 +753,12 @@ export class CaptureStore {
    * #331: how many `Record` rows sit outside the retained recent window, within the same `since` lower bound a host applies.
    * Index-only and bounded by the window: it reads no row content, returns no ids and never scans `rows`.
    * The cohort is the one `rows_brief_records_v1` covers, main-session Records; `available: false` means no derived index
-   * answers this event yet (a large legacy store), never a quiet fallback to a scan.
+   * answers this event yet (a large legacy store) or the plan is not the bounded seek, never a quiet fallback to a scan
+   * and never a throw, so a host upgrade that changes planner rendering degrades the answer instead of the caller.
    */
   countOutsideRecent(f: { event: string; since?: string }): CaptureOutsideCount {
     this.checkReadBinding();
-    if (!this.readOnly || this.recentReadIds === undefined) throw new Error("outside-window counts require a read-only recent window");
+    if (!this.readOnly || this.recentReadIds === undefined) throw new Error("outside-window counts require a read-only recent window; open CaptureStore with readOnly and recentReadRows");
     if (typeof f?.event !== "string" || !f.event.trim() || f.event.length > 64) throw new Error("invalid capture event filter");
     if (f.since !== undefined && (typeof f.since !== "string" || !f.since || f.since.length > 64)) throw new Error("invalid capture since bound");
     // ponytail: Record is the only event with a derived index; counting another event needs its own partial index first.
@@ -763,9 +773,8 @@ export class CaptureStore {
     const bind = [this.key, boundary.at, boundary.id, ...(f.since === undefined ? [] : [f.since]), cap + 1];
     const plan = this.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...bind) as { detail: string }[];
     // The guarantee is a seek bounded by the window boundary, not merely an index: an unbounded walk of the project's
-    // Record history would report the same numbers at a cost that grows with history, so it is refused instead.
-    const seek = plan.find(row => /^SEARCH rows USING INDEX rows_brief_records_v1 \(project=\?[^)]*at<\?/.test(row.detail));
-    if (!seek || plan.some(row => /^SCAN rows\b/.test(row.detail) || row.detail.includes("TEMP B-TREE"))) throw new Error("capture outside count index unavailable");
+    // Record history would report the same numbers at a cost that grows with history, so the count is not answered.
+    if (!outsideCountPlanIsBounded(plan)) return { rows: 0, capped: false, available: false };
     const n = (this.db.query(sql).get(...bind) as { n: number }).n;
     return { rows: Math.min(n, cap), capped: n > cap, available: true };
   }
