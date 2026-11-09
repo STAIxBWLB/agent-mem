@@ -13,11 +13,11 @@ export function interleaveDiagnosticPreload(trace: string): string {
  Bun.plugin({name:'interleave327-scan-observer',setup(builder){builder.onLoad({filter:/[/]hook-transcript\.ts$/},({path:file})=>{
   let source=readFileSync(file,'utf8');
   const anchor='            if (staged) await options.onPublication?.(staged);';
-  if(source.split(anchor).length!==2)throw Error('interleave diagnostic publication anchor changed');
+  if(source.split(anchor).length!==2)throw Error('interleave diagnostic publication anchor changed; update scripts/diagnose-interleave.ts anchors to the current src/hook-transcript.ts');
   const around='if (staged) { (globalThis as any).__interleave327({phase:"publication-before",event:summary.event,cursorBase:cursor.offset,rowStart:cursor.offset+start,nextOffset:cursor.offset+newline+1,workElapsedMs:performance.now()-workStart,workBudgetMs:options.workBudgetMs,remainingHardMs:options.deadline-performance.now(),stopReason:stopReason??null,pending:staged.name}); const diagnosticReplayStart=performance.now(); await options.onPublication?.(staged); (globalThis as any).__interleave327({phase:"publication-after",event:summary.event,cursorBase:cursor.offset,rowStart:cursor.offset+start,nextOffset:cursor.offset+newline+1,callbackMs:performance.now()-diagnosticReplayStart,workElapsedMs:performance.now()-workStart,workBudgetMs:options.workBudgetMs,remainingHardMs:options.deadline-performance.now(),due:due(),stopReason:stopReason??null,pending:staged.name}); }';
   source=source.replace(anchor,around);
   const finish='    return { offset: cursor.offset + start, ...(stopReason ? { stopReason } : {}) };';
-  if(source.split(finish).length!==2)throw Error('interleave diagnostic return anchor changed');
+  if(source.split(finish).length!==2)throw Error('interleave diagnostic return anchor changed; update scripts/diagnose-interleave.ts anchors to the current src/hook-transcript.ts');
   source=source.replace(finish,'(globalThis as any).__interleave327({phase:"scan-return",offset:cursor.offset+start,workElapsedMs:performance.now()-workStart,workBudgetMs:options.workBudgetMs,remainingHardMs:options.deadline-performance.now(),stopReason:stopReason??null});'+finish);
   return {loader:'ts',contents:source};
  });}});

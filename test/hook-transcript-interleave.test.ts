@@ -113,8 +113,10 @@ for (const event of ["Stop", "SessionEnd"] as const) test("a final hook commits 
     expect(metric.drained).toBe(selected.length); expect(metric.captureDrops).toBeUndefined();
     console.log(JSON.stringify({ diagnostic: "interleave-first-hook", event, cursor: cursor.offset, bytes: source.length,
       stopReason: metric.transcriptStopReason ?? null, compactScanned: compact.length === 1, drained: metric.drained }));
-    // Always exercise the next hook, including after EOF. This is a separate protocol phase, never a retry
-    // of a failing invocation: its fresh replay allowance must finish the retained tail without duplicating rows.
+    // Model this SAME session resuming, with unchanged transcript_path and session_id (fixture default p3-fixture),
+    // including after EOF. Production does not guarantee another hook after a non-resumed SessionEnd;
+    // that deferred tail remains uncaptured (#344). This separate protocol phase never retries a failing invocation:
+    // its fresh replay allowance must finish the retained tail without duplicating rows.
     observed.clear();
     const next = f.runFunctional(event, { prompt: `${current} continuation`, transcript_path: transcript }, observed.env);
     expect(next.exitCode, next.stderr.toString()).toBe(0); bounded(observed.reads());
