@@ -194,7 +194,7 @@ test("an awaited publication that exhausts the scan window retains the Compact t
       },
     });
     store.close(); store = undefined;
-    expect(first).toEqual({ offset: recapEnd, stopReason: "deadline" });
+    expect(first).toEqual({ offset: recapEnd, stopReason: "deadline", recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 });
     expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
     expect(f.rows().filter(row => row.excerpt === summary.recap)).toHaveLength(1);
     expect(f.rows().filter(row => row.excerpt === summary.compact)).toHaveLength(0);
