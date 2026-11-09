@@ -229,3 +229,21 @@ test("cache retains five whole Records and two summaries independently of the br
     expect(statSync(briefCacheFile(f.binding)).size).toBeLessThanOrEqual(BRIEF_CACHE_BYTES);
   } finally { store.close(); }
 });
+
+test("the person-raised capture format floor gates native cache and library reads without discarding work", async () => {
+  const f = await fixture(), work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  try { await work.write("floor-work", { task: "allowed work above capture floor", status: "doing" }); }
+  finally { work.close(); }
+  const file = briefCacheFile(f.binding), before = readFileSync(file);
+  // Acting as the person on this isolated fixture: production never writes format floors.
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "capture", minReader: "99.0.0", since: "2026-11-09" }]));
+  for (const native of [true, false]) {
+    const result = await sessionStartBrief({ ...f.options, nativeSession: native ? f.options.nativeSession : undefined, timeRemaining: () => 2000 });
+    expect(result.coverage.capture).toBe("unavailable");
+    expect(result.context).not.toContain("previous recap");
+    expect(result.context).toContain("allowed work above capture floor");
+    if (native) expect(result.context).toContain("floor: upgrade amem");
+    expect(result.tokens).toBeLessThanOrEqual(1200);
+  }
+  expect(readFileSync(file)).toEqual(before);
+});

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { CaptureRow, CaptureStore } from "./memory/capture.ts";
 import { readBriefCache } from "./brief-cache.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
+import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -148,11 +149,15 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const nativeCache = !!options.nativeSession && !options.measureOnly;
     let capture: CaptureStore | undefined, captureFailed = false;
     if (nativeCache) {
+      let floorReason: string | undefined;
+      try { assertFormatFloor(base, "capture"); }
+      catch (error) { floorReason = error instanceof FormatFloorError && error.code === "format_floor" ? "floor: upgrade amem" : "floor: amem doctor"; }
       let machine: string | undefined;
-      try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
-      const cache = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
+      if (!floorReason) try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
+      const cache = !floorReason && typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
         ? readBriefCache({ directory: captureShardDir(base, project, machine), project, section: "capture" }) : undefined;
-      if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing"; }
+      if (floorReason) { coverage.capture = "unavailable"; reasons.capture = floorReason; }
+      else if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing"; }
       else {
         coverage.capture = cache.partial ? "partial" : "complete";
         for (const row of cache.rows) {
