@@ -1,5 +1,5 @@
 name: check
-# README/CHANGELOG and workflow docs are release inputs; identical-tree proof needs their normal check too.
+# Main push and dispatch always run fully: docs/contracts.md Release gate reuse uses the main push as identical-tree release evidence.
 on:
   push:
     branches: [main]
@@ -11,7 +11,42 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  decision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_full: ${{ steps.scope.outputs.run_full }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci-scope.ts
+          sparse-checkout-cone-mode: false
+      # Read the pin from the commit without adding another path to the sparse worktree.
+      - name: Read pinned Bun version
+        id: runtime
+        run: echo "version=$(git show HEAD:.bun-version)" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.runtime.outputs.version }}
+      - name: Classify pull request scope (uncertainty runs everything)
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo 'run_full=true' >> "$GITHUB_OUTPUT"
+          elif gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" > "$RUNNER_TEMP/ci-scope-files.json"; then
+            bun scripts/ci-scope.ts classify "$RUNNER_TEMP/ci-scope-files.json" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo 'run_full=true' >> "$GITHUB_OUTPUT"
+          fi
   test:
+    needs: decision
+    if: needs.decision.outputs.run_full != 'false'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -37,6 +72,8 @@ jobs:
       # Refresh on dgx02: bun test --timings=test/ci-timings.json --update-timings
       - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/2 --timings=test/ci-timings.json
   measure:
+    needs: decision
+    if: needs.decision.outputs.run_full != 'false'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -120,9 +157,9 @@ jobs:
       - name: package.json needs no npm auto-correction
         if: always() && !cancelled()
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
-  # Matrix needs are coupled: either check name rejects any OS/shard failure, cancellation or skip.
+  # Preserve both required names and validate planned skips in both directions.
   check:
-    needs: [test, measure]
+    needs: [decision, test, measure]
     if: always()
     timeout-minutes: 30
     strategy:
@@ -131,13 +168,23 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every test shard and measurement job
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Require exactly the planned test and measurement results
         env:
-          TEST_RESULT: ${{ needs.test.result }}
-          MEASURE_RESULT: ${{ needs.measure.result }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: bun scripts/ci-scope.ts aggregate
+      - name: Fetch ancestry for light documentation checks
+        if: needs.decision.outputs.run_full == 'false'
         run: |
-          if [ "$TEST_RESULT" != success ] || [ "$MEASURE_RESULT" != success ]; then
-            echo "::error::Required jobs did not all succeed (test=$TEST_RESULT, measure=$MEASURE_RESULT); inspect and fix or rerun the failed, cancelled or skipped upstream jobs."
-            exit 1
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --filter=blob:none --unshallow origin
           fi
-          echo 'All required test and measurement jobs succeeded.'
+      - name: Light documentation stamp check
+        if: needs.decision.outputs.run_full == 'false'
+        run: bun scripts/check-docs.ts
+      - name: Light README facts check
+        if: needs.decision.outputs.run_full == 'false'
+        run: bun scripts/readme-facts.ts
