@@ -19,6 +19,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, read
 import { isAbsolute, join } from "node:path";
 import { hookCaptureScope, hookLegacyCaptureScope, hookSpoolReplayInternals as spool, type HookSpoolOwnedFile } from "./hook-spool.ts";
 import { aliasedKeys, resolveAlias } from "./memory/aliases.ts";
+import { buildCaptureBriefCache } from "./brief-capture.ts";
 import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { RecordNormalizationRefusal } from "./memory/capture-input.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -325,6 +326,9 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
             receipt.retired++; receipt.outcomes.push({ name: record.name, outcome: "skipped", reason: "Record declined by current normalization policy; stage a complete compatible Record before replaying again" });
           } else retain("claim changed before policy retirement; preview again before applying");
           closeSync(claim.fd); held = undefined; continue;
+        }
+        if (store!.summaryCommitId > 0) {
+          await buildCaptureBriefCache(store!, { base: home, project: record.project!, cwd: realPath(record.cwd), builtThrough: store!.summaryCommitId });
         }
         const spooled = "spooled" in result;
         if (spooled) receipt.spooled++; else receipt.applied++;

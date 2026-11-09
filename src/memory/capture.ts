@@ -184,6 +184,8 @@ const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.proje
 
 export class CaptureStore {
   readonly dir: string;
+  /** Highest summary row committed by this instance, including capture-spool replay; no cache I/O in the store. */
+  summaryCommitId = 0;
   /** The canonical project key of this shard (aliases resolved). */
   readonly key: string;
   /** Rows the pre-T1 machine-wide capture store handed this shard on open. */
@@ -460,6 +462,7 @@ export class CaptureStore {
         if (!prior) throw new Error("capture receipt lookup failed");
         return { id: prior.id, already: true };
       }).immediate();
+      if ("id" in result && (row.event === "Recap" || row.event === "Compact")) this.summaryCommitId = Math.max(this.summaryCommitId, result.id);
       try { this.evict(); } catch (error) {
         if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
       }
@@ -558,6 +561,7 @@ export class CaptureStore {
         else if (line) batch.push(line);
       }
       try {
+        let summaryThrough = 0;
         this.db.transaction(() => {
           for (const line of batch) {
             let raw: Partial<NormalizedCapture> & { bytes?: number };
@@ -569,10 +573,14 @@ export class CaptureStore {
               candidate = typeof raw.bytes === "number" && typeof raw.excerpt === "string" ? raw as NormalizedCapture : this.normalize(raw as CaptureInput);
             } catch { skipped++; continue; }
             if (!validRow(candidate)) { skipped++; continue; }
-            const added = this.insertRow(candidate, createHash("sha256").update(line).digest("hex")) !== undefined;
-            if (added) drained++;
+            const id = this.insertRow(candidate, createHash("sha256").update(line).digest("hex"));
+            if (id !== undefined) {
+              drained++;
+              if (candidate.event === "Recap" || candidate.event === "Compact") summaryThrough = Math.max(summaryThrough, id);
+            }
           }
         }).immediate();
+        this.summaryCommitId = Math.max(this.summaryCommitId, summaryThrough);
       } catch (error) {
         if (!lockError(error)) throw error;
         break; // still contended: the spool stays for the next invocation

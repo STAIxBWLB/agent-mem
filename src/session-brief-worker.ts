@@ -89,6 +89,7 @@ if (import.meta.main) {
     ready.then(() => { receiptReady = true; }, () => { /* The final drain reports failure inside the owned helper. */ });
     const budget = hookReplayBudget();
     let drainedCount = 0, captured = false, drainStarted = false;
+    let summaryThrough = 0;
     const replay = async (until: number, waitForReady = true) => {
       // Scanning must not wait on native metadata or cold store imports between summary lines.
       // The final replay may await them; publication/backpressure callbacks only use ready resources.
@@ -107,9 +108,17 @@ if (import.meta.main) {
       const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining, replayBudget: budget }, (input, receipt) => {
         store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd });
         const appended = store.append(input, { receipt });
+        summaryThrough = Math.max(summaryThrough, store.summaryCommitId);
         drain({ drained: ++drainedCount }); // DB commit or durable capture-spool acknowledgement, as in the existing contract.
         return appended;
       });
+      if (summaryThrough && store) {
+        try {
+          const { buildCaptureBriefCache } = await import("./brief-capture.ts");
+          await buildCaptureBriefCache(store, { base: options.base!, project, cwd: options.cwd, builtThrough: summaryThrough, policy: options.policy });
+          summaryThrough = 0;
+        } catch { /* Derived cache failure never loses committed capture. A later summary retries. */ }
+      }
       captured ||= drained.captured.includes(options.current);
       return drained.captured.length > 0;
     };

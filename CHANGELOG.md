@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Native SessionStart reads screened prebuilt Recap/Compact summaries before optional work can exhaust its deadline, including after compaction and for the current session. Stop/SessionEnd summary commits and hook-spool replay prepare a private per-project cache; bounded reads re-screen current policy and report `capture cache missing` without rebuilding when unavailable. Library Record ordering, context/deadline budgets and R2 baselines are unchanged. Refs #337, #201, #322.
+
 ## 0.23.1
 
 - Export `recordsEnabled(base, cwd?)` for hosts to check the effective home/repository Record policy before instruction emission or capture (#332, consumer agent-hub#1320). SessionStart and Stop transcript capture share the accessor; absent values stay enabled, either false disables Records, and malformed configuration still throws. Existing exports and storage formats are unchanged.

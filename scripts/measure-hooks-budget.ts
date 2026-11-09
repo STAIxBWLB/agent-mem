@@ -12,6 +12,7 @@ import { Database } from "bun:sqlite";
 import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildCaptureBriefCache } from "../src/brief-capture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
@@ -182,6 +183,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
       if (/work=(?:partial|unavailable)/.test(context) && (wallMs >= 140 || metric.wallMs! >= 140 || /work: deadline exhausted/.test(context))) throw stall("SessionStart deadline omitted fixture work");
       throw new Error("SessionStart fixture lacked known work without deadline evidence");
     }
+    if (!context.includes("r2-cached-recap")) throw new Error("SessionStart omitted the prebuilt capture fixture");
     // With a repo log the brief names the repo section in its coverage line, whatever its state: inside the hook's own 140 ms the optional sections
     // (curated, capture, repo) are dropped as "deadline exhausted" when under 80 ms is left, which is the fail-open design and not a repo fault.
     if (expectRepoSection && !/repo=(?:complete|partial|unavailable)/.test(context)) throw new Error(`SessionStart with a repo log named no repo coverage: ${context.slice(0, 160)}`);
@@ -215,6 +217,10 @@ try {
     await activatePublicPruneView({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
   }
   const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+  // #337: exercise a real prebuilt summary hit in every measured SessionStart, using the unchanged group baseline.
+  const summary = capture.append({ project: f.project, agent: "claude", event: "Recap", excerpt: "r2-cached-recap", session: "a".repeat(16) });
+  if (!("id" in summary)) throw new Error("R2 cache fixture summary did not commit");
+  await buildCaptureBriefCache(capture, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: summary.id });
   const dir = capture.dir, baseline = capture.stats().rows; capture.close();
   const plain = await samples("plain", RUNS.plain, () => invoke("PostToolUse", "plain"));
   const holder = new Database(join(dir, "capture.db"));

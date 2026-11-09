@@ -1,6 +1,8 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow } from "./memory/capture.ts";
+import { readBriefCache } from "./brief-cache.ts";
+import { captureDisplay, displayText, validCachedCapture } from "./brief-capture.ts";
 import { parseRecordLines } from "./hook-record.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
@@ -52,17 +54,6 @@ const unavailable = (): BriefResult => ({ context: "", tokens: 0, partial: true,
   coverage: { work: "unavailable", curated: "unavailable", capture: "unavailable" } });
 class BindingChanged extends Error {}
 
-/** Bound display values only after complete-row policy. JSON records and flattened controls prevent line/header forgery. */
-function displayText(text: string, maximum: number): { text: string; partial: boolean } {
-  const flattened = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
-  let out = "", bytes = 0;
-  for (const character of flattened) {
-    const size = Buffer.byteLength(character);
-    if (bytes + size > maximum) return { text: out, partial: true };
-    out += character; bytes += size;
-  }
-  return { text: out, partial: flattened !== text };
-}
 function workDisplay(view: WorkListView): { data: unknown; partial: boolean } {
   let partial = false;
   const text = (value: string, bytes: number) => { const result = displayText(value, bytes); partial ||= result.partial; return result.text; };
@@ -93,13 +84,6 @@ function repoDisplay(view: RepoView): { data: unknown; partial: boolean } {
   return { data: { id: `repo:${view.id}`, at: view.at, kind: view.kind, ...(title ? { title: title.text } : {}), text: body.text },
     partial: body.partial || title?.partial === true };
 }
-function captureDisplay(row: CaptureRow): { data: unknown; partial: boolean } {
-  const excerpt = displayText(row.excerpt, 240), event = displayText(row.event, 64);
-  const paths = row.paths.slice(0, 2).map(path => displayText(path, 80));
-  return { data: { id: row.id, at: row.at, event: event.text, paths: paths.map(path => path.text), excerpt: excerpt.text },
-    partial: excerpt.partial || event.partial || row.paths.length > paths.length || paths.some(path => path.partial) };
-}
-
 /** Keep the canonical Record whole; '-' is valid only for project-bound decisions/contracts. */
 function recordDisplay(row: CaptureRow): { data: unknown; partial: boolean } | undefined {
   const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
@@ -154,13 +138,33 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
     // Reserve the longest possible fixed header before selecting data; later coverage changes cannot overrun it.
-    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture history deferred" } : {}));
+    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture cache missing" } : {}));
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
     let candidateLine: string | undefined;
     const line = pendingLine(pendingSummary(base, [project, ...aliases], (options.now ?? Date.now)()));
     if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
+    // Read and screen before work/curated can spend their deadline; serialize at the original capture position.
+    const cachedLines: string[] = [];
+    if (options.nativeSession) {
+      let machine: string | undefined;
+      try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
+      const cache = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
+        ? readBriefCache({ directory: captureShardDir(base, project, machine), project, section: "capture" }) : undefined;
+      if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing"; }
+      else {
+        coverage.capture = cache.partial ? "partial" : "complete";
+        for (const row of cache.rows) {
+          if (!validCachedCapture(row, project) || !await screen(row.source) || !await screen(row.data)) { coverage.capture = "partial"; continue; }
+          const line = JSON.stringify({ section: "capture", evidence: false, data: row.data });
+          const size = Buffer.byteLength(line) + 1;
+          if (Buffer.byteLength(line) > RECORD_BYTES || size > remaining) { coverage.capture = "partial"; continue; }
+          cachedLines.push(line); remaining -= size;
+          if (row.partial) coverage.capture = "partial";
+        }
+      }
+    }
     const add = async (section: Section, shown: { data: unknown; partial: boolean }, evidence: boolean): Promise<boolean> => {
       if (!await screen(shown.data)) return false;
       coverage[section] = shown.partial ? "partial" : coverage[section] ?? "complete";
@@ -253,7 +257,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           await add("repo", repoDisplay(view), false); // repo lines are reviewed repository content, not the person's own curated evidence
         }
       });
-      await run("capture", async () => {
+      if (options.nativeSession) lines.push(...cachedLines);
+      else await run("capture", async () => {
         const { CaptureStore } = await import("./memory/capture.ts");
         if (options.measureOnly) {   // this machine's capture database, only when it exists: a project never captured has an empty section and nothing is created
           const machine = (() => { try { return (JSON.parse(readFileSync(join(base, "machine.json"), "utf8")) as { id?: string }).id ?? ""; } catch { return ""; } })();
