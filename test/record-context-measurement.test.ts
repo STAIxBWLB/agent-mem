@@ -19,7 +19,7 @@ test("read-only context measurement reuses native cap, opt-out and notice format
   try {
     const child = Bun.spawnSync([process.execPath, join(runtime, "scripts/measure-record-context.ts"), "--baseline", runtime, "--candidate", runtime,
       "--output", reportFile, "--copy", parent, "--project", project, "--cwd", scratch], { cwd: runtime, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
-    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    expect(child.exitCode, child.stdout.toString() + child.stderr.toString()).toBe(0);
     const text = readFileSync(reportFile, "utf8"), report = JSON.parse(text);
     expect(text).not.toContain("private-copy-canary"); expect(text).not.toContain(copy);
     expect(report.fixture.noLarger).toBe(true);

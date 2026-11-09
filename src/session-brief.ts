@@ -37,6 +37,7 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
    * Read-only diagnostic/console projection: build the brief without writing to the memory home. No reader lease is taken. The caller supplies the two sections that would otherwise
    * open a store read-write: `curated` is a store opened on a private copy of the logs (absent: the project has no curated notes, an empty complete section) and
    * `workBase` is a private base holding a copy of the project's and its aliases' work logs (absent: the work section is `unavailable`, never claimed complete).
+   * With `nativeSession`, curated uses the same read-only cache/floor path as the native hook, rather than this copied curated store.
    * The capture section opens this machine's capture database read-only, and only when it exists.
    */
   measureOnly?: { curated?: MemoryStore; workBase?: string };
@@ -143,10 +144,12 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       const line = JSON.stringify({ section: "capture", evidence: false, data: shown.data });
       return { line, size: Buffer.byteLength(line) + 1, partial: shown.partial };
     };
-    // Explicit diagnostic snapshots retain the read-only library projection, including raw chronological fill.
+    // Capture diagnostics retain the read-only library projection, including raw chronological fill.
+    // Curated diagnostics mirror native cache admission so they cannot claim context the hook would omit.
     const nativeCache = !!options.nativeSession && !options.measureOnly;
+    const nativeCurated = !!options.nativeSession;
     const preparedCurated: { line: string; size: number; partial: boolean }[] = [];
-    if (nativeCache) {
+    if (nativeCurated) {
       const deferredReason = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
       const prepared = readCuratedBriefCache({ base, project, profile: curatedProfileBinding(base, project),
         supportingRelease: CURATED_CACHE_MIN_READER, deferredReason, now: (options.now ?? Date.now)() });
@@ -282,7 +285,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
         if (!complete) coverage[section] = "partial";
       };
-      if (nativeCache) {
+      if (nativeCurated) {
         // Pre-screened before work, but allocated only now from the remaining pool.
         for (const row of preparedCurated) {
           if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.curated = "partial"; continue; }

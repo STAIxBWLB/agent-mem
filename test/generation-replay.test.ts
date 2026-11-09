@@ -73,19 +73,26 @@ test("generation refresh applies only new complete suffix rows; unchanged reads 
   const parent = mkdtempSync(join(tmpdir(), "amem-gen-incremental-")), memory = join(parent, "memory");
   cleanup.push(() => rmSync(parent, { recursive: true, force: true }));
   const legacy = new MemoryStore({ home: parent, profile: "shared-v1", now: () => NOW }); cleanup.push(() => legacy.close());
-  legacy.note({ op: "note", project: "agent-hub", scope: "project", tier: "long", kind: "contract", peer: "person", text: "first immutable row", about: [], source: "person" });
+  const first = legacy.note({ op: "note", project: "agent-hub", scope: "project", tier: "long", kind: "contract", peer: "person", text: "first immutable row", about: [], source: "person" });
   await migrate({ memoryDir: memory, mode: "apply", generation: G, authorizedPerson: true, tty: true });
   const store = new MemoryStore({ home: parent, now: () => NOW, deferPromotions: true }); cleanup.push(() => store.close());
-  // Instrument the real reducer callback, not a time threshold or replacement implementation.
-  const runtime = store as unknown as { apply(line: string, source: string): void };
-  const original = runtime.apply.bind(store), applied: string[] = [];
-  runtime.apply = (line, source) => { applied.push((JSON.parse(line) as Entry).id); original(line, source); };
-  store.list(); store.list(); store.refresh(); expect(applied).toEqual([]);
-  const next = legacy.note({ op: "note", project: "agent-hub", scope: "project", tier: "long", kind: "contract", peer: "person", text: "new complete suffix row", about: [], source: "person" });
-  expect(store.get(next)?.text).toBe("new complete suffix row"); expect(applied).toEqual([next]);
-  store.list(); store.refresh(); expect(applied).toEqual([next]);
-  const before = store.derivedTables(); store.rebuild(); expect(store.derivedTables()).toEqual(before);
-  expect(applied.length).toBe(3); // One new suffix plus two rows in the explicit full rebuild.
+  // Instrument the real reducer on the prototype so every handle for this generation is observed.
+  const runtime = MemoryStore.prototype as unknown as { apply: (this: MemoryStore, line: string, source: string) => void };
+  const original = runtime.apply, applied: string[] = [];
+  runtime.apply = function(this: MemoryStore, line: string, source: string): void {
+    if (this.profile.kind === "generation" && this.profile.dir === store.profile.dir) applied.push((JSON.parse(line) as Entry).id);
+    return original.call(this, line, source);
+  };
+  try {
+    store.list(); store.list(); store.refresh(); expect(applied).toEqual([]);
+    const next = legacy.note({ op: "note", project: "agent-hub", scope: "project", tier: "long", kind: "contract", peer: "person", text: "new complete suffix row", about: [], source: "person" });
+    expect(store.get(next)?.text).toBe("new complete suffix row"); expect(applied).toEqual([next]);
+    store.list(); store.refresh(); expect(applied).toEqual([next]);
+    const before = store.derivedTables(); store.rebuild(); expect(store.derivedTables()).toEqual(before);
+    expect(applied.length).toBe(3); // One new suffix plus two rows in the explicit full rebuild.
+    expect(applied.filter(id => id === next)).toHaveLength(2); // Once incrementally, once in the full rebuild.
+    expect(applied.filter(id => id === first)).toHaveLength(1); // Only the full rebuild reapplies the original row.
+  } finally { runtime.apply = original; }
 });
 
 for (const method of ["refresh", "rebuild"] as const) test(`generation ${method} never moves a concurrently indexed source watermark backward`, async () => {

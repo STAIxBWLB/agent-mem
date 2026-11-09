@@ -38,6 +38,7 @@ import { processSignature } from "./src/memory/platform.ts";
 const [base,cwd,project,mode] = Bun.argv.slice(2), nativeSession = { signature: processSignature(process.pid)! };
 const options = { base, cwd, project, nativeSession, timeRemaining: () => 1000 };
 const native = await sessionStartBrief(options);
+const measured = await sessionStartBrief({ ...options, measureOnly: {} });
 const library = mode === "native-only" ? undefined : await sessionStartBrief({ base, cwd, project });
 const curated = (result:any) => result.context.split("\\n").filter((line:string)=>line.startsWith('{"section":"curated"')).map((line:string)=>JSON.parse(line));
 const workLine = native.context.split("\\n").find((line:string)=>line.startsWith('{"section":"work"'));
@@ -51,7 +52,7 @@ const screened = await sessionStartBrief({ ...options, timeRemaining: () => rema
   if (text.includes("work first marker")) { order.push("work"); remaining = -1; }
   return true;
 } } } });
-writeFileSync(${JSON.stringify(join(root, "child-result.json"))}, JSON.stringify({ native, library, nativeCurated: curated(native), libraryCurated: library ? curated(library) : undefined, tight, order, screened }));
+writeFileSync(${JSON.stringify(join(root, "child-result.json"))}, JSON.stringify({ native, measured, library, nativeCurated: curated(native), measuredCurated: curated(measured), libraryCurated: library ? curated(library) : undefined, tight, order, screened }));
 `);
     writeFileSync(join(base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.24.0", since: "fixture" }]));
     return { root, base, isolated, binding, cache, indexFile, sourceLog };
@@ -63,8 +64,9 @@ function run(f: Awaited<ReturnType<typeof fixture>>, mode = "all") {
   if (result.exitCode !== 0) throw new Error(`isolated future runtime failed (${result.exitCode}): ${result.stderr.toString()}`);
   return JSON.parse(readFileSync(join(f.root, "child-result.json"), "utf8")) as {
     native: { context: string; coverage: Record<string, string> };
+    measured: { context: string; coverage: Record<string, string> };
     library: { context: string; coverage: Record<string, string> };
-    nativeCurated: unknown[]; libraryCurated: unknown[];
+    nativeCurated: unknown[]; measuredCurated: unknown[]; libraryCurated: unknown[];
     tight: { context: string; coverage: Record<string, string> };
     order: string[]; screened: { context: string };
   };
@@ -111,8 +113,12 @@ test("fake 99.0.0 reader admits curated and home floors at 0.24.0 and 0.24.1, re
   for (const surface of ["curated", "home"] as const) {
     for (const [minReader, expected] of [["0.23.9", false], ["0.24.0", true], ["0.24.1", true], ["100.0.0", false]] as const) {
       writeFileSync(file, JSON.stringify([{ surface, minReader, since: "fixture" }]));
+      const beforeCache = readFileSync(briefCacheFile(f.binding));
       const result = run(f, "native-only");
       expect(result.native.coverage.curated, `${surface} ${minReader}`).toBe(expected ? "complete" : "unavailable");
+      expect(result.measured.coverage.curated, `${surface} ${minReader} measureOnly`).toBe(result.native.coverage.curated);
+      expect(result.measuredCurated, `${surface} ${minReader} measureOnly rows`).toEqual(result.nativeCurated);
+      expect(readFileSync(briefCacheFile(f.binding))).toEqual(beforeCache);
       if (!expected) expect(result.native.context).not.toContain("curated evidence");
     }
   }

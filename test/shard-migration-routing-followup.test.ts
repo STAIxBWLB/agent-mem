@@ -274,7 +274,11 @@ test("#119 shared superseded by private has a separate ids-only dry-run count an
 
 test("#119 a destination symlink into the legacy source refuses before journal or foreign metadata writes", async () => {
   const dir = home(), source = seed(dir), before = readFileSync(source.file);
-  mkdirSync(join(source.memory, "projects"), { recursive: true }); symlinkSync(source.memory, shardDir(source.memory, A));
+  const destination = shardDir(source.memory, A);
+  expect(existsSync(join(destination, "generation.json"))).toBe(false);
+  expect(readdirSync(destination).sort()).toEqual(["machine", "project.json"]);
+  rmSync(destination, { recursive: true });
+  mkdirSync(join(source.memory, "projects"), { recursive: true }); symlinkSync(source.memory, destination);
   await expect(migrateShards(options(dir, "apply"))).rejects.toThrow();
   expect(existsSync(join(source.memory, "shards.json"))).toBe(false);
   expect(existsSync(join(source.memory, "generation.json"))).toBe(false);
