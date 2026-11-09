@@ -489,6 +489,7 @@ export class MemoryStore {
         if (sharded && !existsSync(join(shardDir(this.profile.home, project), "generation.json"))) continue;
         const reusable = opened && (!sharded || opened.profile.shardKey === project)
           && (aliases.length ? opened.reconcile?.canonical === project && opened.reconcile.aliases.join("\n") === aliases.join("\n") : !opened.reconcile);
+        if (opened && !reusable) continue; // Explicit single-project preparation never retries with a second store.
         view = reusable ? opened! : sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
         view.withStoreFences(() => {
           const selected = readSelector(this.profile.home);

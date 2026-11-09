@@ -9,6 +9,7 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { shardMachineDir } from "../src/memory/shard.ts";
 import { machineId, MemoryStore } from "../src/memory/store.ts";
 
+interface QuietBrief { brief: string; bytes: number; truncated: boolean; state: string }
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -42,8 +43,8 @@ test("unmarked person CLI brief builds the quiet project's curated cache", async
   const f = fixture();
   expect(existsSync(f.file)).toBe(false);
   const output = await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], { cwd: f.root, env: {}, stdinTTY: true }));
-  const result = JSON.parse(output) as { brief: string };
-  expect(result.brief).toContain("Untrusted project memory data");
+  const result = JSON.parse(output) as QuietBrief;
+  expect(result).toMatchObject({ brief: "", bytes: 0, state: "known" });
   expect(f.cache()).toMatchObject({ project: f.project, section: "curated", rows: [] });
   expect(f.cache()?.curated?.binding).toBeTruthy();
 });
@@ -53,13 +54,13 @@ test("CLAUDECODE-marked CLI brief routes through MCP without updating a curated 
   const before = readFileSync(f.file);
   const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
   try {
-    const expected = await mcp.tools.amem_brief({ intent: "quiet context" }) as { brief: string };
+    const expected = await mcp.tools.amem_brief({ intent: "quiet context" }) as QuietBrief;
     const output = await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], {
       cwd: f.root, env: { CLAUDECODE: "" }, stdinTTY: false,
     }));
-    const result = JSON.parse(output) as { brief: string };
+    const result = JSON.parse(output) as QuietBrief;
     expect(result).toEqual(expected);
-    expect(result.brief).toContain("Untrusted project memory data");
+    expect(result).toMatchObject({ brief: "", bytes: 0, state: "known" });
     expect(readFileSync(f.file)).toEqual(before);
     rmSync(f.file);
     await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], {
@@ -74,8 +75,8 @@ test("direct MCP amem_brief neither creates a missing cache nor overwrites an ex
   let session = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
   try {
     expect(existsSync(f.file)).toBe(false);
-    const result = await session.tools.amem_brief({ intent: "quiet context" }) as { brief: string };
-    expect(result.brief).toContain("Untrusted project memory data");
+    const result = await session.tools.amem_brief({ intent: "quiet context" }) as QuietBrief;
+    expect(result).toMatchObject({ brief: "", bytes: 0, state: "known" });
     expect(existsSync(f.file)).toBe(false);
   } finally { session.close(); }
 
@@ -83,8 +84,8 @@ test("direct MCP amem_brief neither creates a missing cache nor overwrites an ex
   const before = readFileSync(f.file);
   session = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
   try {
-    const result = await session.tools.amem_brief({ intent: "quiet context" }) as { brief: string };
-    expect(result.brief).toContain("Untrusted project memory data");
+    const result = await session.tools.amem_brief({ intent: "quiet context" }) as QuietBrief;
+    expect(result).toMatchObject({ brief: "", bytes: 0, state: "known" });
     expect(readFileSync(f.file)).toEqual(before);
     expect(f.cache()?.curated?.binding).toBe("fixture-sentinel-binding");
   } finally { session.close(); }
