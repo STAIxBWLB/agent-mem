@@ -138,7 +138,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
     // Read and screen before work/curated can spend their deadline; serialize at the original capture position.
     const cachedLines: string[] = [];
-    if (options.nativeSession) {
+    // Explicit diagnostic snapshots retain the read-only library projection; they never represent a native hook invocation.
+    const nativeCache = !!options.nativeSession && !options.measureOnly;
+    if (nativeCache) {
       let machine: string | undefined;
       try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
       const cache = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
@@ -248,7 +250,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           await add("repo", repoDisplay(view), false); // repo lines are reviewed repository content, not the person's own curated evidence
         }
       });
-      if (options.nativeSession) lines.push(...cachedLines);
+      if (nativeCache) lines.push(...cachedLines);
       else await run("capture", async () => {
         const { CaptureStore } = await import("./memory/capture.ts");
         if (options.measureOnly) {   // this machine's capture database, only when it exists: a project never captured has an empty section and nothing is created
