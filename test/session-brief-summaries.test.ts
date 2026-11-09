@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { buildCaptureBriefCache } from "../src/brief-capture.ts";
 import { processSignature } from "../src/memory/platform.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 
@@ -29,7 +30,7 @@ function add(f: ReturnType<typeof fixture>, event: string, excerpt: string, at: 
   return row.id;
 }
 
-test("Recap and Compact older than the 128-row raw snapshot lead the brief, newest first, then raw rows", async () => {
+test("library summaries lead the bounded raw snapshot; native cache keeps the same preferred summaries", async () => {
   const f = fixture();
   const baseAt = f.now - 10_000;
   add(f, "Recap", "goal recap", baseAt + 100);
@@ -49,7 +50,7 @@ test("Recap and Compact older than the 128-row raw snapshot lead the brief, newe
   } finally { db.close(); }
 
   const brief = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project, maxTokens: 1200,
-    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 });
+    measureOnly: {}, timeRemaining: () => 2000 });
   const rows = captureLines(brief.context);
   expect(rows.map(row => [row.event, row.excerpt])).toEqual([
     ["Compact", "compaction state"], ["Recap", "goal recap"], ["PostToolUse", "raw row 4999"], ["PostToolUse", "raw row 4998"],
@@ -57,6 +58,15 @@ test("Recap and Compact older than the 128-row raw snapshot lead the brief, newe
   expect(brief.context).not.toContain("subagent recap must stay out");
   expect(brief.tokens).toBe(Buffer.byteLength(brief.context));
   expect(brief.tokens).toBeLessThanOrEqual(1200);
+  const writer = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { buildCaptureBriefCache(writer, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: 2 }); }
+  finally { writer.close(); }
+  const native = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project,
+    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 });
+  expect(captureLines(native.context).map(row => [row.event, row.excerpt])).toEqual([
+    ["Compact", "compaction state"], ["Recap", "goal recap"],
+  ]);
+  expect(native.context).not.toContain("raw row");
 });
 
 test("with no Recap or Compact, capture rows keep the existing chronological projection", async () => {
@@ -84,7 +94,7 @@ test("only two preferred summaries are selected; a third remains eligible in the
   f.closeCapture();
 
   const brief = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project, maxTokens: 1200,
-    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 });
+    measureOnly: {}, timeRemaining: () => 2000 });
   expect(captureLines(brief.context).map(row => row.excerpt)).toEqual([
     "newest recap", "middle compact", "ordinary raw", "oldest recap",
   ]);
@@ -97,7 +107,7 @@ test("a policy-refused summary is not screened a second time or reintroduced by 
   f.closeCapture();
   let refusedChecks = 0;
   const brief = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project, maxTokens: 1200,
-    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000,
+    measureOnly: {}, timeRemaining: () => 2000,
     policy: { host: { screen: async value => {
       if (JSON.stringify(value).includes("refused recap")) { refusedChecks++; return false; }
       return true;

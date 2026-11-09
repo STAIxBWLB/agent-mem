@@ -2,6 +2,10 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+- Native and library briefs preload and screen capture before work, reserving only the newest permitted main-session Recap/Compact line; work consumes the remaining pool, then up to five whole canonical Records are allocated at the existing capture position, followed by the reserved summary and a second summary if bytes remain. A non-fitting whole line is skipped and marks capture partial. Record and summary commits refresh the private per-project cache, which excludes raw tool captures and reports `capture cache missing` without rebuilding when unavailable. Native Records now appear under the real 140 ms handler deadline. The library uses the same newest-summary reservation. Total context caps, `HANDLER_MS` and R2 baselines are unchanged. Refs #337, #201, #322.
+
 ## 0.23.1
 
 - Export `recordsEnabled(base, cwd?)` for hosts to check the effective home/repository Record policy before instruction emission or capture (#332, consumer agent-hub#1320). SessionStart and Stop transcript capture share the accessor; absent values stay enabled, either false disables Records, and malformed configuration still throws. Existing exports and storage formats are unchanged.

@@ -55,13 +55,14 @@ Bun.plugin({name:'repeat-full-admission',setup(b){if(process.env.AMEM_TEST_LIBRA
     expect(JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext).toContain(workMarker);
     const hooks = resolve(import.meta.dir, "../src/hooks.ts");
     const script = `import {runHook} from ${JSON.stringify(hooks)};console.log(JSON.stringify(await runHook('SessionStart',{cwd:${JSON.stringify(f.cwd)},prompt:'repeat capacity library'},{cwd:${JSON.stringify(f.cwd)},base:${JSON.stringify(f.base)}})));`;
-    if (existsSync(marker)) rmSync(marker); // Require the guaranteed library recovery to reach its own fresh fault.
+    if (existsSync(marker)) rmSync(marker); // Native recovery must not load the capture database module.
     const library = Bun.spawnSync([process.execPath, "--smol", "--preload", preload, "-e", script], { cwd: f.cwd, env: { ...f.env, AMEM_TEST_LIBRARY_CLOCK: "1" }, stdout: "pipe", stderr: "pipe", timeout: 3000 });
-    if (missingCapture) expect(existsSync(marker), library.stderr.toString()).toBe(true);
+    if (missingCapture) expect(existsSync(marker), library.stderr.toString()).toBe(false);
     expect(library.exitCode, library.stderr.toString()).toBe(0);
     const receipt = JSON.parse(library.stdout.toString());
     expect(receipt).toHaveProperty("output");
     expect(receipt.output.hookSpecificOutput.additionalContext).toContain(workMarker);
+    expect(receipt.output.hookSpecificOutput.additionalContext).toContain("capture cache missing");
     expect(receipt.captured).toBe(false); expect(receipt).not.toHaveProperty("pending");
   } finally { f.close(); }
 });

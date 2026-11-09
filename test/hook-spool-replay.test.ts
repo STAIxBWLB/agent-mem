@@ -2,7 +2,8 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { stageHookCapture } from "../src/hook-spool.ts";
+import { readBriefCache } from "../src/brief-cache.ts";
+import { stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { applyHookSpoolReplay, claimFor, parseReplayPlan, planHookSpoolReplay, type HookSpoolReplayPlan } from "../src/hook-spool-replay.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendLifecycle } from "../src/memory/lifecycle.ts";
@@ -334,4 +335,18 @@ test("I3: an open failure other than a vanished file fails the preview with its 
     if (process.getuid?.() === 0) return; // root reads anyway
     await expect(planHookSpoolReplay({ base: f.base })).rejects.toThrow(/EACCES.*ulimit -n|EACCES/);
   } finally { chmodSync(join(f.spool, name), 0o600); }
+});
+
+for (const event of ["Recap", "Compact"] as const) test(`spool replay prepares a prebuilt ${event} section`, async () => {
+  const f = fixture(); await f.seed();
+  const staged = await stageTranscriptCapture({ agent: "claude", event, at: new Date().toISOString(), excerpt: "replayed summary marker", session: "a".repeat(16) }, { cwd: f.cwd, base: f.base });
+  expect(staged).toBeDefined();
+  const plan = await planHookSpoolReplay({ base: f.base });
+  expect(await applyHookSpoolReplay({ base: f.base, plan })).toMatchObject({ applied: 1, retired: 1 });
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    const cache = readBriefCache({ directory: store.dir, project: f.project, section: "capture" });
+    expect(cache?.builtThrough).toBeGreaterThan(0);
+    expect(JSON.stringify(cache?.rows)).toContain("replayed summary marker");
+  } finally { store.close(); }
 });

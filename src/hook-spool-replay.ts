@@ -19,6 +19,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, read
 import { isAbsolute, join } from "node:path";
 import { hookCaptureScope, hookLegacyCaptureScope, hookSpoolReplayInternals as spool, type HookSpoolOwnedFile } from "./hook-spool.ts";
 import { aliasedKeys, resolveAlias } from "./memory/aliases.ts";
+import { buildCaptureBriefCache } from "./brief-capture.ts";
 import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { RecordNormalizationRefusal } from "./memory/capture-input.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -296,6 +297,7 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
 
     const receipt: HookSpoolReplayReceipt = { plan: plan.digest, applied: 0, spooled: 0, retired: 0, retained: 0, absent: 0, outcomes: [] };
     const planned = plan.records.filter(record => applicable(record, confirm)).sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+    let preparedThrough = 0;
     let store: CaptureStore | undefined, storeProject: string | undefined, held: HookSpoolOwnedFile | undefined;
     try {
       for (const record of planned) {
@@ -316,7 +318,7 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
         const decoded = spool.decoded(claim);
         if (!decoded || decoded.unknown || hash(decoded.bytes) !== record.digest) { retain("decode_changed"); closeSync(claim.fd); held = undefined; continue; }
         // One CaptureStore at a time: close the previous project's store before opening the next one.
-        if (storeProject !== record.project) { store?.close(); store = new CaptureStore({ memoryDir: home, project: record.project!, cwd: realPath(record.cwd) }); storeProject = record.project!; }
+        if (storeProject !== record.project) { store?.close(); store = new CaptureStore({ memoryDir: home, project: record.project!, cwd: realPath(record.cwd) }); storeProject = record.project!; preparedThrough = 0; }
         let result: ReturnType<CaptureStore["append"]>;
         try { result = store!.append(captureInput(decoded.value.capture as never, record.project!), { receipt: hash(decoded.bytes) }); }
         catch (error) {
@@ -325,6 +327,11 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
             receipt.retired++; receipt.outcomes.push({ name: record.name, outcome: "skipped", reason: "Record declined by current normalization policy; stage a complete compatible Record before replaying again" });
           } else retain("claim changed before policy retirement; preview again before applying");
           closeSync(claim.fd); held = undefined; continue;
+        }
+        if (store!.briefCommitId > preparedThrough) {
+          // Keep the claim on a cache failure: replay can retry its idempotent append and finish preparation.
+          await buildCaptureBriefCache(store!, { base: home, project: record.project!, cwd: realPath(record.cwd), builtThrough: store!.briefCommitId });
+          preparedThrough = store!.briefCommitId;
         }
         const spooled = "spooled" in result;
         if (spooled) receipt.spooled++; else receipt.applied++;

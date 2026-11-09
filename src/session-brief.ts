@@ -1,7 +1,9 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CaptureRow } from "./memory/capture.ts";
-import { parseRecordLines } from "./hook-record.ts";
+import type { CaptureRow, CaptureStore } from "./memory/capture.ts";
+import { readBriefCache } from "./brief-cache.ts";
+import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
+import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -52,17 +54,6 @@ const unavailable = (): BriefResult => ({ context: "", tokens: 0, partial: true,
   coverage: { work: "unavailable", curated: "unavailable", capture: "unavailable" } });
 class BindingChanged extends Error {}
 
-/** Bound display values only after complete-row policy. JSON records and flattened controls prevent line/header forgery. */
-function displayText(text: string, maximum: number): { text: string; partial: boolean } {
-  const flattened = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
-  let out = "", bytes = 0;
-  for (const character of flattened) {
-    const size = Buffer.byteLength(character);
-    if (bytes + size > maximum) return { text: out, partial: true };
-    out += character; bytes += size;
-  }
-  return { text: out, partial: flattened !== text };
-}
 function workDisplay(view: WorkListView): { data: unknown; partial: boolean } {
   let partial = false;
   const text = (value: string, bytes: number) => { const result = displayText(value, bytes); partial ||= result.partial; return result.text; };
@@ -93,21 +84,6 @@ function repoDisplay(view: RepoView): { data: unknown; partial: boolean } {
   return { data: { id: `repo:${view.id}`, at: view.at, kind: view.kind, ...(title ? { title: title.text } : {}), text: body.text },
     partial: body.partial || title?.partial === true };
 }
-function captureDisplay(row: CaptureRow): { data: unknown; partial: boolean } {
-  const excerpt = displayText(row.excerpt, 240), event = displayText(row.event, 64);
-  const paths = row.paths.slice(0, 2).map(path => displayText(path, 80));
-  return { data: { id: row.id, at: row.at, event: event.text, paths: paths.map(path => path.text), excerpt: excerpt.text },
-    partial: excerpt.partial || event.partial || row.paths.length > paths.length || paths.some(path => path.partial) };
-}
-
-/** Keep the canonical Record whole; '-' is valid only for project-bound decisions/contracts. */
-function recordDisplay(row: CaptureRow): { data: unknown; partial: boolean } | undefined {
-  const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
-  if (!record || parsed.records.length !== 1 || Object.keys(parsed.drops).length || record.line !== row.excerpt
-    || JSON.stringify(record.anchors) !== JSON.stringify(row.paths)) return;
-  return { data: { event: "Record", paths: record.anchors, excerpt: record.line }, partial: false };
-}
-
 /** A short-lived, model-free projection. The hook host supplies the hard process deadline; this function owns no timer or child. */
 export async function sessionStartBrief(options: BriefOptions): Promise<BriefResult> {
   let result = unavailable();
@@ -154,13 +130,79 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
     // Reserve the longest possible fixed header before selecting data; later coverage changes cannot overrun it.
-    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture history deferred" } : {}));
+    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture cache missing" } : {}));
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
     let candidateLine: string | undefined;
     const line = pendingLine(pendingSummary(base, [project, ...aliases], (options.now ?? Date.now)()));
     if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
+    // Preload and screen before work can spend the deadline; only the newest summary reserves bytes here.
+    type PreparedCapture = { line: string; size: number; partial: boolean };
+    const preparedRecords: PreparedCapture[] = [], preparedSummaries: PreparedCapture[] = [];
+    const summaryIds = new Set<number>();
+    const prepare = (shown: { data: unknown; partial: boolean }): PreparedCapture => {
+      const line = JSON.stringify({ section: "capture", evidence: false, data: shown.data });
+      return { line, size: Buffer.byteLength(line) + 1, partial: shown.partial };
+    };
+    // Explicit diagnostic snapshots retain the read-only library projection, including raw chronological fill.
+    const nativeCache = !!options.nativeSession && !options.measureOnly;
+    let capture: CaptureStore | undefined, captureFailed = false;
+    if (nativeCache) {
+      let floorReason: string | undefined;
+      try { assertFormatFloor(base, "capture"); }
+      catch (error) { floorReason = error instanceof FormatFloorError && error.code === "format_floor" ? "floor: upgrade amem" : "floor: amem doctor"; }
+      let machine: string | undefined;
+      if (!floorReason) try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
+      const cache = !floorReason && typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
+        ? readBriefCache({ directory: captureShardDir(base, project, machine), project, section: "capture" }) : undefined;
+      if (floorReason) { coverage.capture = "unavailable"; reasons.capture = floorReason; }
+      else if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing"; }
+      else {
+        coverage.capture = cache.partial ? "partial" : "complete";
+        for (const row of cache.rows) {
+          if (!validCachedCapture(row, project) || !await screen(row.source) || !await screen(row.data)) { coverage.capture = "partial"; continue; }
+          const target = (row.source as CaptureRow).event === "Record" ? preparedRecords : preparedSummaries;
+          if (target.length >= (target === preparedRecords ? 5 : 2)) { coverage.capture = "partial"; continue; }
+          target.push(prepare(row));
+        }
+      }
+    } else try {
+      const { CaptureStore } = await import("./memory/capture.ts");
+      const machine = (() => { try { return JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { return undefined; } })();
+      const present = !options.measureOnly || typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
+        && !!lstatSync(join(captureShardDir(base, project, machine), "capture.db"), { throwIfNoEntry: false });
+      if (present) {
+        capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession || options.measureOnly ? { readOnly: true, busyTimeoutMs: options.measureOnly ? 1000 : 0, maxReadRows: 128, recentReadRows: true } : {}) });
+        closers.push(() => capture!.close());
+        const summaries = capture.readBriefSummaries();
+        if (capture.recentReadTruncated || summaries.partial) coverage.capture = "partial";
+        for (const row of summaries.rows) {
+          if (row.project !== project) continue;
+          if (preparedSummaries.length >= 2) break;
+          summaryIds.add(row.id);
+          if (row.subagent === true || !await screen(row)) continue;
+          const shown = captureDisplay(row);
+          if (await screen(shown.data)) preparedSummaries.push(prepare(shown));
+        }
+      }
+    } catch (error) {
+      if (error instanceof BindingChanged || drifted) throw new BindingChanged();
+      captureFailed = true;
+    }
+    const newest = preparedSummaries[0];
+    const reservedSummary = newest && newest.size - 1 <= RECORD_BYTES && newest.size <= remaining ? newest : undefined;
+    if (reservedSummary) remaining -= reservedSummary.size;
+    else if (newest) coverage.capture = "partial";
+    const emitPrepared = (row: PreparedCapture): boolean => {
+      if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.capture = "partial"; return false; }
+      lines.push(row.line); remaining -= row.size;
+      if (row.partial) coverage.capture = "partial";
+      return true;
+    };
+    const emitReserved = () => {
+      if (reservedSummary) { lines.push(reservedSummary.line); if (reservedSummary.partial) coverage.capture = "partial"; }
+    };
     const add = async (section: Section, shown: { data: unknown; partial: boolean }, evidence: boolean): Promise<boolean> => {
       if (!await screen(shown.data)) return false;
       coverage[section] = shown.partial ? "partial" : coverage[section] ?? "complete";
@@ -253,37 +295,35 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           await add("repo", repoDisplay(view), false); // repo lines are reviewed repository content, not the person's own curated evidence
         }
       });
-      await run("capture", async () => {
-        const { CaptureStore } = await import("./memory/capture.ts");
-        if (options.measureOnly) {   // this machine's capture database, only when it exists: a project never captured has an empty section and nothing is created
-          const machine = (() => { try { return (JSON.parse(readFileSync(join(base, "machine.json"), "utf8")) as { id?: string }).id ?? ""; } catch { return ""; } })();
-          if (!/^[a-f0-9]{16}$/.test(machine) || !lstatSync(join(captureShardDir(base, project, machine), "capture.db"), { throwIfNoEntry: false })) return;
+      if (nativeCache) {
+        for (const row of preparedRecords) emitPrepared(row);
+        emitReserved();
+        for (const row of preparedSummaries.slice(1)) emitPrepared(row);
+      } else {
+        const firstCaptureLine = lines.length;
+        await run("capture", async () => {
+          if (captureFailed) throw new Error("capture unavailable");
+          if (!capture) return;
+          const records = capture.readBriefRecords();
+          if (records.partial) coverage.capture = "partial";
+          let selectedRecords = 0;
+          for (const row of records.rows) {
+            if (row.project !== project || row.subagent === true) continue;
+            if (selectedRecords >= 5) { coverage.capture = "partial"; break; }
+            if (!await screen(row)) continue;
+            const shown = recordDisplay(row);
+            if (shown && await add("capture", shown, false)) selectedRecords++;
+          }
+          emitReserved();
+          let selectedSummaries = reservedSummary ? 1 : 0;
+          for (const row of preparedSummaries.slice(1)) if (emitPrepared(row)) selectedSummaries++;
+          await recent("capture", window => capture!.readPage(window), captureDisplay, selectedSummaries, summaryIds);
+        });
+        // A slow work section may defer optional database reads, but cannot discard the already-screened reservation.
+        if (reservedSummary && !lines.slice(firstCaptureLine).includes(reservedSummary.line)) {
+          emitReserved(); coverage.capture = "partial";
         }
-        const capture = new CaptureStore({ memoryDir: base, project, cwd, ...(options.nativeSession || options.measureOnly ? { readOnly: true, busyTimeoutMs: options.measureOnly ? 1000 : 0, maxReadRows: 128, recentReadRows: true } : {}) }); closers.push(() => capture.close());
-        if (capture.recentReadTruncated) coverage.capture = "partial";
-        const records = capture.readBriefRecords();
-        if (records.partial) coverage.capture = "partial";
-        let selectedRecords = 0;
-        for (const row of records.rows) {
-          if (row.project !== project || row.subagent === true) continue;
-          if (selectedRecords >= 5) { coverage.capture = "partial"; break; }
-          if (!await screen(row)) continue;
-          const shown = recordDisplay(row);
-          if (shown && await add("capture", shown, false)) selectedRecords++;
-        }
-        const summaries = capture.readBriefSummaries(), summaryIds = new Set<number>();
-        if (summaries.partial) coverage.capture = "partial";
-        let selectedSummaries = 0;
-        for (const row of summaries.rows) {
-          if (row.project !== project) continue;
-          if (row.subagent === true) { summaryIds.add(row.id); continue; }
-          if (selectedSummaries >= 2) break;
-          if (!await screen(row)) { summaryIds.add(row.id); continue; }
-          summaryIds.add(row.id);
-          if (await add("capture", captureDisplay(row), false)) selectedSummaries++;
-        }
-        await recent("capture", window => capture.readPage(window), captureDisplay, selectedSummaries, summaryIds);
-      });
+      }
       guard();
       const context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       result = { context, tokens: Buffer.byteLength(context), partial: Object.values(coverage).some(value => value !== "complete"), coverage };

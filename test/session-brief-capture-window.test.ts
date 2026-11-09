@@ -26,7 +26,7 @@ function authoredFiles(base: string): Record<string, { sha: string; mode: number
   }; walk(""); return out;
 }
 
-test("native capture brief reads newest 128 rows across bounded pages without refusing older history or authoring indexes", async () => {
+test("read-only capture projection reads newest 128 rows across bounded pages without refusing older history or authoring indexes", async () => {
   const f = fixture(), db = new Database(join(f.dir, "capture.db"));
   let reader: CaptureStore | undefined;
   try {
@@ -53,10 +53,14 @@ test("native capture brief reads newest 128 rows across bounded pages without re
     expect(authoredFiles(f.base)).toEqual(before);
     expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('fts','mcp_fts')").all()).toEqual([]);
     const signature = processSignature(process.pid); expect(signature).toBeDefined();
-    const brief = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project, nativeSession: { signature: signature! }, timeRemaining: () => 2000 });
+    const brief = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project, measureOnly: {}, timeRemaining: () => 2000 });
     expect(brief.context).toContain("public row 139");
     expect(brief.coverage.capture).toBe("partial"); expect(brief.context).not.toContain("capture history deferred");
     expect(brief.tokens).toBeLessThanOrEqual(1200);
+    const native = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project, nativeSession: { signature: signature! }, timeRemaining: () => 2000 });
+    expect(native.context).not.toContain("public row");
+    expect(native.context).toContain("capture cache missing");
+    expect(native.coverage.capture).toBe("unavailable");
   } finally { reader?.close(); db.close(); f.close(); }
 });
 
