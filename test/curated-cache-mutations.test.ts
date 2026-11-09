@@ -17,17 +17,17 @@ function fixture() {
 test("note and imported note prepare a screened curated cache without rewriting authority", () => {
   const f = fixture();
   try {
-    f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", text: "first public decision", about: [] });
+    f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "first public decision", about: [] });
     expect(f.cache()?.rows.map(row => (row.data as { text: string }).text)).toEqual(["first public decision"]);
     const at = "2026-11-10T00:00:00.000Z";
-    f.store.importNote({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "fixture", text: "import public contract", about: [] }, at);
+    f.store.importNote({ op: "note", project: f.project, scope: "project", tier: "long", kind: "contract", peer: "fixture", source: "person", text: "import public contract", about: [] }, at);
     expect(f.cache()?.rows).toHaveLength(2);
   } finally { f.store.close(); }
 });
 test("forget and supersede never leave removed rows in the published cache", () => {
   const f = fixture();
   try {
-    const add = (text: string) => f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", text, about: [] });
+    const add = (text: string) => f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text, about: [] });
     const first = add("old public decision"), second = add("new public decision");
     f.store.supersede(first, second, "fixture", f.project);
     expect(f.cache()?.rows.map(row => (row.data as { text: string }).text)).toEqual(["new public decision"]);
@@ -42,7 +42,7 @@ test("promotion, demotion and settlement publish the current library projection"
   const projection = () => f.store.readPage({ project: f.project, limit: 32 }).rows.filter(row => row.project === f.project).slice(0, 4)
     .map(({ id, at, kind, text, title }) => ({ id, at, kind, ...(title ? { title } : {}), text }));
   try {
-    const first = f.store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "decision", peer: "fixture", text: "public task decision", task: `${f.project}#1`, about: [] });
+    const first = f.store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "decision", peer: "fixture", source: "person", text: "public task decision", task: `${f.project}#1`, about: [] });
     expect(display()).toEqual(projection());
     expect(f.store.promote(first, "fixture", f.project)).toBeDefined();
     expect(display()).toEqual(projection());
@@ -50,7 +50,7 @@ test("promotion, demotion and settlement publish the current library projection"
     f.store.demote(long.id, "fixture", f.project);
     expect(display()).toEqual(projection());
     expect(f.cache()!.curated!.expiresAt).not.toBeNull();
-    f.store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "finding", peer: "fixture", text: "another public task observation", task: `${f.project}#2`, about: [] });
+    f.store.note({ op: "note", project: f.project, scope: "project", tier: "short", kind: "finding", peer: "fixture", source: "person", text: "another public task observation", task: `${f.project}#2`, about: [] });
     f.store.settle(`${f.project}#2`, "fixture");
     expect(display()).toEqual(projection());
   } finally { f.store.close(); }

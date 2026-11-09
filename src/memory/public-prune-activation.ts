@@ -226,7 +226,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
     return { mode: options.mode, generation: intent.generation, active: true, ...(alreadyActive ? {alreadyActive:true} : {}), realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "verified" };
   }
   let previousProjects: string[] | undefined;
-  const result = await withProfileLock(home, async () => {
+  const result = await withProfileLock<PublicPruneActivationResult>(home, async () => {
     const releases: (() => void)[] = [];
     try {
       guard(lstatSync(home).dev === rootStat.dev && lstatSync(home).ino === rootStat.ino);

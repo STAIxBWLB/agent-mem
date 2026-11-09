@@ -579,7 +579,7 @@ export class MemoryStore {
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(local, this.machine.id);
       const id = entryId(body);
-      const affected = "project" in body ? String(body.project) : "target" in body ? (this.db.query("SELECT project FROM entries WHERE id=?").get(body.target) as { project: string } | null)?.project : undefined;
+      const affected = "project" in body ? String(body.project) : "target" in body && typeof body.target === "string" ? (this.db.query("SELECT project FROM entries WHERE id=?").get(body.target) as { project: string } | null)?.project : undefined;
       if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") this.markCuratedChange(affected);
       appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.
