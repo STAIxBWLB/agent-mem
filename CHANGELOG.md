@@ -4,7 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
-- Native SessionStart reads screened prebuilt Recap/Compact summaries before optional work can exhaust its deadline, including after compaction and for the current session. Stop/SessionEnd Record/summary commits and hook-spool replay prepare a private per-project cache, preserving canonical Records before summaries and excluding raw tool captures; bounded reads re-screen current policy and report `capture cache missing` without rebuilding when unavailable. Library Record ordering, context/deadline budgets and R2 baselines are unchanged. Refs #337, #201, #322.
+- Native and library briefs preload and screen capture before work, reserving only the newest permitted main-session Recap/Compact line; work consumes the remaining pool, then up to five whole canonical Records are allocated at the existing capture position, followed by the reserved summary and a second summary if bytes remain. A non-fitting whole line is skipped and marks capture partial. Record and summary commits refresh the private per-project cache, which excludes raw tool captures and reports `capture cache missing` without rebuilding when unavailable. Native Records now appear under the real 140 ms handler deadline. The library uses the same newest-summary reservation. Total context caps, `HANDLER_MS` and R2 baselines are unchanged. Refs #337, #201, #322.
 
 ## 0.23.1
 

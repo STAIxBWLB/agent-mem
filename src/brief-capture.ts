@@ -1,8 +1,8 @@
 import { parseRecordLines } from "./hook-record.ts";
 import type { CaptureRow, CaptureStore } from "./memory/capture.ts";
-import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { configuredPolicyOptions } from "./memory/config.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
-import { writeBriefCache, type BriefCacheRow } from "./brief-cache.ts";
+import { BRIEF_CACHE_BYTES, writeBriefCache, type BriefCacheRow } from "./brief-cache.ts";
 
 /** Bound display values only after complete-row policy; flatten controls before serialization. */
 export function displayText(text: string, maximum: number): { text: string; partial: boolean } {
@@ -34,11 +34,27 @@ export interface CaptureBriefOptions { base: string; project: string; cwd: strin
 export function buildCaptureBriefCache(store: CaptureStore, options: CaptureBriefOptions): void {
   if (options.policy?.host) throw new Error("prebuilt capture requires synchronous standalone screening");
   const policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
-  const maximum = Math.min(1200, loadAmemConfig(options.base, repoConfigRoot(options.cwd)).config.briefBytes ?? 1200);
   store.withBriefCaptureSnapshot((summaries, builtThrough) => {
-    const rows: BriefCacheRow[] = [];
-    const records = store.readBriefRecords();
-    let partial = summaries.partial || records.partial, remaining = maximum;
+    const records = store.readBriefRecords(), recordRows: BriefCacheRow[] = [], summaryRows: BriefCacheRow[] = [];
+    const watermark = Math.max(options.builtThrough, builtThrough);
+    let partial = summaries.partial || records.partial, count = 0;
+    let storedBytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project,
+      section: "capture", builtThrough: watermark, partial: false, rows: [] })) + 1;
+    const keep = (target: BriefCacheRow[], source: CaptureRow, shown: { data: unknown; partial: boolean }) => {
+      const row = { source, ...shown }, bytes = Buffer.byteLength(JSON.stringify(row)) + (count ? 1 : 0);
+      const displayBytes = Buffer.byteLength(JSON.stringify({ section: "capture", evidence: false, data: shown.data }));
+      if (displayBytes > 768 || storedBytes + bytes > BRIEF_CACHE_BYTES) { partial = true; return false; }
+      target.push(row); count++; storedBytes += bytes; partial ||= shown.partial; return true;
+    };
+    // Keep the two summary candidates independently of Record/context allocation. The reader alone owns the brief pool.
+    let selectedSummaries = 0;
+    for (const source of summaries.rows) {
+      if (source.project !== options.project || source.subagent === true || !policy.screenStandalone(source)) continue;
+      if (selectedSummaries >= 2) break;
+      const shown = captureDisplay(source);
+      if (!policy.screenStandalone(shown.data)) continue;
+      selectedSummaries++; keep(summaryRows, source, shown);
+    }
     let selectedRecords = 0;
     for (const source of records.rows) {
       if (source.project !== options.project || source.subagent === true) continue;
@@ -46,22 +62,11 @@ export function buildCaptureBriefCache(store: CaptureStore, options: CaptureBrie
       if (!policy.screenStandalone(source)) continue;
       const shown = recordDisplay(source);
       if (!shown || !policy.screenStandalone(shown.data)) continue;
-      const bytes = Buffer.byteLength(JSON.stringify({ section: "capture", evidence: false, data: shown.data })) + 1;
-      if (bytes > remaining || bytes > 769) { partial = true; continue; }
-      rows.push({ source, ...shown }); remaining -= bytes; selectedRecords++;
-    }
-    let selectedSummaries = 0;
-    for (const source of summaries.rows) {
-      if (source.project !== options.project || source.subagent === true || !policy.screenStandalone(source)) continue;
-      if (selectedSummaries >= 2) break;
-      const shown = captureDisplay(source);
-      if (!policy.screenStandalone(shown.data)) continue;
-      const bytes = Buffer.byteLength(JSON.stringify({ section: "capture", evidence: false, data: shown.data })) + 1;
-      if (bytes > remaining || bytes > 768 + 1) { partial = true; continue; }
-      rows.push({ source, ...shown }); remaining -= bytes; selectedSummaries++; partial ||= shown.partial;
+      if (keep(recordRows, source, shown)) selectedRecords++;
     }
     writeBriefCache({ directory: store.dir, project: options.project, section: "capture" }, {
-      schema: "agent-mem.brief-cache/v1", project: options.project, section: "capture", builtThrough: Math.max(options.builtThrough, builtThrough), partial, rows,
+      schema: "agent-mem.brief-cache/v1", project: options.project, section: "capture", builtThrough: watermark, partial,
+      rows: [...recordRows, ...summaryRows],
     });
   });
 }

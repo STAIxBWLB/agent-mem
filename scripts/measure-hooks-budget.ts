@@ -183,9 +183,11 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
       if (/work=(?:partial|unavailable)/.test(context) && (wallMs >= 140 || metric.wallMs! >= 140 || /work: deadline exhausted/.test(context))) throw stall("SessionStart deadline omitted fixture work");
       throw new Error("SessionStart fixture lacked known work without deadline evidence");
     }
-    if (!context.includes("r2-cached-recap")) throw new Error("SessionStart omitted the prebuilt capture fixture");
+    if (!context.includes("r2-cached-recap") || !context.includes("amem: contract | - | r2-cached-record")) {
+      throw new Error("SessionStart omitted a prebuilt summary or whole Record fixture");
+    }
     // With a repo log the brief names the repo section in its coverage line, whatever its state: inside the hook's own 140 ms the optional sections
-    // (curated, capture, repo) are dropped as "deadline exhausted" when under 80 ms is left, which is the fail-open design and not a repo fault.
+    // (curated, repo) are dropped as "deadline exhausted" when under 80 ms is left, which is the fail-open design and not a repo fault.
     if (expectRepoSection && !/repo=(?:complete|partial|unavailable)/.test(context)) throw new Error(`SessionStart with a repo log named no repo coverage: ${context.slice(0, 160)}`);
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
@@ -217,7 +219,10 @@ try {
     await activatePublicPruneView({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
   }
   const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
-  // #337: exercise a real prebuilt summary hit in every measured SessionStart, using the unchanged group baseline.
+  // #337: exercise prebuilt Record and summary hits under the real native deadline and unchanged group baselines.
+  const record = capture.append({ project: f.project, agent: "claude", event: "Record", paths: [],
+    excerpt: "amem: contract | - | r2-cached-record", session: "a".repeat(16) });
+  if (!("id" in record)) throw new Error("R2 cache fixture Record did not commit");
   const summary = capture.append({ project: f.project, agent: "claude", event: "Recap", excerpt: "r2-cached-recap", session: "a".repeat(16) });
   if (!("id" in summary)) throw new Error("R2 cache fixture summary did not commit");
   await buildCaptureBriefCache(capture, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: summary.id });

@@ -12,7 +12,7 @@ import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture() {
+async function fixture(seed = true) {
   const root = mkdtempSync(join(tmpdir(), "amem-brief-cache-")); roots.push(root);
   const base = join(root, "memory"), project = "cache-project";
   const capture = new CaptureStore({ memoryDir: base, project });
@@ -21,8 +21,10 @@ async function fixture() {
     if (!("id" in result)) throw Error("fixture append spooled");
     return result.id;
   };
-  const id = append("previous recap"); append("subagent forbidden", "Recap", true);
-  await buildCaptureBriefCache(capture, { base, project, cwd: root, builtThrough: id });
+  if (seed) {
+    const id = append("previous recap"); append("subagent forbidden", "Recap", true);
+    buildCaptureBriefCache(capture, { base, project, cwd: root, builtThrough: id });
+  }
   const directory = capture.dir; capture.close();
   const binding = { directory, project, section: "capture" as const };
   const options = { cwd: root, base, project, nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 70 };
@@ -44,11 +46,11 @@ test("private cache preserves library summary display and native reads no captur
   expect(native.tokens).toBeLessThanOrEqual(1200);
 });
 
-test("capture is preloaded before slow work spends the deadline, with output order preserved", async () => {
+for (const native of [true, false]) test(`capture is preloaded before slow work spends the deadline, with output order preserved: ${native ? "native" : "library"}`, async () => {
   const f = await fixture(), work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
   await work.write("queue", { task: "slow-work", status: "doing" }); work.close();
   let remaining = 70, reached = false, captureScreenedBeforeWork = false;
-  const native = await sessionStartBrief({ ...f.options, timeRemaining: () => remaining, policy: { host: { screen: async value => {
+  const result = await sessionStartBrief({ ...f.options, nativeSession: native ? f.options.nativeSession : undefined, timeRemaining: () => remaining, policy: { host: { screen: async value => {
     const text = JSON.stringify(value);
     if (text.includes("previous recap") && !reached) captureScreenedBeforeWork = true;
     if (text.includes("slow-work")) { reached = true; remaining = -1; }
@@ -56,8 +58,8 @@ test("capture is preloaded before slow work spends the deadline, with output ord
   } } } });
   expect(reached).toBe(true);
   expect(captureScreenedBeforeWork).toBe(true);
-  expect(native.context).toContain("previous recap");
-  expect(native.context.indexOf('"section":"work"')).toBeLessThan(native.context.indexOf('"section":"capture"'));
+  expect(result.context).toContain("previous recap");
+  expect(result.context.indexOf('"section":"work"')).toBeLessThan(result.context.indexOf('"section":"capture"'));
 });
 
 for (const mode of ["missing", "public", "oversize", "symlink", "malformed", "foreign"] as const) test(`cache ${mode} is unavailable without repairing it`, async () => {
@@ -149,4 +151,81 @@ test("retention eviction invalidates cached source rows without serving removed 
   const native = await sessionStartBrief(f.options);
   expect(native.context).not.toContain("previous recap");
   expect(native.context).toContain("capture cache missing");
+});
+
+test("equal-budget native and library reserve only the newest recap before saturated work, ahead of large Records", async () => {
+  const f = await fixture(false), store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  const work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  try {
+    for (let i = 0; i < 4; i++) await work.write(`queue-${i}`, { status: "doing", title: `work-${i} ` + "w".repeat(65), detail: "d".repeat(10) });
+  } finally { work.close(); }
+  try {
+    for (let i = 0; i < 2; i++) store.append({ project: f.project, agent: "claude", event: "Record", paths: [],
+      excerpt: `amem: decision | - | ${i} ${"r".repeat(280)}` });
+    const budget = 868; // The existing 1200-byte hook pool after the 332-byte Record instruction reservation.
+    const options = { ...f.options, maxTokens: budget, timeRemaining: () => 2000 };
+    const project = async () => [await sessionStartBrief(options), await sessionStartBrief({ ...options, nativeSession: undefined })];
+    const workRows = (context: string) => context.split("\n").filter(line => line.startsWith('{"section":"work"')).length;
+    buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.root, builtThrough: store.briefCommitId });
+    const before = await project();
+    store.append({ project: f.project, agent: "claude", event: "Recap", paths: [], at: new Date(Date.now() + 1000).toISOString(),
+      excerpt: "newest reserved recap " + "n".repeat(60) });
+    buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.root, builtThrough: store.briefCommitId });
+    const one = await project();
+    store.append({ project: f.project, agent: "claude", event: "Compact", paths: [], at: new Date(Date.now() - 1000).toISOString(),
+      excerpt: "older deferred compact " + "o".repeat(60) });
+    buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.root, builtThrough: store.briefCommitId });
+    expect(readBriefCache(f.binding)?.rows.filter(row => (row.source as { event: string }).event !== "Record")).toHaveLength(2);
+    const both = await project();
+    expect(captureRows(both[0]!.context)).toEqual(captureRows(both[1]!.context));
+    for (let i = 0; i < both.length; i++) {
+      const result = both[i]!;
+      expect(result.context).toContain("newest reserved recap");
+      expect(result.context).not.toContain("older deferred compact");
+      expect(captureRows(result.context).map(row => row.event)).toEqual(["Recap"]);
+      expect(result.coverage.work).toBe("partial");
+      expect(workRows(result.context)).toBeGreaterThan(0);
+      expect(workRows(result.context)).toBeLessThan(workRows(before[i]!.context));
+      expect(workRows(result.context)).toBe(workRows(one[i]!.context));
+      expect(result.tokens).toBeLessThanOrEqual(budget);
+    }
+  } finally { store.close(); }
+});
+
+test("an oversized newest summary is skipped whole instead of reserving the older one ahead of work", async () => {
+  const f = await fixture(), store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    store.append({ project: f.project, agent: "claude", event: "Recap", paths: ["a".repeat(80), "b".repeat(80)],
+      excerpt: "oversized newest " + "x".repeat(224), at: new Date(Date.now() + 1000).toISOString() });
+    buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.root, builtThrough: store.briefCommitId });
+  } finally { store.close(); }
+  const work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  try { await work.write("must-keep-work", { status: "doing", title: "w".repeat(72), detail: "d".repeat(30) }); }
+  finally { work.close(); }
+  const native = await sessionStartBrief({ ...f.options, maxTokens: 600, timeRemaining: () => 2000 });
+  expect(native.context).toContain("must-keep-work");
+  expect(native.context).not.toContain("oversized newest");
+  expect(native.context).not.toContain("previous recap");
+  expect(native.coverage.capture).toBe("partial");
+  expect(native.tokens).toBeLessThanOrEqual(600);
+});
+
+test("cache retains five whole Records and two summaries independently of the brief byte pool", async () => {
+  const f = await fixture(false), store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    for (let i = 0; i < 5; i++) store.append({ project: f.project, agent: "claude", event: "Record", paths: [],
+      excerpt: `amem: decision | - | ${i} ${"r".repeat(280)}` });
+    store.append({ project: f.project, agent: "claude", event: "Record", paths: [],
+      excerpt: "amem: decision | - | " + "한".repeat(280) });
+    store.append({ project: f.project, agent: "claude", event: "Recap", excerpt: "first recap" });
+    store.append({ project: f.project, agent: "claude", event: "Compact", excerpt: "second compact" });
+    buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.root, builtThrough: store.briefCommitId });
+    const cache = readBriefCache(f.binding)!;
+    expect(cache.rows.map(row => (row.source as { event: string }).event)).toEqual([
+      "Record", "Record", "Record", "Record", "Record", "Compact", "Recap",
+    ]);
+    expect(JSON.stringify(cache.rows)).not.toContain("한".repeat(280));
+    expect(cache.partial).toBe(true);
+    expect(statSync(briefCacheFile(f.binding)).size).toBeLessThanOrEqual(BRIEF_CACHE_BYTES);
+  } finally { store.close(); }
 });
