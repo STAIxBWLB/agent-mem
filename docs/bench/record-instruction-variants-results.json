@@ -3193,6 +3193,47 @@
     "days": 8,
     "hardCapBytes": 4194304,
     "capTrimReported": true,
-    "validation": "follow-up checks pending"
+    "validation": "Age, 4 MiB cap, cap-trim reporting, numeric-only projection and hook integration tests passed at follow-up head."
+  },
+  "followupValidation": {
+    "head": "2cb1848a82db5701759d8b1be56017f5a5e17ae9",
+    "typecheck": "pass",
+    "boundary": {
+      "status": "pass",
+      "sourceFiles": 163
+    },
+    "focused": {
+      "pass": 43,
+      "skip": 1,
+      "fail": 0,
+      "files": 5
+    },
+    "command": "bun test --timeout 20000",
+    "fullSuite": {
+      "pass": 3513,
+      "skip": 22,
+      "fail": 0,
+      "tests": 3535,
+      "files": 316,
+      "expectations": 48970,
+      "durationSeconds": 1296.47
+    },
+    "pack": {
+      "status": "pass",
+      "files": 173
+    },
+    "logs": [
+      {
+        "artifact": "task193-2cb1848-full.log",
+        "bytes": 466434,
+        "sha256": "05d77132d36df9be069518fdea390e3509d5717d6df9ab28f5b5fc0cebf66d89"
+      },
+      {
+        "artifact": "task193-2cb1848-pack.log",
+        "bytes": 8229,
+        "sha256": "3f1c9a5055500aded2d5398432a497975dcc34de7e70ea05fc8c12e5a304fde2"
+      }
+    ],
+    "scope": "I1 journal retention and I2 file admission only; public experiment, parser and retrieval implementation unchanged."
   }
 }

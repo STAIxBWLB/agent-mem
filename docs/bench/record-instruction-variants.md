@@ -53,3 +53,9 @@ A-to-B overall deltas, rounded here to six decimals; the strict verdict uses ful
 S has 14 decreasing aggregate rows and 21 public questions with a per-question decrease. M has 21 decreasing aggregate rows and 33 such questions. M question `73d42213` loses MCP all@10 (1 to 0); library question `6b7dfb22` loses MRR from 1 to 1/3. The common-input, gold, row, harness and fixed-BM25 guards passed.
 
 AC3 is unmet. A remains the default, and no text, fixture or threshold tuning followed these results. This evidence does not establish live-week writing effectiveness or release readiness. Typecheck, boundary (162 source files), the 227 focused tests and pack (172 files) passed at the measured head. The final full suite finished with 3506 pass, 21 skip, two default 5-second sync-placement timeouts and one subsequent async error. Both timeout cases also occur on the source-identical, data-only control branch; their mechanism remains unattributed. The separate main/candidate/candidate/main GC diagnostic timed out on all four arms. No deadline, limit or assertion was widened. The aggregate evidence retains outcomes and log hashes.
+
+## Retention and file-admission follow-up
+
+At implementation head `2cb1848a82db5701759d8b1be56017f5a5e17ae9`, typecheck, boundary (163 source files), focused tests (43 pass, one uid/chown skip) and pack (173 files) pass. The full CI command `bun test --timeout 20000` passes with 3513 pass, 22 skip and zero failures across 3535 tests. The old default-5-second result above remains historical evidence. Production handler deadlines, resource limits and assertions are unchanged.
+
+The separate numeric journal retains eight days within 4 MiB, leaving resource metrics unchanged; cap loss is explicit. Selection accepts regular, single-link, current-uid files without group/other write permission, including 0644. These changes do not alter the frozen public experiment or its failed strict no-loss result.
