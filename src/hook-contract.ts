@@ -4,11 +4,15 @@ export const HOOK_INPUT_BYTES = 64 * 1024, HOOK_CONTEXT_BYTES = 1200, HOOK_OUTPU
 /** `unavailable` (#221): the scan threw, so no progress is known; unlike the others it is a fault, never accepted progress. */
 export type HookTranscriptStopReason = "cap" | "deadline" | "spool_full" | "unavailable";
 export const HOOK_TRANSCRIPT_STOP_REASONS: readonly HookTranscriptStopReason[] = ["cap", "deadline", "spool_full", "unavailable"];
-export interface HookTranscriptProgress { offset?: number; stopReason?: HookTranscriptStopReason }
+export interface HookRecordCounts { recordValidRecords: number; recordBasisRecords: number; recordUnverifiedRecords: number }
+export interface HookTranscriptProgress extends Partial<HookRecordCounts> { offset?: number; stopReason?: HookTranscriptStopReason }
 export function isHookTranscriptProgress(value: unknown): value is HookTranscriptProgress {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  return Object.keys(row).every(key => key === "offset" || key === "stopReason")
+  return Object.keys(row).every(key => ["offset", "stopReason", "recordValidRecords", "recordBasisRecords", "recordUnverifiedRecords"].includes(key))
+    && (["recordValidRecords", "recordBasisRecords", "recordUnverifiedRecords"].every(key => row[key] === undefined)
+      || ["recordValidRecords", "recordBasisRecords", "recordUnverifiedRecords"].every(key => Number.isSafeInteger(row[key]) && (row[key] as number) >= 0)
+        && (row.recordBasisRecords as number) <= (row.recordValidRecords as number) && (row.recordUnverifiedRecords as number) <= (row.recordValidRecords as number))
     && (row.offset !== undefined || row.stopReason !== undefined)
     && (row.offset === undefined || Number.isSafeInteger(row.offset) && (row.offset as number) >= 0)
     && (row.stopReason === undefined || (HOOK_TRANSCRIPT_STOP_REASONS as readonly string[]).includes(row.stopReason as string));

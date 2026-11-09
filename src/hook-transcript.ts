@@ -157,6 +157,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
     let start = 0, stopReason: HookTranscriptProgress["stopReason"];
+    const recordMetrics = { recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 };
     // ponytail: the two-record cap is per native message.id within this scan only; no durable count.
     // A crash after staging but before cursor save has the summaries' duplicate window.
     // Upgrade to a msgid+ordinal receipt if the AC6 live week demonstrates duplicates.
@@ -192,6 +193,12 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
       if (records) {
         for (const [reason, count] of Object.entries(records.parsed.drops)) dropRecord(reason as RecordDropReason, count!);
         if (records.parsed.incomplete) { stopReason = "deadline"; break; }
+        if (records.messageId && records.at) {
+          const admitted = records.parsed.records.slice(0, Math.max(0, 2 - (recordCounts.get(records.messageId) ?? 0)));
+          recordMetrics.recordValidRecords += admitted.length;
+          recordMetrics.recordBasisRecords += admitted.filter(record => record.text.includes("basis:")).length;
+          recordMetrics.recordUnverifiedRecords += admitted.filter(record => record.text.startsWith("?")).length;
+        }
         if (records.messageId && records.at) for (const record of records.parsed.records) {
           const count = recordCounts.get(records.messageId) ?? 0;
           if (count >= 2) { dropRecord("record_count"); continue; }
@@ -263,7 +270,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     assertFormatFloor(base, "hook-spool");
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1").run(cursor.offset + start, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, cursor.skipping);
     db.run("COMMIT");
-    return { offset: cursor.offset + start, ...(stopReason ? { stopReason } : {}) };
+    return { offset: cursor.offset + start, ...recordMetrics, ...(stopReason ? { stopReason } : {}) };
   } finally {
     try { if (db) { try { db.run("ROLLBACK"); } catch { /* Already committed. */ } db.close(); } } finally { closeSync(fd); }
   }

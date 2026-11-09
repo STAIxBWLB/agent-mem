@@ -210,7 +210,7 @@ test("a deadline after one summary commits its prefix and resumes the remaining 
 test("a full spool reports its stop reason without advancing the unadmitted row", async () => {
   const f = fixture(); f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "wait for capacity" });
   const full = spyOn(spool, "stageTranscriptCapture").mockImplementation(async () => { throw new spool.HookSpoolFull(); });
-  try { expect(await f.scan()).toEqual({ offset: 0, stopReason: "spool_full" }); }
+  try { expect(await f.scan()).toEqual({ offset: 0, stopReason: "spool_full", recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 }); }
   finally { full.mockRestore(); }
   expect(await f.drain()).toHaveLength(0);
   await f.scan(); await f.scan(); expect(await f.drain()).toHaveLength(1);

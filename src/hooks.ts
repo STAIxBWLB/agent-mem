@@ -7,7 +7,7 @@ import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
-import { appendMetrics, captureDropSummary } from "./memory/metrics.ts";
+import { appendMetrics, captureDropSummary, type RecordVariantMetric } from "./memory/metrics.ts";
 import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
 import { jcodeHookCapture, jcodeJournalTarget } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
@@ -61,11 +61,30 @@ function joinedContext(context: string, notice: string, maximum: number): string
   return Buffer.byteLength(fallback) <= maximum ? fallback : "";
 }
 
-function instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number } {
+function instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number; recordVariant?: "a" | "b" } {
   const instruction = Object.values(RECORD_INSTRUCTIONS).find(text => context.startsWith(`${text}\n`));
   const bytes = instruction ? Buffer.byteLength(instruction) + 1 : 0;
   // Approximation only: the UTF-8 byte count is exact; tokens depend on the host tokenizer.
-  return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4) };
+  return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4), ...(instruction ? { recordVariant: instruction === RECORD_INSTRUCTIONS.a ? "a" as const : "b" as const } : {}) };
+}
+
+/** Numeric experiment units only. No raw payload, session id or Record text enters metrics. */
+function recordMetricIdentity(event: string, input: unknown, base: string, cwd: string): RecordVariantMetric {
+  if (!["SessionStart", "Stop", "SessionEnd"].includes(event) || !input || typeof input !== "object" || Array.isArray(input)) return {};
+  const value = input as { session_id?: unknown; source?: unknown };
+  try {
+    const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
+    return { recordVariant: recordInstructionVariant(config.recordInstruction ?? "a", captureSessionKey(value.session_id)),
+      recordEnabled: Number(recordsEnabled(base, cwd)),
+      ...(event === "SessionStart" ? { recordSessions: Number(value.source === "startup" || value.source === "resume"), recordBriefBytes: 0, recordInstructionEmitted: 0 }
+        : { recordTurns: Number(event === "Stop") }) };
+  } catch { return {}; } // Telemetry cannot turn a successful hook into a refusal.
+}
+function recordScanMetric(progress?: HookTranscriptProgress): RecordVariantMetric {
+  return progress?.recordValidRecords === undefined ? {} : {
+    recordValidRecords: progress.recordValidRecords, recordBasisRecords: progress.recordBasisRecords!, recordUnverifiedRecords: progress.recordUnverifiedRecords!,
+    recordTurnsWithRecords: Number(progress.recordValidRecords > 0),
+  };
 }
 
 async function before<T>(work: Promise<T>, deadline: number): Promise<T | undefined> {
@@ -351,6 +370,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
   let emittedCost = instructionCost("");
+  let recordMetric: RecordVariantMetric = {};
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
@@ -361,14 +381,16 @@ export async function runHook(event: string, input: unknown, options: HookOption
     captured = result.captured; pending = result.pending; dropped = "dropped" in result && result.dropped === true;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources();
     transcriptProgress = "transcript" in result ? result.transcript : undefined;
+    recordMetric = { ...recordMetricIdentity(event, input, base, options.cwd), ...recordScanMetric(transcriptProgress) };
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     emittedCost = instructionCost(result.context);
+    recordMetric = { ...recordMetric, recordBriefBytes: Buffer.byteLength(result.context), recordInstructionEmitted: Number(emittedCost.recordInstructionBytes > 0) };
     return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } } };
   } catch { return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true }; }
   finally {
-    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started, ...emittedCost,
+    if (base) try { const self = hookRssReading(); appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - started, ...recordMetric, ...emittedCost,
       rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
       ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]); } catch { /* Metrics never change the native tool outcome. */ }
   }
@@ -383,6 +405,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
   let emittedCost = instructionCost("");
+  let recordMetric: RecordVariantMetric = {};
   try {
     if (args.length !== 1) return "";
     if (args[0] === "jcode") {
@@ -418,8 +441,10 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
       transcriptProgress = "transcript" in result ? result.transcript : undefined;
+      recordMetric = { ...recordMetricIdentity(args[0]!, input, base, process.cwd()), ...recordScanMetric(transcriptProgress) };
       if (!result.valid || args[0] !== "SessionStart") return "";
       emittedCost = instructionCost(result.context);
+      recordMetric = { ...recordMetric, recordBriefBytes: Buffer.byteLength(result.context), recordInstructionEmitted: Number(emittedCost.recordInstructionBytes > 0) };
       return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: result.context } });
     }
     return "";
@@ -428,7 +453,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     await cleanup?.();
     try {
       const self = hookRssReading();
-      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt, ...emittedCost,
+      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", wallMs: performance.now() - startedAt, ...recordMetric, ...emittedCost,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
         ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }
