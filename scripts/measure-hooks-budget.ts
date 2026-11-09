@@ -9,7 +9,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { hookWallRunner348, reportHookWallAdvisory348, budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
+import { hookWallPass348, hookWallRunner348, reportHookWallAdvisory348, budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCaptureBriefCache } from "../src/brief-capture.ts";
@@ -212,8 +212,9 @@ async function samples(name: string, count: number, run: () => Sample): Promise<
 }
 function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
+  const wallSamplesMs = samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN);
   const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
-    wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN), wallLimitMs: WALL_MS });
+    wallSamplesMs, wallLimitMs: WALL_MS });
   const evidence = { telemetryValid: samples.every(sample => sample.rssProvenanceKnown), rssPass: verdict.peakPass, survivors: leftoverProcesses,
     wallP95Ms, wallMaxMs: verdict.r2.wallMax.maxMs, rssP95MB: verdict.r2.regression.p95MB, peakRssMB };
   const p95Advisory = !verdict.wallTimingPass && reportHookWallAdvisory348(name, "wall-p95", evidence);
@@ -226,7 +227,7 @@ function summarize(name: string, samples: Sample[]) {
     stallAdvisories++;
   }
   const hookWallAdvisory348 = p95Advisory || maxAdvisory || stallAdvisories > 0;
-  const pass = verdict.peakPass && (verdict.r2.wallMax.pass || maxAdvisory) && (verdict.wallTimingPass || p95Advisory || verdict.wallAdvisory);
+  const pass = hookWallPass348(verdict, wallP95Ms, wallSamplesMs, { p95: p95Advisory, max: maxAdvisory });
   return { rssCoverageComplete: samples.every(sample => sample.rssProvenanceKnown), rssProvenanceAdvisories: samples.filter(sample => !sample.rssProvenanceKnown).length, runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict, pass, hookWallAdvisory348, wallMaxAdvisory348: maxAdvisory, stallAdvisories348: stallAdvisories };
 }
 try {

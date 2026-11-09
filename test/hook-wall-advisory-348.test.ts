@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hookWallAdvisory348, reportHookWallAdvisory348, type HookWallEvidence348 } from "../scripts/budget-attempt.ts";
+import { hookWallPass348, hookWallAdvisory348, reportHookWallAdvisory348, type HookWallEvidence348 } from "../scripts/budget-attempt.ts";
 const evidence: HookWallEvidence348 = { telemetryValid: true, rssPass: true, survivors: 0, wallP95Ms: 180, wallMaxMs: 350, rssP95MB: 80, peakRssMB: 90 };
 const hosted = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" };
 test("#348 exact hosted markers and seven groups only", () => {
@@ -30,4 +30,26 @@ test("#348 numeric evidence is retained under its own step-summary record", () =
     expect(reportHookWallAdvisory348("plain", "wall-max", { ...evidence, rssPass: false }, hosted)).toBe(false);
     expect(() => reportHookWallAdvisory348("plain", "wall-max", evidence, hosted)).toThrow("set GITHUB_STEP_SUMMARY");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#348 combiner keeps invalid wall telemetry strict on both hosted runners", async () => {
+  const { workloadBudget } = await import("../scripts/hook-timing-check.ts");
+  for (const os of ["Linux", "macOS"]) {
+    const env = { ...hosted, RUNNER_OS: os };
+    const baseline = { schema: "agent-mem.r2-baseline/v1" as const, runners: { "hosted-linux": { "hooks:plain": 80 }, "hosted-macos": { "hooks:plain": 80 } } };
+    const dir = mkdtempSync(join(tmpdir(), "amem-combiner-"));
+    try {
+      const runEnv = { ...env, GITHUB_STEP_SUMMARY: join(dir, "summary") };
+      const verdict = (wallP95Ms: number, wallSamplesMs: number[], rss = 80) => workloadBudget("combiner fixture", {
+        group: "hooks:plain", wallP95Ms, wallSamplesMs, rssSamplesMB: [rss], wallLimitMs: 150, baseline,
+      }, runEnv);
+      for (const invalid of [NaN, Infinity, -1]) expect(hookWallPass348(verdict(invalid, [120]), invalid, [120], { p95: true, max: true })).toBe(false);
+      for (const invalid of [[], [NaN], [Infinity], [-1], [120, NaN]]) expect(hookWallPass348(verdict(180, invalid), 180, invalid, { p95: true, max: true })).toBe(false);
+      expect(hookWallPass348(verdict(180, [350]), 180, [350], { p95: true, max: true })).toBe(true);
+      expect(hookWallPass348(verdict(180, [350], 90), 180, [350], { p95: true, max: true })).toBe(false);
+      const original = verdict(100, [120]);
+      expect(original.pass).toBe(true);
+      expect(hookWallPass348(original, 100, [120], { p95: false, max: false })).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
 });

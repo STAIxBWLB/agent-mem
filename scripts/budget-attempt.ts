@@ -181,3 +181,13 @@ export function reportHookWallAdvisory348(group: string, kind: string, evidence:
   console.warn(`::warning title=Hook wall advisory #348::${JSON.stringify(record)}`);
   return true;
 }
+
+/** Preserve the original verdict; widen timing only after validating all wall telemetry. */
+export function hookWallPass348(verdict: { pass: boolean; peakPass: boolean; wallTimingPass: boolean; wallAdvisory: boolean; r2: { wallMax: { pass: boolean } } },
+  wallP95Ms: number, wallSamplesMs: readonly number[], advisories: { p95: boolean; max: boolean }): boolean {
+  const wallValid = Number.isFinite(wallP95Ms) && wallP95Ms >= 0 && wallSamplesMs.length > 0
+    && wallSamplesMs.every(value => Number.isFinite(value) && value >= 0);
+  if (!wallValid) return false;
+  return verdict.pass || verdict.peakPass && (verdict.r2.wallMax.pass || advisories.max)
+    && (verdict.wallTimingPass || advisories.p95 || verdict.wallAdvisory);
+}
