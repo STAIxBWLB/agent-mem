@@ -17,7 +17,7 @@ test("eight-day trim retains a busy week's observations and leaves general metri
   const got = rows(base);
   expect(got).toHaveLength(245);
   expect(got.every(row => Date.parse(row.at) >= NOW - 8 * DAY)).toBe(true);
-  expect(aggregateRecordVariants(got).variants.b.sessions).toBe(245);
+  expect(aggregateRecordVariants(got).variants.b?.sessions).toBe(245);
   expect(readFileSync(join(base, "metrics.jsonl"), "utf8")).toBe("general-metrics-canary\n");
   expect(statSync(join(base, RECORD_VARIANTS_FILE)).mode & 0o077).toBe(0);
 });
