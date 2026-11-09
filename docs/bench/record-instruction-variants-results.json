@@ -3193,7 +3193,11 @@
     "days": 8,
     "hardCapBytes": 4194304,
     "capTrimReported": true,
-    "validation": "Age, 4 MiB cap, cap-trim reporting, numeric-only projection and hook integration tests passed at follow-up head."
+    "validation": "Age, 4 MiB cap, cap-trim reporting, numeric-only projection and hook integration tests passed at follow-up head.",
+    "triggerDays": 9,
+    "keptDaysOnTrim": 8,
+    "replacement": "temp+rename; concurrent append loss is an accepted documented ceiling",
+    "trimCounter": "observed trim markers, not losses"
   },
   "followupValidation": {
     "head": "2cb1848a82db5701759d8b1be56017f5a5e17ae9",
@@ -3235,5 +3239,297 @@
       }
     ],
     "scope": "I1 journal retention and I2 file admission only; public experiment, parser and retrieval implementation unchanged."
+  },
+  "nativeR2Followup": {
+    "measuredHead": "5650063598d5b8023b8518d4b09645e77b27f423",
+    "mainControl": "9a1792a0a05903afe23482329dcd83cc81cc9a31",
+    "arms": {
+      "main": {
+        "groups": [
+          {
+            "group": "hooks:plain",
+            "n": 40,
+            "wallP95Ms": 84.51248799999985,
+            "rssP95MB": 86.9375,
+            "wallMaxMs": 92.663271984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:spoolAndExit",
+            "n": 15,
+            "wallP95Ms": 78.07896500000061,
+            "rssP95MB": 89.40625,
+            "wallMaxMs": 73.785761984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStart",
+            "n": 20,
+            "wallP95Ms": 63.48089600000003,
+            "rssP95MB": 50.0625,
+            "wallMaxMs": 60.541944109375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStartRepoLog",
+            "n": 20,
+            "wallP95Ms": 66.00572800000009,
+            "rssP95MB": 52.6015625,
+            "wallMaxMs": 62.236543125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:drain",
+            "n": 1,
+            "wallP95Ms": 88.65619200000037,
+            "rssP95MB": 88.96875,
+            "wallMaxMs": 84.64016484375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcode",
+            "n": 40,
+            "wallP95Ms": 80.93148499999916,
+            "rssP95MB": 87.1796875,
+            "wallMaxMs": 91.890394984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcodeJournal",
+            "n": 40,
+            "wallP95Ms": 91.95444599999973,
+            "rssP95MB": 89.4609375,
+            "wallMaxMs": 101.318600703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "transcript:Stop",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 97.85354399999983,
+            "rssP95MB": 94.78515625,
+            "wallMaxMs": 98.249103703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:SessionEnd",
+            "n": 40,
+            "invocations": 41,
+            "wallP95Ms": 106.36542599999939,
+            "rssP95MB": 94.921875,
+            "wallMaxMs": 111.749198984375,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:StopBurst",
+            "n": 40,
+            "invocations": 356,
+            "wallP95Ms": 114.58030299999518,
+            "rssP95MB": 109.66796875,
+            "wallMaxMs": 119.15152884375,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          }
+        ],
+        "proofs": {
+          "hooks": {
+            "artifacts": [
+              "main-hooks.log",
+              "main-hooks-proof.jsonl"
+            ],
+            "logSha256": "607268b46a1555deb16ed5480f2c6d927aa89a97013d5e11a5052ce9af6545e0",
+            "observations": 3,
+            "journalPresent": 0,
+            "rows": 0,
+            "events": {}
+          },
+          "transcript": {
+            "artifacts": [
+              "main-transcript.log",
+              "main-transcript-proof.jsonl"
+            ],
+            "logSha256": "02d68d757b87f5c9b2b6bfb2324a6943d5a464fd9a20f0e206d0e9828c84cbf7",
+            "observations": 41,
+            "journalPresent": 0,
+            "rows": 0,
+            "events": {}
+          }
+        }
+      },
+      "candidate": {
+        "groups": [
+          {
+            "group": "hooks:plain",
+            "n": 40,
+            "wallP95Ms": 79.16194600000017,
+            "rssP95MB": 86.64453125,
+            "wallMaxMs": 91.969368984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:spoolAndExit",
+            "n": 15,
+            "wallP95Ms": 77.50101300000006,
+            "rssP95MB": 88.96484375,
+            "wallMaxMs": 73.63253684375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStart",
+            "n": 20,
+            "wallP95Ms": 64.50120599999991,
+            "rssP95MB": 50.34765625,
+            "wallMaxMs": 61.086298703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStartRepoLog",
+            "n": 20,
+            "wallP95Ms": 66.34830600000078,
+            "rssP95MB": 52.65625,
+            "wallMaxMs": 63.23420584375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:drain",
+            "n": 1,
+            "wallP95Ms": 93.98931399999947,
+            "rssP95MB": 88.66796875,
+            "wallMaxMs": 89.58154584375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcode",
+            "n": 40,
+            "wallP95Ms": 79.04259000000093,
+            "rssP95MB": 86.984375,
+            "wallMaxMs": 88.128214703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcodeJournal",
+            "n": 40,
+            "wallP95Ms": 95.38884299999881,
+            "rssP95MB": 89.56640625,
+            "wallMaxMs": 92.149517125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "transcript:Stop",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 95.40849000000003,
+            "rssP95MB": 96.2265625,
+            "wallMaxMs": 102.699346703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:SessionEnd",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 94.6403250000003,
+            "rssP95MB": 94.7109375,
+            "wallMaxMs": 94.550256703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:StopBurst",
+            "n": 40,
+            "invocations": 355,
+            "wallP95Ms": 114.94178500000271,
+            "rssP95MB": 109.41796875,
+            "wallMaxMs": 114.417833703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          }
+        ],
+        "proofs": {
+          "hooks": {
+            "artifacts": [
+              "candidate-hooks.log",
+              "candidate-hooks-proof.jsonl"
+            ],
+            "logSha256": "25c4d1ca4101bd0e9630c98e68e12f51593deedc5ff094edab4a74749aeb6e11",
+            "observations": 3,
+            "journalPresent": 2,
+            "rows": 41,
+            "events": {
+              "SessionStart": 41
+            }
+          },
+          "transcript": {
+            "artifacts": [
+              "candidate-transcript.log",
+              "candidate-transcript-proof.jsonl"
+            ],
+            "logSha256": "fee8f1827ff6b26fad36ce79181187bb5f59f688d327494cf64cdf6d028efc9b",
+            "observations": 41,
+            "journalPresent": 41,
+            "rows": 435,
+            "events": {
+              "Stop": 395,
+              "SessionEnd": 40
+            }
+          }
+        }
+      }
+    },
+    "deltas": [
+      {
+        "group": "hooks:plain",
+        "wallP95Ms": -5.3505419999996775,
+        "rssP95MB": -0.29296875
+      },
+      {
+        "group": "hooks:spoolAndExit",
+        "wallP95Ms": -0.5779520000005505,
+        "rssP95MB": -0.44140625
+      },
+      {
+        "group": "hooks:sessionStart",
+        "wallP95Ms": 1.0203099999998813,
+        "rssP95MB": 0.28515625
+      },
+      {
+        "group": "hooks:sessionStartRepoLog",
+        "wallP95Ms": 0.3425780000006853,
+        "rssP95MB": 0.0546875
+      },
+      {
+        "group": "hooks:drain",
+        "wallP95Ms": 5.3331219999990935,
+        "rssP95MB": -0.30078125
+      },
+      {
+        "group": "hooks:jcode",
+        "wallP95Ms": -1.8888949999982287,
+        "rssP95MB": -0.1953125
+      },
+      {
+        "group": "hooks:jcodeJournal",
+        "wallP95Ms": 3.4343969999990804,
+        "rssP95MB": 0.10546875
+      },
+      {
+        "group": "transcript:Stop",
+        "wallP95Ms": -2.4450539999998,
+        "rssP95MB": 1.44140625
+      },
+      {
+        "group": "transcript:SessionEnd",
+        "wallP95Ms": -11.725100999999086,
+        "rssP95MB": -0.2109375
+      },
+      {
+        "group": "transcript:StopBurst",
+        "wallP95Ms": 0.36148200000752695,
+        "rssP95MB": -0.25
+      }
+    ],
+    "interpretation": "Matched main/candidate on one runner; all four scripts exit rss-miss against old committed seeds, no baseline/limit edits. Wall and absolute ceilings pass on both arms; report observed deltas, not zero movement."
   }
 }

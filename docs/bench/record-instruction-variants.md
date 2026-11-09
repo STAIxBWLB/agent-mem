@@ -59,3 +59,19 @@ AC3 is unmet. A remains the default, and no text, fixture or threshold tuning fo
 At implementation head `2cb1848a82db5701759d8b1be56017f5a5e17ae9`, typecheck, boundary (163 source files), focused tests (43 pass, one uid/chown skip) and pack (173 files) pass. The full CI command `bun test --timeout 20000` passes with 3513 pass, 22 skip and zero failures across 3535 tests. The old default-5-second result above remains historical evidence. Production handler deadlines, resource limits and assertions are unchanged.
 
 The separate numeric journal retains eight days within 4 MiB, leaving resource metrics unchanged; cap loss is explicit. Selection accepts regular, single-link, current-uid files without group/other write permission, including 0644. These changes do not alter the frozen public experiment or its failed strict no-loss result.
+
+## Trim hysteresis and native R2
+
+At `5650063598d5b8023b8518d4b09645e77b27f423`, the age trigger is past nine days and retention after trim is eight days. A steady ten-day hourly append test observes one age trim. Common appends do not read the tail or rewrite. Temp+rename keeps readers from seeing a truncated intermediate file; concurrent appends or competing trims can still lose observations, as the documented `ponytail:` ceiling. The upgrade is a shared append/trim lock or dated daily files. The report counts observed trims, never guesses lost rows.
+
+Matched native measurements against frozen main on the same runner (p95):
+
+| Group | main wall ms | candidate wall ms | delta ms | main RSS MB | candidate RSS MB | delta MB |
+|---|---:|---:|---:|---:|---:|---:|
+| SessionStart | 63.481 | 64.501 | +1.020 | 50.063 | 50.348 | +0.285 |
+| SessionStart repo log | 66.006 | 66.348 | +0.343 | 52.602 | 52.656 | +0.055 |
+| Stop | 97.854 | 95.408 | -2.445 | 94.785 | 96.227 | +1.441 |
+| SessionEnd | 106.365 | 94.640 | -11.725 | 94.922 | 94.711 | -0.211 |
+| StopBurst | 114.580 | 114.942 | +0.361 | 109.668 | 109.418 | -0.250 |
+
+All groups remain under wall and absolute RSS ceilings on both arms. Both arms report RSS misses against the old committed remote seeds; no seed or threshold was changed. These are observed pair deltas, not a claim of zero movement. The identical cleanup-only observer ran after timing and confirmed no control journal, versus candidate journal observations containing SessionStart, Stop and SessionEnd. Full counts, raw-log hashes and all other groups are in the aggregate evidence. Typecheck, boundary and affected focused tests passed; the previous full-suite result above is at its explicitly named earlier head. Hosted CI at the corrected head remains the merge gate.
