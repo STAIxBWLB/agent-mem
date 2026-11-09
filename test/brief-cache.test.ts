@@ -247,3 +247,20 @@ test("the person-raised capture format floor gates native cache and library read
   }
   expect(readFileSync(file)).toEqual(before);
 });
+
+test("the person-raised home format floor gates both native and library capture caches and work", async () => {
+  const f = await fixture(), work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  try { await work.write("home-floor-work", { task: "work withheld by home floor", status: "doing" }); }
+  finally { work.close(); }
+  const file = briefCacheFile(f.binding), before = readFileSync(file);
+  // Acting as the person on this isolated fixture; never inspect or change the real home's floor.
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "99.0.0", since: "2026-11-09" }]));
+  for (const native of [true, false]) {
+    const result = await sessionStartBrief({ ...f.options, nativeSession: native ? f.options.nativeSession : undefined, timeRemaining: () => 2000 });
+    expect(result.coverage).toEqual({ work: "unavailable", curated: "unavailable", capture: "unavailable" });
+    expect(result.context).not.toContain("previous recap");
+    expect(result.context).not.toContain("work withheld by home floor");
+    expect(result.tokens).toBeLessThanOrEqual(1200);
+  }
+  expect(readFileSync(file)).toEqual(before);
+});
