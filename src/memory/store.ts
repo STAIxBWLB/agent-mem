@@ -488,8 +488,8 @@ export class MemoryStore {
         view.withStoreFences(() => {
           const selected = readSelector(this.profile.home);
           const shards = sharded ? readShardedSelection(this.profile.home) : null;
-          if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (selected.selector?.kind ?? "shared-v1")
-            || view!.profile.generation !== selected.selector?.generation || resolveAlias(this.profile.home, raw) !== project
+          if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (shards ? "generation" : selected.selector?.kind ?? "shared-v1")
+            || view!.profile.generation !== (shards?.generation ?? selected.selector?.generation) || resolveAlias(this.profile.home, raw) !== project
             || shards && (shards.selectorRevision !== selected.revision || shards.generation !== view!.profile.generation)
             || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")) {
             throw Error("curated snapshot source binding changed; retry an off-hook amem brief");
