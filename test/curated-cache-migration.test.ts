@@ -1,13 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBriefCache } from "../src/brief-cache.ts";
+import { sessionStartBrief } from "../src/session-brief.ts";
 import { curatedProfileBinding } from "../src/memory/curated-cache-state.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
-import { shardMachineDir } from "../src/memory/shard.ts";
-import { machineId, MemoryStore } from "../src/memory/store.ts";
+import { shardDir, shardMachineDir } from "../src/memory/shard.ts";
+import { machineId, MemoryStore, openShardStore } from "../src/memory/store.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -26,6 +27,14 @@ function seed(home: string, project: string, scope: "project" | "shared", text: 
   try {
     store.note({ op: "note", project, scope, tier: "long", kind: "decision", peer: "fixture", source: "person", text, about: [] });
   } finally { store.close(); }
+}
+
+function sourceSegmentBytes(base: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const folder of ["log", "local"]) for (const name of readdirSync(join(base, folder)).filter(name => name.endsWith(".jsonl")).sort()) {
+    result[`${folder}/${name}`] = readFileSync(join(base, folder, name), "utf8");
+  }
+  return result;
 }
 
 const authorized = { authorizedPerson: true, tty: true } as const;
@@ -70,4 +79,45 @@ test("shard migration rebuilds the cache from active project data including shar
   expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
   expect(f.cache()?.curated?.binding).toBe(selectedBinding);
   expect(f.texts()).toEqual(expect.arrayContaining(["legacy project source", "legacy shared source"]));
+});
+
+test("shared user writes cannot create a missing project generation or cache after sharding", async () => {
+  const f = fixture(), legacy = new MemoryStore({ home: f.home, profile: "shared-v1", deferPromotions: true });
+  const base = legacy.dir; legacy.close();
+  const sourceBefore = sourceSegmentBytes(base), projectDirectory = shardDir(base, f.project);
+  await migrateShards({ memoryDir: base, mode: "apply", ...authorized });
+  expect(existsSync(join(projectDirectory, "generation.json"))).toBe(false);
+
+  const user = openShardStore({ memoryDir: base, user: true, deferPromotions: true });
+  try {
+    user.note({ op: "note", project: f.project, scope: "shared", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "user row for missing project", about: [] });
+  } finally { user.close(); }
+
+  expect(existsSync(join(projectDirectory, "generation.json"))).toBe(false);
+  expect(f.cache()).toBeUndefined();
+  expect(sourceSegmentBytes(base)).toEqual(sourceBefore);
+
+  // A normal off-hook read can initialize this v1 project through the existing source API.
+  const brief = await sessionStartBrief({ cwd: f.home, base, project: f.project, repository: false });
+  expect(brief.coverage.curated).toBe("complete");
+  expect(existsSync(join(projectDirectory, "generation.json"))).toBe(true);
+  expect(f.texts()).toContain("user row for missing project");
+  expect(sourceSegmentBytes(base)).toEqual(sourceBefore);
+});
+
+test("ordinary library brief may initialize a v1 project cache and include shared user rows", async () => {
+  const f = fixture();
+  seed(f.home, f.project, "shared", "v1 shared user source");
+  const sourceBefore = sourceSegmentBytes(f.base), projectDirectory = shardDir(f.base, f.project);
+  expect(f.cache()).toBeDefined();
+  expect(existsSync(join(projectDirectory, "generation.json"))).toBe(false);
+  rmSync(projectDirectory, { recursive: true, force: true });
+  expect(sourceSegmentBytes(f.base)).toEqual(sourceBefore);
+
+  const brief = await sessionStartBrief({ cwd: f.home, base: f.base, project: f.project, repository: false });
+  expect(brief.coverage.curated).toBe("complete");
+  expect(existsSync(join(projectDirectory, "project.json"))).toBe(true);
+  expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
+  expect(f.texts()).toContain("v1 shared user source");
+  expect(sourceSegmentBytes(f.base)).toEqual(sourceBefore);
 });

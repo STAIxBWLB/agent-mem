@@ -484,7 +484,10 @@ export class MemoryStore {
         const project = resolveAlias(this.profile.home, raw), aliases = aliasedKeys(this.profile.home, project);
         const common = { memoryDir: this.profile.home, deferPromotions: true, now: this.now, ...(aliases.length ? { reconcile: { canonical: project, aliases } } : {}) };
         const sharded = existsSync(join(this.profile.home, "shards.json"));
-        view = sharded ? openShardStore({ ...common, ...(existsSync(join(shardDir(this.profile.home, project), "generation.json")) ? { project } : { user: true }) }) : new MemoryStore(common);
+        // Cache preparation cannot replace project admission with a user-only view.
+        // The ordinary off-hook read may initialize a missing shard only where the source API permits it.
+        if (sharded && !existsSync(join(shardDir(this.profile.home, project), "generation.json"))) continue;
+        view = sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
         view.withStoreFences(() => {
           const selected = readSelector(this.profile.home);
           const shards = sharded ? readShardedSelection(this.profile.home) : null;
