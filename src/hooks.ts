@@ -95,10 +95,10 @@ function recordMetricIdentity(event: string, input: unknown, base: string, cwd: 
       recordInstructionInvalid: Number(selection.invalid), recordEnabled: Number(recordsEnabled(base, cwd)) };
   } catch { return units; } // Telemetry cannot turn a successful hook into a refusal.
 }
-function recordScanMetric(progress?: HookTranscriptProgress): RecordVariantMetric {
+function recordScanMetric(event: string, progress?: HookTranscriptProgress): RecordVariantMetric {
   return progress?.recordValidRecords === undefined ? {} : {
     recordValidRecords: progress.recordValidRecords, recordBasisRecords: progress.recordBasisRecords!, recordUnverifiedRecords: progress.recordUnverifiedRecords!,
-    recordTurnsWithRecords: Number(progress.recordValidRecords > 0),
+    ...(event === "Stop" ? { recordTurnsWithRecords: Number(progress.recordValidRecords > 0) } : {}),
   };
 }
 
@@ -397,7 +397,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
     captured = result.captured; pending = result.pending; dropped = "dropped" in result && result.dropped === true;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources();
     transcriptProgress = "transcript" in result ? result.transcript : undefined;
-    recordMetric = { ...recordMetric, ...recordScanMetric(transcriptProgress) };
+    recordMetric = { ...recordMetric, ...recordScanMetric(event, transcriptProgress) };
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
@@ -459,7 +459,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
       transcriptProgress = "transcript" in result ? result.transcript : undefined;
-      recordMetric = { ...recordMetric, ...recordScanMetric(transcriptProgress) };
+      recordMetric = { ...recordMetric, ...recordScanMetric(args[0]!, transcriptProgress) };
       if (!result.valid || args[0] !== "SessionStart") return "";
       emittedCost = instructionCost(result.context);
       recordMetric = { ...recordMetric, recordBriefBytes: Buffer.byteLength(result.context), recordInstructionEmitted: Number(emittedCost.recordInstructionBytes > 0) };

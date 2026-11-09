@@ -30,6 +30,7 @@ for (const mode of ["a", "b", "alternate"] as const) test(`numeric ${mode} metri
     recordValidRecords: 2, recordBasisRecords: 1, recordUnverifiedRecords: 1 });
   await runHook("SessionEnd", input, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
   expect(readMetrics(f.base).at(-1)).toMatchObject({ recordVariant: expected, recordTurns: 0, recordValidRecords: 0 });
+  expect(readMetrics(f.base).at(-1)!.recordTurnsWithRecords).toBeUndefined();
   expect(readFileSync(join(f.base, "metrics.jsonl"), "utf8")).not.toContain(canary);
   expect(readFileSync(join(f.base, "metrics.jsonl"), "utf8")).not.toContain(session_id);
 });
