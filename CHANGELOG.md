@@ -4,6 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Temporarily report hook wall-p95, wall-max and timing-only SessionStart omitted-work misses as #348 advisories on exact hosted GitHub Linux/macOS markers. RSS, telemetry, R1 and correctness remain strict; local and remote runs stay strict. Retire only after #348 is resolved and the person approves. Refs #348, #302.
 - Key reader lease lifetimes by the physical memory home, so parent-symlink and macOS path spellings share one reference count and closing one handle cannot drop another reader's lease. Admission, ownership, migration/prune blocking, lease filenames and schema remain unchanged. Refs #353.
 - At SessionEnd, stage the bounded transcript tail before ordinary publication replay, so a slow replay does not prevent a following Recap/Compact from reaching the durable spool. A later hook from another session in the same cwd can drain it without duplicate tail captures. Stop/StopBurst, backpressure and final replay, native budgets, data formats and R2 limits/baselines are unchanged; unscanned tails remain subject to the documented ceiling. Refs #344, #327.
 

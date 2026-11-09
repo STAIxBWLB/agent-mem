@@ -9,7 +9,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
  * P1's measure-budget.ts remains its separate hook-like baseline; this measures bin/amem.js hook itself.
  */
 import { Database } from "bun:sqlite";
-import { budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
+import { hookWallRunner348, reportHookWallAdvisory348, budgetGroup, budgetSample, BudgetStall, budgetGroupRecorder, keepAttemptRss, keepAttemptWall, R2_RSS_CEILING_MB, runnerFingerprint, type BudgetAttempt } from "./budget-attempt.ts";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCaptureBriefCache } from "../src/brief-capture.ts";
@@ -27,6 +27,7 @@ const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(va
 const round = (value: number) => Math.round(value * 100) / 100;
 interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   wallMs: number;
+  timingOnlyStall348?: boolean;
   /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
   metricWallMs: number;
   countedRetirements: number;
@@ -169,6 +170,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
   if (!Number.isFinite(cliRssMB) || cliRssMB <= 0) throw new Error("hook process RSS unavailable");
   // #228: an over-limit sample is reported, never hidden, and the group verdict (nearest-rank p95 over its fixed count) decides.
   if (!(rss.rssMB < RSS_MB)) console.log(JSON.stringify({ diagnostic: "R2-sample-over-limit", event, group, invocation: invocations, wallMs: round(wallMs), rssMB: rss.rssMB, limitMB: RSS_MB, cliRssMB, recordedRssMB, rawRssMB: metric.rawRssMB, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSources: rss.rssSources }));
+  let timingOnlyStall348 = false;
   if (event === "SessionStart") {
     const stall = (reason: string) => new BudgetStall(reason, { wallMs, metricWallMs: metric.wallMs!, rssMB: rss.rssMB, wallLimitMs: WALL_MS, rssSource: rss.rssSource, rssCoverage: rss.rssCoverage, rssSourcesJson: JSON.stringify(rss.rssSources), rssProvenanceKnown: rss.rssProvenanceKnown });
     if (/"(?:decision|permissionDecision|updatedInput|block)"\s*:|"continue"\s*:\s*false/.test(result.stdout.toString())) throw new Error("context hook emitted a control directive");
@@ -180,8 +182,11 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     const output = JSON.parse(result.stdout.toString()), context = output.hookSpecificOutput?.additionalContext;
     if (output.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof context !== "string" || !/coverage|complete|partial/i.test(context) || Buffer.byteLength(context) > 1200) throw new Error(`SessionStart fixture lacked bounded known work and coverage: wall=${wallMs}, metric=${metric.wallMs}, context=${JSON.stringify(context)}`);
     if (!context.includes(workMarker)) {
-      if (/work=(?:partial|unavailable)/.test(context) && (wallMs >= 140 || metric.wallMs! >= 140 || /work: deadline exhausted/.test(context))) throw stall("SessionStart deadline omitted fixture work");
-      throw new Error("SessionStart fixture lacked known work without deadline evidence");
+      if (/work=(?:partial|unavailable)/.test(context) && (wallMs >= 140 || metric.wallMs! >= 140 || /work: deadline exhausted/.test(context))) {
+        if (!hookWallRunner348(group) || !rss.rssProvenanceKnown) throw stall("SessionStart deadline omitted fixture work");
+        // Retain this invocation in the RSS cohort and continue every non-timing assertion below.
+        timingOnlyStall348 = true;
+      } else throw new Error("SessionStart fixture lacked known work without deadline evidence");
     }
     if (!context.includes("r2-cached-recap") || !context.includes("amem: contract | - | r2-cached-record")) {
       throw new Error("SessionStart omitted a prebuilt summary or whole Record fixture");
@@ -192,7 +197,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
-  return { wallMs, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
+  return { wallMs, timingOnlyStall348, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
@@ -209,7 +214,20 @@ function summarize(name: string, samples: Sample[]) {
   const wallP95Ms = p95(samples.map(sample => sample.wallMs)), peakRssMB = Math.max(...samples.map(sample => sample.rssMB));
   const verdict = workloadBudget(name, { group: `hooks:${name}`, wallP95Ms, rssSamplesMB: samples.map(sample => sample.rssMB),
     wallSamplesMs: samples.map(sample => (sample as Sample & { attemptWallMaxMs?: number }).attemptWallMaxMs ?? Number.NaN), wallLimitMs: WALL_MS });
-  return { rssCoverageComplete: samples.every(sample => sample.rssProvenanceKnown), rssProvenanceAdvisories: samples.filter(sample => !sample.rssProvenanceKnown).length, runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict };
+  const evidence = { telemetryValid: samples.every(sample => sample.rssProvenanceKnown), rssPass: verdict.peakPass, survivors: leftoverProcesses,
+    wallP95Ms, wallMaxMs: verdict.r2.wallMax.maxMs, rssP95MB: verdict.r2.regression.p95MB, peakRssMB };
+  const p95Advisory = !verdict.wallTimingPass && reportHookWallAdvisory348(name, "wall-p95", evidence);
+  const maxAdvisory = !verdict.r2.wallMax.pass && reportHookWallAdvisory348(name, "wall-max", evidence);
+  let stallAdvisories = 0;
+  for (const sample of samples.filter(sample => sample.timingOnlyStall348)) {
+    if (!reportHookWallAdvisory348(name, "SessionStart deadline omitted fixture work", { ...evidence, wallP95Ms: sample.wallMs, wallMaxMs: sample.metricWallMs })) {
+      throw Error("Hook omitted-work timing exception lacks strict RSS/telemetry evidence; inspect workload-R2 and repair the failing gate");
+    }
+    stallAdvisories++;
+  }
+  const hookWallAdvisory348 = p95Advisory || maxAdvisory || stallAdvisories > 0;
+  const pass = verdict.peakPass && (verdict.r2.wallMax.pass || maxAdvisory) && (verdict.wallTimingPass || p95Advisory || verdict.wallAdvisory);
+  return { rssCoverageComplete: samples.every(sample => sample.rssProvenanceKnown), rssProvenanceAdvisories: samples.filter(sample => !sample.rssProvenanceKnown).length, runs: samples.length, stalledAttempts: stalledAttempts.get(name) ?? 0, wallP95Ms: round(wallP95Ms), wallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxMs: round(Math.max(...samples.map(sample => sample.wallMs))), outerWallMaxReportedOnly: true, peakRssMB: round(peakRssMB), cliPeakRssMB: round(Math.max(...samples.map(sample => sample.cliRssMB))), productionCombinedPeakRssMB: round(Math.max(...samples.map(sample => sample.recordedRssMB))), rawCombinedPeakRssMB: samples.some(sample => sample.rawRssMB === null) ? null : round(Math.max(...samples.map(sample => sample.rawRssMB!))), rssSources: combineRssSources(...samples.map(sample => sample.rssSources)), samples, ...verdict, pass, hookWallAdvisory348, wallMaxAdvisory348: maxAdvisory, stallAdvisories348: stallAdvisories };
 }
 try {
   runnerFingerprint();
@@ -354,7 +372,7 @@ try {
 const measured = await budgetGroup("hook-workloads", measureHooks, report => ({
   wallPass: Object.values(report.budgets.R2.groups).every(group => group.pass),
   rssPass: Object.values(report.budgets.R2.groups).every(group => group.peakPass),
-  wallMaxPass: Object.values(report.budgets.R2.groups).every(group => group.r2.wallMax.pass),
+  wallMaxPass: Object.values(report.budgets.R2.groups).every(group => group.r2.wallMax.pass || group.wallMaxAdvisory348),
 }));
 
 // Small atomic pipe writes avoid Bun 1.4.2's duplicated/truncated large-report prefix.

@@ -1,6 +1,6 @@
 /** Measurement-only policy; never imported by the shipped hook or MCP path. */
 import { cpus, totalmem } from "node:os";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { probeRunnerSpeed, runnerIsSlow, RUNNER_BASELINES, type RunnerBaseline, type RunnerProbe } from "./runner-probe.ts";
 
@@ -151,4 +151,33 @@ export async function budgetGroup<T>(check: string, run: () => T | Promise<T>, j
     throw Error(`${check}: ${outcome}`);
   }
   throw Error("unreachable budget group attempt");
+}
+
+export type HookWallKind348 = "wall-p95" | "wall-max" | "SessionStart deadline omitted fixture work";
+export interface HookWallEvidence348 {
+  telemetryValid: boolean; rssPass: boolean; survivors: number;
+  wallP95Ms: number; wallMaxMs: number; rssP95MB: number; peakRssMB: number;
+}
+/** Measurement-only admission, not a verdict: RSS regression is checked on the complete group later. */
+export function hookWallRunner348(group: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CI === "true" && env.GITHUB_ACTIONS === "true" && (env.RUNNER_OS === "Linux" || env.RUNNER_OS === "macOS")
+    && ["plain", "spoolAndExit", "drain", "sessionStart", "sessionStartRepoLog", "jcode", "jcodeJournal"].includes(group);
+}
+/** ponytail: temporary owner ruling #348; retire only after #348 is resolved and the person approves.
+ * Upgrade to a strict wall gate after the attributed timing path is repaired; no automatic expiry. */
+export function hookWallAdvisory348(group: string, kind: string, evidence: HookWallEvidence348, env: NodeJS.ProcessEnv = process.env): boolean {
+  return hookWallRunner348(group, env) && evidence.telemetryValid === true && evidence.rssPass === true && evidence.survivors === 0
+    && [evidence.wallP95Ms, evidence.wallMaxMs].every(value => Number.isFinite(value) && value >= 0)
+    && [evidence.rssP95MB, evidence.peakRssMB].every(value => Number.isFinite(value) && value > 0 && value < R2_RSS_CEILING_MB)
+    && (kind === "wall-p95" && evidence.wallP95Ms >= 150 || kind === "wall-max" && evidence.wallMaxMs > R2_WALL_MAX_MS
+      || kind === "SessionStart deadline omitted fixture work" && ["sessionStart", "sessionStartRepoLog"].includes(group));
+}
+export function reportHookWallAdvisory348(group: string, kind: string, evidence: HookWallEvidence348, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!hookWallAdvisory348(group, kind, evidence, env)) return false;
+  const record = { diagnostic: "hosted-hook-wall-advisory-348", issue: 348, group, kind, status: "warning", ...evidence };
+  console.log(JSON.stringify(record));
+  if (!env.GITHUB_STEP_SUMMARY) throw Error("Hook #348 advisory step summary unavailable; set GITHUB_STEP_SUMMARY to retain timing evidence");
+  appendFileSync(env.GITHUB_STEP_SUMMARY, `**Hook #348 advisory: ${group} (${kind})**\n\n\`${JSON.stringify(record)}\`\n\n`);
+  console.warn(`::warning title=Hook wall advisory #348::${JSON.stringify(record)}`);
+  return true;
 }
