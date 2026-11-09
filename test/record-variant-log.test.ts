@@ -39,3 +39,15 @@ test("only selected numeric fields enter one appended observation", () => {
   expect(raw).not.toContain("private-");
   expect(rows(base)).toEqual([{ at: new Date(NOW).toISOString(), event: "Stop", variant: "b", recordSessions: 1, recordTurns: 1, recordValidRecords: 2, recordBriefBytes: 442 }]);
 });
+
+
+test("nine-day trigger keeps eight days without rewriting each steady-stream append", () => {
+  const base = home();
+  appendRecordVariant(base, "Stop", sample, NOW - 10 * DAY);
+  for (let hour = 1; hour <= 10 * 24; hour++) appendRecordVariant(base, "Stop", sample, NOW - 10 * DAY + hour * DAY / 24);
+  const got = rows(base), trims = got.filter(row => row.trimmed === 1);
+  expect(trims.length).toBe(1);
+  expect(Date.parse(trims[0]!.at)).toBeGreaterThan(NOW - DAY);
+  expect(got.every(row => Date.parse(row.at) >= NOW - 9 * DAY)).toBe(true);
+  expect(aggregateRecordVariants(got).window.trimCount).toBe(1);
+});

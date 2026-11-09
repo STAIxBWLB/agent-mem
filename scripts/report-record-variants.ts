@@ -24,11 +24,12 @@ export function aggregateRecordVariants(samples: unknown[]) {
   });
   const totals = { a: empty(), b: empty() };
   let ignoredRows = 0, unknownRows = 0, malformedRows = 0, hookRows = 0, attributedRows = 0;
-  let capForcedTrim = false;
+  let capForcedTrim = false, trimCount = 0;
   for (const original of samples) {
     const value = isObject(original) && (original.variant === "a" || original.variant === "b") && ["SessionStart", "Stop", "SessionEnd"].includes(original.event as string)
       ? { ...original, kind: "hook", recordVariant: original.variant } : original;
     if (isObject(value) && value.capTrimmed === 1) capForcedTrim = true;
+    if (isObject(value) && value.trimmed === 1) trimCount++;
     if (!isObject(value)) { malformedRows++; continue; }
     if (value.kind !== "hook") { ignoredRows++; continue; }
     hookRows++;
@@ -132,7 +133,7 @@ export function aggregateRecordVariants(samples: unknown[]) {
   const incompleteRows = totals.a.incompleteRows + totals.b.incompleteRows;
   const totalRows = samples.length;
   return { variants, ignoredRows, unknownRows, malformedRows, incompleteRows,
-    window: { file: RECORD_VARIANTS_FILE, retentionDays: RECORD_VARIANTS_DAYS, capBytes: RECORD_VARIANTS_MAX_BYTES, capForcedTrim },
+    window: { file: RECORD_VARIANTS_FILE, retentionDays: RECORD_VARIANTS_DAYS, capBytes: RECORD_VARIANTS_MAX_BYTES, capForcedTrim, trimCount },
     scanCoverage: { totalRows, hookRows, attributedRows, complete: !capForcedTrim && totalRows > 0 && unknownRows === 0 && malformedRows === 0 && incompleteRows === 0, unknownRows, malformedRows, incompleteRows, ignoredRows },
     retention: "Record observations retain 8 days within a 4 MiB cap; capForcedTrim means the supplied window lost observations." };
 }
