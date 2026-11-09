@@ -5,6 +5,10 @@ import { curatedCacheFresh } from "./brief-curated.ts";
 import { assertFormatFloor, formatFloorAtLeast, FormatFloorError } from "./memory/formats.ts";
 import { captureShardDir } from "./memory/shard.ts";
 
+// ponytail: #322 is planned for 0.24.0. If that release ships before this change,
+// the release PR must move this constant to the first release containing invalidation.
+export const CURATED_CACHE_MIN_READER = "0.24.0";
+
 /**
  * ponytail: a missed invalidation path can serve at most 24 hours of stale curated data.
  * Upgrade to the bounded authoritative manifest frontier if real missed paths justify it.

@@ -298,7 +298,11 @@ export class MemoryStore {
       this.memoryBaseDir = home;
       try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
-        apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work), beforeCuratedWrite: () => this.markCuratedChange(),
+        apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work), beforeCuratedWrite: targets => {
+          invalidateCuratedCaches(this.profile.home);
+          const rows = this.db.query("SELECT DISTINCT project FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string }[];
+          this.queueCuratedProjects(rows.map(row => row.project));
+        },
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
       this.refresh();
     } catch (error) {
@@ -419,28 +423,51 @@ export class MemoryStore {
 
   private markCuratedChange(project?: string): void {
     if (this.bootstrapOnly) return;
+    invalidateCuratedCaches(this.profile.home);
+    this.queueCuratedProjects(project ? [project] : []);
+  }
+
+  private queueCuratedProjects(touched: Iterable<string>): void {
     let owner: MemoryStore = this;
     while (owner.curatedParent) owner = owner.curatedParent;
     const pending = curatedPending.get(this.profile.home) ?? new Map<MemoryStore, Set<string>>();
     const projects = pending.get(owner) ?? new Set<string>();
-    for (const key of invalidateCuratedCaches(this.profile.home)) projects.add(key);
-    if (project) projects.add(project);
+    for (const project of touched) projects.add(project);
+    if (owner.profile.shardKey) projects.add(owner.profile.shardKey);
     pending.set(owner, projects); curatedPending.set(this.profile.home, pending);
+  }
+
+  private curatedProjectRevisions(): Map<string, string> {
+    this.ensureFresh();
+    const projects = new Map<string, string[]>();
+    for (const view of this.views()) {
+      const rows = projects.get(view.project) ?? [];
+      rows.push(JSON.stringify([view.id, view.tier, view.expiresAt, view.supersededBy]));
+      projects.set(view.project, rows);
+    }
+    return new Map([...projects].map(([project, rows]) => [project, JSON.stringify(rows.sort())]));
   }
 
   /** Internal derived-cache port; the sync caller already holds the authoritative writer fences. */
   beginCuratedCacheUpdate(): () => void {
     const release = this.deferCuratedPublication();
-    let owner: MemoryStore = this; while (owner.curatedParent) owner = owner.curatedParent;
-    owner.curatedRebuildAll = true;
-    this.markCuratedChange();
-    return release;
+    let before: Map<string, string>;
+    try { before = this.curatedProjectRevisions(); invalidateCuratedCaches(this.profile.home); }
+    catch (error) { release(); throw error; }
+    return () => {
+      try {
+        const after = this.curatedProjectRevisions();
+        const touched = [...new Set([...before.keys(), ...after.keys()])].filter(project => before.get(project) !== after.get(project));
+        if (touched.length) this.queueCuratedProjects(touched);
+      } catch { /* The invalidated cache stays unavailable if the committed source cannot be read. */ }
+      finally { release(); }
+    };
   }
 
   /** Off-hook preparation; callers never invoke this from native SessionStart. */
   prepareCuratedBriefs(projects?: readonly string[]): void {
-    this.curatedRebuildAll = projects === undefined;
-    this.publishCurated(new Set(projects ?? []));
+    try { this.curatedRebuildAll = projects === undefined; this.publishCurated(new Set(projects ?? [])); }
+    catch { /* An off-hook read still succeeds when its optional derived cache cannot be prepared. */ }
   }
 
   private publishCurated(input: ReadonlySet<string>): void {
@@ -579,7 +606,7 @@ export class MemoryStore {
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(local, this.machine.id);
       const id = entryId(body);
-      const affected = "project" in body ? String(body.project) : "target" in body && typeof body.target === "string" ? (this.db.query("SELECT project FROM entries WHERE id=?").get(body.target) as { project: string } | null)?.project : undefined;
+      const affected = "project" in body ? String(body.project) : "target" in body && typeof body.target === "string" ? (this.db.query("SELECT project FROM entries WHERE id=? OR task=?").get(body.target, body.target) as { project: string } | null)?.project : undefined;
       if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") this.markCuratedChange(affected);
       appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.

@@ -20,7 +20,7 @@ export interface GenerationIndexOptions {
   profile: BoundProfile; db: Database; now: () => number;
   apply: (line: string, source: string) => void;
   withMutation: <T>(work: () => T) => T;
-  beforeCuratedWrite?: () => void;
+  beforeCuratedWrite?: (targets: readonly string[]) => void;
   limits?: readonly LegacyCheckpoint[]; commit?: string;
 }
 /** Pure deadline summary shared by migration and prune: no live index or host TTL is a proof. */
@@ -402,7 +402,7 @@ export class GenerationIndex {
         if (!complete.some(value => canonicalJSON(JSON.parse(value)) === canonicalJSON(row))) return fail();
       } else {
         if (!bytes.subarray(0, tail.length).equals(tail)) return fail();
-        this.options.beforeCuratedWrite?.();
+        this.options.beforeCuratedWrite?.(row.targets.map(target => target.id));
         let offset = tail.length;
         while (offset < bytes.length) { const wrote = writeSync(fd, bytes, offset, bytes.length - offset); if (wrote <= 0) fail(); offset += wrote; }
       }

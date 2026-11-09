@@ -74,3 +74,20 @@ test("review acceptance invalidates inside its outer writer fence and publishes 
     expect(f.cache()?.rows.map(row => (row.data as { text: string }).text)).toContain("durable callback failure note");
   } finally { f.store.close(); }
 });
+
+test("a project mutation rebuilds only its touched cache after home-wide invalidation", () => {
+  const f = fixture(), other = "curated-write-quiet-peer";
+  const add = (project: string, text: string) => f.store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text, about: [] });
+  const peerCache = () => readBriefCache({ directory: captureShardDir(f.base, other, machineId(f.base).id), project: other, section: "curated" });
+  try {
+    add(f.project, "project P baseline"); add(other, "project Q baseline");
+    f.store.prepareCuratedBriefs([f.project, other]);
+    expect(f.cache()?.rows).toHaveLength(1); expect(peerCache()?.rows).toHaveLength(1);
+
+    add(f.project, "project P changed");
+    const projectRows = f.cache()?.rows.map(row => (row.data as { text: string }).text) ?? [];
+    expect(projectRows).toHaveLength(2);
+    expect(projectRows).toEqual(expect.arrayContaining(["project P baseline", "project P changed"]));
+    expect(peerCache()).toBeUndefined();
+  } finally { f.store.close(); }
+});
