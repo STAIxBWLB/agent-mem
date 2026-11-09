@@ -32,7 +32,10 @@ export function readBriefCache(binding: BriefCacheBinding): BriefCache | undefin
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/** Atomic private replacement. Refuse a replacement when a newer committed-row watermark is already visible. */
+/** Invalidate under the source store's write transaction, before a summary can commit. */
+export function invalidateBriefCache(binding: BriefCacheBinding): void { rmSync(briefCacheFile(binding), { force: true }); }
+
+/** Atomic private replacement; callers serialize publication with their source-store writers. Refuse a replacement when a newer committed-row watermark is already visible. */
 export function writeBriefCache(binding: BriefCacheBinding, cache: BriefCache): void {
   const text = JSON.stringify(cache) + "\n";
   if (Buffer.byteLength(text) > BRIEF_CACHE_BYTES) throw new Error("brief cache byte bound");

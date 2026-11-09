@@ -327,8 +327,9 @@ export async function applyHookSpoolReplay(options: { base: string; plan: HookSp
           } else retain("claim changed before policy retirement; preview again before applying");
           closeSync(claim.fd); held = undefined; continue;
         }
-        if (store!.summaryCommitId > 0) {
-          await buildCaptureBriefCache(store!, { base: home, project: record.project!, cwd: realPath(record.cwd), builtThrough: store!.summaryCommitId });
+        if (store!.briefCommitId > 0) {
+          // Keep the claim on a cache failure: replay can retry its idempotent append and finish preparation.
+          await buildCaptureBriefCache(store!, { base: home, project: record.project!, cwd: realPath(record.cwd), builtThrough: store!.briefCommitId });
         }
         const spooled = "spooled" in result;
         if (spooled) receipt.spooled++; else receipt.applied++;

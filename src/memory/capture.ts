@@ -1,3 +1,4 @@
+import { invalidateBriefCache } from "../brief-cache.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
@@ -184,8 +185,8 @@ const toRow = (r: RawRow): CaptureRow => ({ id: r.id, at: r.at, project: r.proje
 
 export class CaptureStore {
   readonly dir: string;
-  /** Highest summary row committed by this instance, including capture-spool replay; no cache I/O in the store. */
-  summaryCommitId = 0;
+  /** Highest Record or summary row committed by this instance, including capture-spool replay; no cache I/O in the store. */
+  briefCommitId = 0;
   /** The canonical project key of this shard (aliases resolved). */
   readonly key: string;
   /** Rows the pre-T1 machine-wide capture store handed this shard on open. */
@@ -462,7 +463,7 @@ export class CaptureStore {
         if (!prior) throw new Error("capture receipt lookup failed");
         return { id: prior.id, already: true };
       }).immediate();
-      if ("id" in result && (row.event === "Recap" || row.event === "Compact")) this.summaryCommitId = Math.max(this.summaryCommitId, result.id);
+      if ("id" in result && (row.event === "Record" || row.event === "Recap" || row.event === "Compact")) this.briefCommitId = Math.max(this.briefCommitId, result.id);
       try { this.evict(); } catch (error) {
         if (!lockError(error)) throw error; // the row is already committed; a locked eviction simply resumes on a later append
       }
@@ -576,11 +577,11 @@ export class CaptureStore {
             const id = this.insertRow(candidate, createHash("sha256").update(line).digest("hex"));
             if (id !== undefined) {
               drained++;
-              if (candidate.event === "Recap" || candidate.event === "Compact") summaryThrough = Math.max(summaryThrough, id);
+              if (candidate.event === "Record" || candidate.event === "Recap" || candidate.event === "Compact") summaryThrough = Math.max(summaryThrough, id);
             }
           }
         }).immediate();
-        this.summaryCommitId = Math.max(this.summaryCommitId, summaryThrough);
+        this.briefCommitId = Math.max(this.briefCommitId, summaryThrough);
       } catch (error) {
         if (!lockError(error)) throw error;
         break; // still contended: the spool stays for the next invocation
@@ -605,6 +606,7 @@ export class CaptureStore {
       const id = Number(this.db.query("INSERT INTO rows (at, project, agent, event, tool, paths, status, excerpt, bytes, spool_id, session, subagent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(row.at, row.project, row.agent, row.event, row.tool, JSON.stringify(row.paths), row.status, row.excerpt, row.bytes, spoolId, row.session ?? null, row.subagent ? 1 : null).lastInsertRowid);
       this.addBytes(row.bytes);
+      if (row.event === "Record" || row.event === "Recap" || row.event === "Compact") invalidateBriefCache({ directory: this.dir, project: this.key, section: "capture" });
       return id;
     } catch (error) {
       if (String((error as Error)?.message ?? "").includes("UNIQUE")) return undefined; // a racing drain won this line
@@ -707,6 +709,15 @@ export class CaptureStore {
       partial = this.db.query("SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC,id DESC LIMIT 129").all().length > 128;
     }
     return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
+  }
+
+  /** Serialize a derived cache snapshot/publication with summary invalidation and commits in every writer. */
+  withBriefCaptureSnapshot<T>(write: (summaries: { rows: CaptureRow[]; partial: boolean }, builtThrough: number) => T): T {
+    this.writable();
+    return this.db.transaction(() => {
+      const latest = this.db.query("SELECT id FROM rows ORDER BY id DESC LIMIT 1").get() as { id: number } | null;
+      return write(this.readBriefSummaries(), latest?.id ?? 0);
+    }).immediate();
   }
 
   /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */

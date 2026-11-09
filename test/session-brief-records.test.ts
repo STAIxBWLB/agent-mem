@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { buildCaptureBriefCache } from "../src/brief-capture.ts";
 import { processSignature } from "../src/memory/platform.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
@@ -13,8 +14,10 @@ function fixture() {
     project: f.project, agent: "claude", event, excerpt, paths: ["src/a.ts"], at: new Date(Date.now() - 60_000 + n++).toISOString(), ...extra,
   });
   cleanup.push(() => store.close());
-  const options = { cwd: f.cwd, base: f.base, project: f.project, maxTokens: 8000, nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 };
-  return { ...f, append, options };
+  const options = { cwd: f.cwd, base: f.base, project: f.project, maxTokens: 8000, measureOnly: {}, timeRemaining: () => 2000 };
+  return { ...f, append, options,
+    prepare: () => buildCaptureBriefCache(store, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: store.briefCommitId }),
+  };
 }
 function lines(context: string): { event: string; excerpt: string; paths: string[] }[] {
   return context.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line))
@@ -63,4 +66,15 @@ test("Record bytes take priority over raw captures without exceeding the same br
   expect(result.tokens).toBeLessThanOrEqual(500);
   expect(lines(result.context)[0]?.excerpt).toBe("amem: fix | src/a.ts | race -> serialize writes");
   expect(lines(result.context).filter(row => row.event === "PostToolUse")).toHaveLength(0);
+});
+
+test("native cache preserves canonical Record-before-summary placement without raw fill", async () => {
+  const f = fixture();
+  f.append("amem: finding | src/a.ts | native record");
+  f.append("native summary", "Recap"); f.append("native raw", "PostToolUse");
+  f.prepare();
+  const result = await sessionStartBrief({ cwd: f.cwd, base: f.base, project: f.project, maxTokens: 1200,
+    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 70 });
+  expect(lines(result.context).map(row => row.excerpt)).toEqual(["amem: finding | src/a.ts | native record", "native summary"]);
+  expect(result.context).not.toContain("native raw");
 });

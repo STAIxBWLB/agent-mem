@@ -31,7 +31,7 @@ const captureRows = (context: string) => context.split("\n").filter(line => line
 
 test("private cache preserves library summary display and native reads no capture database", async () => {
   const f = await fixture(), cache = readBriefCache(f.binding)!;
-  expect(cache.builtThrough).toBe(1);
+  expect(cache.builtThrough).toBe(2);
   expect(statSync(briefCacheFile(f.binding)).mode & 0o777).toBe(0o600);
   const library = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project });
   writeFileSync(join(f.binding.directory, "capture.db"), "invalid sqlite, native must not open it");
@@ -107,4 +107,32 @@ for (const event of ["Stop", "SessionEnd"] as const) test(`${event} prepares sum
       expect(Buffer.byteLength(context)).toBeLessThanOrEqual(1200);
     }
   } finally { f.close(); }
+});
+
+test("a summary commit invalidates the older cache before a failed refresh can claim completeness", async () => {
+  const f = await fixture(), store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { store.append({ project: f.project, agent: "claude", event: "Recap", excerpt: "new durable summary" }); }
+  finally { store.close(); }
+  expect(readBriefCache(f.binding)).toBeUndefined();
+  const native = await sessionStartBrief(f.options);
+  expect(native.coverage.capture).toBe("unavailable");
+  expect(native.context).not.toContain("previous recap");
+  expect(native.context).toContain("capture cache missing");
+});
+
+test("snapshot publication serializes against a competing summary writer and its later spool replay", async () => {
+  const f = await fixture(), first = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try {
+    first.withBriefCaptureSnapshot(() => {
+      const second = new CaptureStore({ memoryDir: f.base, project: f.project, busyTimeoutMs: 0 });
+      try { expect(second.append({ project: f.project, agent: "claude", event: "Compact", excerpt: "competing compact" })).toEqual({ spooled: true }); }
+      finally { second.close(); }
+      expect(readBriefCache(f.binding)).toBeDefined();
+    });
+    first.append({ project: f.project, agent: "claude", event: "PostToolUse", excerpt: "drain summary" });
+    expect(first.briefCommitId).toBeGreaterThan(0);
+    expect(readBriefCache(f.binding)).toBeUndefined();
+    buildCaptureBriefCache(first, { base: f.base, project: f.project, cwd: f.root, builtThrough: first.briefCommitId });
+    expect(JSON.stringify(readBriefCache(f.binding)?.rows)).toContain("competing compact");
+  } finally { first.close(); }
 });

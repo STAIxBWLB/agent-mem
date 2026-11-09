@@ -2,8 +2,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow } from "./memory/capture.ts";
 import { readBriefCache } from "./brief-cache.ts";
-import { captureDisplay, displayText, validCachedCapture } from "./brief-capture.ts";
-import { parseRecordLines } from "./hook-record.ts";
+import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -84,14 +83,6 @@ function repoDisplay(view: RepoView): { data: unknown; partial: boolean } {
   return { data: { id: `repo:${view.id}`, at: view.at, kind: view.kind, ...(title ? { title: title.text } : {}), text: body.text },
     partial: body.partial || title?.partial === true };
 }
-/** Keep the canonical Record whole; '-' is valid only for project-bound decisions/contracts. */
-function recordDisplay(row: CaptureRow): { data: unknown; partial: boolean } | undefined {
-  const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
-  if (!record || parsed.records.length !== 1 || Object.keys(parsed.drops).length || record.line !== row.excerpt
-    || JSON.stringify(record.anchors) !== JSON.stringify(row.paths)) return;
-  return { data: { event: "Record", paths: record.anchors, excerpt: record.line }, partial: false };
-}
-
 /** A short-lived, model-free projection. The hook host supplies the hard process deadline; this function owns no timer or child. */
 export async function sessionStartBrief(options: BriefOptions): Promise<BriefResult> {
   let result = unavailable();
