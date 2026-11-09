@@ -278,18 +278,18 @@ Baseline seeds (p95 RSS, MB):
 
 | Group | hosted-linux | hosted-macos | dgx02 |
 |---|---|---|---|
-| hooks plain | 87.52 | 65.19 | 71.75 |
-| hooks spoolAndExit | 89.84 | 65.75 | 71.75 |
-| hooks jcode | 87.59 | 65.28 | 70.00 |
-| hooks sessionStart | 48.55 | 38.22 | 43.75 |
-| hooks sessionStartRepoLog | 48.56 | 40.72 | 44.61 |
-| hooks drain | 89.79 | 65.34 | 70.00 |
+| hooks plain | 87.52 | 65.19 | 86.72 |
+| hooks spoolAndExit | 89.84 | 65.75 | 89.05 |
+| hooks jcode | 87.59 | 65.28 | 86.76 |
+| hooks sessionStart | 48.55 | 38.22 | 50.05 |
+| hooks sessionStartRepoLog | 48.56 | 40.72 | 52.60 |
+| hooks drain | 89.79 | 65.34 | 89.04 |
 | transcript Stop | 94.81 | 72.74 | 78.75 |
 | transcript SessionEnd | 94.83 | 72.75 | 78.75 |
 | transcript StopBurst | 98.84 | 93.58 | 84.00 |
 | full-spool (3 groups) | not gated: not run in CI | not gated: not run in CI | 75.25 / 75.25 / 44.61 |
 
-Derivation: hosted values are the median of the per-run group p95 across the retained main runs 9986fe6, e287ecf, 1b3ed5d, 85768a5 (#224), d927292 and 9aac257, except hosted-linux transcript StopBurst, the median across 21 retained ubuntu runs after the 0.20.0 worker redesign (#231; see `derivation` in `docs/bench/r2-baseline.json`); dgx02 values are the median across 3 unconstrained runs at 9aac257 (unconstrained, because CI runs unconstrained). The earlier evidence that moved the verdict to p95: from 9986fe6 the whole hosted ubuntu StopBurst distribution rose about 7 MB on unchanged hook code and the same runner image (cause unknown), and single Stop maxima above 100 MB (102.2, 102.6) were outliers out of 40.
+Derivation: hosted values are the median of the per-run group p95 across the retained main runs 9986fe6, e287ecf, 1b3ed5d, 85768a5 (#224), d927292 and 9aac257, except hosted-linux transcript StopBurst, the median across 21 retained ubuntu runs after the 0.20.0 worker redesign (#231; see `derivation` in `docs/bench/r2-baseline.json`); dgx02 hook values for plain, spoolAndExit, jcode, sessionStart, sessionStartRepoLog and drain are the median across 3 clean-main unconstrained runs at 9a1792a on 2026-11-09, re-seeded because the runner environment moved under unchanged code (#338, per-run p95 and raw log hashes in `derivation.dgx02`). The remaining dgx02 values are the median across the 3 unconstrained runs at 9aac257 and were not re-measured. Unconstrained, because CI runs unconstrained. The earlier evidence that moved the verdict to p95: from 9986fe6 the whole hosted ubuntu StopBurst distribution rose about 7 MB on unchanged hook code and the same runner image (cause unknown), and single Stop maxima above 100 MB (102.2, 102.6) were outliers out of 40.
 ### Pending-spool identity and admission (#217)
 
 Directory identity uses canonical cwd plus inode and birth time, without `st_dev`: macOS can change the device number across a reboot. The scope still binds HOME and project-deciding Git configuration. Open-file ownership and claim checks continue to compare device, inode, size and timestamps. A reboot-like device-only fixture proves that a newly staged record remains drainable; changing HOME, Git identity or the physical directory remains a replay boundary.
