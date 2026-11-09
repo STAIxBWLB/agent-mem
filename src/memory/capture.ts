@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
+import { outsideCountPlanIsBounded } from "./capture-plan.ts";
 import { captureAttribution, normalizeCaptureFields, RecordNormalizationRefusal, SESSION_KEY, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
@@ -107,15 +108,6 @@ export interface CaptureOutsideCount {
   capped: boolean;
   /** False when nothing could answer this event safely: no derived index, or a plan that is not the bounded seek. */
   available: boolean;
-}
-/**
- * #331: true when an `EXPLAIN QUERY PLAN` result is the bounded Record seek `countOutsideRecent` requires, meaning the
- * derived index is searched with the project and an upper `at` bound, with no table scan and no temporary sort.
- * Exported for its own unit test because a bundled SQLite may render the seek differently; not a host API.
- */
-export function outsideCountPlanIsBounded(plan: readonly { detail: string }[]): boolean {
-  return plan.some(row => /^SEARCH rows USING INDEX rows_brief_records_v1 \(project=\?[^)]*at<\?/.test(row.detail))
-    && !plan.some(row => /^SCAN rows\b/.test(row.detail) || row.detail.includes("TEMP B-TREE"));
 }
 export interface CaptureAppendOptions {
   /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */

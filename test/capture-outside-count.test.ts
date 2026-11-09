@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { CaptureStore, outsideCountPlanIsBounded } from "../src/memory/capture.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { outsideCountPlanIsBounded } from "../src/memory/capture-plan.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const cleanup: (() => void)[] = [];
