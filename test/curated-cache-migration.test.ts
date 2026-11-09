@@ -9,6 +9,7 @@ import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { shardDir, shardMachineDir } from "../src/memory/shard.ts";
 import { machineId, MemoryStore, openShardStore } from "../src/memory/store.ts";
+import { prepareCuratedBriefCache } from "../src/index.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -101,7 +102,7 @@ test("shared user writes cannot create a missing project generation or cache aft
   const brief = await sessionStartBrief({ cwd: f.home, base, project: f.project, repository: false });
   expect(brief.coverage.curated).toBe("complete");
   expect(existsSync(join(projectDirectory, "generation.json"))).toBe(true);
-  expect(f.texts()).toContain("user row for missing project");
+  expect(f.cache()).toBeUndefined();
   expect(sourceSegmentBytes(base)).toEqual(sourceBefore);
 });
 
@@ -117,6 +118,10 @@ test("ordinary library brief may initialize a v1 project cache and include share
   const brief = await sessionStartBrief({ cwd: f.home, base: f.base, project: f.project, repository: false });
   expect(brief.coverage.curated).toBe("complete");
   expect(existsSync(join(projectDirectory, "project.json"))).toBe(true);
+  expect(f.cache()).toBeUndefined();
+  expect(sourceSegmentBytes(f.base)).toEqual(sourceBefore);
+
+  prepareCuratedBriefCache(f.base, f.project);
   expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
   expect(f.texts()).toContain("v1 shared user source");
   expect(sourceSegmentBytes(f.base)).toEqual(sourceBefore);

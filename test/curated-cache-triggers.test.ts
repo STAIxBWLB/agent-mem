@@ -7,6 +7,7 @@ import { sessionStartBrief } from "../src/session-brief.ts";
 import { captureShardDir } from "../src/memory/shard.ts";
 import { machineId, MemoryStore } from "../src/memory/store.ts";
 import { processSignature } from "../src/memory/platform.ts";
+import { prepareCuratedBriefCache } from "../src/index.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -20,27 +21,56 @@ function fixture() {
   return { root, base, project, directory, binding, cache: () => readBriefCache(binding) };
 }
 
-test("ordinary library session brief creates a first cache for a successful empty project", async () => {
+test("ordinary library brief neither creates nor rewrites curated cache", async () => {
   const f = fixture();
+  const empty = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project, repository: false });
+  expect(empty.coverage.curated).toBe("complete");
   expect(f.cache()).toBeUndefined();
+  const store = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+  try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "cached baseline", about: [] }); }
+  finally { store.close(); }
+  prepareCuratedBriefCache(f.base, f.project);
+  const before = readBriefCache(f.binding)!;
+  const bytes = readFileSync(briefCacheFile(f.binding));
   const result = await sessionStartBrief({ cwd: f.root, base: f.base, project: f.project, repository: false });
   expect(result.coverage.curated).toBe("complete");
-  expect(f.cache()?.rows).toEqual([]);
-  expect(f.cache()?.curated?.binding).toBeTruthy();
+  expect(result.context).toContain("cached baseline");
+  expect(f.cache()).toEqual(before);
+  expect(readFileSync(briefCacheFile(f.binding))).toEqual(bytes);
 });
 
-test("native and measure-only session briefs never create curated caches", async () => {
+test("native and measure-only briefs do not create or rewrite curated caches", async () => {
+  const nativeMissing = fixture();
+  await sessionStartBrief({ cwd: nativeMissing.root, base: nativeMissing.base, project: nativeMissing.project, repository: false,
+    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 });
+  expect(nativeMissing.cache()).toBeUndefined();
+
   const native = fixture();
+  const nativeStore = new MemoryStore({ memoryDir: native.base, deferPromotions: true });
+  try { nativeStore.note({ op: "note", project: native.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "native cached baseline", about: [] }); }
+  finally { nativeStore.close(); }
+  prepareCuratedBriefCache(native.base, native.project);
+  const nativeBytes = readFileSync(briefCacheFile(native.binding));
   const signature = processSignature(process.pid)!;
   await sessionStartBrief({ cwd: native.root, base: native.base, project: native.project, repository: false,
     nativeSession: { signature }, timeRemaining: () => 2000 });
-  expect(native.cache()).toBeUndefined();
+  expect(readFileSync(briefCacheFile(native.binding))).toEqual(nativeBytes);
+
+  const measuredMissing = fixture(), emptyStore = new MemoryStore({ memoryDir: measuredMissing.base, deferPromotions: true });
+  try {
+    await sessionStartBrief({ cwd: measuredMissing.root, base: measuredMissing.base, project: measuredMissing.project, repository: false,
+      measureOnly: { curated: emptyStore } });
+    expect(measuredMissing.cache()).toBeUndefined();
+  } finally { emptyStore.close(); }
 
   const measured = fixture(), store = new MemoryStore({ memoryDir: measured.base, deferPromotions: true });
   try {
+    store.note({ op: "note", project: measured.project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "measure cached baseline", about: [] });
+    store.prepareCuratedBriefs([measured.project]);
+    const bytes = readFileSync(briefCacheFile(measured.binding));
     await sessionStartBrief({ cwd: measured.root, base: measured.base, project: measured.project, repository: false,
       measureOnly: { curated: store } });
-    expect(measured.cache()).toBeUndefined();
+    expect(readFileSync(briefCacheFile(measured.binding))).toEqual(bytes);
   } finally { store.close(); }
 });
 

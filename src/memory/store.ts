@@ -466,11 +466,11 @@ export class MemoryStore {
 
   /** Off-hook preparation; callers never invoke this from native SessionStart. */
   prepareCuratedBriefs(projects?: readonly string[]): void {
-    try { this.curatedRebuildAll = projects === undefined; this.publishCurated(new Set(projects ?? [])); }
+    try { this.curatedRebuildAll = projects === undefined; this.publishCurated(new Set(projects ?? []), projects?.length === 1 ? this : undefined); }
     catch { /* An off-hook read still succeeds when its optional derived cache cannot be prepared. */ }
   }
 
-  private publishCurated(input: ReadonlySet<string>): void {
+  private publishCurated(input: ReadonlySet<string>, opened?: MemoryStore): void {
     const projects = new Set(input);
     if (this.curatedRebuildAll) {
       this.curatedRebuildAll = false;
@@ -487,14 +487,17 @@ export class MemoryStore {
         // Cache preparation cannot replace project admission with a user-only view.
         // The ordinary off-hook read may initialize a missing shard only where the source API permits it.
         if (sharded && !existsSync(join(shardDir(this.profile.home, project), "generation.json"))) continue;
-        view = sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
+        const reusable = opened && (!sharded || opened.profile.shardKey === project)
+          && (aliases.length ? opened.reconcile?.canonical === project && opened.reconcile.aliases.join("\n") === aliases.join("\n") : !opened.reconcile);
+        view = reusable ? opened! : sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
         view.withStoreFences(() => {
           const selected = readSelector(this.profile.home);
           const shards = sharded ? readShardedSelection(this.profile.home) : null;
           if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (shards ? "generation" : selected.selector?.kind ?? "shared-v1")
             || view!.profile.generation !== (shards?.generation ?? selected.selector?.generation) || resolveAlias(this.profile.home, raw) !== project
             || shards && (shards.selectorRevision !== selected.revision || shards.generation !== view!.profile.generation)
-            || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")) {
+            || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")
+            || (view!.reconcile?.aliases.join("\n") ?? "") !== aliases.join("\n")) {
             throw Error("curated snapshot source binding changed; retry an off-hook amem brief");
           }
           // Stamp the source handle's inputs, never a newer metadata read that it did not open.
@@ -506,7 +509,7 @@ export class MemoryStore {
           if (curatedProfileBinding(this.profile.home, project) !== binding) rmSync(join(directory, "brief-curated.json"), { force: true });
         });
       } catch { /* Failed derived publication leaves the invalidated cache unavailable; a later mutation retries. */ }
-      finally { try { view?.close(); } catch { /* Preserve the authoritative mutation result. */ } }
+      finally { try { if (view !== opened) view?.close(); } catch { /* Preserve the authoritative mutation result. */ } }
     }
   }
 

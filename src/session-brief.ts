@@ -301,8 +301,6 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           : new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
         closers.push(() => store.close());
         await recent("curated", window => store.readPage(window), noteDisplay);
-        // Off-hook first/quiet-project build; native and diagnostic snapshots never enter this branch.
-        store.prepareCuratedBriefs([project]);
       });
       if (coverage.repo) await run("repo", async () => {
         const scoped = repoReadPolicy(repoRoot!, configuredPolicyOptions(base, cwd, options.policy));

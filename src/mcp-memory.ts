@@ -276,7 +276,6 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const result = await buildIntentBrief(createIntentBriefSource(store, project),
           { project, cwd: staleRoot, repo: project, intent, paths, symbols, maxBytes: Number(maxBytes), policy: currentPolicy, policyVersion: policyRevisionForCall, allowed: permitted, assertCurrent: guard, now: () => store.readNow(), stale: stale() });
         guard();
-        store.prepareCuratedBriefs([project]);
         return observed({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, result.items.map(view => view.id), result.items);
       },
       async amem_graph(args) {

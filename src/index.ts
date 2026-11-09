@@ -48,6 +48,7 @@ export * from "./memory/vault.ts";
 export * from "./hooks.ts";
 export * from "./ingest.ts";
 export * from "./session-brief.ts";
+export { prepareCuratedBriefCache } from "./curated-brief-cache.ts";
 
 export * from "./memory/decay-review.ts";
 export * from "./memory/goal-promotion.ts";
