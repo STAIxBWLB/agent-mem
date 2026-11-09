@@ -227,7 +227,7 @@ def main():
             trial_dir.mkdir(mode=0o700)
             tmp.mkdir(mode=0o700)
             env = dict(os.environ)
-            env.update({"TMPDIR": str(tmp), "TMP": str(tmp), "TEMP": str(tmp), "HOME": str(tmp),
+            env.update({"TMPDIR": str(tmp), "TMP": str(tmp), "TEMP": str(tmp),
                         "AMEM_INTERLEAVE_DIAGNOSTIC_DIR": str(trial_dir),
                         "AMEM_INTERLEAVE_DIAGNOSTIC_TRACE": "0" if arm == "A" else "1",
                         "NO_COLOR": "1", "FORCE_COLOR": "0"})
