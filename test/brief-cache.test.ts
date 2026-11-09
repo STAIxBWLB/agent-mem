@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { BRIEF_CACHE_BYTES, briefCacheFile, readBriefCache, writeBriefCache } from "../src/brief-cache.ts";
 import { buildCaptureBriefCache } from "../src/brief-capture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { processSignature } from "../src/memory/platform.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
@@ -24,7 +25,7 @@ async function fixture() {
   await buildCaptureBriefCache(capture, { base, project, cwd: root, builtThrough: id });
   const directory = capture.dir; capture.close();
   const binding = { directory, project, section: "capture" as const };
-  const options = { cwd: root, base, project, nativeSession: { signature: "a".repeat(64) }, timeRemaining: () => 70 };
+  const options = { cwd: root, base, project, nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 70 };
   return { root, base, project, binding, options };
 }
 const captureRows = (context: string) => context.split("\n").filter(line => line.startsWith('{"section":"capture"')).map(line => JSON.parse(line).data);
