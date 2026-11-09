@@ -18,12 +18,12 @@ const diagnosticRoots=new Set<string>();
 let diagnosticCall=0;
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();diagnosticRoots.clear();diagnosticCall=0;});
 const cli=fileURLToPath(new URL("../src/cli.ts",import.meta.url));
-function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false){
+function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false,syncDeadlineMs?:number){
   const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
   const diagnostic=process.env.AMEM_CADENCE_DIAGNOSTIC==="1"&&diagnosticRoots.has(f.root), started=performance.now();
   const load=diagnostic?`${cadenceDiagnosticPrelude()}const {runCli}=await import(${JSON.stringify(cli)});`:`import {runCli} from ${JSON.stringify(cli)};`;
   const report=diagnostic?`finally{const p=globalThis.__cadenceProbe;p.mark("cli-finished",{stops:p.signals.map(s=>({deadlineMs:s.deadlineMs,cause:s.cause()??null,aborted:s.signal.aborted}))});}`:"";
-  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
+  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env${syncDeadlineMs===undefined?"":`,syncDeadlineMs:${JSON.stringify(syncDeadlineMs)}`}});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
   const result=Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
   if(diagnostic){
     const phases=result.stderr.toString().split("\n").flatMap(line=>{try{const row=JSON.parse(line);return row.diagnostic==="cadence-child-phase"?[row]:[];}catch{return[];}});
@@ -97,7 +97,10 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   expect(success(run(f,["sync","--json"])).ok).toBe(true);
   const writer=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});let fresh:string;
   try{fresh=writer.note({op:"note",project:f.project,scope:"project",tier:"long",kind:"finding",peer:"person",source:"person",text:"cadence publication after renewal",about:[]});}finally{writer.close();}
-  const published=success(run(f,["sync","--if-due","--force","--json"]));expect(published.ok,JSON.stringify(published)).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
+  const reproValue=process.env.AMEM_CADENCE_REPRO_DEADLINE_MS;
+  const reproDeadline=reproValue===undefined?undefined:Number(reproValue);
+  if(reproDeadline!==undefined&&(!Number.isSafeInteger(reproDeadline)||reproDeadline<1||reproDeadline>30000||process.env.AMEM_CADENCE_DIAGNOSTIC!=="1"))throw Error("cadence diagnostic deadline must be1..30000ms with diagnostics enabled; fix the test invocation before probing");
+  const published=success(run(f,["sync","--if-due","--force","--json"],false,reproDeadline));expect(published.ok,JSON.stringify(published)).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
   expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
 },120_000); // Several actual local-Git publications plus fresh writer measurements; this is functional, not R2 timing proof.
 
