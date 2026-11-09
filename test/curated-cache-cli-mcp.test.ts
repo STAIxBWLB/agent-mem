@@ -53,7 +53,7 @@ test("CLAUDECODE-marked CLI brief routes through MCP without updating a curated 
   const before = readFileSync(f.file);
   const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
   try {
-    const expected = await mcp.tools.amem_brief({ intent: "quiet context" });
+    const expected = await mcp.tools.amem_brief({ intent: "quiet context" }) as { brief: string };
     const output = await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], {
       cwd: f.root, env: { CLAUDECODE: "" }, stdinTTY: false,
     }));
