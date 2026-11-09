@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, utimesSync, writ
 import { join, resolve } from "node:path";
 import { HOOK_REPLAY_MAX_BYTES, HOOK_REPLAY_MAX_FILES, stageHookCapture } from "../src/hook-spool.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
+import { interleaveDiagnosticPreload, saveInterleaveDiagnostic } from "../scripts/diagnose-interleave.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 type Fixture = ReturnType<typeof hookFixture>;
@@ -37,10 +38,13 @@ function summaries(file: string): { recap: string; compact: string } {
 /** Observe replay body inspections inside the owned worker only. This is functional
  * proof of the shared bound, not a native R2 timing measurement. */
 function observeReplay(f: Fixture) {
+  const phaseTrace = join(f.root, "scan-phases.jsonl");
   const preload = join(f.root, "observe-replay.ts"), trace = join(f.root, "replay-reads.jsonl"), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(trace, "");
+  if (process.env.AMEM_INTERLEAVE_DIAGNOSTIC_DIR) writeFileSync(phaseTrace, "");
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 if(process.argv[1]===${JSON.stringify(worker)}){
+${interleaveDiagnosticPreload(phaseTrace)}
  (globalThis as any).__replayRead=(bytes,event,excerpt)=>appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,bytes,event,excerpt})+'\\n');
  Bun.plugin({name:'shared-replay-read-bound',setup(builder){builder.onLoad({filter:/[/]hook-spool\\.ts$/},({path})=>{
   const source=readFileSync(path,'utf8'),anchor='      const record = decoded(claim);';
@@ -50,7 +54,7 @@ if(process.argv[1]===${JSON.stringify(worker)}){
 }
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
 `);
-  return { env: { BUN_OPTIONS: `--preload=${preload}` }, clear: () => writeFileSync(trace, ""), reads: (): ReplayRead[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
+  return { phaseTrace, env: { BUN_OPTIONS: `--preload=${preload}` }, clear: () => writeFileSync(trace, ""), reads: (): ReplayRead[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
 }
 
 function bounded(reads: ReplayRead[]): void {
@@ -84,7 +88,10 @@ for (const event of ["Stop", "SessionEnd"] as const) test("a final hook commits 
     expect(reads.map(row => row.excerpt)).toEqual(selected.map(row => row.excerpt));
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
     expect(metric.drained).toBe(selected.length); expect(metric.transcriptOffset).toBeGreaterThan(0); expect(metric.captureDrops).toBeUndefined();
-  } finally { f.close(); }
+  } finally {
+    try { if (process.env.AMEM_INTERLEAVE_DIAGNOSTIC_DIR) saveInterleaveDiagnostic(f, event, transcript, observed.phaseTrace, observed.reads()); }
+    finally { f.close(); }
+  }
 });
 
 test("repeated publication callbacks share one 32-file replay allowance and resume all accepted backlog without duplicates", async () => {
