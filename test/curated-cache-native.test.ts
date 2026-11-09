@@ -7,6 +7,7 @@ import { machineId, MemoryStore } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { captureShardDir } from "../src/memory/shard.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const roots: string[] = [], G = "f".repeat(32), project = "curated/native-fixture";
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -26,6 +27,8 @@ async function fixture() {
     const machine = machineId(base).id, directory = captureShardDir(base, project, machine), binding = { directory, project, section: "curated" as const };
     const cache = readBriefCache(binding);
     if (!cache) throw new Error("fixture curated cache was not prepared");
+    const indexFile = join(store.profile.dir, indexFileName(!!store.profile.foreignPruneFormat));
+    const sourceLog = join(store.profile.dir, "log", `${store.machine.id}.jsonl`);
     cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
     writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-native-fixture", version: "99.0.0", type: "module" }));
     writeFileSync(join(isolated, "run.ts"), `
@@ -51,7 +54,7 @@ const screened = await sessionStartBrief({ ...options, timeRemaining: () => rema
 writeFileSync(${JSON.stringify(join(root, "child-result.json"))}, JSON.stringify({ native, library, nativeCurated: curated(native), libraryCurated: library ? curated(library) : undefined, tight, order, screened }));
 `);
     writeFileSync(join(base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.24.0", since: "fixture" }]));
-    return { root, base, isolated, binding, cache };
+    return { root, base, isolated, binding, cache, indexFile, sourceLog };
   } finally { store.close(); }
 }
 
@@ -113,4 +116,16 @@ test("fake 99.0.0 reader admits curated and home floors at 0.24.0 and 0.24.1, re
       if (!expected) expect(result.native.context).not.toContain("curated evidence");
     }
   }
+});
+
+test("native-only cached brief ignores a malformed selected index and preserves cache and source bytes", async () => {
+  const f = await fixture(), cacheFile = briefCacheFile(f.binding);
+  writeFileSync(f.indexFile, "malformed selected curated index database");
+  const beforeIndex = readFileSync(f.indexFile), beforeSource = readFileSync(f.sourceLog), beforeCache = readFileSync(cacheFile);
+  const result = run(f, "native-only");
+  expect(result.native.context).toContain("curated evidence");
+  expect(result.native.context).toContain('"section":"curated"');
+  expect(readFileSync(f.indexFile)).toEqual(beforeIndex);
+  expect(readFileSync(f.sourceLog)).toEqual(beforeSource);
+  expect(readFileSync(cacheFile)).toEqual(beforeCache);
 });

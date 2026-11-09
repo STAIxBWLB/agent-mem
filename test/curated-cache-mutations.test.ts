@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, machineId } from "../src/memory/store.ts";
-import { captureShardDir } from "../src/memory/shard.ts";
+import { aliasedKeys, appendAlias, captureShardDir } from "../src/memory/shard.ts";
 import { readBriefCache } from "../src/brief-cache.ts";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -90,4 +90,34 @@ test("a project mutation rebuilds only its touched cache after home-wide invalid
     expect(projectRows).toEqual(expect.arrayContaining(["project P baseline", "project P changed"]));
     expect(peerCache()).toBeUndefined();
   } finally { f.store.close(); }
+});
+
+test("alias binding drift after cache view open leaves the invalidated cache missing", () => {
+  const f = fixture(), alias = "curated-write-late-alias";
+  const note = (text: string) => ({ op: "note" as const, project: f.project, scope: "project" as const, tier: "long" as const,
+    kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [] });
+  const prototype = MemoryStore.prototype as unknown as {
+    withStoreFences: <T>(this: MemoryStore, work: (stores: readonly MemoryStore[]) => T) => T;
+  };
+  const original = prototype.withStoreFences;
+  let injected = false;
+  try {
+    f.store.note(note("cache view baseline"));
+    expect(f.cache()?.rows).toHaveLength(1);
+    prototype.withStoreFences = function<T>(this: MemoryStore, work: (stores: readonly MemoryStore[]) => T): T {
+      if (this !== f.store && !injected) {
+        injected = true;
+        appendAlias(f.base, { alias, key: f.project, actor: "person", machine: machineId(f.base).id });
+      }
+      return original.call(this, work);
+    };
+
+    f.store.note(note("must not publish under the new alias binding"));
+    expect(injected).toBe(true);
+    expect(aliasedKeys(f.base, f.project)).toContain(alias);
+    expect(f.cache()).toBeUndefined();
+  } finally {
+    prototype.withStoreFences = original;
+    f.store.close();
+  }
 });

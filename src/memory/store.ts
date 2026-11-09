@@ -486,7 +486,16 @@ export class MemoryStore {
         const sharded = existsSync(join(this.profile.home, "shards.json"));
         view = sharded ? openShardStore({ ...common, ...(existsSync(join(shardDir(this.profile.home, project), "generation.json")) ? { project } : { user: true }) }) : new MemoryStore(common);
         view.withStoreFences(() => {
-          const binding = curatedProfileBinding(this.profile.home, project);
+          const selected = readSelector(this.profile.home);
+          const shards = sharded ? readShardedSelection(this.profile.home) : null;
+          if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (selected.selector?.kind ?? "shared-v1")
+            || view!.profile.generation !== selected.selector?.generation || resolveAlias(this.profile.home, raw) !== project
+            || shards && (shards.selectorRevision !== selected.revision || shards.generation !== view!.profile.generation)
+            || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")) {
+            throw Error("curated snapshot source binding changed; retry an off-hook amem brief");
+          }
+          // Stamp the source handle's inputs, never a newer metadata read that it did not open.
+          const binding = JSON.stringify({ selector: selected.revision, shards, aliases });
           ensureShardDescriptor(this.profile.home, project);
           const directory = shardMachineDir(this.profile.home, project, machineId(this.profile.home).id);
           mkdirSync(directory, { recursive: true, mode: 0o700 });

@@ -6,7 +6,7 @@ import { BRIEF_CACHE_BYTES, writeBriefCache, type BriefCacheRow } from "./brief-
 
 const PAGE_ROWS = 32, MAX_PAGES = 4, SECTION_RECORDS = 4, RECORD_BYTES = 768, MAX_AGE = 24 * 60 * 60 * 1000;
 
-/** Keep this projection byte-for-byte in step with the library session brief. */
+/** Canonical curated display shared by the library brief and snapshot writer. */
 export function noteDisplay(view: View): { data: unknown; partial: boolean } {
   const body = displayText(view.text, 240), title = view.title === null ? undefined : displayText(view.title, 96);
   return { data: { id: view.id, at: view.at, kind: view.kind, ...(title ? { title: title.text } : {}), text: body.text },
