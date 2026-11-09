@@ -1,3 +1,4 @@
+import { captureSessionKey } from "./memory/capture-input.ts";
 import { parseRecordLines, RECORD_INPUT_BYTES, type ParsedRecordTurn, type RecordDropReason } from "./hook-record.ts";
 import { stripPrivateSpans } from "./memory/private-spans.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
@@ -126,7 +127,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
   if (!await policy.screen(value)) return;
   const captureRecords = recordsEnabled(base, cwd)
     && !(typeof value.agent_id === "string" && value.agent_id.length > 0);
-  const session = hash(`amem-session\0${value.session_id}`).slice(0, 16);
+  const session = captureSessionKey(value.session_id)!;
   if (lstatSync(value.transcript_path).isSymbolicLink()) throw new Error("transcript unavailable");
   const transcript = realPath(value.transcript_path);
   // Parent aliases must not hide a configured deny path behind an allowed spelling.

@@ -9,7 +9,7 @@ import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
-function fixture(machine?: boolean, repo?: boolean) {
+function fixture(machine?: unknown, repo?: boolean) {
   const f = hookFixture(); fixtures.push(f);
   mkdirSync(f.base, { recursive: true });
   if (machine !== undefined) writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: machine }));
@@ -17,6 +17,50 @@ function fixture(machine?: boolean, repo?: boolean) {
   if (repo !== undefined) writeFileSync(join(f.cwd, ".amem", "config"), JSON.stringify({ records: repo }));
   return f;
 }
+
+for (const instruction of [undefined, "a", "b", "alternate"] as const) {
+  test(`machine records instruction object selects ${instruction ?? "default a"}`, () => {
+    const f = hookFixture(); fixtures.push(f);
+    mkdirSync(f.base, { recursive: true });
+    writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: instruction === undefined ? {} : { instruction } }));
+    const loaded = config.loadAmemConfig(f.base).config;
+    expect(loaded.records).toBe(true);
+    expect(loaded.recordInstruction).toBe(instruction ?? "a");
+    expect(recordsEnabled(f.base)).toBe(true);
+  });
+}
+
+test("repo records stays boolean and false overrides machine instruction variants", () => {
+  for (const instruction of ["a", "b", "alternate"] as const) {
+    const f = fixture({ instruction }, false);
+    const loaded = config.loadAmemConfig(f.base, f.cwd).config;
+    expect(loaded.records).toBe(false);
+    expect(loaded.recordInstruction).toBe(instruction);
+    expect(recordsEnabled(f.base, f.cwd)).toBe(false);
+  }
+  const f = fixture(true, false);
+  expect(() => config.loadAmemConfig(f.base, f.cwd)).not.toThrow();
+  writeFileSync(join(f.cwd, ".amem", "config"), JSON.stringify({ records: { instruction: "b" } }));
+  expect(() => config.loadAmemConfig(f.base, f.cwd)).toThrow("records is not a boolean");
+});
+
+for (const records of [{ extra: true }, { instruction: "c" }, { instruction: null }, []]) {
+  test(`machine records instruction object refuses ${JSON.stringify(records)}`, () => {
+    const f = fixture(records);
+    expect(() => config.loadAmemConfig(f.base)).toThrow();
+  });
+}
+
+test("recordInstruction is not a top-level machine or repository input", () => {
+  const f = hookFixture(); fixtures.push(f);
+  mkdirSync(f.base, { recursive: true });
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ recordInstruction: "b" }));
+  expect(() => config.loadAmemConfig(f.base)).toThrow('unknown key "recordInstruction"');
+  writeFileSync(join(f.base, "amem.config.json"), "{}");
+  mkdirSync(join(f.cwd, ".amem"), { recursive: true });
+  writeFileSync(join(f.cwd, ".amem", "config"), JSON.stringify({ recordInstruction: "b" }));
+  expect(() => config.loadAmemConfig(f.base, f.cwd)).toThrow('unknown key "recordInstruction"');
+});
 
 for (const machine of [undefined, true, false]) for (const repo of [undefined, true, false]) {
   test(`public records policy: machine=${machine}, repo=${repo}`, () => {

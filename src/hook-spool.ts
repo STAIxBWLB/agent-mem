@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { CaptureAppend, CaptureInput } from "./memory/capture.ts";
 import { parseRecordLines, type ParsedRecord, type RecordDropReason } from "./hook-record.ts";
-import { CAPTURE_MAX_EXCERPT, TRANSCRIPT_CAPTURE_EVENTS, RecordNormalizationRefusal, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
+import { captureSessionKey, CAPTURE_MAX_EXCERPT, TRANSCRIPT_CAPTURE_EVENTS, RecordNormalizationRefusal, clipCaptureUtf8, normalizeCaptureFields, toolCaptureExcerpt, toolInputLine, type CaptureFields, type NormalizedCaptureFields } from "./memory/capture-input.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -687,7 +687,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
     : contentText;
   // #173: attribution. Only a fixed-width hash of the native session id is kept, never the id or transcript path;
   // a non-empty agent_id marks a subagent (or in-process teammate) event. Both are read from the already-screened input.
-  const session = typeof value.session_id === "string" && value.session_id.length > 0 && value.session_id.length <= 256 ? hash(`amem-session\0${value.session_id}`).slice(0, 16) : undefined;
+  const session = captureSessionKey(value.session_id);
   const subagent = typeof value.agent_id === "string" && value.agent_id.length > 0;
   const capture = normalizeCaptureFields({ agent: options.agent ?? "claude", event, paths, status: event === "PostToolUseFailure" ? "failed" : "ok",
     ...(session ? { session } : {}), ...(subagent ? { subagent: true } : {}),

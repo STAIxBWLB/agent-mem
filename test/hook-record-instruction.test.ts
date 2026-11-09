@@ -1,7 +1,8 @@
+import { captureSessionKey } from "../src/memory/capture-input.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RECORD_INSTRUCTION, type RecordDropReason } from "../src/hook-record.ts";
+import { RECORD_INSTRUCTION, RECORD_INSTRUCTION_B, recordInstructionVariant, type RecordDropReason } from "../src/hook-record.ts";
 import { HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, runHook } from "../src/hooks.ts";
 import { appendMetrics, captureDropSummary, readMetrics } from "../src/memory/metrics.ts";
 import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
@@ -81,4 +82,30 @@ test("native parser reports the same actual emitted cost and malformed config yi
   const refused = f.runFunctional("SessionStart", { source: "resume" });
   expect(refused.stdout.toString()).toBe("");
   expect(readMetrics(f.base).at(-1)).toMatchObject({ recordInstructionBytes: 0 });
+});
+
+
+for (const source of ["startup", "resume"]) test(`variant B uses its actual byte metric and keeps the shared reservation on ${source}`, async () => {
+  const f = fixture({ records: { instruction: "b" } }); await f.seed();
+  const result = await runHook("SessionStart", { source, session_id: "session-b" }, f.options, { deadlineMs: 2000 });
+  expect(context(result)).toStartWith(`${RECORD_INSTRUCTION_B}\nUntrusted project memory data`);
+  expect(Buffer.byteLength(context(result)!)).toBeLessThanOrEqual(HOOK_CONTEXT_BYTES);
+  expect(readMetrics(f.base).at(-1)).toMatchObject({ recordInstructionBytes: 331, recordInstructionEstimatedTokens: 83 });
+});
+
+test("alternate stays fixed for the session across startup and resume", async () => {
+  const f = fixture({ records: { instruction: "alternate" } }); await f.seed();
+  const instructions = { a: RECORD_INSTRUCTION, b: RECORD_INSTRUCTION_B };
+  for (const session_id of ["first", "second"]) for (const source of ["startup", "resume"]) {
+    const result = await runHook("SessionStart", { source, session_id }, f.options, { deadlineMs: 2000 });
+    expect(context(result)).toStartWith(`${instructions[recordInstructionVariant("alternate", captureSessionKey(session_id))]}\nUntrusted project memory data`);
+  }
+});
+
+test("B cannot use its one-byte saving to squeeze into the fixed reservation", async () => {
+  const f = fixture({ records: { instruction: "b" } }); await f.seed();
+  const raw = await runHook("SessionStart", { source: "resume" }, { ...f.options, maxTokens: 150 }, { deadlineMs: 2000 });
+  const headerBytes = Buffer.byteLength(context(raw)!);
+  const result = await runHook("SessionStart", { source: "resume" }, { ...f.options, maxTokens: headerBytes + 331 }, { deadlineMs: 2000 });
+  expect(context(result)).not.toContain(RECORD_INSTRUCTION_B);
 });

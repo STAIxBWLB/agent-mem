@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import { RECORD_INSTRUCTION } from "./hook-record.ts";
+import { RECORD_INSTRUCTION_BYTES, RECORD_INSTRUCTIONS, recordInstructionVariant } from "./hook-record.ts";
+import { captureSessionKey } from "./memory/capture-input.ts";
 import { fileURLToPath } from "node:url";
 import { resolveHookProjectAsync, type HookProjectReceipt } from "./hook-project.ts";
 import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
@@ -61,7 +62,8 @@ function joinedContext(context: string, notice: string, maximum: number): string
 }
 
 function instructionCost(context: string): { recordInstructionBytes: number; recordInstructionEstimatedTokens: number } {
-  const bytes = context.startsWith(`${RECORD_INSTRUCTION}\n`) ? Buffer.byteLength(RECORD_INSTRUCTION) + 1 : 0;
+  const instruction = Object.values(RECORD_INSTRUCTIONS).find(text => context.startsWith(`${text}\n`));
+  const bytes = instruction ? Buffer.byteLength(instruction) + 1 : 0;
   // Approximation only: the UTF-8 byte count is exact; tokens depend on the host tokenizer.
   return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4) };
 }
@@ -235,7 +237,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
 }
 
 /** SessionStart shared pieces: the numeric capture-loss notice and the native byte ceiling. */
-function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, currentDropped: boolean, header = unavailable): { dropNotice: string; contextLimit: number; instruction: string } {
+function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, currentDropped: boolean, header = unavailable, sessionId?: unknown): { dropNotice: string; contextLimit: number; instruction: string } {
   const losses = captureDropSummary(base);
   if (currentDropped) losses.spool_full = (losses.spool_full ?? 0) + 1;
   // Record parsing refusals remain observable metrics, but are not lost captures.
@@ -243,9 +245,10 @@ function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, 
   const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
   const configuredBrief = config.briefBytes;
   const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
-  const prefix = `${RECORD_INSTRUCTION}\n`;
-  const instruction = recordsEnabled(base, cwd) && Buffer.byteLength(prefix) + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
-  return { dropNotice, contextLimit: contextLimit - Buffer.byteLength(instruction), instruction };
+  const variant = recordInstructionVariant(config.recordInstruction ?? "a", captureSessionKey(sessionId));
+  const prefix = `${RECORD_INSTRUCTIONS[variant]}\n`;
+  const instruction = recordsEnabled(base, cwd) && RECORD_INSTRUCTION_BYTES + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
+  return { dropNotice, contextLimit: contextLimit - (instruction ? RECORD_INSTRUCTION_BYTES : 0), instruction };
 }
 
 /** SessionStart spends one Bun boot on context. Capture remains durable/pending;
@@ -261,7 +264,7 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
   if (remaining() <= 0) { result.dropped = !pending; return result; }
   if (sessionSource(input) === "resume") {
     try {
-      const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending, RESUME_HEADER);
+      const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending, RESUME_HEADER, (input as { session_id?: unknown } | null)?.session_id);
       const context = joinedContext(RESUME_HEADER, dropNotice, contextLimit);
       result.context = context ? instruction + context : "";
       result.valid = result.context.length > 0;
@@ -291,7 +294,7 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     if (remaining() <= 0) return result;
     // The current SessionStart is durable in its bounded reserve. All replay and
     // retirement belong to a later non-SessionStart hook, never this brief deadline.
-    const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending);
+    const { dropNotice, contextLimit, instruction } = sessionNoticeAndLimit(base, cwd, options, !pending, unavailable, (input as { session_id?: unknown } | null)?.session_id);
     const brief = await sessionStartBrief({ ...options, maxTokens: Math.max(1, contextLimit - Buffer.byteLength(dropNotice) - (dropNotice ? 1 : 0)), cwd, base, project, nativeSession: { signature }, projectFromCwd: true, timeRemaining: remaining });
     result.pending = !!pending && !result.captured;
     result.dropped = !pending;

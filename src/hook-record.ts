@@ -7,10 +7,30 @@ export const RECORD_INSTRUCTION = [
   "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII.",
 ].join("\n");
 
+/** Purpose-framed alternative; the canonical Record grammar is unchanged. */
+export const RECORD_INSTRUCTION_B = [
+  "Future use: keep what code/git/instructions lack. Up to 2 final lines; else none:",
+  "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 chars; basis:test|log|issue|run; prefix ? if unverified>",
+  "fix/fail: symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII.",
+].join("\n");
+export type RecordInstructionVariant = "a" | "b";
+export type RecordInstructionMode = RecordInstructionVariant | "alternate";
+export const RECORD_INSTRUCTIONS = Object.freeze({ a: RECORD_INSTRUCTION, b: RECORD_INSTRUCTION_B });
+export const RECORD_INSTRUCTION_BYTES = 332;
+
+/** Parity of the persisted session hash is reproducible without the raw session id. */
+export function recordInstructionVariant(mode: RecordInstructionMode, sessionKey?: string): RecordInstructionVariant {
+  if (mode !== "alternate") return mode;
+  return sessionKey && /^[a-f0-9]{16}$/.test(sessionKey) && Number.parseInt(sessionKey.slice(-1), 16) % 2 === 1 ? "b" : "a";
+}
+
 /** Data remains untrusted after the one exact package-owned instruction prefix. */
 export function recordContextData(context: string): string {
-  const prefix = `${RECORD_INSTRUCTION}\n`;
-  return context.startsWith(prefix) ? context.slice(prefix.length) : context;
+  for (const instruction of Object.values(RECORD_INSTRUCTIONS)) {
+    const prefix = `${instruction}\n`;
+    if (context.startsWith(prefix)) return context.slice(prefix.length);
+  }
+  return context;
 }
 
 export const RECORD_INPUT_BYTES = 256 * 1024;

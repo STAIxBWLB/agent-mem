@@ -177,6 +177,14 @@ async function main() {
     await seed(candidate, raw, project, false); await seed(candidate, recorded, project, true);
     const before = await projectBytes(baseline, raw, scratch, project), after = await projectBytes(candidate, recorded, scratch, project);
     const unchanged = await projectBytes(candidate, raw, scratch, project);
+    // Both variants project the same isolated data; no real or copied home is modified.
+    writeFileSync(join(recorded, "amem.config.json"), JSON.stringify({ records: { instruction: "b" } }), { mode: 0o600 });
+    const variantB = await projectBytes(candidate, recorded, scratch, project);
+    const variants = { a: after, b: variantB, bytesDelta: variantB.totalBytes - after.totalBytes,
+      sameData: variantB.dataBytes === after.dataBytes && JSON.stringify(variantB.sections) === JSON.stringify(after.sections)
+        && JSON.stringify(variantB.events) === JSON.stringify(after.events), reservationBytes: 332 };
+    if (!variants.sameData || after.instructionBytes !== 332 || variantB.instructionBytes !== 331 || variants.bytesDelta !== -1)
+      throw Error("Record variant projection changed data or byte reservations; inspect the isolated A/B fixture and formatter before rerunning");
     const qualified = qualifyRecordContextFixture(before, after, unchanged);
     if (!qualified.complete) throw Error(`${qualified.cause} ${qualified.nextStep}`);
     let realCopy: unknown;
@@ -189,7 +197,7 @@ async function main() {
     phase = "runtime";
     if (sourcePin(baseRoot, baseline).commit !== sources.baseline.commit || sourcePin(candidateRoot, candidate).commit !== sources.candidate.commit) throw Error("measurement runtime changed during projection; rerun on immutable checkouts");
     phase = "index";
-    const report = { schema: "agent-mem.record-context/v1", complete: true, pass: qualified.pass, sources, fixture: { before, after, noRecordsCandidate: unchanged, ...qualified },
+    const report = { schema: "agent-mem.record-context/v1", complete: true, pass: qualified.pass, sources, fixture: { before, after, noRecordsCandidate: unchanged, variants, ...qualified },
       ...(realCopy ? { realCopy } : {}), indexCost: await indexCost(candidate, join(scratch, "large"), project), rawPrivateContentPublished: false };
     writeFileSync(values["--output"], JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
     console.log(JSON.stringify(report));

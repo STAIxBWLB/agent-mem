@@ -80,6 +80,8 @@ export { readEffectiveSyncPlacementWriters, readEffectiveSyncPlacementWriterRoot
 export type { EffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 export { readSetupWriterRoots, SetupWriterRootsError } from "./setup.ts";
 
-export { parseRecordLines, RECORD_INSTRUCTION, type ParsedRecord, type ParsedRecordTurn, type RecordKind, type RecordDropReason } from "./hook-record.ts";
+export { parseRecordLines, RECORD_INSTRUCTION, RECORD_INSTRUCTION_B, RECORD_INSTRUCTIONS, RECORD_INSTRUCTION_BYTES, recordInstructionVariant, type RecordInstructionMode, type RecordInstructionVariant, type ParsedRecord, type ParsedRecordTurn, type RecordKind, type RecordDropReason } from "./hook-record.ts";
 export { createPlacementAttestation, PlacementWriterContextError } from "./sync-placement-writer-context.ts";
 export type { PlacementWriterRootCategory, PlacementWriterContextPhase } from "./sync-placement-writer-context.ts";
+
+export { captureSessionKey } from "./memory/capture-input.ts";
