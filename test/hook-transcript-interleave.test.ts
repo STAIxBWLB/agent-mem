@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { HOOK_REPLAY_MAX_BYTES, HOOK_REPLAY_MAX_FILES, stageHookCapture } from "../src/hook-spool.ts";
+import { HOOK_REPLAY_MAX_BYTES, HOOK_REPLAY_MAX_FILES, drainHookCaptures, hookReplayBudget, stageHookCapture } from "../src/hook-spool.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/metrics.ts";
+import { interleaveDiagnosticPreload, saveInterleaveDiagnostic } from "../scripts/diagnose-interleave.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 type Fixture = ReturnType<typeof hookFixture>;
@@ -37,10 +39,13 @@ function summaries(file: string): { recap: string; compact: string } {
 /** Observe replay body inspections inside the owned worker only. This is functional
  * proof of the shared bound, not a native R2 timing measurement. */
 function observeReplay(f: Fixture) {
+  const phaseTrace = join(f.root, "scan-phases.jsonl");
   const preload = join(f.root, "observe-replay.ts"), trace = join(f.root, "replay-reads.jsonl"), worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
   writeFileSync(trace, "");
+  if (process.env.AMEM_INTERLEAVE_DIAGNOSTIC_DIR) writeFileSync(phaseTrace, "");
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 if(process.argv[1]===${JSON.stringify(worker)}){
+${interleaveDiagnosticPreload(phaseTrace)}
  (globalThis as any).__replayRead=(bytes,event,excerpt)=>appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,bytes,event,excerpt})+'\\n');
  Bun.plugin({name:'shared-replay-read-bound',setup(builder){builder.onLoad({filter:/[/]hook-spool\\.ts$/},({path})=>{
   const source=readFileSync(path,'utf8'),anchor='      const record = decoded(claim);';
@@ -50,7 +55,7 @@ if(process.argv[1]===${JSON.stringify(worker)}){
 }
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===${JSON.stringify(worker)}?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
 `);
-  return { env: { BUN_OPTIONS: `--preload=${preload}` }, clear: () => writeFileSync(trace, ""), reads: (): ReplayRead[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
+  return { phaseTrace, env: { BUN_OPTIONS: `--preload=${preload}` }, clear: () => writeFileSync(trace, ""), reads: (): ReplayRead[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
 }
 
 function bounded(reads: ReplayRead[]): void {
@@ -66,25 +71,100 @@ function pending(f: Fixture): { event: string; excerpt: string }[] {
   }) : []);
 }
 
-for (const event of ["Stop", "SessionEnd"] as const) test("a final hook commits a 16+ backlog and its just-scanned Recap/Compact in the same replay budget: " + event, async () => {
+function cursorPosition(f: Fixture): { offset: number; size: number } {
+  const directory = join(f.base, "hook-transcripts"), names = readdirSync(directory).filter(name => name.endsWith(".db"));
+  expect(names).toHaveLength(1);
+  const db = new Database(join(directory, names[0]!), { readonly: true });
+  try { return db.query("SELECT offset,size FROM cursor WHERE id=1").get() as { offset: number; size: number }; }
+  finally { db.close(); }
+}
+
+for (const event of ["Stop", "SessionEnd"] as const) test("a final hook commits its backlog and every scanned summary within one shared replay budget: " + event, async () => {
   const f = hookFixture(), transcript = join(f.root, "interleave.jsonl"), observed = observeReplay(f), summary = summaries(transcript);
+  const source = readFileSync(transcript), recapEnd = source.indexOf(10) + 1;
+  let diagnosticSaved = false;
   try {
     await f.seed(); const accepted = await backlog(f, 20), current = "interleave current native";
     const result = f.runFunctional(event, { prompt: current, transcript_path: transcript }, observed.env);
     expect(result.exitCode, result.stderr.toString()).toBe(0);
-    const rows = f.rows(), selected = rows.filter(row => row.excerpt.startsWith("interleave backlog ") || row.excerpt === current || row.excerpt === summary.recap || row.excerpt === summary.compact);
-    // This fails the old drain-first/deferred-scan path: staging a new summary
-    // after the only drain is not sufficient to satisfy the freshness contract.
-    expect(selected.map(row => row.excerpt)).toEqual([...accepted, current, summary.recap, summary.compact]);
-    expect(new Set(selected.map(row => `${row.event}:${row.excerpt}`)).size).toBe(selected.length);
+    const rows = f.rows(), metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    const reads = observed.reads(), held = pending(f);
+    // Preserve FIRST-hook evidence before the unconditional protocol continuation, including on a failing assertion.
+    if (process.env.AMEM_INTERLEAVE_DIAGNOSTIC_DIR) {
+      saveInterleaveDiagnostic(f, event, transcript, observed.phaseTrace, reads); diagnosticSaved = true;
+    }
+    const cursor = cursorPosition(f), compact = rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact);
     expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
-    expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
-    expect(pending(f).filter(row => selected.some(saved => row.event === saved.event && row.excerpt === saved.excerpt))).toHaveLength(0);
-    const reads = observed.reads(); bounded(reads);
-    expect(reads.map(row => row.excerpt)).toEqual(selected.map(row => row.excerpt));
-    const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
-    expect(metric.drained).toBe(selected.length); expect(metric.transcriptOffset).toBeGreaterThan(0); expect(metric.captureDrops).toBeUndefined();
-  } finally { f.close(); }
+    expect(compact.length).toBeLessThanOrEqual(1);
+    if (compact.length === 0) {
+      // #327: awaited replay counts against the unchanged 60 ms scan clock. Only a positively observed,
+      // unscanned tail may defer; a staged-but-unpublished summary with this spare replay quota still fails.
+      expect(cursor).toEqual({ offset: recapEnd, size: source.length });
+      expect(metric.transcriptStopReason).toBe("deadline");
+      expect(held.some(row => row.event === "Compact")).toBe(false);
+    } else expect(cursor).toEqual({ offset: source.length, size: source.length });
+    expect(metric.transcriptOffset).toBe(cursor.offset);
+    expect(readFileSync(transcript)).toEqual(source);
+    const selected = rows.filter(row => row.excerpt.startsWith("interleave backlog ") || row.excerpt === current || row.excerpt === summary.recap || row.excerpt === summary.compact);
+    expect(selected.map(row => row.excerpt)).toEqual([...accepted, current, summary.recap, ...(compact.length ? [summary.compact] : [])]);
+    expect(new Set(selected.map(row => `${row.event}:${row.excerpt}`)).size).toBe(selected.length);
+    expect(held.filter(row => selected.some(saved => row.event === saved.event && row.excerpt === saved.excerpt))).toHaveLength(0);
+    bounded(reads); expect(reads.map(row => row.excerpt)).toEqual(selected.map(row => row.excerpt));
+    expect(metric.drained).toBe(selected.length); expect(metric.captureDrops).toBeUndefined();
+    console.log(JSON.stringify({ diagnostic: "interleave-first-hook", event, cursor: cursor.offset, bytes: source.length,
+      stopReason: metric.transcriptStopReason ?? null, compactScanned: compact.length === 1, drained: metric.drained }));
+    // Model this SAME session resuming, with unchanged transcript_path and session_id (fixture default p3-fixture),
+    // including after EOF. Production does not guarantee another hook after a non-resumed SessionEnd;
+    // that deferred tail remains uncaptured (#344). This separate protocol phase never retries a failing invocation:
+    // its fresh replay allowance must finish the retained tail without duplicating rows.
+    observed.clear();
+    const next = f.runFunctional(event, { prompt: `${current} continuation`, transcript_path: transcript }, observed.env);
+    expect(next.exitCode, next.stderr.toString()).toBe(0); bounded(observed.reads());
+    const finished = f.rows();
+    for (const excerpt of [...accepted, current, summary.recap, summary.compact]) expect(finished.filter(row => row.excerpt === excerpt)).toHaveLength(1);
+    expect(cursorPosition(f)).toEqual({ offset: source.length, size: source.length });
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+    expect(readFileSync(transcript)).toEqual(source);
+    expect(readMetrics(f.base).some(row => row.captureDrops !== undefined)).toBe(false);
+  } finally {
+    try { if (process.env.AMEM_INTERLEAVE_DIAGNOSTIC_DIR && !diagnosticSaved) saveInterleaveDiagnostic(f, event, transcript, observed.phaseTrace, observed.reads()); }
+    finally { f.close(); }
+  }
+});
+
+test("an awaited publication that exhausts the scan window retains the Compact tail for a separate hook", async () => {
+  const f = hookFixture(), transcript = join(f.root, "bounded-scan.jsonl"), summary = summaries(transcript), previousHome = process.env.HOME;
+  const source = readFileSync(transcript), recapEnd = source.indexOf(10) + 1;
+  let store: CaptureStore | undefined;
+  try {
+    await f.seed(); process.env.HOME = f.env.HOME;
+    store = new CaptureStore({ memoryDir: f.base, project: f.project });
+    const { scanHookTranscriptTail } = await import("../src/hook-transcript.ts");
+    const deadline = performance.now() + 2000, replayBudget = hookReplayBudget();
+    const first = await scanHookTranscriptTail({ cwd: f.cwd, session_id: "p3-fixture", transcript_path: transcript }, {
+      cwd: f.cwd, base: f.base, workBudgetMs: 60, deadline,
+      onPublication: async () => {
+        await drainHookCaptures({ cwd: f.cwd, base: f.base, project: f.project, replayBudget, timeRemaining: () => deadline - performance.now() },
+          (input, receipt) => store!.append(input, { receipt }));
+        // Functional delay control, not a native/R2 sample or a change to any product limit.
+        await Bun.sleep(65);
+      },
+    });
+    store.close(); store = undefined;
+    expect(first).toEqual({ offset: recapEnd, stopReason: "deadline" });
+    expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
+    expect(f.rows().filter(row => row.excerpt === summary.recap)).toHaveLength(1);
+    expect(f.rows().filter(row => row.excerpt === summary.compact)).toHaveLength(0);
+    expect(pending(f).some(row => row.event === "Compact")).toBe(false);
+    expect(readFileSync(transcript)).toEqual(source);
+    const next = f.runFunctional("Stop", { transcript_path: transcript });
+    expect(next.exitCode, next.stderr.toString()).toBe(0);
+    for (const excerpt of [summary.recap, summary.compact]) expect(f.rows().filter(row => row.excerpt === excerpt)).toHaveLength(1);
+    expect(cursorPosition(f)).toEqual({ offset: source.length, size: source.length });
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+  } finally {
+    store?.close(); if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; f.close();
+  }
 });
 
 test("repeated publication callbacks share one 32-file replay allowance and resume all accepted backlog without duplicates", async () => {
