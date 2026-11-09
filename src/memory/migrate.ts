@@ -6,7 +6,6 @@ import { acquireMutation } from "./mutation.ts";
 import { canonicalPath, realPath } from "./platform.ts";
 import { canonicalJSON, fsyncDirectory, generationDescriptor, generationDir, hashJSON, readProfileJSON, readSelector, resolveProfile, validGeneration, withProfileLock, writeProfileJSON, type BoundProfile } from "./generation.ts";
 import { invalidateCuratedCaches } from "./curated-cache-state.ts";
-import { rebuildCuratedCachesAfterProfileChange } from "./curated-cache-maintenance.ts";
 import { label, PLAIN, singleLine, type Style } from "./style.ts";
 
 export interface SourcePrefix extends LegacyCheckpoint { tailBytes: number }
@@ -121,7 +120,6 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
   if (options.mode === "dry-run") {
     return { mode: options.mode, profile: initial, counts: await counts(memoryDir, options.generation ?? initial.generation, (options.now ?? Date.now)()), consequence };
   }
-  let previousProjects: string[] | undefined;
   const result = await withProfileLock(memoryDir, async () => {
     refuseShardSelection(memoryDir);
     const selected = readSelector(memoryDir);
@@ -139,7 +137,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
             if (!unavailable && !releaseGeneration) throw new Error("generation mutation lock is busy");
           }
           if (readSelector(memoryDir).revision !== initial.selectorRevision) return changed();
-          previousProjects = invalidateCuratedCaches(memoryDir);
+          invalidateCuratedCaches(memoryDir);
           writeProfileJSON(join(memoryDir, "profile.json"), { schema: "agent-mem.profile/v1", kind: "shared-v1" });
         }
         return { mode: options.mode, profile: resolveProfile(memoryDir), consequence };
@@ -221,14 +219,15 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
       if (options.checkpoint) await options.checkpoint("before-selector");
       if (readSelector(memoryDir).revision !== journal.selectorRevision) return changed();
       verifySources(memoryDir, journal.generation, journal.sources, journal.legacyCommit);
-      previousProjects = invalidateCuratedCaches(memoryDir);
+      invalidateCuratedCaches(memoryDir);
       writeProfileJSON(join(memoryDir, "profile.json"), { schema: "agent-mem.profile/v1", kind: "generation", generation: journal.generation });
       if (options.checkpoint) await options.checkpoint("after-selector");
       journal.phase = "active"; rememberJournal(memoryDir, journal);
       return { mode: options.mode, profile: resolveProfile(memoryDir), counts: await counts(memoryDir, journal.generation, (options.now ?? Date.now)(), journal.sources, journal.legacyCommit), consequence };
     } finally { releaseGeneration(); }
   });
-  if (previousProjects) await rebuildCuratedCachesAfterProfileChange(memoryDir, previousProjects);
+  // ponytail: profile transitions leave caches missing until the next ordinary off-hook trigger.
+  // Upgrade with a snapshot builder that never reopens legacy SQLite or live alias reader leases.
   return result;
 }
 

@@ -105,7 +105,6 @@ function proofs(intent: AdvanceIntent): (()=>void)[] {
 }
 function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefined, checkpoint?: PublicPruneAdvanceOptions["checkpoint"]): Promise<PublicPruneAdvanceResult> {
   const checks=proofs(intent), releases:MutationHandle[]=[];
-  let previousProjects: string[] | undefined;
   const work=()=>{
     const dirs=[intent.home,...intent.bindings.map(item=>item.dir)].sort();
     const handles=provided??dirs.map(dir=>{const lease=acquireMutation(dir);guard(lease);releases.push(lease);return lease;});
@@ -122,7 +121,7 @@ function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefine
       if(profile===intent.finalProfile&&shards===intent.finalShards&&!lstatSync(file,{throwIfNoEntry:false}))return{revision:intent.finalProfileHash,viewHash};
       immutable(join(intent.home,"public-prune-input-sets",viewHash+".json"),canonicalJSON(intent.view)+"\n");
       immutable(file,text);yield "after-intent";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);
-      previousProjects=invalidateCuratedCaches(intent.home);
+      invalidateCuratedCaches(intent.home);
       if(shards!==intent.finalShards)replace(join(intent.home,"shards.json"),intent.finalShards);shards=intent.finalShards;
       yield "after-shards";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);
       if(profile!==intent.finalProfile)replace(join(intent.home,"profile.json"),intent.finalProfile);profile=intent.finalProfile;
@@ -133,11 +132,7 @@ function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefine
     if(checkpoint)return(async()=>{const iterator=stages();for(;;){const next=iterator.next();if(next.done)return next.value;await checkpoint(next.value);}})();
     const iterator=stages();for(;;){const next=iterator.next();if(next.done)return next.value;}
   };
-  return withProfileLock(intent.home,work).finally(()=>{for(const release of releases.reverse())release();}).then(async result=>{
-    // External sync handles remain owned by the caller; its deferred publisher runs after their release.
-    if(!provided&&previousProjects)try{await(await import("./curated-cache-maintenance.ts")).rebuildCuratedCachesAfterProfileChange(intent.home,previousProjects);}catch{/* Never fail a committed selector update over derived data. */}
-    return result;
-  });
+  return withProfileLock(intent.home,work).finally(()=>{for(const release of releases.reverse())release();});
 }
 export async function advancePublicPruneView(options: PublicPruneAdvanceOptions):Promise<PublicPruneAdvanceResult>{
   const home=realPath(options.memoryDir),root=owned(home,true),selection=readSelector(home),profile=selection.selector;

@@ -40,7 +40,7 @@ function sourceSegmentBytes(base: string): Record<string, string> {
 
 const authorized = { authorizedPerson: true, tty: true } as const;
 
-test("generation activation and deactivation invalidate then rebuild the selected curated cache", async () => {
+test("generation profile changes leave caches missing until explicit off-hook preparation", async () => {
   const f = fixture();
   seed(f.home, f.project, "project", "legacy curated source");
   const legacyBinding = curatedProfileBinding(f.base, f.project);
@@ -49,6 +49,8 @@ test("generation activation and deactivation invalidate then rebuild the selecte
   await migrate({ memoryDir: f.base, mode: "apply", generation: "a".repeat(32), ...authorized });
   const activeBinding = curatedProfileBinding(f.base, f.project);
   expect(activeBinding).not.toBe(legacyBinding);
+  expect(f.cache()).toBeUndefined();
+  prepareCuratedBriefCache(f.base, f.project);
   expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
   expect(f.cache()?.curated?.binding).toBe(activeBinding);
   expect(f.texts()).toContain("legacy curated source");
@@ -63,11 +65,13 @@ test("generation activation and deactivation invalidate then rebuild the selecte
   await migrate({ memoryDir: f.base, mode: "deactivate", ...authorized });
   const deactivatedBinding = curatedProfileBinding(f.base, f.project);
   expect(deactivatedBinding).not.toBe(activeBinding);
+  expect(f.cache()).toBeUndefined();
+  prepareCuratedBriefCache(f.base, f.project);
   expect(f.cache()?.curated?.binding).toBe(deactivatedBinding);
   expect(f.texts()).toEqual(["legacy curated source"]);
 });
 
-test("shard migration rebuilds the cache from active project data including shared user data", async () => {
+test("shard migration leaves caches missing until explicit project preparation", async () => {
   const f = fixture();
   seed(f.home, f.project, "project", "legacy project source");
   seed(f.home, f.project, "shared", "legacy shared source");
@@ -77,6 +81,8 @@ test("shard migration rebuilds the cache from active project data including shar
   await migrateShards({ memoryDir: f.base, mode: "apply", ...authorized });
   const selectedBinding = curatedProfileBinding(f.base, f.project);
   expect(selectedBinding).not.toBe(oldBinding);
+  expect(f.cache()).toBeUndefined();
+  prepareCuratedBriefCache(f.base, f.project);
   expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
   expect(f.cache()?.curated?.binding).toBe(selectedBinding);
   expect(f.texts()).toEqual(expect.arrayContaining(["legacy project source", "legacy shared source"]));

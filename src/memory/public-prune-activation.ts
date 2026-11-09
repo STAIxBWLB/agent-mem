@@ -225,7 +225,6 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
     }
     return { mode: options.mode, generation: intent.generation, active: true, ...(alreadyActive ? {alreadyActive:true} : {}), realms: intent.realms.length, viewHash: publicPruneViewHash(intent.view), maskBuildCheck: "verified" };
   }
-  let previousProjects: string[] | undefined;
   const result = await withProfileLock<PublicPruneActivationResult>(home, async () => {
     const releases: (() => void)[] = [];
     try {
@@ -251,7 +250,7 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
       if (!pending && profile === intent.finalProfile && shards === intent.finalShards) return { mode: options.mode, generation: intent.generation, active: true, alreadyActive: true, realms: intent.realms.length, viewHash, maskBuildCheck: "verified" };
       writeImmutableActivationMetadata(intentFile, canonicalJSON(intent) + "\n");
       await options.checkpoint?.("after-intent"); verify(intent, profile, shards);
-      previousProjects = invalidateCuratedCaches(home);
+      invalidateCuratedCaches(home);
       if (shards !== intent.finalShards) { writeProfileJSON(join(home, "shards.json"), JSON.parse(intent.finalShards)); shards = intent.finalShards; }
       await options.checkpoint?.("after-shards"); verify(intent, profile, shards);
       if (profile !== intent.finalProfile) { writeProfileJSON(join(home, "profile.json"), JSON.parse(intent.finalProfile)); profile = intent.finalProfile; }
@@ -261,9 +260,5 @@ export async function activatePublicPruneView(options: PublicPruneActivationOpti
       return { mode: options.mode, generation: intent.generation, active: true, realms: intent.realms.length, viewHash, maskBuildCheck: "verified" };
     } finally { for (const release of releases.reverse()) release(); }
   });
-  if (previousProjects) {
-    try { await (await import("./curated-cache-maintenance.ts")).rebuildCuratedCachesAfterProfileChange(home, previousProjects); }
-    catch { /* Derived cache work never changes a committed activation result. */ }
-  }
   return result;
 }
