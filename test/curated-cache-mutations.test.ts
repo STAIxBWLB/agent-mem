@@ -109,7 +109,7 @@ test("alias binding drift after cache view open leaves the invalidated cache mis
         injected = true;
         appendAlias(f.base, { alias, key: f.project, actor: "person", machine: machineId(f.base).id });
       }
-      return original.call(this, work);
+      return original.call(this, work) as T;
     };
 
     f.store.note(note("must not publish under the new alias binding"));
