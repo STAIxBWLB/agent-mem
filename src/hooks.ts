@@ -1,3 +1,4 @@
+import { types } from "node:util";
 import { readRecordInstruction } from "./memory/record-instruction.ts";
 import { homedir } from "node:os";
 import { RECORD_INSTRUCTION_BYTES, RECORD_INSTRUCTIONS, recordInstructionVariant } from "./hook-record.ts";
@@ -69,17 +70,30 @@ function instructionCost(context: string): { recordInstructionBytes: number; rec
   return { recordInstructionBytes: bytes, recordInstructionEstimatedTokens: Math.ceil(bytes / 4), ...(instruction ? { recordVariant: instruction === RECORD_INSTRUCTIONS.a ? "a" as const : "b" as const } : {}) };
 }
 
+/** Metadata inspection never invokes payload getters or Proxy traps. */
+function metricInputString(input: unknown, key: "source" | "session_id"): string | undefined {
+  if (!input || typeof input !== "object" || types.isProxy(input)) return;
+  try {
+    const field = Object.getOwnPropertyDescriptor(input, key);
+    return field && "value" in field && typeof field.value === "string" ? field.value : undefined;
+  } catch { return; }
+}
+
+/** Invocation units remain observable even when policy or a deadline declines optional work. */
+function recordMetricUnits(event: string, input: unknown): RecordVariantMetric {
+  if (event === "Stop" || event === "SessionEnd") return { recordTurns: Number(event === "Stop") };
+  return event === "SessionStart" ? { recordSessions: Number(metricInputString(input, "source") === "startup" || metricInputString(input, "source") === "resume"), recordBriefBytes: 0, recordInstructionEmitted: 0 } : {};
+}
+
 /** Numeric experiment units only. No raw payload, session id or Record text enters metrics. */
 function recordMetricIdentity(event: string, input: unknown, base: string, cwd: string): RecordVariantMetric {
-  if (!["SessionStart", "Stop", "SessionEnd"].includes(event) || !input || typeof input !== "object" || Array.isArray(input)) return {};
-  const value = input as { session_id?: unknown; source?: unknown };
+  const units = recordMetricUnits(event, input);
+  if (!["SessionStart", "Stop", "SessionEnd"].includes(event)) return units;
   try {
     const selection = readRecordInstruction(base);
-    return { recordVariant: recordInstructionVariant(selection.mode, captureSessionKey(value.session_id)), recordInstructionInvalid: Number(selection.invalid),
-      recordEnabled: Number(recordsEnabled(base, cwd)),
-      ...(event === "SessionStart" ? { recordSessions: Number(value.source === "startup" || value.source === "resume"), recordBriefBytes: 0, recordInstructionEmitted: 0 }
-        : { recordTurns: Number(event === "Stop") }) };
-  } catch { return {}; } // Telemetry cannot turn a successful hook into a refusal.
+    return { ...units, recordVariant: recordInstructionVariant(selection.mode, captureSessionKey(metricInputString(input, "session_id"))),
+      recordInstructionInvalid: Number(selection.invalid), recordEnabled: Number(recordsEnabled(base, cwd)) };
+  } catch { return units; } // Telemetry cannot turn a successful hook into a refusal.
 }
 function recordScanMetric(progress?: HookTranscriptProgress): RecordVariantMetric {
   return progress?.recordValidRecords === undefined ? {} : {
@@ -371,18 +385,19 @@ export async function runHook(event: string, input: unknown, options: HookOption
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
   let emittedCost = instructionCost("");
-  let recordMetric: RecordVariantMetric = {};
+  let recordMetric: RecordVariantMetric = recordMetricUnits(event, input);
   try {
     base = canonicalPath(options.base ?? memoryHome());
     if (!(HOOK_EVENTS as readonly string[]).includes(event)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     const policy = createStandalonePolicy(configuredPolicyOptions(base, options.cwd, options.policy));
     // Persist screened capture before the optional worker can exhaust its time slice.
     const result = await captureAndWork(event, input, options, base, deadline - 3);
+    recordMetric = { ...recordMetric, ...recordMetricIdentity(event, input, base, options.cwd) };
     if (!result) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     captured = result.captured; pending = result.pending; dropped = "dropped" in result && result.dropped === true;
     childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources();
     transcriptProgress = "transcript" in result ? result.transcript : undefined;
-    recordMetric = { ...recordMetricIdentity(event, input, base, options.cwd), ...recordScanMetric(transcriptProgress) };
+    recordMetric = { ...recordMetric, ...recordScanMetric(transcriptProgress) };
     if (!result.valid) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: true };
     if (event !== "SessionStart") return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
     if (!await publicBefore(policy, { context: result.context }, deadline)) return { captured, ...(pending ? { pending: true as const } : {}), ...(dropped ? { dropped: true as const, dropReason: "spool_full" as const, dropCount: 1 } : {}), skipped: false };
@@ -406,7 +421,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
   let emittedCost = instructionCost("");
-  let recordMetric: RecordVariantMetric = {};
+  let recordMetric: RecordVariantMetric = recordMetricUnits(args[0] ?? "", undefined);
   try {
     if (args.length !== 1) return "";
     if (args[0] === "jcode") {
@@ -438,11 +453,13 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
     if ((HOOK_EVENTS as readonly string[]).includes(args[0]!)) {
       const base = canonicalPath(memoryHome());
+      recordMetric = recordMetricUnits(args[0]!, input);
       const result = await captureAndWork(args[0]!, input, { cwd: process.cwd() }, base, startedAt + deadlineMs - 3);
+      recordMetric = { ...recordMetric, ...recordMetricIdentity(args[0]!, input, base, process.cwd()) };
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
       transcriptProgress = "transcript" in result ? result.transcript : undefined;
-      recordMetric = { ...recordMetricIdentity(args[0]!, input, base, process.cwd()), ...recordScanMetric(transcriptProgress) };
+      recordMetric = { ...recordMetric, ...recordScanMetric(transcriptProgress) };
       if (!result.valid || args[0] !== "SessionStart") return "";
       emittedCost = instructionCost(result.context);
       recordMetric = { ...recordMetric, recordBriefBytes: Buffer.byteLength(result.context), recordInstructionEmitted: Number(emittedCost.recordInstructionBytes > 0) };

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 import { deriveRecordQuestion, fixtureRecord, variantRecordLine } from "../scripts/record-variant-fixture.ts";
 import { parseRecordLines } from "../src/hook-record.ts";
@@ -69,4 +73,30 @@ test("A and B lines are deterministic, preserve record identity, and fit the B p
   expect(bOdd).toBe(`${a.slice(0, textStart)}? ${a.slice(textStart)}; basis:test`);
   expect(Array.from(bOdd).length).toBeLessThanOrEqual(300);
   expect(parseRecordLines(bOdd).records).toHaveLength(1);
+});
+
+
+test("streaming derivation pins source/output provenance and never overwrites earlier artifacts", () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-derived-fixture-"));
+  try {
+    const input = join(import.meta.dir, "fakes/longmemeval-three.json"), output = join(root, "derived.json"), provenance = join(root, "provenance.json");
+    const script = resolve(import.meta.dir, "../scripts/record-variant-fixture.ts");
+    const command = [process.execPath, script, "--input", input, "--output", output, "--provenance", provenance];
+    const original = readFileSync(input);
+    const first = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(first.exitCode, first.stderr.toString()).toBe(0);
+    const derived = readFileSync(output), proof = JSON.parse(readFileSync(provenance, "utf8"));
+    expect(proof).toMatchObject({ source: { sha256: createHash("sha256").update(original).digest("hex"), bytes: original.length },
+      derived: { sha256: createHash("sha256").update(derived).digest("hex"), bytes: derived.length }, counts: { questions: 3, records: 3 } });
+    expect(statSync(output).mode & 0o077).toBe(0);
+    expect(statSync(provenance).mode & 0o077).toBe(0);
+    expect(readFileSync(input)).toEqual(original);
+    const beforeProof = readFileSync(provenance);
+    const second = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    expect(second.exitCode).not.toBe(0);
+    expect(second.stderr.toString()).toContain("nextstep:");
+    expect(second.stderr.toString()).not.toContain(root);
+    expect(readFileSync(output)).toEqual(derived);
+    expect(readFileSync(provenance)).toEqual(beforeProof);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

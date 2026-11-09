@@ -60,3 +60,25 @@ test("missing scan counts remain unknown while every accepted Stop is still a tu
   expect(sample.recordValidRecords).toBeUndefined();
   expect(sample.recordTurnsWithRecords).toBeUndefined();
 });
+
+
+test("policy-declined hook invocations retain units without fabricating parsed counts", async () => {
+  const f = fixture("b"), options = { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => false } } };
+  await runHook("Stop", { session_id: "declined" }, options, { deadlineMs: 2000 });
+  const stop = readMetrics(f.base).at(-1)!;
+  expect(stop).toMatchObject({ recordVariant: "b", recordTurns: 1 });
+  expect(stop.recordValidRecords).toBeUndefined();
+  await runHook("SessionStart", { source: "resume", session_id: "declined" }, options, { deadlineMs: 2000 });
+  expect(readMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "b", recordSessions: 1, recordInstructionEmitted: 0, recordBriefBytes: 0 });
+});
+
+
+test("metric metadata cannot invoke getters on a refused payload", async () => {
+  const f = fixture("a"); let reads = 0;
+  const input = Object.defineProperties({}, {
+    source: { enumerable: true, get() { reads++; throw Error("source getter must not run"); } },
+    session_id: { enumerable: true, get() { reads++; throw Error("identity getter must not run"); } },
+  });
+  await runHook("SessionStart", input, { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => false } } }, { deadlineMs: 2000 });
+  expect(reads).toBe(0);
+});

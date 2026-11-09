@@ -63,10 +63,10 @@ function args(argv: string[]): { input: string; output: string; provenance: stri
   const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i], value = argv[i + 1];
-    if (!["--input", "--output", "--provenance"].includes(key ?? "") || !value || value.startsWith("--") || values.has(key!)) throw new Error("expected --input FILE --output FILE --provenance FILE");
+    if (!["--input", "--output", "--provenance"].includes(key ?? "") || !value || value.startsWith("--") || values.has(key!)) throw Object.assign(new Error("invalid fixture arguments"), { causeClass: "arguments" });
     values.set(key!, value);
   }
-  if (values.size !== 3) throw new Error("expected --input FILE --output FILE --provenance FILE");
+  if (values.size !== 3) throw Object.assign(new Error("invalid fixture arguments"), { causeClass: "arguments" });
   return { input: values.get("--input")!, output: values.get("--output")!, provenance: values.get("--provenance")! };
 }
 
@@ -128,8 +128,9 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) main().catch(error => {
-  const cause = error && typeof error === "object" && "causeClass" in error ? "source_changed" : error instanceof Error && error.message.includes("LongMemEval input:") ? "invalid_input" : error instanceof Error && /EEXIST|EACCES|ENOENT/.test(error.message) ? "file_io" : "fixture_derivation";
-  const next = cause === "source_changed" ? "verify the input stayed unchanged, then retry" : cause === "invalid_input" ? "verify the input is a valid LongMemEval JSON array" : cause === "file_io" ? "check file paths and output permissions" : "inspect the fixture derivation contract and input eligibility";
+  const tagged = error && typeof error === "object" && "causeClass" in error ? error.causeClass : undefined;
+  const cause = tagged === "source_changed" || tagged === "arguments" ? tagged : error instanceof Error && error.message.includes("LongMemEval input:") ? "invalid_input" : error instanceof Error && /EEXIST|EACCES|ENOENT/.test(error.message) ? "file_io" : "fixture_derivation";
+  const next = cause === "arguments" ? "use --input FILE --output FILE --provenance FILE with unused output names" : cause === "source_changed" ? "verify the input stayed unchanged, then retry" : cause === "invalid_input" ? "verify the input is a valid LongMemEval JSON array" : cause === "file_io" ? "check file paths and output permissions" : "inspect the fixture derivation contract and input eligibility";
   process.stderr.write(`record variant fixture failed; cause: ${cause}; nextstep: ${next}\n`);
   process.exitCode = 1;
 });
