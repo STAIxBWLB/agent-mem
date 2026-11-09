@@ -46,12 +46,15 @@ test("private cache preserves library summary display and native reads no captur
 test("capture is preloaded before slow work spends the deadline, with output order preserved", async () => {
   const f = await fixture(), work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
   await work.write("queue", { task: "slow-work", status: "doing" }); work.close();
-  let remaining = 70, reached = false;
+  let remaining = 70, reached = false, captureScreenedBeforeWork = false;
   const native = await sessionStartBrief({ ...f.options, timeRemaining: () => remaining, policy: { host: { screen: async value => {
-    if (JSON.stringify(value).includes("slow-work")) { reached = true; remaining = -1; }
+    const text = JSON.stringify(value);
+    if (text.includes("previous recap") && !reached) captureScreenedBeforeWork = true;
+    if (text.includes("slow-work")) { reached = true; remaining = -1; }
     return true;
   } } } });
   expect(reached).toBe(true);
+  expect(captureScreenedBeforeWork).toBe(true);
   expect(native.context).toContain("previous recap");
   expect(native.context.indexOf('"section":"work"')).toBeLessThan(native.context.indexOf('"section":"capture"'));
 });
