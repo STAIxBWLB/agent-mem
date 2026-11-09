@@ -178,7 +178,7 @@ async function main() {
     const before = await projectBytes(baseline, raw, scratch, project), after = await projectBytes(candidate, recorded, scratch, project);
     const unchanged = await projectBytes(candidate, raw, scratch, project);
     // Both variants project the same isolated data; no real or copied home is modified.
-    writeFileSync(join(recorded, "amem.config.json"), JSON.stringify({ records: { instruction: "b" } }), { mode: 0o600 });
+    writeFileSync(join(recorded, "record-instruction.json"), JSON.stringify({ instruction: "b" }), { mode: 0o600 });
     const variantB = await projectBytes(candidate, recorded, scratch, project);
     const variants = { a: after, b: variantB, bytesDelta: variantB.totalBytes - after.totalBytes,
       sameData: variantB.dataBytes === after.dataBytes && JSON.stringify(variantB.sections) === JSON.stringify(after.sections)

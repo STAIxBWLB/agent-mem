@@ -85,3 +85,4 @@ export { createPlacementAttestation, PlacementWriterContextError } from "./sync-
 export type { PlacementWriterRootCategory, PlacementWriterContextPhase } from "./sync-placement-writer-context.ts";
 
 export { captureSessionKey } from "./memory/capture-input.ts";
+export { readRecordInstruction, RECORD_INSTRUCTION_FILE } from "./memory/record-instruction.ts";

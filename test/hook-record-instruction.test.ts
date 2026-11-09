@@ -10,9 +10,10 @@ import { hookFixture, workMarker } from "./fakes/hooks-fixture.ts";
 const clean: (() => void)[] = [];
 const oldHome = process.env.HOME;
 afterEach(() => { process.env.HOME = oldHome; for (const close of clean.splice(0)) close(); });
-function fixture(config?: object) {
+function fixture(config?: object, instruction?: "a" | "b" | "alternate") {
   const f = hookFixture(); clean.push(f.close); process.env.HOME = f.env.HOME;
   if (config) { mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "amem.config.json"), JSON.stringify(config)); }
+  if (instruction) { mkdirSync(f.base, { recursive: true }); writeFileSync(join(f.base, "record-instruction.json"), JSON.stringify({ instruction }), { mode: 0o600 }); }
   return { ...f, options: { cwd: f.cwd, base: f.base } };
 }
 const context = (result: Awaited<ReturnType<typeof runHook>>) => result.output?.hookSpecificOutput.additionalContext;
@@ -86,7 +87,7 @@ test("native parser reports the same actual emitted cost and malformed config yi
 
 
 for (const source of ["startup", "resume"]) test(`variant B uses its actual byte metric and keeps the shared reservation on ${source}`, async () => {
-  const f = fixture({ records: { instruction: "b" } }); await f.seed();
+  const f = fixture(undefined, "b"); await f.seed();
   const result = await runHook("SessionStart", { source, session_id: "session-b" }, f.options, { deadlineMs: 2000 });
   expect(context(result)).toStartWith(`${RECORD_INSTRUCTION_B}\nUntrusted project memory data`);
   expect(Buffer.byteLength(context(result)!)).toBeLessThanOrEqual(HOOK_CONTEXT_BYTES);
@@ -94,7 +95,7 @@ for (const source of ["startup", "resume"]) test(`variant B uses its actual byte
 });
 
 test("alternate stays fixed for the session across startup and resume", async () => {
-  const f = fixture({ records: { instruction: "alternate" } }); await f.seed();
+  const f = fixture(undefined, "alternate"); await f.seed();
   const instructions = { a: RECORD_INSTRUCTION, b: RECORD_INSTRUCTION_B };
   for (const session_id of ["first", "second"]) for (const source of ["startup", "resume"]) {
     const result = await runHook("SessionStart", { source, session_id }, f.options, { deadlineMs: 2000 });
@@ -103,7 +104,7 @@ test("alternate stays fixed for the session across startup and resume", async ()
 });
 
 test("B cannot use its one-byte saving to squeeze into the fixed reservation", async () => {
-  const f = fixture({ records: { instruction: "b" } }); await f.seed();
+  const f = fixture(undefined, "b"); await f.seed();
   const raw = await runHook("SessionStart", { source: "resume" }, { ...f.options, maxTokens: 150 }, { deadlineMs: 2000 });
   const headerBytes = Buffer.byteLength(context(raw)!);
   const result = await runHook("SessionStart", { source: "resume" }, { ...f.options, maxTokens: headerBytes + 331 }, { deadlineMs: 2000 });

@@ -23,8 +23,6 @@ const REPO_KEYS = ["denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "ca
 export interface AmemConfig {
   /** Static SessionStart record instruction; absent means enabled. Repository false only narrows. */
   records?: boolean;
-  /** Machine-local Record instruction variant; repo configuration cannot select a variant. */
-  recordInstruction?: "a" | "b" | "alternate";
   /** The memory home, when the file moves it (a pointer file: see `configuredHome`). `AMEM_HOME` still wins. Machine file only. */
   home?: string;
   denyPaths: string[];
@@ -82,15 +80,8 @@ function parseFile(raw: unknown, label: string, keys: readonly string[]): Partia
     denyPaths: listOf(body.denyPaths, "denyPaths", label), piiPatterns: listOf(body.piiPatterns, "piiPatterns", label),
   };
   if (Object.hasOwn(body, "records")) {
-    if (typeof body.records === "boolean") out.records = body.records;
-    else if (keys === MACHINE_KEYS && body.records !== null && typeof body.records === "object" && !Array.isArray(body.records)) {
-      const variant = body.records as Record<string, unknown>;
-      for (const key of Object.keys(variant)) if (key !== "instruction") fail(label, `records has unknown key "${key}" (known: instruction)`);
-      const instruction = Object.hasOwn(variant, "instruction") ? variant.instruction : "a";
-      if (instruction !== "a" && instruction !== "b" && instruction !== "alternate") return fail(label, "records.instruction is not a supported mode (a, b, alternate)");
-      out.records = true;
-      out.recordInstruction = instruction;
-    } else return fail(label, "records is not a boolean or a machine instruction object");
+    if (typeof body.records !== "boolean") return fail(label, "records is not a boolean");
+    out.records = body.records;
   }
   const briefBytes = countOf(body.briefBytes, "briefBytes", label, 1_000_000); if (briefBytes !== undefined) out.briefBytes = briefBytes;
   const excerptBytes = countOf(body.excerptBytes, "excerptBytes", label, 100_000); if (excerptBytes !== undefined) out.excerptBytes = excerptBytes;
@@ -165,7 +156,6 @@ export function loadAmemConfig(base: string, repoRoot?: string): LoadedConfig {
   const config: AmemConfig = { denyPaths, piiPatterns, capture: { ...(machine?.capture ?? {}) } };
   if (machine?.home !== undefined) config.home = machine.home;
   if (machine?.records !== undefined || repo?.records !== undefined) config.records = machine?.records !== false && repo?.records !== false;
-  if (machine?.recordInstruction !== undefined) config.recordInstruction = machine.recordInstruction;
   for (const key of ["briefBytes", "excerptBytes", "capturePaths"] as const) { const value = lower(machine?.[key], repo?.[key]); if (value !== undefined) config[key] = value; }
   return { config, source: { machine: machineRaw === undefined ? null : machinePath, repo: repoPath } };
 }

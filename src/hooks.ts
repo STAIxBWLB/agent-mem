@@ -1,3 +1,4 @@
+import { readRecordInstruction } from "./memory/record-instruction.ts";
 import { homedir } from "node:os";
 import { RECORD_INSTRUCTION_BYTES, RECORD_INSTRUCTIONS, recordInstructionVariant } from "./hook-record.ts";
 import { captureSessionKey } from "./memory/capture-input.ts";
@@ -73,8 +74,8 @@ function recordMetricIdentity(event: string, input: unknown, base: string, cwd: 
   if (!["SessionStart", "Stop", "SessionEnd"].includes(event) || !input || typeof input !== "object" || Array.isArray(input)) return {};
   const value = input as { session_id?: unknown; source?: unknown };
   try {
-    const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
-    return { recordVariant: recordInstructionVariant(config.recordInstruction ?? "a", captureSessionKey(value.session_id)),
+    const selection = readRecordInstruction(base);
+    return { recordVariant: recordInstructionVariant(selection.mode, captureSessionKey(value.session_id)), recordInstructionInvalid: Number(selection.invalid),
       recordEnabled: Number(recordsEnabled(base, cwd)),
       ...(event === "SessionStart" ? { recordSessions: Number(value.source === "startup" || value.source === "resume"), recordBriefBytes: 0, recordInstructionEmitted: 0 }
         : { recordTurns: Number(event === "Stop") }) };
@@ -264,7 +265,7 @@ function sessionNoticeAndLimit(base: string, cwd: string, options: HookOptions, 
   const config = loadAmemConfig(base, repoConfigRoot(cwd)).config;
   const configuredBrief = config.briefBytes;
   const contextLimit = Math.min(HOOK_CONTEXT_BYTES, configuredBrief ?? HOOK_CONTEXT_BYTES, Math.max(1, Number.isFinite(options.maxTokens) ? Math.floor(options.maxTokens!) : HOOK_CONTEXT_BYTES));
-  const variant = recordInstructionVariant(config.recordInstruction ?? "a", captureSessionKey(sessionId));
+  const variant = recordInstructionVariant(readRecordInstruction(base).mode, captureSessionKey(sessionId));
   const prefix = `${RECORD_INSTRUCTIONS[variant]}\n`;
   const instruction = recordsEnabled(base, cwd) && RECORD_INSTRUCTION_BYTES + Buffer.byteLength(header) + Buffer.byteLength(dropNotice) + (dropNotice ? 1 : 0) <= contextLimit ? prefix : "";
   return { dropNotice, contextLimit: contextLimit - (instruction ? RECORD_INSTRUCTION_BYTES : 0), instruction };

@@ -11,7 +11,8 @@ const fixtures: ReturnType<typeof hookFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
 function fixture(mode: "a" | "b" | "alternate") {
   const f = hookFixture(); fixtures.push(f); mkdirSync(f.base, { recursive: true });
-  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: { instruction: mode } }));
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: true }));
+  writeFileSync(join(f.base, "record-instruction.json"), JSON.stringify({ instruction: mode }), { mode: 0o600 });
   return f;
 }
 for (const mode of ["a", "b", "alternate"] as const) test(`numeric ${mode} metrics use payload parity and count Stop separately from SessionEnd`, async () => {
@@ -38,7 +39,7 @@ test("native metrics count the emitted instruction and omitted tiny-budget expos
   const result = f.runFunctional("SessionStart", { source: "resume", session_id: "native-b" });
   const text = JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext;
   expect(readMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "b", recordSessions: 1, recordBriefBytes: Buffer.byteLength(text), recordInstructionEmitted: 1 });
-  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: { instruction: "b" }, briefBytes: 150 }));
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ records: true, briefBytes: 150 }));
   f.runFunctional("SessionStart", { source: "resume", session_id: "native-b" });
   expect(readMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "b", recordSessions: 1, recordInstructionEmitted: 0, recordInstructionBytes: 0 });
 });

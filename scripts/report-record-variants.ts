@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -14,7 +14,7 @@ const ratio = (numerator: number, denominator: number): number | null => denomin
 /** Aggregate only bounded numeric telemetry. Input rows and any text fields are never returned. */
 export function aggregateRecordVariants(samples: unknown[]) {
   const empty = () => ({
-    sessions: 0, disabledSessions: 0, instructionEmittedSessions: 0, turns: 0,
+    invalidInstructionSelections: 0, sessions: 0, disabledSessions: 0, instructionEmittedSessions: 0, turns: 0,
     observedTurns: 0, turnsWithRecords: 0, validRecords: 0, basisRecords: 0,
     unverifiedRecords: 0, briefBytes: 0, briefSamples: 0, incompleteRows: 0,
     sessionRows: 0, enabledRows: 0, instructionRows: 0, turnRows: 0,
@@ -41,6 +41,11 @@ export function aggregateRecordVariants(samples: unknown[]) {
       if (rowsKey) delta[rowsKey]++;
     };
     add("recordSessions", "sessions", "sessionRows");
+    if ("recordInstructionInvalid" in value) {
+      recognized = true;
+      if (!count(value.recordInstructionInvalid) || value.recordInstructionInvalid > 1) malformed = true;
+      else delta.invalidInstructionSelections += value.recordInstructionInvalid;
+    }
     if ("recordEnabled" in value) {
       recognized = true;
       if (!count(value.recordEnabled) || value.recordEnabled > 1) malformed = true;
@@ -101,6 +106,7 @@ export function aggregateRecordVariants(samples: unknown[]) {
     const x = totals[variant];
     const turnComplete = x.turnRows > 0 && x.turnCounterRows === x.turnRows && x.turnsWithRecordsRows === x.turnRows;
     return [variant, {
+      invalidInstructionSelections: x.invalidInstructionSelections,
       sessions: x.sessionRows ? x.sessions : null,
       recordsPerSession: x.recordRows && x.sessionRows ? ratio(x.validRecords, x.sessions) : null,
       turns: x.turnRows ? x.turns : null,
@@ -136,8 +142,10 @@ function readMetrics(file: string): unknown[] {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error("not-file");
     if (stat.size > MAX_BYTES) throw new Error("too-large");
-    const content = readFileSync(fd, "utf8");
-    if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("too-large");
+    const bytes = Buffer.alloc(MAX_BYTES + 1);
+    const length = readSync(fd, bytes, 0, bytes.length, 0);
+    if (length > MAX_BYTES) throw new Error("too-large");
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
     const rows: unknown[] = [];
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;

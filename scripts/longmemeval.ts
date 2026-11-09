@@ -1,4 +1,5 @@
 /** Retrieval only: no reader model, generated answer, judge, network call or runtime package dependency. */
+import { fixtureRecord, variantRecordLine } from "./record-variant-fixture.ts";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { aggregateMetrics, type Backend, type GoldEvidence, type QuestionRetriev
 import { hashLongMemEvalFile, parseBenchmarkDate, readLongMemEvalQuestions, validateQuestion, type LongMemEvalQuestion, type LongMemEvalTurn } from "./longmemeval-input.ts";
 
 const HERE = realPath(join(import.meta.dir, "..")), LIMIT = 50, DEFAULT_TIMEOUT = 30_000;
-const HARNESS_FILES = ["longmemeval.ts", "longmemeval-input.ts", "longmemeval-metrics.ts", "budget-rss.ts"];
+const HARNESS_FILES = ["longmemeval.ts", "longmemeval-input.ts", "longmemeval-metrics.ts", "budget-rss.ts", "record-variant-fixture.ts", "../src/hook-record.ts", "../src/memory/private-spans.ts", "../src/memory/screen.ts"];
 function harnessDigest(): string {
   const hash = createHash("sha256");
   for (const file of HARNESS_FILES) hash.update(file).update(readFileSync(join(HERE, "scripts", file)));
@@ -25,10 +26,11 @@ const code = (error: unknown): string => error instanceof Error ? error.message.
 const digest = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 
 export interface BenchmarkOptions {
-  input: string; output: string; sourceRoot?: string; questionTimeoutMs?: number; maxQuestions?: number; variant?: string; questionTypes?: readonly string[];
+  input: string; output: string; sourceRoot?: string; questionTimeoutMs?: number; maxQuestions?: number; variant?: string; questionTypes?: readonly string[]; recordVariant?: "a" | "b";
 }
 interface Runtime { root: string; commit: string; version: string }
 interface QuestionRun extends QuestionRetrieval {
+  recordFixture?: { variant: "a" | "b"; records: number; seedSha256: string; bm25Control: "canonical-a-projection" };
   upstreamNoUserTarget: boolean;
   status: "ok" | "partial" | "timeout" | "failed" | "abstention-excluded"; workerError?: string;
   wallMs: number; cleanupMs: number; workerPeakKB: number | null; workerPeakComplete: boolean; workerCheckpointPeakKB?: number; mcpPeakKB: number | null;
@@ -184,7 +186,7 @@ async function queryMcp(runtime: Runtime, home: string, base: string, cwd: strin
 }
 
 /** All stores are throwaway. Gold IDs/turn flags stay in this controller, never in indexed text. */
-export async function runQuestion(q: LongMemEvalQuestion, runtime: Runtime, home: string, checkpoint: (value: QuestionRun) => void = () => {}): Promise<QuestionRun> {
+export async function runQuestion(q: LongMemEvalQuestion, runtime: Runtime, home: string, checkpoint: (value: QuestionRun) => void = () => {}, recordVariant?: "a" | "b"): Promise<QuestionRun> {
   const result = baseResult(q), started = performance.now(), cwd = join(home, "project"), base = join(home, "memory");
   const clock = parseBenchmarkDate(q.question_date), dates = q.haystack_dates.map(parseBenchmarkDate);
   const retentionDays = Math.max(90, Math.ceil((clock - dates.reduce((minimum, at) => Math.min(minimum, at), clock)) / 86400_000) + 2);
@@ -204,18 +206,35 @@ export async function runQuestion(q: LongMemEvalQuestion, runtime: Runtime, home
   const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => clock });
   requireBench(store.readNow() === clock, "library clock mismatch");
   const capture = new CaptureStore({ memoryDir: base, project, cwd, now: () => clock, retentionDays, capMb: 512 });
-  const db = (capture as { db: Database }).db, databaseFile = join(capture.dir, "capture.db");
+  // The opt-in A/B fixture freezes plain BM25 to canonical A content on both arms.
+  // Real capture, library and MCP still receive the selected, separately hashed seed form.
+  const control = recordVariant ? new CaptureStore({ memoryDir: join(base, "bm25-control"), project, cwd, now: () => clock, retentionDays, capMb: 512 }) : undefined;
+  const seedHash = createHash("sha256"); let fixtureRecords = 0;
+  const db = (capture as { db: Database }).db, databaseFile = join(control?.dir ?? capture.dir, "capture.db");
   try {
     const seedStarted = performance.now();
+    const controlDb = control ? (control as { db: Database }).db : undefined;
+    controlDb?.run("BEGIN");
     db.transaction(() => {
       eachTurn(q, (turn, sessionIndex, ref) => {
-        const appended = capture.append({ project, agent: "longmemeval", event: turn.role, at: new Date(dates[sessionIndex]!).toISOString(),
-          excerpt: turn.content, paths: [] }, { receipt: digest([q.question_id, ref.sessionId, ref.turnIndex]) });
+        const record = recordVariant ? fixtureRecord(turn) : undefined;
+        const excerpt = record ? variantRecordLine(record, recordVariant!, fixtureRecords++) : turn.content;
+        const fields = { project, agent: "longmemeval", event: record ? "Record" : turn.role, at: new Date(dates[sessionIndex]!).toISOString(),
+          excerpt, paths: record?.anchors ?? [] };
+        const receipt = { receipt: digest([q.question_id, ref.sessionId, ref.turnIndex]) };
+        const appended = capture.append(fields, receipt);
+        if (control) {
+          const fixed = control.append({ ...fields, excerpt: turn.content }, receipt);
+          requireBench("id" in fixed && "id" in appended && fixed.id === appended.id, "fixture BM25 control lost row alignment; rebuild the isolated A/B fixture before rerunning");
+        }
+        if (recordVariant) seedHash.update(JSON.stringify({ ref, event: fields.event, paths: fields.paths, excerpt })).update("\n");
         requireBench("id" in appended && !appended.already, "capture unexpectedly spooled or duplicated");
-        refs.set(appended.id, ref); originals.set(appended.id, turn.content);
+        refs.set(appended.id, ref); originals.set(appended.id, excerpt);
         result.rows.input++; result.rows.overExcerptCap += Number(turn.content.length > 2000);
       });
     })();
+    controlDb?.run("COMMIT");
+    if (recordVariant) result.recordFixture = { variant: recordVariant, records: fixtureRecords, seedSha256: seedHash.digest("hex"), bm25Control: "canonical-a-projection" };
     result.rows.stored = capture.stats().rows;
     requireBench(result.rows.stored === result.rows.input, "capture retention or capacity removed benchmark turns");
     for (const row of db.query("SELECT id,excerpt FROM rows").iterate() as Iterable<{ id: number; excerpt: string }>) {
@@ -227,7 +246,7 @@ export async function runQuestion(q: LongMemEvalQuestion, runtime: Runtime, home
       result.rankings.library = mapped(captureIds(store.search(q.question, { project, includeCapture: true, limit: LIMIT }), project), refs);
     } catch (error) { result.errors!.library = code(error); }
     result.times.library = performance.now() - queryStarted; result.completedAt.library = performance.timeOrigin + performance.now(); checkpoint(result);
-  } finally { capture.close(); store.close(); }
+  } finally { control?.close(); capture.close(); store.close(); }
   const plainStarted = performance.now(), plain = new Database(databaseFile, { readonly: true });
   try {
     const terms = ftsTerms(q.question);
@@ -255,11 +274,11 @@ function members(pgid: number): number[] {
     const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line); return m && Number(m[2]) === pgid ? [Number(m[1])] : [];
   });
 }
-async function executeQuestion(q: LongMemEvalQuestion, runtime: Runtime, runRoot: string, timeoutMs: number): Promise<QuestionRun> {
+async function executeQuestion(q: LongMemEvalQuestion, runtime: Runtime, runRoot: string, timeoutMs: number, recordVariant?: "a" | "b"): Promise<QuestionRun> {
   const root = mkdtempSync(join(runRoot, "question-")), input = join(root, "question.json"), output = join(root, "result.json");
   const home = join(root, "home"); mkdirSync(home, { mode: 0o700 }); mkdirSync(join(home, "tmp"), { mode: 0o700 });
   const started = performance.now(), deadlineAt = performance.timeOrigin + started + timeoutMs; writeFileSync(input, JSON.stringify(q), { mode: 0o600 });
-  const child = Bun.spawn([process.execPath, "--smol", import.meta.filename, "--worker", input, output, runtime.root, runtime.commit, home, HARNESS_AT_LOAD],
+  const child = Bun.spawn([process.execPath, "--smol", import.meta.filename, "--worker", input, output, runtime.root, runtime.commit, home, HARNESS_AT_LOAD, recordVariant ?? "off"],
     { cwd: root, env: envFor(home), stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: true });
   let exited = false, timedOut = false;
   const exit = child.exited.then(value => { exited = true; return value; });
@@ -324,6 +343,7 @@ export function markdownReport(report: any): string {
 export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
   const input = realPath(resolve(options.input)), output = canonicalPath(resolve(options.output)), source = runtimeAt(options.sourceRoot ?? HERE);
   requireBench(input !== output && input !== canonicalPath(output + ".jsonl") && input !== canonicalPath(output + ".md"), "output cannot overwrite dataset");
+  requireBench(options.recordVariant === undefined || options.recordVariant === "a" || options.recordVariant === "b", "invalid Record fixture variant; use --record-variant a or b with a derived records-present input");
   const timeoutMs = options.questionTimeoutMs ?? DEFAULT_TIMEOUT;
   requireBench(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 300_000, "invalid per-question time limit");
   requireBench(options.maxQuestions === undefined || Number.isSafeInteger(options.maxQuestions) && options.maxQuestions > 0, "invalid question limit");
@@ -356,7 +376,7 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
       requireBench(runtimeAt(source.root).commit === source.commit, "runtime changed during benchmark");
       requireBench(harnessDigest() === HARNESS_AT_LOAD, "harness changed during benchmark");
       if (result.abstention) result.status = "abstention-excluded";
-      else result = await executeQuestion(q, source, root, timeoutMs);
+      else result = await executeQuestion(q, source, root, timeoutMs, options.recordVariant);
       requireBench(runtimeAt(source.root).commit === source.commit && harnessDigest() === HARNESS_AT_LOAD, "source or harness changed during question");
       results.push(result); appendFileSync(output + ".jsonl", JSON.stringify(result) + "\n", { mode: 0o600 });
       console.error(JSON.stringify({ event: "longmemeval-question", index: results.length, id: result.id, type: result.type, status: result.status,
@@ -370,7 +390,11 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
     requireBench(initial.dev === after.dev && initial.ino === after.ino && initial.size === after.size && initial.mtimeMs === after.mtimeMs && initial.ctimeMs === after.ctimeMs, "dataset changed during benchmark");
   } catch (error) { fatal = code(error); }
   finally { process.removeListener("SIGINT", stopRun); process.removeListener("SIGTERM", stopRun); rmSync(root, { recursive: true, force: true }); }
-  const report = { schema: "agent-mem.longmemeval/v2", variant: options.variant ?? "custom", dataset: { ...dataset, file: input }, runtime: source,
+  const fixtureEvidence = options.recordVariant ? { variant: options.recordVariant, records: results.reduce((sum, row) => sum + (row.recordFixture?.records ?? 0), 0),
+    seedSha256: digest(results.filter(row => !row.abstention).map(row => ({ id: row.id, sha256: row.recordFixture?.seedSha256 ?? null }))),
+    bm25Control: "canonical-a-projection", input: "shared derived input; actual seeded form is independently hashed" } : undefined;
+  if (fixtureEvidence && fixtureEvidence.records === 0) fatal ??= "no Record fixtures were seeded; derive a records-present input before rerunning --record-variant";
+  const report = { schema: "agent-mem.longmemeval/v2", ...(fixtureEvidence ? { recordFixture: fixtureEvidence } : {}), variant: options.variant ?? "custom", dataset: { ...dataset, file: input }, runtime: source,
     harnessCommit: git(HERE, ["rev-parse", "HEAD"]).stdout.trim(), harnessSha256: HARNESS_AT_LOAD, definitions: { upstream: "xiaowu0162/LongMemEval@9e0b455f4ef0e2ab8f2e582289761153549043fc/src/retrieval/eval_utils.py", sessionRanking: "upstream turn2session effective_k widening; duplicate turns remain in DCG", ndcgAnyAt10: "upstream dcg: ranks 1 and 2 weight 1, full-corpus ideal at effective_k", MRR: "extra: first gold SID reciprocal raw turn rank among 50 returned turns", turnRecallAt10: "extra: fraction of has_answer turns in the first ten raw hits; turnIndex is cumulative per SID across repeated entries", failures: "failed paths contribute zero; no-turn-label averages are null", clock: "raw session timestamps, question-date UTC clock, retention covers haystack", workerPeakKB: "whole question worker (seed, library, BM25 and MCP controller); MCP child separate; null when incomplete/unavailable", wallMs: "input/seed/query/worker execution; cleanupMs is a separate reap barrier" }, platform: process.platform, bun: Bun.version, limit: LIMIT, questionTimeoutMs: timeoutMs,
     selection: { questionTypes, examined, skippedByType }, complete: complete && !fatal, ...(fatal ? { fatal } : {}), questions: results.length, upstreamNoUserTarget: results.filter(q => !q.abstention && q.upstreamNoUserTarget).length, duplicateSessionIds: results.reduce((sum, q) => sum + q.rows.duplicateSessionIds, 0), abstentions: results.filter(q => q.abstention).length,
     failed: results.filter(q => q.status === "failed" || q.status === "timeout" || q.status === "partial").map(q => ({ id: q.id, type: q.type, status: q.status, errors: q.errors })),
@@ -384,14 +408,15 @@ export async function runLongMemEval(options: BenchmarkOptions): Promise<any> {
 }
 function args(values: readonly string[]): BenchmarkOptions {
   const parsed: Record<string, string> = {};
-  const names = ["--input", "--output", "--source-root", "--question-timeout-ms", "--max-questions", "--variant", "--question-types"];
+  const names = ["--input", "--output", "--source-root", "--question-timeout-ms", "--max-questions", "--variant", "--question-types", "--record-variant"];
   for (let i = 0; i < values.length; i += 2) {
     const key = values[i]!, value = values[i + 1];
     requireBench(names.includes(key) && value !== undefined && !Object.hasOwn(parsed, key), "invalid arguments");
     parsed[key] = value!;
   }
   requireBench(!!parsed["--input"] && !!parsed["--output"], "--input and --output are required");
-  return { input: parsed["--input"]!, output: parsed["--output"]!, ...(parsed["--source-root"] ? { sourceRoot: parsed["--source-root"] } : {}),
+  requireBench(parsed["--record-variant"] === undefined || parsed["--record-variant"] === "a" || parsed["--record-variant"] === "b", "invalid Record fixture variant; use --record-variant a or b");
+  return { ...(parsed["--record-variant"] ? { recordVariant: parsed["--record-variant"] as "a" | "b" } : {}), input: parsed["--input"]!, output: parsed["--output"]!, ...(parsed["--source-root"] ? { sourceRoot: parsed["--source-root"] } : {}),
     ...(parsed["--question-timeout-ms"] ? { questionTimeoutMs: Number(parsed["--question-timeout-ms"]) } : {}),
     ...(parsed["--max-questions"] ? { maxQuestions: Number(parsed["--max-questions"]) } : {}), ...(parsed["--variant"] ? { variant: parsed["--variant"] } : {}),
     ...(parsed["--question-types"] !== undefined ? { questionTypes: parsed["--question-types"]!.split(",") } : {}) };
@@ -399,13 +424,14 @@ function args(values: readonly string[]): BenchmarkOptions {
 if (import.meta.main) {
   const values = process.argv.slice(2);
   if (values[0] === "--worker") {
-    const [, input, output, sourceRoot, expected, home, expectedHarness] = values;
+    const [, input, output, sourceRoot, expected, home, expectedHarness, recordVariant = "off"] = values;
     requireBench(!!input && !!output && !!sourceRoot && !!expected && !!home && expectedHarness === HARNESS_AT_LOAD, "invalid question worker arguments");
+    requireBench(recordVariant === "off" || recordVariant === "a" || recordVariant === "b", "invalid worker Record fixture variant; invoke the benchmark driver with --record-variant a or b");
     const runtime = runtimeAt(sourceRoot!); requireBench(runtime.commit === expected, "question worker runtime changed");
     let result: QuestionRun | undefined;
     process.once("exit", () => { if (result) writeCheckpoint(output!, result, true); });
-    result = await runQuestion(validateQuestion(JSON.parse(readFileSync(input!, "utf8"))), runtime, home!, value => writeCheckpoint(output!, value, false));
+    result = await runQuestion(validateQuestion(JSON.parse(readFileSync(input!, "utf8"))), runtime, home!, value => writeCheckpoint(output!, value, false), recordVariant === "off" ? undefined : recordVariant);
   } else if (values.length === 1 && values[0] === "--help") {
-    console.log("bun scripts/longmemeval.ts --input FILE --output REPORT.json [--source-root MAIN_CHECKOUT] [--question-timeout-ms 30000] [--max-questions N] [--variant S|M] [--question-types knowledge-update,multi-session]");
+    console.log("bun scripts/longmemeval.ts --input FILE --output REPORT.json [--source-root MAIN_CHECKOUT] [--question-timeout-ms 30000] [--max-questions N] [--variant S|M] [--record-variant a|b] [--question-types knowledge-update,multi-session]");
   } else await runLongMemEval(args(values));
 }

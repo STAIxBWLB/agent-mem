@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -66,11 +66,11 @@ test("CLI reads bounded regular files without writing input and reports fixed er
   const dir = temp(), file = join(dir, "metrics.jsonl"), cli = join(process.cwd(), "scripts/report-record-variants.ts");
   const row = JSON.stringify({ kind: "hook", recordVariant: "a", recordSessions: 1, recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 });
   writeFileSync(file, `${row}\n`, { mode: 0o600 });
-  const before = { size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, content: Bun.file(file).text() };
+  const before = { size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, content: readFileSync(file, "utf8") };
   const good = spawnSync("bun", [cli, "--metrics", file], { encoding: "utf8" });
   expect(good.status).toBe(0);
   expect(JSON.parse(good.stdout).variants.a.sessions).toBe(1);
-  expect({ size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, content: Bun.file(file).text() }).toEqual(before);
+  expect({ size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, content: readFileSync(file, "utf8") }).toEqual(before);
   const missing = spawnSync("bun", [cli, "--metrics", join(dir, "missing")], { encoding: "utf8" });
   expect(missing.status).not.toBe(0);
   expect(missing.stderr).toContain("Cannot read metrics file");
