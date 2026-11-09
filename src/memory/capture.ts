@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./screen.ts";
+import { outsideCountPlanIsBounded } from "./capture-plan.ts";
 import { captureAttribution, normalizeCaptureFields, RecordNormalizationRefusal, SESSION_KEY, type CaptureFields } from "./capture-input.ts";
 export { CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "./capture-input.ts";
 import { memoryBase } from "./home.ts";
@@ -98,6 +99,15 @@ export interface CaptureOptions {
    * `ignore` is for the maintenance that must still reach the shard (gc, export): it never appends.
    */
   lifecycle?: "enforce" | "ignore";
+}
+/** A bounded, index-only answer to an event count outside the retained recent window (#331). */
+export interface CaptureOutsideCount {
+  /** Matching rows outside the window, at most the store's window bound. */
+  rows: number;
+  /** True when the true count is at least one more than `rows` reports. */
+  capped: boolean;
+  /** False when nothing could answer this event safely: no derived index, or a plan that is not the bounded seek. */
+  available: boolean;
 }
 export interface CaptureAppendOptions {
   /** Opaque stable source receipt for deterministic transcript replay. Requires an explicit source timestamp. */
@@ -203,6 +213,10 @@ export class CaptureStore {
   private contended = false;
   private readonly readOnly: boolean;
   private recentReadIds?: number[];
+  /** The oldest retained (at,id) pair: every row below it is outside the recent window. */
+  private recentBoundary?: { at: string; id: number };
+  /** The host's own window bound, reused as the outside count's cost bound. */
+  private maxRecentReadRows = 0;
   /** True when the optional recent snapshot excludes older capture rows. */
   readonly recentReadTruncated: boolean = false;
 
@@ -264,13 +278,17 @@ export class CaptureStore {
         db.run(`PRAGMA busy_timeout = ${timeout}`); db.run("PRAGMA cache_size = -2048"); db.run("PRAGMA mmap_size = 0");
         db.run("BEGIN");
         if (opts.recentReadRows) {
-          // The existing rows_at index supplies the reverse time/id walk; retain ids only.
+          // The existing rows_at index supplies the reverse time/id walk; retain ids and the oldest retained pair only.
           // One sentinel records excluded history without counting or loading its bodies.
-          const sql = "SELECT id FROM rows INDEXED BY rows_at ORDER BY at DESC, id DESC LIMIT ?";
+          const sql = "SELECT id, at FROM rows INDEXED BY rows_at ORDER BY at DESC, id DESC LIMIT ?";
           const plan = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(maxReadRows + 1) as { detail: string }[];
           if (plan.some(row => row.detail.includes("TEMP B-TREE"))) throw new Error("capture recent index unavailable");
-          const recent = db.query(sql).all(maxReadRows + 1) as { id: number }[];
-          this.recentReadIds = recent.slice(0, maxReadRows).map(row => row.id);
+          const recent = db.query(sql).all(maxReadRows + 1) as { id: number; at: string }[];
+          const retained = recent.slice(0, maxReadRows);
+          this.recentReadIds = retained.map(row => row.id);
+          const boundary = retained.at(-1);
+          if (boundary) this.recentBoundary = { at: boundary.at, id: boundary.id };
+          this.maxRecentReadRows = maxReadRows;
           this.recentReadTruncated = recent.length > maxReadRows;
         } else {
           const count = (db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows LIMIT ?)").get(maxReadRows + 1) as { n: number }).n;
@@ -721,6 +739,36 @@ export class CaptureStore {
       const latest = this.db.query("SELECT id FROM rows ORDER BY id DESC LIMIT 1").get() as { id: number } | null;
       return write(this.readBriefSummaries(), latest?.id ?? 0);
     }).immediate();
+  }
+
+  /**
+   * #331: how many `Record` rows sit outside the retained recent window, within the same `since` lower bound a host applies.
+   * Index-only and bounded by the window: it reads no row content, returns no ids and never scans `rows`.
+   * The cohort is the one `rows_brief_records_v1` covers, main-session Records; `available: false` means no derived index
+   * answers this event yet (a large legacy store) or the plan is not the bounded seek, never a quiet fallback to a scan
+   * and never a throw, so a host upgrade that changes planner rendering degrades the answer instead of the caller.
+   */
+  countOutsideRecent(f: { event: string; since?: string }): CaptureOutsideCount {
+    this.checkReadBinding();
+    if (!this.readOnly || this.recentReadIds === undefined) throw new Error("outside-window counts require a read-only recent window; open CaptureStore with readOnly and recentReadRows");
+    if (typeof f?.event !== "string" || !f.event.trim() || f.event.length > 64) throw new Error("invalid capture event filter");
+    if (f.since !== undefined && (typeof f.since !== "string" || !f.since || f.since.length > 64)) throw new Error("invalid capture since bound");
+    // ponytail: Record is the only event with a derived index; counting another event needs its own partial index first.
+    if (f.event !== "Record" || !this.db.query("SELECT 1 FROM sqlite_master WHERE name='rows_brief_records_v1' AND type='index'").get()) {
+      return { rows: 0, capped: false, available: false };
+    }
+    const cap = this.maxRecentReadRows, boundary = this.recentBoundary;
+    if (!boundary) return { rows: 0, capped: false, available: true }; // an empty shard holds nothing outside the window
+    const sinceSql = f.since === undefined ? "" : " AND at >= ?";
+    const sql = `SELECT COUNT(*) AS n FROM (SELECT 1 FROM rows INDEXED BY rows_brief_records_v1
+      WHERE project=? AND event='Record' AND (subagent IS NULL OR subagent != 1) AND (at,id) < (?,?)${sinceSql} LIMIT ?)`;
+    const bind = [this.key, boundary.at, boundary.id, ...(f.since === undefined ? [] : [f.since]), cap + 1];
+    const plan = this.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...bind) as { detail: string }[];
+    // The guarantee is a seek bounded by the window boundary, not merely an index: an unbounded walk of the project's
+    // Record history would report the same numbers at a cost that grows with history, so the count is not answered.
+    if (!outsideCountPlanIsBounded(plan)) return { rows: 0, capped: false, available: false };
+    const n = (this.db.query(sql).get(...bind) as { n: number }).n;
+    return { rows: Math.min(n, cap), capped: n > cap, available: true };
   }
 
   /** Index reads return at most33 bodies. Legacy fallback reads at most128 recent rows. */
