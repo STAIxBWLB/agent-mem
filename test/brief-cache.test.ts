@@ -139,3 +139,13 @@ test("snapshot publication serializes against a competing summary writer and its
     expect(JSON.stringify(readBriefCache(f.binding)?.rows)).toContain("competing compact");
   } finally { first.close(); }
 });
+
+test("retention eviction invalidates cached source rows without serving removed summaries", async () => {
+  const f = await fixture(), store = new CaptureStore({ memoryDir: f.base, project: f.project, now: () => Date.now() + 366 * 24 * 3600_000 });
+  try { expect(store.evict().expired).toBeGreaterThan(0); }
+  finally { store.close(); }
+  expect(readBriefCache(f.binding)).toBeUndefined();
+  const native = await sessionStartBrief(f.options);
+  expect(native.context).not.toContain("previous recap");
+  expect(native.context).toContain("capture cache missing");
+});

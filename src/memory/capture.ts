@@ -638,12 +638,15 @@ export class CaptureStore {
   private evictWhere(where: string, bind: string[], start: number): { rows: number; bytes: number } {
     let rows = 0, bytes = 0;
     for (let batch = 0; batch < CAPTURE_EVICT_MAX_BATCHES && performance.now() - start < CAPTURE_EVICT_MAX_MS; batch++) {
-      const old = this.db.query(`SELECT id, bytes FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number; bytes: number }[];
+      const old = this.db.query(`SELECT id, bytes, event FROM rows WHERE ${where} ORDER BY at, id LIMIT ?`).all(...bind, CAPTURE_EVICT_BATCH_ROWS) as { id: number; bytes: number; event: string }[];
       if (!old.length) break;
       const removedBytes = old.reduce((sum, r) => sum + r.bytes, 0);
       // Deleting rows and adjusting the running size is atomic too; a lock cannot leave a permanently stale counter.
       this.db.transaction(() => {
         for (const { id } of old) this.db.query("DELETE FROM rows WHERE id = ?").run(id);
+        if (old.some(row => row.event === "Record" || row.event === "Recap" || row.event === "Compact")) {
+          invalidateBriefCache({ directory: this.dir, project: this.key, section: "capture" });
+        }
         if (removedBytes) this.addBytes(-removedBytes);
       }).immediate();
       rows += old.length;
