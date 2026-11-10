@@ -227,7 +227,7 @@ test("a real deadline after durable publication intent retains an unknown attemp
   const retained = retainedPublication(f);
   expect(retained).toMatchObject({ phase: "publication-intent", pending: false });
   expect(canonicalJSON(retained.bundle)).toBe(planBytes); expect(f.plans()).toEqual(planNames);
-  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`))).toEqual(intentBytes!);
+  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`)).equals(intentBytes!)).toBe(true);
   expect(readFileSync(join(dir, `publication-${attempt}-receipt.json`))).toHaveLength(0);
   expect(retained.facts.some(fact => fact.phase === "completed")).toBe(false);
   expect(refs(remote)).toEqual([]); expect(verifiedPublicRows(remote).size).toBe(0);
@@ -237,7 +237,7 @@ test("a real deadline after durable publication intent retains an unknown attemp
   const completed = retainedPublication(f);
   expect(completed).toMatchObject({ phase: "completed", pending: false });
   expect(canonicalJSON(completed.bundle)).toBe(planBytes); expect(f.plans()).toEqual(planNames);
-  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`))).toEqual(intentBytes!);
+  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`)).equals(intentBytes!)).toBe(true);
   expect(verifiedPublicRows(remote).has(f.ids.allowed!)).toBe(true);
   expect(held(f, f.ids.declined!)?.held).toBe(true);
   assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_DEADLINE"]);
