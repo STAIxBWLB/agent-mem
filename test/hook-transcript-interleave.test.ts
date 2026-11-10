@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HOOK_REPLAY_MAX_BYTES, HOOK_REPLAY_MAX_FILES, drainHookCaptures, hookReplayBudget, stageHookCapture } from "../src/hook-spool.ts";
@@ -58,16 +59,58 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
   return { phaseTrace, env: { BUN_OPTIONS: `--preload=${preload}` }, clear: () => writeFileSync(trace, ""), reads: (): ReplayRead[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
 }
 
+/** Functional-only: delay ordinary replay 65ms and deny this invocation's final drain; no product budget changes. */
+interface StageFirstTrace { kind: "scan" | "replay"; received?: string | null; effective?: string | null; waitForReady?: boolean }
+function observeStageFirst(f: Fixture, tagMode: "preserve" | "missing" | "unknown" | "stop") {
+  const trace = join(f.root, `stage-first-${tagMode}.jsonl`), preload = join(f.root, `stage-first-${tagMode}.ts`);
+  const worker = resolve(import.meta.dir, "../src/session-brief-worker.ts");
+  writeFileSync(trace, "");
+  writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
+const worker=${JSON.stringify(worker)},trace=${JSON.stringify(trace)},tagMode=${JSON.stringify(tagMode)};
+if(process.argv[1]===worker){
+ if(process.env.HOME!==${JSON.stringify(f.env.HOME)})throw Error('stage-first control requires fixture HOME; run through hookFixture');
+ (globalThis as any).__stageFirstIpc=(scan:any)=>{
+  const received=scan?.event ?? null;
+  if(scan&&tagMode==='missing')delete scan.event;
+  if(scan&&tagMode==='unknown')scan.event='UnexpectedFixtureEvent';
+  if(scan&&tagMode==='stop')scan.event='Stop';
+  appendFileSync(trace,JSON.stringify({kind:'scan',received,effective:scan?.event ?? null})+'\\n');
+ };
+ (globalThis as any).__stageFirstReplay=async(waitForReady:boolean)=>{
+  appendFileSync(trace,JSON.stringify({kind:'replay',waitForReady})+'\\n');
+  if(!waitForReady)await Bun.sleep(65);
+  return false;
+ };
+ Bun.plugin({name:'task203-stage-first-probe',setup(builder){builder.onLoad({filter:/[/]session-brief-worker\\.ts$/},({path})=>{
+  let source=readFileSync(path,'utf8');
+  const scanAnchor='    const scan = first.scan as Scan | undefined;';
+  if(source.split(scanAnchor).length!==2)throw Error('task203 scan IPC anchor changed; rebase on the worker refactor and reselect the pre-validation scan binding');
+  source=source.replace(scanAnchor,scanAnchor+'\\n    (globalThis as any).__stageFirstIpc(scan);');
+  const replayAnchor='    const replay = async (until: number, waitForReady = true) => {';
+  if(source.split(replayAnchor).length!==2)throw Error('task203 replay anchor changed; rebase on the worker refactor and reselect the bounded replay insertion point');
+  source=source.replace(replayAnchor,replayAnchor+'\\n      await (globalThis as any).__stageFirstReplay(waitForReady);\\n      return false;');
+  return {loader:'ts',contents:source};
+ });}});
+}
+const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
+`);
+  return { trace, env: { BUN_OPTIONS: `--preload=${preload}` }, rows: (): StageFirstTrace[] => readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) };
+}
+
+function transcriptSession(sessionId: string): string {
+  return createHash("sha256").update(`amem-session\0${sessionId}`).digest("hex").slice(0, 16);
+}
+
 function bounded(reads: ReplayRead[]): void {
   expect(reads.length).toBeGreaterThan(0);
   expect(new Set(reads.map(row => row.pid)).size).toBe(1);
   expect(reads.length).toBeLessThanOrEqual(32);
   expect(reads.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(256 * 1024);
 }
-function pending(f: Fixture): { event: string; excerpt: string }[] {
+function pending(f: Fixture): { event: string; excerpt: string; session?: string }[] {
   const dir = join(f.base, "hook-spool");
   return [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder).filter(name => name.startsWith("hook-")).map(name => {
-    const record = JSON.parse(readFileSync(join(folder, name), "utf8")) as { capture: { event: string; excerpt: string } }; return record.capture;
+    const record = JSON.parse(readFileSync(join(folder, name), "utf8")) as { capture: { event: string; excerpt: string; session?: string } }; return record.capture;
   }) : []);
 }
 
@@ -354,5 +397,105 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     const rows = f.rows();
     expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
     expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+  } finally { f.close(); }
+});
+
+
+test("#344 actual SessionEnd stages the bounded transcript tail before replay for same-cwd recovery", async () => {
+  const f = hookFixture(), transcript = join(f.root, "stage-first-session-end.jsonl"), summary = summaries(transcript);
+  const source = readFileSync(transcript), sessionId = "p3-stage-first-original", recoverySession = "p3-stage-first-recovery";
+  const observed = observeStageFirst(f, "preserve");
+  try {
+    await f.seed();
+    const result = f.runFunctional("SessionEnd", { session_id: sessionId, transcript_path: transcript }, observed.env);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const trace = observed.rows(), scan = trace.find(row => row.kind === "scan")!;
+    expect(cursorPosition(f)).toEqual({ offset: source.length, size: source.length });
+    expect(readFileSync(transcript)).toEqual(source);
+    const tailPending = pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact);
+    expect(tailPending).toHaveLength(2);
+    expect(tailPending.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(tailPending.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+    expect(scan.received).toBe("SessionEnd");
+    expect(scan.effective).toBe("SessionEnd");
+    expect(trace.filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(0);
+    expect(trace.some(row => row.kind === "replay" && row.waitForReady === true)).toBe(true);
+    expect(tailPending.every(row => row.session === transcriptSession(sessionId))).toBe(true);
+    expect(f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+
+    const recoveryInput = { session_id: recoverySession, tool_name: "Read", tool_response: "stage-first recovery" };
+    const recovery = f.runFunctional("PostToolUse", recoveryInput);
+    expect(recovery.exitCode, recovery.stderr.toString()).toBe(0);
+    const recovered = f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact);
+    expect(recovered.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(recovered.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+    expect(recovered.every(row => row.session === transcriptSession(sessionId))).toBe(true);
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+
+    // Repeated native intake is independent; the recovered tail must add no further rows.
+    const repeated = f.runFunctional("PostToolUse", recoveryInput);
+    expect(repeated.exitCode, repeated.stderr.toString()).toBe(0);
+    const afterRepeat = f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact);
+    expect(afterRepeat).toEqual(recovered);
+    expect(afterRepeat.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(afterRepeat.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+    expect(cursorPosition(f)).toEqual({ offset: source.length, size: source.length });
+    expect(readFileSync(transcript)).toEqual(source);
+  } finally { f.close(); }
+});
+
+for (const control of [
+  { name: "Stop retains inline replay", hookEvent: "Stop" as const, tagMode: "preserve" as const, received: "Stop", effective: "Stop" },
+  { name: "SessionEnd tagged Stop retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "stop" as const, received: "SessionEnd", effective: "Stop" },
+  { name: "missing SessionEnd scan tag retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "missing" as const, received: "SessionEnd", effective: null },
+  { name: "unknown SessionEnd scan tag retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "unknown" as const, received: "SessionEnd", effective: "UnexpectedFixtureEvent" },
+]) test(`#344 ${control.name}`, async () => {
+  const f = hookFixture(), transcript = join(f.root, "stage-first-control.jsonl"), summary = summaries(transcript);
+  const source = readFileSync(transcript), sessionId = `p3-stage-first-${control.tagMode}-${control.hookEvent}`;
+  const recapEnd = source.indexOf(10) + 1, observed = observeStageFirst(f, control.tagMode);
+  try {
+    await f.seed();
+    const result = f.runFunctional(control.hookEvent, { session_id: sessionId, transcript_path: transcript }, observed.env);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const trace = observed.rows(), scan = trace.find(row => row.kind === "scan")!;
+    expect(scan.received).toBe(control.received);
+    expect(scan.effective).toBe(control.effective);
+    expect(trace.filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(1);
+    expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
+    expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe("deadline");
+    const tailPending = pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact);
+    expect(tailPending.map(row => [row.event, row.excerpt])).toEqual([["Recap", summary.recap]]);
+    expect(tailPending[0]!.session).toBe(transcriptSession(sessionId));
+    expect(f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
+    expect(readFileSync(transcript)).toEqual(source);
+  } finally { f.close(); }
+});
+
+test("#344 SessionEnd still leaves an unscanned tail beyond the bounded read window", async () => {
+  const f = hookFixture(), transcript = join(f.root, "stage-first-read-window.jsonl"), summary = summaries(transcript);
+  const { HOOK_TRANSCRIPT_BYTES } = await import("../src/hook-transcript.ts");
+  const pair = readFileSync(transcript, "utf8").trimEnd().split("\n");
+  const ordinary = JSON.stringify({ type: "assistant", message: { content: "x".repeat(HOOK_TRANSCRIPT_BYTES + 64) } });
+  writeFileSync(transcript, pair[0]! + "\n" + ordinary + "\n" + pair[1]! + "\n");
+  const source = readFileSync(transcript), recapEnd = source.indexOf(10) + 1, observed = observeStageFirst(f, "preserve");
+  try {
+    await f.seed();
+    const result = f.runFunctional("SessionEnd", { session_id: "p3-read-window-original", transcript_path: transcript }, observed.env);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(source.length).toBeGreaterThan(HOOK_TRANSCRIPT_BYTES);
+    expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
+    expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe("cap");
+    expect(observed.rows().filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(0);
+    expect(pending(f).filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(pending(f).filter(row => row.event === "Compact")).toHaveLength(0);
+    expect(readFileSync(transcript)).toEqual(source);
+    const recovery = f.runFunctional("PostToolUse", { session_id: "p3-read-window-other", tool_name: "Read", tool_response: "read-window recovery" });
+    expect(recovery.exitCode, recovery.stderr.toString()).toBe(0);
+    expect(f.rows().filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
+    expect(f.rows().filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(0);
+    expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
+    expect(readFileSync(transcript)).toEqual(source);
+    expect(pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
   } finally { f.close(); }
 });

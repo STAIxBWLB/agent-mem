@@ -63,9 +63,10 @@ if (import.meta.main) {
     const line = await next();
     if (line === undefined) stop();
     const first = JSON.parse(line) as Record<string, unknown>;
-    type Scan = { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number };
+    type Scan = { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number; event?: "Stop" | "SessionEnd" };
     type DrainOptions = BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean; hookStartAt?: number };
     const scan = first.scan as Scan | undefined;
+    const scanEvent = scan?.event === "Stop" || scan?.event === "SessionEnd" ? scan.event : undefined;
     const deadlineAt = scan?.deadlineAt ?? first.deadlineAt;
     if (!Number.isFinite(deadlineAt) || first.ownedGroup !== true) stop();
     owned = true;
@@ -132,7 +133,8 @@ if (import.meta.main) {
           const scanned = await scanHookTranscriptTail(scan.transcript, {
             cwd: scan.cwd, base: scan.base, policy: scan.policy, workBudgetMs: 60, deadline: performance.now() + (scanEnd - now()),
             // Same existing oldest-first drain and one shared budget, never a new 32-file allowance per publication.
-            onPublication: async () => { await replay(scanEnd, false); },
+            // SessionEnd stages its bounded tail first; pressure and the final replay keep the same allowance.
+            onPublication: scanEvent === "SessionEnd" ? undefined : async () => { await replay(scanEnd, false); },
             onBackpressure: () => replay(scanEnd, false),
           });
           if (scanned) progress(scanned);
