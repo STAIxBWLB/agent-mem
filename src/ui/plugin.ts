@@ -156,7 +156,7 @@ export const plugin = {
     }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
-    let chosen: string | undefined;
+    let chosen: string | undefined, actionVersion = 0;
     /** An active project whose curated store holds a note of its own, also when no listing source named it. */
     const exists = (key: string) => {
       if (projectState(base, key) !== "active") return false;
@@ -468,7 +468,12 @@ export const plugin = {
         // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
+        let projectionVersion = actionVersion;
         const projection = async () => {
+          if (projectionVersion !== actionVersion) {
+            list = projects(); project = pick(args, list); catalog = undefined;
+            projectionVersion = actionVersion;
+          }
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           const data = await load(at => { until = Math.min(until, at); });
@@ -489,7 +494,7 @@ export const plugin = {
       close: async () => { catalog = undefined; preparedReads.clear(); await Promise.all([snapshots.close(), inboxCache.close()]); },
       snapshot,
       async action(input) {
-        snapshots.invalidate(); catalog = undefined;
+        actionVersion++; snapshots.invalidate(); catalog = undefined;
         const result = await performAction(input);
         if (result.ok) {
           const id = str(input.id);

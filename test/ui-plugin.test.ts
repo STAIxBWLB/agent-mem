@@ -230,6 +230,24 @@ test("an action during Recap causes one fresh post-action read", async () => {
   } finally { brief.mockRestore(); }
 });
 
+test("post-action Recap rereads project selection when the last candidate-only project disappears", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-console-candidate-only-")); roots.push(root);
+  const family = join(root, "hub"), base = join(family, "memory"), project = "candidate-only";
+  const candidates = new CandidateStore({ memoryDir: base });
+  const id = candidates.put({ project, kind: "memory", text: "only waiting fixture" }, "public"); candidates.close();
+  const provider = await open(family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) expect(await provider.action({ action: "reject", id, project })).toMatchObject({ ok: true });
+    return value;
+  });
+  try {
+    const changed = await provider.snapshot({ after: 0, panel: "recap", project });
+    expect(changed.error).toBeUndefined(); expect(changed.projects).toEqual([]); expect(changed.project).toBeNull();
+    expect(changed.brief).toBeUndefined(); expect(Number.isSafeInteger(changed.cursor)).toBe(true); expect(reads).toBe(1);
+  } finally { brief.mockRestore(); }
+});
+
 test("Timeline refreshes referenced-file stale markers without a memory-store write", async () => {
   const f = fixture(), file = join(f.base, "public.txt");
   writeFileSync(file, "fixture source"); utimesSync(file, new Date(0), new Date(0));
