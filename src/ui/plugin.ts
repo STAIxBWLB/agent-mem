@@ -466,12 +466,13 @@ export const plugin = {
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
         return await snapshots.snapshot(key, input.after, async () => {
+          const sampledAt = Date.now();
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           const data = await load(at => { until = Math.min(until, at); });
           // Resource advice also samples external disk/pressure and a rolling growth
           // window. ponytail: at most 60 s old; upgrade with a resource revision port.
-          return { data, until: Math.min(until, leaseExpiry(data), input.panel === "capacity" ? Date.now() + 60_000 : Infinity) };
+          return { data, until: Math.min(until, leaseExpiry(data), input.panel === "capacity" ? sampledAt + 60_000 : Infinity) };
         });
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);

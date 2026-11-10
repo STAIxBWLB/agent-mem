@@ -226,6 +226,7 @@ export class CandidateStore {
     this.path = join(this.dir, "candidates.db");
     this.db = new Database(this.path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${CANDIDATE_DB_BUSY_TIMEOUT_MS}`);
+    // A warm read must not manufacture a revision; every extra permission bit still gets stripped.
     if ((lstatSync(this.path).mode & 0o7777) !== 0o600) chmodSync(this.path, 0o600);
     // `journal_mode = WAL` takes a lock that busy_timeout does not always wait for, so several processes opening a brand-new home at once (every `amem mcp` builds this store at
     // startup) can see "database is locked". It is retried for a bounded time: the first caller switches the mode, the others then find it already WAL.
