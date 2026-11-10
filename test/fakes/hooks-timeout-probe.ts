@@ -58,13 +58,13 @@ export function timeoutProbeBranch(input: {
   const { workers, parentPid, receipt } = input;
   const evidence = input.evidence.filter(row => row.pid === parentPid), life = input.lifecycle.filter(row => row.parentPid === parentPid);
   const attempts = life.filter(row => row.phase === "spawn-attempt");
-  check(input.survivors === 0 && receipt.valid && !life.some(row => row.phase === "truncated" || row.phase === "spawn-failed"), "timeout observation is incomplete or has survivors");
+  check(input.survivors === 0 && receipt.valid && new Set(receipt.pids).size === receipt.pids.length && !life.some(row => row.phase === "truncated" || row.phase === "spawn-failed"), "timeout observation is incomplete or has survivors");
   check(new Set(workers.map(row => row.pid)).size === workers.length && workers.every(row => row.detached), "timeout owned child identity unavailable");
   check(evidence.filter(row => row.phase === "preload").length === 1 && evidence.every(row => row.loads === 1), "timeout preload observation unavailable");
   check(attempts.length === workers.length && evidence.filter(row => row.phase === "attempt").length === workers.length
     && evidence.filter(row => row.phase === "returned").length === workers.length
     && evidence.filter(row => row.phase === "attempt" || row.phase === "returned").every(row => row.exact === 1), "timeout spawn observation incomplete");
-  if (input.control) check(workers.length === input.expected && input.entered && receipt.complete, "timeout control did not reach every owned blocking command");
+  if (input.control) check(workers.length === input.expected && input.entered && receipt.complete && receipt.pids.length === input.expected, "timeout control did not reach every owned blocking command");
   if (workers.length === 0) {
     const expired = evidence.some(row => Number.isFinite(row.remainingUs) && (
       row.phase === "deadline_skip" && row.host === 0 && row.remainingUs! < 5000
@@ -103,7 +103,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
     const wallMs = performance.now() - start, workers = observer.read();
     const diagnostic = () => hookProcessDiagnostic({ event, ...invocation, parentPid: result.pid, variant: functional ? "timeout-functional" : "timeout-native",
-      expectedOwnedChildren: event === "SessionStart" ? 3 : 2, expectation: "fixture-contract", workers, evidence: observer.evidence(), lifecycle: observer.lifecycle(result.pid),
+      expectedOwnedChildren: functional ? (event === "SessionStart" ? 3 : 2) : null, expectation: functional ? "fixture-contract" : "observed-spawn-attempts", workers, evidence: observer.evidence(), lifecycle: observer.lifecycle(result.pid),
       metric: readMetrics(f.base).filter(row => row.kind === "hook").at(-1), cliRawRssMB: result.resourceUsage.maxRSS / 1048576 });
     const expected = event === "SessionStart" ? 3 : 2;
     groups = workers.map(worker => worker.pid);
@@ -161,11 +161,8 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     } catch (error) {
       throw new Error(`${(error as Error).message}: ${JSON.stringify({ ...diagnostic(), entered, pidWitness, descendantReceipt: receipt })}`);
     }
-    // Every invocation reports coverage, including legitimate refusals before fixture entry.
-    console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, control: functional, branch,
-      observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0 }));
     let descendantReceiptAdvisory = false;
-    if (!receipt.complete && branch === "admitted-blocked") {
+    if (!receipt.complete && branch === "admitted-blocked" && workers.length === expected) {
       check(!functional && receipt.incomplete && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0
         && metric.rssScope === "owned-images" && validRssSources(metric.rssSources), "invalid owned descendant receipt");
       descendantReceiptAdvisory = reportBudgetAdvisory("owned-descendant-receipt", `timeout ${event}`, {
@@ -173,8 +170,11 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       });
       check(descendantReceiptAdvisory, "invalid owned descendant receipt");
     }
-    const rss = functional || branch !== "admitted-blocked" ? measuredHookRss(metric, cliRssMB)
+    const rss = functional || branch !== "admitted-blocked" || workers.length !== expected ? measuredHookRss(metric, cliRssMB)
       : measuredBudgetHookRss(metric, cliRssMB, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `timeout ${event}`);
+    // Every invocation reports coverage, including legitimate refusals before fixture entry.
+    console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, control: functional, branch,
+      observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0 }));
     return { event, branch, wallMs, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
   } finally {
     // Only a fresh PID/group/command match from this probe can be signalled on failure.

@@ -101,4 +101,5 @@ test("cleanup controls cannot substitute a deadline refusal, missing child or mi
   expect(timeoutProbeBranch(complete)).toBe("admitted-blocked");
   expect(() => timeoutProbeBranch({ ...complete, entered: false })).toThrow();
   expect(() => timeoutProbeBranch({ ...complete, survivors: 1 })).toThrow();
+  expect(() => timeoutProbeBranch({ ...complete, receipt: timeoutDescendantReceipt("30 30", 2) })).toThrow();
 });
