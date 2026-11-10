@@ -4,6 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Give only the two expected-success cadence calls in the person-activation e2e a 60-second test-context deadline, with 90-second child envelopes and a 240-second test envelope. This exceeds twice the measured 28.6-second hosted macOS full sync; production keeps its 30-second default and unchanged stop, retained-attempt and fail-closed semantics. Refs #345.
 - Temporarily report hook wall-p95, wall-max and timing-only SessionStart omitted-work misses as #348 advisories on exact hosted GitHub Linux/macOS markers. RSS, telemetry, R1 and correctness remain strict; local and remote runs stay strict. Retire only after #348 is resolved and the person approves. Refs #348, #302.
 - Key reader lease lifetimes by the physical memory home, so parent-symlink and macOS path spellings share one reference count and closing one handle cannot drop another reader's lease. Admission, ownership, migration/prune blocking, lease filenames and schema remain unchanged. Refs #353.
 - At SessionEnd, stage the bounded transcript tail before ordinary publication replay, so a slow replay does not prevent a following Recap/Compact from reaching the durable spool. A later hook from another session in the same cwd can drain it without duplicate tail captures. Stop/StopBurst, backpressure and final replay, native budgets, data formats and R2 limits/baselines are unchanged; unscanned tails remain subject to the documented ceiling. Refs #344, #327.
