@@ -109,9 +109,8 @@ for (const scope of ["legacy", "shard"] as const) for (const closeAliasFirst of 
     mkdirSync(physical); symlinkSync(physical, alias, "dir");
     samePhysicalHome(join(physical, "memory"), join(alias, "memory"), scope, closeAliasFirst);
   });
-  test(`#353 macOS private-var shares ${scope} lease (${closeAliasFirst ? "alias" : "canonical"} first)`, {
-    skip: process.platform !== "darwin" || !existsSync("/var/tmp") || !existsSync("/private/var/tmp"),
-  }, () => {
+  test.skipIf(process.platform !== "darwin" || !existsSync("/var/tmp") || !existsSync("/private/var/tmp"))(
+    `#353 macOS private-var shares ${scope} lease (${closeAliasFirst ? "alias" : "canonical"} first)`, () => {
     const alias = mkdtempSync("/var/tmp/amem-reader-spelling-"); cleanup.push(() => rmSync(alias, { recursive: true, force: true }));
     const physical = realPath(alias);
     expect(physical).not.toBe(alias);
