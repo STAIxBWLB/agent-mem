@@ -45,8 +45,8 @@ function trim(base: string, fd: number, size: number, cutoff: number): void {
   let encoded = rows.map(value => JSON.stringify(value) + "\n");
   let bytes = encoded.reduce((sum, line) => sum + Buffer.byteLength(line), 0), from = 0;
   const capacityTrim = size >= RECORD_VARIANTS_MAX_BYTES;
-  const target = capacityTrim ? CAP_TRIM_BYTES : RECORD_VARIANTS_MAX_BYTES;
-  while (from < encoded.length && bytes + 32 > target) bytes -= Buffer.byteLength(encoded[from++]!);
+  const byteTarget = capacityTrim ? CAP_TRIM_BYTES : RECORD_VARIANTS_MAX_BYTES;
+  while (from < encoded.length && bytes + 32 > byteTarget) bytes -= Buffer.byteLength(encoded[from++]!);
   if (from || capacityTrim) {
     rows[rows.length - 1]!.capTrimmed = 1;
     encoded[encoded.length - 1] = JSON.stringify(rows[rows.length - 1]) + "\n";
