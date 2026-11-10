@@ -147,18 +147,6 @@ export const plugin = {
       else catalog = undefined;
       return list;
     }
-    function dataExpiry(name: string, data: Args): number {
-      let until = Infinity;
-      if (name === "timeline" && Array.isArray(data.entries)) for (const entry of data.entries) {
-        if (entry && typeof entry === "object" && typeof entry.expiresAt === "string")
-          until = Math.min(until, Date.parse(entry.expiresAt));
-      }
-      if (name === "work" && Array.isArray(data.lists)) for (const view of data.lists) {
-        const lease = view && typeof view === "object" ? view.lease : undefined;
-        if (lease && lease.expired === false && typeof lease.until === "string") until = Math.min(until, Date.parse(lease.until));
-      }
-      return until;
-    }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
     let chosen: string | undefined;
@@ -431,7 +419,7 @@ export const plugin = {
     }
 
     const preparedReads = new Set<string>();
-    const cachedPanels = new Set(["review", "recap", "timeline", "work"]);
+    const cachedPanels = new Set(["review", "recap", "work"]);
     async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
       const args = input as Args;
       if (input.panel === "inbox") {
@@ -468,15 +456,15 @@ export const plugin = {
         const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
           ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
           : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry)) };
-        // Disk/pressure and rolling growth windows have no cheap complete revision.
-        // Capacity stays fresh and uncached until an authoritative resource revision exists.
+        // Capacity samples resources/time; Timeline probes arbitrary referenced files.
+        // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
         return await snapshots.snapshot(key, input.after, async () => {
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           const data = await load(at => { until = Math.min(until, at); });
-          return { data, until: Math.min(until, dataExpiry(input.panel, data)) };
+          return { data, until };
         });
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);

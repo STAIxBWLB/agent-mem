@@ -34,10 +34,10 @@ try {
     for (let call = 0; call < 3; call++) {
       const started = performance.now(), result = await provider.snapshot({ panel, project, after: 0 });
       times.push(performance.now() - started);
-      if (result.error || panel !== "capacity" && !Number.isSafeInteger(result.cursor)) throw Error(`fixture ${panel} unavailable`);
+      if (result.error || panel !== "capacity" && panel !== "timeline" && !Number.isSafeInteger(result.cursor)) throw Error(`fixture ${panel} unavailable`);
       cursor = Number(result.cursor);
     }
-    if (panel === "capacity") {
+    if (panel === "capacity" || panel === "timeline") {
       rows.push({ panel, firstMs: times[0]!, warmMs: times.slice(1), unchangedMs: null, cursor: null });
       continue;
     }
