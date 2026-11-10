@@ -13,6 +13,7 @@ import { scanPlugins } from "../node_modules/@staix/agent-console/src/plugins.ts
 import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import * as mcpModule from "../src/mcp-memory.ts";
+import * as revisionModule from "../src/ui/snapshot-revision.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -126,6 +127,45 @@ test("Capacity stays uncached when its external and rolling-time inputs have no 
     expect(second.error).toBeUndefined(); expect(second.changed).toBeUndefined(); expect(second.cursor).toBeUndefined();
     expect((second.report as { at: string }).at).not.toBe((first.report as { at: string }).at);
   } finally { clock.mockRestore(); }
+});
+
+test("a revision exception disables reuse while Recap, Timeline and Capacity still read fresh", async () => {
+  const f = fixture(), provider = await open(f.family);
+  const before = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(before.error).toBeUndefined();
+  const revision = spyOn(revisionModule, "snapshotRevision").mockImplementation(() => { throw Error("injected inventory race"); });
+  const brief = spyOn(briefModule, "sessionStartBrief");
+  try {
+    for (const panel of ["timeline", "capacity"]) {
+      const fresh = await provider.snapshot({ after: 0, panel, project: f.project });
+      expect(fresh.error, panel).toBeUndefined(); expect(fresh.changed).toBeUndefined();
+    }
+    expect(revision).not.toHaveBeenCalled();
+    const fresh = await provider.snapshot({ after: Number(before.cursor), panel: "recap", project: f.project });
+    expect(fresh.error).toBeUndefined(); expect(fresh.changed).toBeUndefined(); expect(Number.isSafeInteger(fresh.cursor)).toBe(true);
+    const next = await provider.snapshot({ after: Number(fresh.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(next.changed).toBeUndefined(); expect(next.cursor).not.toBe(fresh.cursor);
+    expect(brief).toHaveBeenCalledTimes(2);
+    revision.mockRestore();
+    const recovered = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(recovered.error).toBeUndefined();
+    expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
+    expect(brief).toHaveBeenCalledTimes(3);
+  } finally { revision.mockRestore(); brief.mockRestore(); }
+});
+
+test("an unrelated home symlink makes snapshots uncacheable without blanking healthy panels", async () => {
+  const f = fixture(), provider = await open(f.family), target = join(f.root, "external.json"), link = join(f.base, "unrelated.json");
+  writeFileSync(target, JSON.stringify({ fixture: true })); symlinkSync(target, link);
+  for (const panel of ["recap", "timeline", "capacity"]) {
+    const fresh = await provider.snapshot({ after: 0, panel, project: f.project });
+    expect(fresh.error, panel).toBeUndefined(); expect(fresh.changed).toBeUndefined();
+    if (panel === "recap") expect((fresh.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
+  }
+  rmSync(link);
+  const recovered = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(recovered.error).toBeUndefined();
+  expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
 });
 
 test("Timeline refreshes referenced-file stale markers without a memory-store write", async () => {

@@ -137,15 +137,22 @@ export const plugin = {
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
-    function projectList(): string[] {
-      const revision = snapshotRevision(base), now = Date.now();
-      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return [...catalog.list];
+    function projectList(): { list: string[]; cacheable: boolean } {
+      let revision: string;
+      try { revision = snapshotRevision(base); }
+      catch { catalog = undefined; return { list: projects(), cacheable: false }; }
+      const now = Date.now();
+      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return { list: [...catalog.list], cacheable: true };
       const list = projects();
-      // Pending-summary time revisions trigger the original candidate pruning;
-      // curated project disappearance is bounded by the exact next note expiry.
-      if (snapshotRevision(base) === revision) catalog = { revision, list: [...list], sampledAt: now, until: catalogExpiry };
-      else catalog = undefined;
-      return list;
+      // A missing witness affects reuse only; ordinary fresh reads remain available.
+      try {
+        if (snapshotRevision(base) === revision) {
+          catalog = { revision, list: [...list], sampledAt: now, until: catalogExpiry };
+          return { list, cacheable: true };
+        }
+      } catch { /* Uncacheable; do not turn an inventory race into a panel failure. */ }
+      catalog = undefined;
+      return { list, cacheable: false };
     }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
@@ -443,7 +450,8 @@ export const plugin = {
             }
           }
         }
-        list = projectList(); project = pick(args, list);
+        const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
+        list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
           const q = str(args.q);
@@ -460,12 +468,13 @@ export const plugin = {
         // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
-        return await snapshots.snapshot(key, input.after, async () => {
+        const projection = async () => {
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           const data = await load(at => { until = Math.min(until, at); });
           return { data, until };
-        });
+        };
+        return selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
         return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
