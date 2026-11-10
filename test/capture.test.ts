@@ -1,9 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CaptureStore, readCaptureConfig, writeCaptureConfig, writeCaptureConfigFile, CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS } from "../src/memory/capture.ts";
+import { CaptureStore, readCaptureConfig, writeCaptureConfig, writeCaptureConfigFile, CAPTURE_MAX_EXCERPT, CAPTURE_MAX_PATHS, CAPTURE_DRAIN_MAX_LINES, CAPTURE_EVICT_BATCH_ROWS, CAPTURE_EVICT_MAX_BATCHES, CAPTURE_EVICT_MAX_MS } from "../src/memory/capture.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
 const cleanup: (() => void)[] = [];
@@ -108,56 +108,69 @@ test("capture writes and eviction never touch the curated store", () => {
   expect(memory.list({ project: "proj" })).toEqual(beforeList);
 });
 
-test("a contended writer spools and exits; the next uncontended writer drains the spool once", () => {
-  const dir = home(), began = performance.now();
-  let fixtureLockHeld = 0;
-  const drains: { instance: number; stage: number; atMs: number; elapsedMs: number; remainingMs: number; fixtureLockHeld: number; drained: number; skipped: number; errorCode: number }[] = [];
-  // Numeric, failure-only diagnostics. A returned result does not expose any lock
-  // swallowed inside drain; fixtureLockHeld records only this test's own lock.
-  const diagnostic = () => JSON.stringify({ captureDrain: drains });
+for (const slowMs of [0, 50]) test(`contended writers preserve every row and bounded drains converge (operation delay ${slowMs} ms)`, () => {
+  const dir = home(); let workMs = 0;
+  // Functional work clock: completed operations consume a known budget even if
+  // the host is descheduled. Dedicated R2 scripts retain the real wall gates.
+  const clock = spyOn(performance, "now").mockImplementation(() => workMs);
+  const drains: { instance: number; drained: number; skipped: number }[] = [];
+  const diagnostic = () => JSON.stringify({ slowMs, drains });
   const observed = (store: CaptureStore, instance: number) => {
     const drain = store.drain.bind(store);
-    store.drain = () => {
-      const start = performance.now();
-      try {
-        const result = drain(), elapsed = performance.now() - start;
-        drains.push({ instance, stage: 1, atMs: start - began, elapsedMs: elapsed, remainingMs: 25 - elapsed, fixtureLockHeld, ...result, errorCode: 0 });
-        return result;
-      } catch (error) {
-        const elapsed = performance.now() - start, value = error && typeof error === "object" ? error as { errno?: unknown; code?: unknown } : {};
-        const errorCode = typeof value.errno === "number" && Number.isFinite(value.errno) ? value.errno : value.code === "SQLITE_BUSY" ? 5 : value.code === "SQLITE_LOCKED" ? 6 : -1;
-        drains.push({ instance, stage: 2, atMs: start - began, elapsedMs: elapsed, remainingMs: 25 - elapsed, fixtureLockHeld, drained: -1, skipped: -1, errorCode });
-        throw error;
-      }
-    };
+    store.drain = () => { const result = drain(); drains.push({ instance, ...result }); return result; };
     return store;
   };
-  const first = observed(capture(dir), 1);
-  first.append(input({ excerpt: "before the contention" }));
-  const capDir = first.dir;
-  const holder = new Database(join(capDir, "capture.db"));
-  holder.run("PRAGMA busy_timeout = 0");
-  holder.run("BEGIN EXCLUSIVE"); fixtureLockHeld = 1;
   try {
-    const blocked = observed(capture(dir), 2);
-    expect(blocked.append(input({ excerpt: "spooled under contention", at: "2026-10-17T01:00:00.000Z" })), diagnostic()).toEqual({ spooled: true });
-    expect(blocked.append(input({ excerpt: "second spooled row", at: "2026-10-17T01:01:00.000Z" })), diagnostic()).toEqual({ spooled: true });
-    // A blocked hook never half-writes: a WAL snapshot read shows only the row committed before the contention.
-    expect(blocked.rows().map((r) => r.excerpt), diagnostic()).toEqual(["before the contention"]);
-    // Both complete published segments contain exactly the screened rows.
-    const spooled = spoolLines(capDir);
-    expect(spooled, diagnostic()).toHaveLength(2);
-    expect(spooled.some((line) => line.includes("spooled under contention")), diagnostic()).toBe(true);
-    expect(spooled.some((line) => line.includes("second spooled row")), diagnostic()).toBe(true);
-  } finally { holder.run("ROLLBACK"); fixtureLockHeld = 0; holder.close(); }
-  const late = observed(capture(dir), 3);
-  late.append(input({ excerpt: "after the contention" })); // an uncontended append drains the spool first
-  expect(late.rows().map((r) => r.excerpt), diagnostic()).toEqual(["before the contention", "spooled under contention", "second spooled row", "after the contention"]);
-  expect(late.rows()[1]!.at, diagnostic()).toBe("2026-10-17T01:00:00.000Z"); // the original hook time, not the drain time
-  expect(existsSync(join(capDir, "spool.jsonl")), diagnostic()).toBe(false);
-  expect(existsSync(join(capDir, "spool.jsonl.draining")), diagnostic()).toBe(false);
-  expect(late.drain().drained, diagnostic()).toBe(0); // replay is idempotent: no row is doubled
-  expect(late.rows(), diagnostic()).toHaveLength(4);
+    const first = observed(capture(dir), 1);
+    first.append(input({ excerpt: "before the contention" }));
+    const capDir = first.dir, holder = new Database(join(capDir, "capture.db"));
+    holder.run("PRAGMA busy_timeout = 0"); holder.run("BEGIN EXCLUSIVE");
+    try {
+      const blocked = observed(capture(dir), 2);
+      expect(blocked.append(input({ excerpt: "spooled under contention", at: "2026-10-17T01:00:00.000Z" }))).toEqual({ spooled: true });
+      expect(blocked.append(input({ excerpt: "second spooled row", at: "2026-10-17T01:01:00.000Z" }))).toEqual({ spooled: true });
+      expect(blocked.rows().map(r => r.excerpt)).toEqual(["before the contention"]);
+      const spooled = spoolLines(capDir);
+      expect(spooled).toHaveLength(2);
+      expect(spooled.some(line => line.includes("spooled under contention"))).toBe(true);
+      expect(spooled.some(line => line.includes("second spooled row"))).toBe(true);
+    } finally { holder.run("ROLLBACK"); holder.close(); }
+    const late = observed(capture(dir), 3);
+    const internal = late as unknown as { insertRow: (row: { excerpt: string }, receipt: string | null) => number | undefined };
+    const insert = internal.insertRow.bind(late);
+    let slowOperations = 0;
+    internal.insertRow = (row, receipt) => {
+      const id = insert(row, receipt);
+      if (id !== undefined && slowMs) { Bun.sleepSync(slowMs); workMs += slowMs; slowOperations++; }
+      return id;
+    };
+    const expected = ["before the contention", "spooled under contention", "second spooled row"];
+    const retained = () => [...late.rows().map(r => r.excerpt), ...spoolLines(capDir).map(line => (JSON.parse(line) as { excerpt: string }).excerpt)];
+    // Two pending rows permit at most two progressing drain calls in this fixture.
+    // This resumes partial work, never repeats a failed test or waits for a lucky wall time.
+    for (let invocation = 0; invocation < 2 && spoolLines(capDir).length; invocation++) {
+      const pending = spoolLines(capDir).length, result = late.drain();
+      expect(result.skipped, diagnostic()).toBe(0);
+      expect(result.drained, diagnostic()).toBeGreaterThan(0);
+      expect(result.drained, diagnostic()).toBeLessThanOrEqual(CAPTURE_DRAIN_MAX_LINES);
+      expect(spoolLines(capDir).length, diagnostic()).toBe(pending - result.drained);
+      expect(retained().sort(), diagnostic()).toEqual([...expected].sort());
+      if (slowMs && invocation === 0) { expect(result.drained).toBe(1); expect(spoolLines(capDir)).toHaveLength(1); }
+    }
+    expect(spoolLines(capDir), diagnostic()).toEqual([]);
+    if (slowMs) expect(slowOperations).toBe(2);
+    expect(drains.filter(row => row.instance === 3).reduce((n, row) => n + row.drained, 0)).toBe(2);
+    const calls = drains.length;
+    late.append(input({ excerpt: "after the contention" }));
+    expect(drains).toHaveLength(calls + 1); // append still invokes its ordinary drain.
+    expect(late.rows().map(r => r.excerpt)).toEqual([...expected, "after the contention"]);
+    expect(late.rows()[1]!.at).toBe("2026-10-17T01:00:00.000Z");
+    expect(late.rows()[2]!.at).toBe("2026-10-17T01:01:00.000Z");
+    expect(existsSync(join(capDir, "spool.jsonl"))).toBe(false);
+    expect(existsSync(join(capDir, "spool.jsonl.draining"))).toBe(false);
+    expect(late.drain()).toEqual({ drained: 0, skipped: 0 });
+    expect(late.rows()).toHaveLength(4);
+  } finally { clock.mockRestore(); }
 });
 
 test("a leftover draining file from a crashed drain is finished without doubling rows", () => {
@@ -290,23 +303,68 @@ test("an incomplete spool row is skipped and counted without blocking later rows
   expect(store.rows().map((row) => row.excerpt)).toEqual(["valid after poison", "later append"]);
 });
 
-test("P2-7: eviction after a cap shrink is time-bounded per append and converges over invocations", () => {
-  const dir = home();
-  const excerpt = "e".repeat(900);
-  const writer = capture(dir, { capMb: 100 });
+test("P2-7: cap-shrink eviction bounds each work batch and converges after a slow operation", () => {
+  const dir = home(), excerpt = "e".repeat(900), writer = capture(dir, { capMb: 100 });
   for (let i = 0; i < 4000; i++) writer.append(input({ excerpt, at: `2026-10-17T00:00:${String(i % 60).padStart(2, "0")}.${String(i).padStart(3, "0")}Z` }));
   const oversized = writer.stats().bytes;
   expect(oversized).toBeGreaterThan(1024 * 1024);
-  const shrink = capture(dir, { capMb: 0.001 }); // about 1 KB: everything must go, over many bounded invocations
-  const start = performance.now();
-  shrink.append(input({ excerpt: "trigger eviction" }));
-  const wallMs = performance.now() - start;
-  expect(wallMs).toBeLessThan(150); // R2 holds even with megabytes to evict
-  const afterOne = shrink.stats().bytes;
-  expect(afterOne).toBeLessThan(oversized); // progress was made
-  expect(afterOne).toBeGreaterThan(0.001 * 1024 * 1024); // but one invocation did not do it all
-  for (let i = 0; i < 200 && shrink.stats().bytes > 0.001 * 1024 * 1024; i++) shrink.append(input({ excerpt: "x" }));
-  expect(shrink.stats().bytes).toBeLessThanOrEqual(0.001 * 1024 * 1024); // later invocations finish it
+  const shrink = capture(dir, { capMb: 0.001 }), capBytes = 0.001 * 1024 * 1024;
+  type Run = ((...args: never[]) => unknown) & { immediate: (...args: never[]) => unknown };
+  const internal = shrink as unknown as {
+    db: { transaction: (fn: (...args: never[]) => unknown) => Run; query: (sql: string) => { get(): unknown } };
+    evictWhere: (where: string, bind: string[], start: number) => { rows: number; bytes: number };
+  };
+  const count = () => (internal.db.query("SELECT count(*) AS n FROM rows").get() as { n: number }).n;
+  const transaction = internal.db.transaction.bind(internal.db), evictWhere = internal.evictWhere.bind(shrink);
+  const passes: { batches: number; rows: number }[] = [];
+  let pass: { batches: number; rows: number } | undefined, workMs = 0, operationMs = 207, slowOperations = 0;
+  const clock = spyOn(performance, "now").mockImplementation(() => workMs);
+  // Same instance/transaction seam used by scripts/budget-hook-child.ts. Count
+  // actual rows removed, not FTS-trigger changes or a new product test port.
+  internal.db.transaction = fn => {
+    const run = transaction(fn);
+    const observed = (call: (...args: never[]) => unknown) => (...args: never[]) => {
+      const current = pass; if (!current) return call(...args);
+      const before = count(), result = call(...args), removed = before - count();
+      expect(removed).toBeGreaterThan(0); expect(removed).toBeLessThanOrEqual(CAPTURE_EVICT_BATCH_ROWS);
+      current.batches++; current.rows += removed;
+      if (operationMs === 207) { Bun.sleepSync(operationMs); slowOperations++; }
+      workMs += operationMs;
+      return result;
+    };
+    return Object.assign(observed(run), { immediate: observed(run.immediate.bind(run)) });
+  };
+  internal.evictWhere = (where, bind, start) => {
+    const current = pass = { batches: 0, rows: 0 };
+    try {
+      const result = evictWhere(where, bind, start);
+      expect(result.rows).toBe(current.rows);
+      expect(current.batches).toBeLessThanOrEqual(CAPTURE_EVICT_MAX_BATCHES);
+      return result;
+    } finally { passes.push(current); pass = undefined; }
+  };
+  const append = (text: string) => {
+    const before = count(), at = passes.length;
+    expect(shrink.append(input({ excerpt: text }))).toHaveProperty("id");
+    const calls = passes.slice(at), batches = calls.reduce((n, row) => n + row.batches, 0);
+    expect(before + 1 - count()).toBe(calls.reduce((n, row) => n + row.rows, 0));
+    // The batch count is bounded by the operation cost fed to the shared budget.
+    // Four batches bound one evictWhere pass, not every possible fast append.
+    expect(batches).toBeLessThanOrEqual(Math.ceil(CAPTURE_EVICT_MAX_MS / operationMs));
+    expect(shrink.stats().bytes).toBe((internal.db.query("SELECT coalesce(sum(bytes), 0) AS n FROM rows").get() as { n: number }).n);
+    return batches;
+  };
+  try {
+    expect(append("trigger eviction")).toBe(1);
+    expect(slowOperations).toBe(1); expect(workMs).toBe(207); // old <150ms witness would reject this completed batch.
+    const afterOne = shrink.stats().bytes;
+    expect(afterOne).toBeLessThan(oversized);
+    expect(afterOne).toBeGreaterThan(capBytes);
+    operationMs = 1;
+    for (let invocation = 0; invocation < 200 && shrink.stats().bytes > capBytes; invocation++) append("x");
+    expect(passes.some(row => row.batches === CAPTURE_EVICT_MAX_BATCHES)).toBe(true);
+    expect(shrink.stats().bytes).toBeLessThanOrEqual(capBytes);
+  } finally { clock.mockRestore(); }
 });
 
 test("AC3 tripwire: the capture and search modules make no network or model call", () => {
