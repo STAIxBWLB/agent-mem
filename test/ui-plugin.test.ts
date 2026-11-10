@@ -6,11 +6,13 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { Database } from "bun:sqlite";
 import type { ConsolePlugin } from "@staix/agent-console/contract";
 import { registerConsoleConformance } from "@staix/agent-console/conformance";
 import { scanPlugins } from "../node_modules/@staix/agent-console/src/plugins.ts";
 import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
+import * as mcpModule from "../src/mcp-memory.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -139,6 +141,43 @@ test("a cached Recap cannot retain a short note after its exact expiry without a
     expect(expired.error).toBeUndefined(); expect(expired.changed).not.toBe(false);
     expect(JSON.stringify(expired)).not.toContain("exact expiry recap marker");
   } finally { clock.mockRestore(); }
+});
+
+test("project discovery still prunes expired shown candidates before the Recap count", async () => {
+  const f = fixture(), now = Date.now(), candidates = new CandidateStore({ memoryDir: f.base, now: () => now - 40 * 86400_000 });
+  const old = candidates.put({ project: f.project, kind: "memory", text: "expired shown fixture" }, "public"); candidates.close();
+  const db = new Database(join(f.base, "candidates.db"));
+  try { db.query("UPDATE candidates SET shown_at = ? WHERE id = ?").run(now - 8 * 86400_000, old); } finally { db.close(); }
+  const provider = await open(f.family), review = await provider.snapshot({ after: 0, panel: "review", project: f.project });
+  expect((review.rows as { id: string }[]).map(row => row.id).sort()).toEqual([f.memory, f.fail].sort());
+  const recap = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(recap.error).toBeUndefined(); expect(JSON.stringify(recap)).toContain("2 candidates pending");
+  expect(JSON.stringify(recap)).not.toContain("3 candidates pending");
+});
+
+test("a Timeline row expiring during the awaited MCP return is refused and never cached", async () => {
+  const f = fixture(); let now = Date.now(), calls = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now), original = mcpModule.createMemoryMcp;
+  const factory = spyOn(mcpModule, "createMemoryMcp").mockImplementation(options => {
+    const reader = original(options), timeline = reader.tools.amem_timeline;
+    reader.tools.amem_timeline = async args => {
+      calls++;
+      if (calls !== 1) return timeline(args);
+      const expiresAt = now + 1000;
+      const selected = [{ id: "e".repeat(32), tier: "short", kind: "finding", text: "expires during return", expiresAt: new Date(expiresAt).toISOString() }];
+      await Promise.resolve(); now = expiresAt + 1;
+      return selected;
+    };
+    return reader;
+  });
+  try {
+    const provider = await open(f.family), first = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+    expect(first.error).toBeDefined(); expect(first.entries).toBeUndefined();
+    const recovered = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+    expect(recovered.error).toBeUndefined(); expect(JSON.stringify(recovered)).not.toContain("expires during return");
+    expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "timeline", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
+    expect(calls).toBe(2);
+  } finally { factory.mockRestore(); clock.mockRestore(); }
 });
 
 test("Recap matches a direct brief under machine policy and leaves the memory home unchanged", async () => {

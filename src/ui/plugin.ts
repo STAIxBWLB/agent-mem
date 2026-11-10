@@ -134,7 +134,7 @@ export const plugin = {
       const keys = new Set<string>(), waiting = new Set<string>();
       try { for (const p of readCatalogFresh(base)) keys.add(p.key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
       try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
-      if (hasCandidates()) for (const key of withPendingCandidates(base, reader => reader.projects({ allWaiting: true }))) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
+      if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
     function projectList(): string[] {
@@ -147,13 +147,15 @@ export const plugin = {
       else catalog = undefined;
       return list;
     }
-    function leaseExpiry(value: unknown): number {
-      if (Array.isArray(value)) return value.reduce((until, item) => Math.min(until, leaseExpiry(item)), Infinity);
-      if (!value || typeof value !== "object") return Infinity;
+    function dataExpiry(name: string, data: Args): number {
       let until = Infinity;
-      for (const [key, item] of Object.entries(value)) {
-        if ((key === "until" || key === "expiresAt") && typeof item === "string") { const at = Date.parse(item); if (at > Date.now()) until = Math.min(until, at); }
-        else if (item && typeof item === "object") until = Math.min(until, leaseExpiry(item));
+      if (name === "timeline" && Array.isArray(data.entries)) for (const entry of data.entries) {
+        if (entry && typeof entry === "object" && typeof entry.expiresAt === "string")
+          until = Math.min(until, Date.parse(entry.expiresAt));
+      }
+      if (name === "work" && Array.isArray(data.lists)) for (const view of data.lists) {
+        const lease = view && typeof view === "object" ? view.lease : undefined;
+        if (lease && lease.expired === false && typeof lease.until === "string") until = Math.min(until, Date.parse(lease.until));
       }
       return until;
     }
@@ -472,7 +474,7 @@ export const plugin = {
           const data = await load(at => { until = Math.min(until, at); });
           // Resource advice also samples external disk/pressure and a rolling growth
           // window. ponytail: at most 60 s old; upgrade with a resource revision port.
-          return { data, until: Math.min(until, leaseExpiry(data), input.panel === "capacity" ? sampledAt + 60_000 : Infinity) };
+          return { data, until: Math.min(until, dataExpiry(input.panel, data), input.panel === "capacity" ? sampledAt + 60_000 : Infinity) };
         });
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
