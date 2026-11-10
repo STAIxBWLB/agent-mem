@@ -92,3 +92,17 @@ test("shard renewal refuses a replaced shard-readers directory without following
   mkdirSync(other); renameSync(folder, join(dir, "retained-shards")); symlinkSync(other, folder, "dir");
   lease.renew(); lease.close(); expect(readdirSync(other)).toEqual([]); expect(readdirSync(join(dir, "retained-shards"))).toHaveLength(1);
 });
+
+for (const scope of [undefined, "shard"] as const) test(`#353 alias refcount never bypasses profile admission (${scope ?? "legacy"})`, async () => {
+  const root = fixture(), physical = join(root, "physical"), alias = join(root, "alias");
+  mkdirSync(physical); symlinkSync(physical, alias, "dir");
+  const options = scope ? { scope } : {};
+  const reader = registerReaderLease(physical, options); cleanup.push(reader);
+  const folder = scope ? "shard-readers" : "readers", name = readdirSync(join(physical, folder))[0]!;
+  const before = readFileSync(join(physical, folder, name));
+  await withProfileLock(physical, () => {
+    expect(() => registerReaderLease(alias, options)).toThrow(/profile lock/i);
+    expect(readFileSync(join(physical, folder, name))).toEqual(before);
+  });
+  reader.verify(); reader(); expect(readdirSync(join(physical, folder))).toEqual([]);
+});
