@@ -2,6 +2,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow, CaptureStore } from "./memory/capture.ts";
 import { readBriefCache } from "./brief-cache.ts";
+import { noteDisplay, validCachedCurated } from "./brief-curated.ts";
+import { CURATED_CACHE_MIN_READER, readCuratedBriefCache } from "./brief-curated-native.ts";
+import { curatedProfileBinding } from "./memory/curated-cache-state.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { readSelector } from "./memory/generation.ts";
@@ -16,7 +19,7 @@ import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, captureShardDir, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
-import type { MemoryStore, View } from "./memory/store.ts";
+import type { MemoryStore } from "./memory/store.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
 export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
@@ -34,6 +37,7 @@ export interface BriefOptions { cwd: string; base?: string; project?: string; ma
    * Read-only diagnostic/console projection: build the brief without writing to the memory home. No reader lease is taken. The caller supplies the two sections that would otherwise
    * open a store read-write: `curated` is a store opened on a private copy of the logs (absent: the project has no curated notes, an empty complete section) and
    * `workBase` is a private base holding a copy of the project's and its aliases' work logs (absent: the work section is `unavailable`, never claimed complete).
+   * With `nativeSession`, curated uses the same read-only cache/floor path as the native hook, rather than this copied curated store.
    * The capture section opens this machine's capture database read-only, and only when it exists.
    */
   measureOnly?: { curated?: MemoryStore; workBase?: string };
@@ -73,11 +77,6 @@ function workDisplay(view: WorkListView): { data: unknown; partial: boolean } {
   const data = { list: text(view.list, 96), fields: fields(view.fields, 3),
     items: open.slice(0, 2).map(item => ({ task: text(item.task, 96), fields: fields(item.fields, 2) })) };
   return { data, partial };
-}
-function noteDisplay(view: View): { data: unknown; partial: boolean } {
-  const body = displayText(view.text, 240), title = view.title === null ? undefined : displayText(view.title, 96);
-  return { data: { id: view.id, at: view.at, kind: view.kind, ...(title ? { title: title.text } : {}), text: body.text },
-    partial: body.partial || title?.partial === true };
 }
 function repoDisplay(view: RepoView): { data: unknown; partial: boolean } {
   const body = displayText(view.text, 240), title = view.title === null ? undefined : displayText(view.title, 96);
@@ -145,8 +144,27 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       const line = JSON.stringify({ section: "capture", evidence: false, data: shown.data });
       return { line, size: Buffer.byteLength(line) + 1, partial: shown.partial };
     };
-    // Explicit diagnostic snapshots retain the read-only library projection, including raw chronological fill.
+    // Capture diagnostics retain the read-only library projection, including raw chronological fill.
+    // Curated diagnostics mirror native cache admission so they cannot claim context the hook would omit.
     const nativeCache = !!options.nativeSession && !options.measureOnly;
+    const nativeCurated = !!options.nativeSession;
+    const preparedCurated: { line: string; size: number; partial: boolean }[] = [];
+    if (nativeCurated) {
+      const deferredReason = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
+      const prepared = readCuratedBriefCache({ base, project, profile: curatedProfileBinding(base, project),
+        supportingRelease: CURATED_CACHE_MIN_READER, deferredReason, now: (options.now ?? Date.now)() });
+      if (!prepared.cache) { coverage.curated = "unavailable"; reasons.curated = prepared.reason!; }
+      else {
+        coverage.curated = prepared.cache.partial ? "partial" : "complete";
+        for (const row of prepared.cache.rows) {
+          if (preparedCurated.length >= SECTION_RECORDS || !validCachedCurated(row, project, (options.now ?? Date.now)())
+            || !await screen(row.source) || !await screen(row.data)) { coverage.curated = "partial"; continue; }
+          const line = JSON.stringify({ section: "curated", evidence: true, data: row.data });
+          preparedCurated.push({ line, size: Buffer.byteLength(line) + 1, partial: row.partial });
+        }
+      }
+      guard();
+    }
     let capture: CaptureStore | undefined, captureFailed = false;
     if (nativeCache) {
       let floorReason: string | undefined;
@@ -267,11 +285,13 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
         if (!complete) coverage[section] = "partial";
       };
-      if (options.nativeSession) {
-        // ponytail: native parent avoids unbounded curated/legacy-Git/FTS refresh.
-        // Upgrade: asynchronous/deadline-aware generation and curated read transport.
-        coverage.curated = "unavailable";
-        reasons.curated = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
+      if (nativeCurated) {
+        // Pre-screened before work, but allocated only now from the remaining pool.
+        for (const row of preparedCurated) {
+          if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.curated = "partial"; continue; }
+          lines.push(row.line); remaining -= row.size;
+          if (row.partial) coverage.curated = "partial";
+        }
       } else if (options.measureOnly) await run("curated", async () => {
         const store = options.measureOnly!.curated;
         if (store) await recent("curated", window => store.readPage(window), noteDisplay);   // no store: no curated notes, an empty and complete section

@@ -274,10 +274,11 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   if (!opts.remote && !existsSync(join(dir, ".git"))) return fail(noRemote); // never set up: nothing to do, nothing created
   const release = lock(dir);
   if (!release) return fail("another sync is running on this machine");
-  let releaseMutation: (() => void) | undefined;
+  let releaseMutation: (() => void) | undefined, releaseCurated: (() => void) | undefined;
   try {
     releaseMutation = acquireMutation(dir);
     if (!releaseMutation) return fail("another memory mutation is running on this machine");
+    releaseCurated = store.beginCuratedCacheUpdate();
     // Holding sync.lock, no other git runs in this repository: what a killed one left behind is stale.
     rmSync(join(dir, ".git", "index.lock"), { force: true });
     if (existsSync(join(dir, ".git", "MERGE_HEAD"))) await git(dir, ["merge", "--abort"]);
@@ -341,5 +342,5 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
     });
   } catch (e) {
     return fail((e as Error).message.slice(0, 200));
-  } finally { try { releaseMutation?.(); } finally { release(); } }
+  } finally { try { releaseMutation?.(); } finally { try { releaseCurated?.(); } finally { release(); } } }
 }

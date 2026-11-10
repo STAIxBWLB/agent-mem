@@ -108,7 +108,7 @@ test("amem mcp keeps answering from its own code after its install root is remov
   } finally { clearTimeout(timer); if (child.exitCode === null) { child.kill(); await child.exited; } }
 });
 
-// CLI-only modules: no MCP handler reaches them, so `amem mcp` does not load them.
+// Lazy edges confined to CLI/hook paths. Shared helpers can also load transitively at MCP startup.
 const CLI_ONLY = ["brief-capture.ts", "hooks.ts", "hook-transcript.ts", "hook-jcode-journal.ts", "hook-spool-replay.ts", "ingest.ts", "setup.ts", "setup-console.ts", "session-brief.ts", "memory/decay-review.ts", "memory/goal-promotion.ts", "memory/sync-placement-activation.ts", "memory/sync-placement-transport.ts", "sync-placement-writer-context.ts"];
 test("every lazy import under src/ is preloaded by amem mcp or named CLI-only", () => {
   const src = join(PACKAGE, "src"), found = new Set<string>();

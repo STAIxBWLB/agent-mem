@@ -37,10 +37,19 @@ export function timeoutOwnedGroupsGone(table: string, groups: readonly number[])
   return gone;
 }
 
+/** An unreceipted orphan gets only the remainder of the same PID exit barrier. */
+export async function timeoutOwnedGroupBarrier(groups: readonly number[], remaining: () => number, census: () => string, pause: () => Promise<unknown>): Promise<boolean> {
+  for (;;) {
+    if (timeoutOwnedGroupsGone(census(), groups)) return true;
+    if (remaining() <= 0) return false;
+    await pause();
+  }
+}
+
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
 export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
-  const observer = hookProcessObserver(f.root, true, undefined, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
+  const observer = hookProcessObserver(f.root, true, undefined, true, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
   let nativePids: number[] = [], groups: number[] = [];
   try {
     const start = performance.now();
@@ -48,10 +57,11 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
       ? f.runFunctional(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` })
       : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
     const wallMs = performance.now() - start, workers = observer.read();
-    check(workers.length === (event === "SessionStart" ? 3 : 2), "timeout probe did not observe every owned child: "+JSON.stringify(hookProcessDiagnostic({event,...invocation,parentPid:result.pid,variant:functional?"timeout-functional":"timeout-native",
-      expectedOwnedChildren:event==="SessionStart"?3:2,expectation:"fixture-contract",workers,evidence:observer.evidence(),lifecycle:observer.lifecycle(result.pid),
-      metric:readMetrics(f.base).filter(row=>row.kind==="hook").at(-1),cliRawRssMB:result.resourceUsage.maxRSS/1048576})));
+    const diagnostic = () => hookProcessDiagnostic({ event, ...invocation, parentPid: result.pid, variant: functional ? "timeout-functional" : "timeout-native",
+      expectedOwnedChildren: event === "SessionStart" ? 3 : 2, expectation: "fixture-contract", workers, evidence: observer.evidence(), lifecycle: observer.lifecycle(result.pid),
+      metric: readMetrics(f.base).filter(row => row.kind === "hook").at(-1), cliRawRssMB: result.resourceUsage.maxRSS / 1048576 });
     groups = workers.map(worker => worker.pid);
+    if (workers.length !== (event === "SessionStart" ? 3 : 2)) throw new Error("timeout probe did not observe every owned child: " + JSON.stringify(diagnostic()));
     check(workers.every(worker => worker.detached), "timeout child did not own its process group");
     check(existsSync(observer.entered) && existsSync(observer.nativePidFile), "timeout fixture did not reach its owned blocking command");
     const receipt = timeoutDescendantReceipt(readFileSync(observer.nativePidFile, "utf8"), workers.length);
@@ -62,11 +72,33 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     // Never accept a zombie as success: its PID must actually disappear too.
     const until = performance.now() + 500;
     while ([...nativePids, ...groups].some(alive) && performance.now() < until) await Bun.sleep(10);
-    check(![...nativePids, ...groups].some(alive), "owned timeout descendant or leader survived the exit barrier");
+    const survivorError = (groupCensusAtBarrier?: string) => {
+      // Keep the same barrier and failure. A leader exit receipt alone cannot identify
+      // a surviving command, orphan or zombie; retain the fresh numeric process state.
+      const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+      const owned = new Set([...nativePids, ...groups]);
+      const processes = census.stdout.toString().split("\n").flatMap(line => {
+        const row = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+        return row && (owned.has(Number(row[1])) || groups.includes(Number(row[3])))
+          ? [{ pid: Number(row[1]), ppid: Number(row[2]), pgid: Number(row[3]), stat: row[4] }] : [];
+      }).slice(0, 128);
+      return new Error("owned timeout descendant or leader survived the exit barrier: " + JSON.stringify({ ...diagnostic(),
+        descendantReceipt: receipt,
+        groupCensusAtBarrier: groupCensusAtBarrier?.split("\n").flatMap(line => {
+          const row = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+          return row && groups.includes(Number(row[2])) ? [{ pid: Number(row[1]), pgid: Number(row[2]) }] : [];
+        }).slice(0, 128), processCensus: { exitCode: census.exitCode, signalCode: census.signalCode, processes } }));
+    };
+    if ([...nativePids, ...groups].some(alive)) throw survivorError();
     if (!receipt.complete) {
-      const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
-      check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
-      check(timeoutOwnedGroupsGone(census.stdout.toString(), groups), "owned timeout descendant or leader survived the exit barrier");
+      let groupCensusAtBarrier = "";
+      const gone = await timeoutOwnedGroupBarrier(groups, () => until - performance.now(), () => {
+        const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+        check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
+        groupCensusAtBarrier = census.stdout.toString();
+        return groupCensusAtBarrier;
+      }, () => Bun.sleep(10));
+      if (!gone) throw survivorError(groupCensusAtBarrier);
     }
     const spool = join(f.base, "hook-spool");
     const retained = [spool, join(spool, ".capacity")].flatMap(dir => (existsSync(dir) ? readdirSync(dir) : [])

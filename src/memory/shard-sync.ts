@@ -443,6 +443,7 @@ async function prepareHolds(targets: readonly Target[], root: string, url: strin
   }
 }
 export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = {}, testOnlyUnexpectedError?: (error: unknown) => void, testOnlyPhase?: (phase: SyncPhase) => void): Promise<SyncResult> {
+  let releaseCurated: (() => void) | undefined;
   const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return (await import("./sync-placement-transport.ts")).syncPlacementMemory(store, opts);
@@ -541,6 +542,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
       const release = acquireMutation(target.store.dir); if (!release) refuse(`${shardSyncLabel(target.realm)}: another source mutation is running`); releases.push(release); target.mutation=release;
       if (v2) ensurePublisherBoundary(target.store.profile,release);
     }
+    releaseCurated = store.beginCuratedCacheUpdate();
     const blobCache = new Map<string, Buffer>();
     const blob = async (object: string, path: string): Promise<Buffer> => {
       const maximum = path === "shard.json" || isShardManifestPath(path) ? 64 * 1024 : SHARD_PACK_MAX_BYTES, prior = blobCache.get(object);
@@ -729,6 +731,7 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
     for (const release of releases.reverse()) { try { release(); } catch { /* fail-open cleanup */ } }
     try { releaseSync?.(); } catch { /* private lock cleanup */ }
     try { releaseTransport?.(); } catch { /* private lock cleanup */ }
+    releaseCurated?.();
   }
 }
 

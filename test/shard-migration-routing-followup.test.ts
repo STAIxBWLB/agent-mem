@@ -274,7 +274,11 @@ test("#119 shared superseded by private has a separate ids-only dry-run count an
 
 test("#119 a destination symlink into the legacy source refuses before journal or foreign metadata writes", async () => {
   const dir = home(), source = seed(dir), before = readFileSync(source.file);
-  mkdirSync(join(source.memory, "projects"), { recursive: true }); symlinkSync(source.memory, shardDir(source.memory, A));
+  const destination = shardDir(source.memory, A);
+  expect(existsSync(join(destination, "generation.json"))).toBe(false);
+  expect(readdirSync(destination).sort()).toEqual(["machine", "project.json"]);
+  rmSync(destination, { recursive: true });
+  mkdirSync(join(source.memory, "projects"), { recursive: true }); symlinkSync(source.memory, destination);
   await expect(migrateShards(options(dir, "apply"))).rejects.toThrow();
   expect(existsSync(join(source.memory, "shards.json"))).toBe(false);
   expect(existsSync(join(source.memory, "generation.json"))).toBe(false);
@@ -349,8 +353,14 @@ test("#119 malformed UTF-8 legacy line is counted once without shifting its byte
 });
 
 
-test("#119 interrupted active resume deactivates every split reader until idempotent completion", async () => {
-  const dir = home(), source = seed(dir);
+for (const aliasHome of [false, true]) test(`#119 interrupted active resume deactivates every split reader until idempotent completion${aliasHome ? " through a home alias" : ""}`, async () => {
+  const root = home();
+  let dir = root;
+  if (aliasHome) {
+    const actual = join(root, "actual"); mkdirSync(actual);
+    dir = join(root, "alias"); symlinkSync(actual, dir, "dir");
+  }
+  const source = seed(dir);
   await migrateShards(options(dir, "apply"));
   const existing = openShardStore({ home: dir, project: A });
   try {

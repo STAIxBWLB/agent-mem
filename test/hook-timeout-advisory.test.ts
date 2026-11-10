@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { timeoutDescendantReceipt, timeoutOwnedGroupsGone } from "./fakes/hooks-timeout-probe.ts";
+import { timeoutDescendantReceipt, timeoutOwnedGroupsGone, timeoutOwnedGroupBarrier } from "./fakes/hooks-timeout-probe.ts";
 
 test("timeout descendant receipts distinguish complete, incomplete and empty positive-PID lists", () => {
   expect(timeoutDescendantReceipt("12\n34\n", 2)).toEqual({ pids: [12, 34], valid: true, complete: true, incomplete: false });
@@ -32,4 +32,24 @@ test("unknown or malformed process census stays strict", () => {
 test("invalid owned group identities cannot prove an incomplete receipt safe", () => {
   for (const groups of [[], [0], [-1], [Number.NaN], [1, 1]])
     expect(() => timeoutOwnedGroupsGone("2 2\n", groups)).toThrow("R1 owned group identity unavailable");
+});
+
+test("an unreceipted orphan is judged at the existing exit barrier, even after every receipted PID has gone", async () => {
+  let left = 400, scans = 0;
+  const gone = await timeoutOwnedGroupBarrier([42], () => left,
+    () => ++scans === 1 ? "1 1\n99 42\n" : "1 1\n", async () => { left -= 10; });
+  expect(gone).toBe(true);
+  expect(scans).toBe(2);
+  expect(left).toBe(390);
+});
+
+test("a persistent unreceipted group member fails without renewing the exit barrier", async () => {
+  let left = 20, pauses = 0, scans = 0;
+  const gone = await timeoutOwnedGroupBarrier([42], () => left,
+    () => { scans++; return "1 1\n99 42\n"; }, async () => { pauses++; left -= 10; });
+  expect(gone).toBe(false);
+  expect(scans).toBe(3);
+  expect(pauses).toBe(2);
+  expect(left).toBe(0);
+  await expect(timeoutOwnedGroupBarrier([42], () => 0, () => "malformed", async () => {})).rejects.toThrow("R1 process table unavailable");
 });

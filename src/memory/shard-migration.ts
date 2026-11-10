@@ -10,6 +10,7 @@ import { canonicalPath, realPath } from "./platform.ts";
 import { assertNoLiveReaders } from "./reader-lease.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, shardDir, SHARDED_SCHEMA, SHARDED_V2_SCHEMA, userShardDir, SHARD_SCHEMA } from "./shard.ts";
 import { buildGenerationIndex, type Entry } from "./store.ts";
+import { invalidateCuratedCaches } from "./curated-cache-state.ts";
 import { readMigrationSources, type SourcePrefix } from "./migrate.ts";
 import { label, PLAIN, singleLine, type Style } from "./style.ts";
 
@@ -510,7 +511,7 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
   // Validate every immutable prune and routing decision before even a profile/mutation lock creates metadata.
   const initial = preflight(memoryDir, options, undefined, options.mode === "dry-run");
   if (options.mode === "dry-run") return { mode: options.mode, generation: initial.generation, active: initial.previous?.phase === "active", counts: counts(initial.plan), ...refusalSummary(initial.plan), consequence: CONSEQUENCE, ...removalEvidence(initial.previous) };
-  return withProfileLock(memoryDir, async () => {
+  const result = await withProfileLock(memoryDir, async () => {
     const release = acquireMutation(memoryDir);
     if (!release) throw new Error("legacy mutation lock is busy");
     let releaseOwn: (() => void) | undefined;
@@ -546,6 +547,7 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
     let affected: Set<Destination>;
     try {
       for (const destination of plan.destinations) assessDestination(memoryDir, destination, plan, generation, machine);
+      invalidateCuratedCaches(memoryDir);
       if (!alreadyActive) journal.phase = "captured";
       persist();
       affected = writeRoutes(memoryDir, plan, generation, machine);
@@ -561,6 +563,7 @@ export async function migrateShards(options: ShardMigrationOptions): Promise<Sha
     persist();
     return { mode: options.mode, generation, active: true, ...(alreadyActive ? { alreadyActive: true } : {}), counts: counts(plan), ...refusalSummary(plan), consequence: CONSEQUENCE, ...removalEvidence(journal) };
   });
+  return result;
 }
 
 /** Render a shard migration result for a person; JSON output remains owned by the CLI. */

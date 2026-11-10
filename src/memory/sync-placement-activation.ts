@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync } from 
 import { dirname, join } from "node:path";
 import { types } from "node:util";
 import { canonicalJSON, hashJSON, writeProfileJSON, fsyncDirectory } from "./generation.ts";
+import { invalidateCuratedCaches } from "./curated-cache-state.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { withPlacementActivationFences, PlacementInventoryFenceError } from "./sync-placement-activation-locks.ts";
 import { realPath } from "./platform.ts";
@@ -134,7 +135,8 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
   if(options.mode==="dry-run")return{mode:options.mode,active:false,forwardOnly:true,quiescence:"deferred-to-apply",realms:source!.base.realms.length,writers:writer!.measurement.roots,source:report};
   if(!pending&&!options.writerRoots.length)throw Error("Initial sync placement apply requires an explicit complete --writer-root inventory; run amem migrate --sync-placement --dry-run, then apply the reviewed roots.");
   const directories=pending?pending.plan.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16))):source!.directories;
-  try{return await withPlacementActivationFences(home,directories,async(mutation,owner)=>{
+  try{
+    const result=await withPlacementActivationFences(home,directories,async(mutation,owner)=>{
     let intent=pending;
     const initialCheck=()=>{assertPlacementActivationOwner(owner);source!.assertSourcesUnchanged();writer!.attest();if(requirePlacementHomeFloor(home)!==initialFloorHash)fail("changed");};
     if(!intent){
@@ -152,7 +154,10 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     }
     const fixed=intent,epochHash=placementEpochHash(fixed.epoch);
     const metadataCheck=()=>{assertPlacementActivationOwner(owner);requirePlacementHomeFloor(home);if(!committed(home,fixed))fail("changed");readSyncPlacementWriterRoots(home);assertMutationHandle(mutation,home);};
-    if(committed(home,fixed))return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
+    if(committed(home,fixed)){
+      invalidateCuratedCaches(home);
+      return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
+    }
     let current:PlacementWriterContext;
     try{current=writer??initialPlacementWriterContext(home,fixed.roots,options.ownRoot);}catch(error){writerInputFailure(error);}
     if(canonicalJSON(current.measurement.writers)!==canonicalJSON(fixed.plan.writers))throw new PlacementActivationInputError("writer root");
@@ -173,12 +178,15 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     preparePlacementEpoch(home,fixed.epoch,fixed.plan,{mutation,assertCurrent:check});await options.checkpoint?.("after-epoch");check();
     writeSyncPlacementWriterRoots(home,{epochHash,homeHash:fixed.epoch.homeHash,activationHash:fixed.plan.seal,roots:current.measurement.roots},fixed.plan.writers,{mutation,assertCurrent:check});await options.checkpoint?.("after-root-map");check();
     const final=placementActivationFinalMarkers(fixed),markers=readPlacementRuntimeMarkers(home);
+    invalidateCuratedCaches(home);
     if(canonicalJSON(markers.shards)+"\n"!==final.shards)writeProfileJSON(join(home,"shards.json"),JSON.parse(final.shards));else syncFile(join(home,"shards.json"));
     await options.checkpoint?.("after-shards");check();
     if(canonicalJSON(readPlacementRuntimeMarkers(home).profile)+"\n"!==final.profile)writeProfileJSON(join(home,"profile.json"),JSON.parse(final.profile));else syncFile(join(home,"profile.json"));
     await options.checkpoint?.("after-profile");check();
     ensurePlacementFence(home,epochHash,{mutation,assertCurrent:check});await options.checkpoint?.("after-fence");metadataCheck();return finishCommittedActivation(home,fixed,options,mutation,owner,fixed,report);
-  });}catch(error){
+  });
+    return result;
+  }catch(error){
     try{options.testOnlyFailure?.(error);}catch{/* observers never affect production outcomes */}
     return rethrowActivationFailure(error);
   }

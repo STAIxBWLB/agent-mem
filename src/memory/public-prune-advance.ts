@@ -9,6 +9,7 @@ import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mu
 import { createPublicPruneReplayCache, type PublicPruneProjection } from "./public-prune-inputs.ts";
 import { PUBLIC_PRUNE_INTENT, publicPruneViewHash, readPublicPruneViewForActivation, validatePublicPruneView, type PublicPruneViewV1 } from "./public-prune-view.ts";
 import { realPath } from "./platform.ts";
+import { invalidateCuratedCaches } from "./curated-cache-state.ts";
 
 export type PublicPruneAdvanceStage = "after-intent" | "after-shards" | "after-profile" | "after-remove";
 export interface PublicPruneAdvanceOptions {
@@ -120,6 +121,7 @@ function run(intent: AdvanceIntent, provided: readonly MutationHandle[]|undefine
       if(profile===intent.finalProfile&&shards===intent.finalShards&&!lstatSync(file,{throwIfNoEntry:false}))return{revision:intent.finalProfileHash,viewHash};
       immutable(join(intent.home,"public-prune-input-sets",viewHash+".json"),canonicalJSON(intent.view)+"\n");
       immutable(file,text);yield "after-intent";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);
+      invalidateCuratedCaches(intent.home);
       if(shards!==intent.finalShards)replace(join(intent.home,"shards.json"),intent.finalShards);shards=intent.finalShards;
       yield "after-shards";verify();guard(raw(file)===text&&raw(join(intent.home,"profile.json"))===profile&&raw(join(intent.home,"shards.json"))===shards);
       if(profile!==intent.finalProfile)replace(join(intent.home,"profile.json"),intent.finalProfile);profile=intent.finalProfile;
