@@ -301,7 +301,7 @@ export class CaptureStore {
     }
     const db = new Database(file, { create: true });
     this.db = db;
-    try { chmodSync(file, 0o600); } catch { /* best effort */ }
+    try { if ((lstatSync(file).mode & 0o7777) !== 0o600) chmodSync(file, 0o600); } catch { /* best effort */ }
     try {
       db.run(`PRAGMA busy_timeout = ${opts.busyTimeoutMs ?? CAPTURE_BUSY_TIMEOUT_MS}`);
       db.run("PRAGMA journal_mode = WAL");

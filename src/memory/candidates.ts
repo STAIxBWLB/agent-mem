@@ -219,7 +219,8 @@ export class CandidateStore {
     this.path = join(this.dir, "candidates.db");
     this.db = new Database(this.path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${CANDIDATE_DB_BUSY_TIMEOUT_MS}`);
-    chmodSync(this.path, 0o600);
+    // A warm read must not manufacture a revision; every extra permission bit still gets stripped.
+    if ((lstatSync(this.path).mode & 0o7777) !== 0o600) chmodSync(this.path, 0o600);
     // `journal_mode = WAL` takes a lock that busy_timeout does not always wait for, so several processes opening a brand-new home at once (every `amem mcp` builds this store at
     // startup) can see "database is locked". It is retried for a bounded time: the first caller switches the mode, the others then find it already WAL.
     retryLocked(() => this.db.run("PRAGMA journal_mode = WAL"));
@@ -242,7 +243,8 @@ export class CandidateStore {
     if (overflow) throw new ConsolidationReviewLimit(overflow.project, overflow.n);
     this.db.run(`INSERT INTO consolidation_reviews (id, project, status, note_id)
       SELECT id, project, status, note_id FROM candidates WHERE kind = 'consolidation' AND status IN ('accepting', 'accepted', 'rejected')
-      ON CONFLICT(id) DO UPDATE SET status = excluded.status, note_id = excluded.note_id`);
+      ON CONFLICT(id) DO UPDATE SET status = excluded.status, note_id = excluded.note_id
+      WHERE consolidation_reviews.status IS NOT excluded.status OR consolidation_reviews.note_id IS NOT excluded.note_id`);
   }
   private prune(): void {
     this.db.transaction(() => {

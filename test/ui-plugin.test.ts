@@ -2,15 +2,19 @@
 // `for await` over a Bun stream elsewhere in this program stops type-checking.
 /// <reference lib="dom.asynciterable" />
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { Database } from "bun:sqlite";
 import type { ConsolePlugin } from "@staix/agent-console/contract";
 import { registerConsoleConformance } from "@staix/agent-console/conformance";
 import { scanPlugins } from "../node_modules/@staix/agent-console/src/plugins.ts";
 import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
+import * as mcpModule from "../src/mcp-memory.ts";
+import * as revisionModule from "../src/ui/snapshot-revision.ts";
+import { pendingSummary } from "../src/memory/candidate-pending.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -71,6 +75,284 @@ function tree(dir: string): string[] {
 }
 const noteOf = (base: string, id: string, project: string) => { const store = new MemoryStore({ memoryDir: base, screen: () => "skip" }); try { return store.get(id, project); } finally { store.close(); } };
 const statusOf = (base: string, id: string, project: string) => { const c = new CandidateStore({ memoryDir: base }); try { return c.get(id, project)?.status; } finally { c.close(); } };
+
+test("Recap memoizes its screened projection and unchanged cursor polls take under 100 ms", async () => {
+  const f = fixture(), provider = await open(f.family), calls = spyOn(briefModule, "sessionStartBrief");
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(Number.isSafeInteger(first.cursor)).toBe(true);
+    const started = performance.now();
+    expect(await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: first.cursor });
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(await provider.snapshot({ after: 0, panel: "recap", project: f.project })).toEqual(first);
+    expect(calls).toHaveBeenCalledTimes(1);
+    const store = new MemoryStore({ memoryDir: f.base });
+    try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "external recap revision marker", about: [] }); }
+    finally { store.close(); }
+    const changed = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+    expect(JSON.stringify(changed)).toContain("external recap revision marker"); expect(calls).toHaveBeenCalledTimes(2);
+  } finally { calls.mockRestore(); }
+});
+
+test("Recap expires at the selected project's candidate day boundary even when another project masks the home summary", async () => {
+  const day = 86400_000, start = Date.now(); let now = start;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), olderProject = memoryProjectKey(join(f.root, "older-project"));
+    ensureShardDescriptor(f.base, olderProject);
+    const old = new CandidateStore({ memoryDir: f.base, now: () => start - 40 * day });
+    try { old.put({ project: olderProject, kind: "memory", text: "Unshown older project candidate" }, "public"); }
+    finally { old.close(); }
+    const provider = await open(f.family), global = pendingSummary(f.base, undefined, now);
+    expect(global.oldestExpiresInDays).toBe(7);
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first.brief)).toContain("oldest expires in 30 days");
+    now = start + day - 1;
+    expect(await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: first.cursor });
+    now++;
+    expect(pendingSummary(f.base, undefined, now)).toEqual(global);
+    const changed = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(changed.error).toBeUndefined(); expect(changed.changed).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+    expect(JSON.stringify(changed.brief)).toContain("oldest expires in 29 days");
+    expect(await provider.snapshot({ after: Number(changed.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: changed.cursor });
+  } finally { clock.mockRestore(); }
+});
+
+test("all revision panels honor after, query selection and external source or policy changes", async () => {
+  const f = fixture(), provider = await open(f.family);
+  for (const panel of ["review", "recap", "work"]) {
+    const first = await provider.snapshot({ after: 0, panel, project: f.project });
+    expect(first.error, panel).toBeUndefined(); expect(Number.isSafeInteger(first.cursor), panel).toBe(true);
+    expect(await provider.snapshot({ after: Number(first.cursor), panel, project: f.project }), panel).toEqual({ changed: false, cursor: first.cursor });
+  }
+  const review = await provider.snapshot({ after: 0, panel: "review", project: f.project, id: f.memory });
+  const selected = await provider.snapshot({ after: Number(review.cursor), panel: "review", project: f.project, id: f.fail });
+  expect(selected.selected).toBe(f.fail); expect(selected.cursor).not.toBe(review.cursor);
+  const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "external capture revision marker" }); } finally { capture.close(); }
+  const captured = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+  expect(captured.error).toBeUndefined(); expect(captured.cursor).not.toBe(first.cursor);
+  expect(JSON.stringify(captured)).toContain("external capture revision marker");
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["external capture revision marker"] }));
+  const narrowed = await provider.snapshot({ after: Number(captured.cursor), panel: "recap", project: f.project });
+  expect(narrowed.error).toBeUndefined(); expect(narrowed.changed).not.toBe(false);
+  expect(JSON.stringify(narrowed)).not.toContain("external capture revision marker");
+});
+
+test("Capacity stays uncached when its external and rolling-time inputs have no complete revision", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), provider = await open(f.family);
+    const first = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+    expect(first.error).toBeUndefined(); expect(first.cursor).toBeUndefined();
+    now++;
+    const second = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+    expect(second.error).toBeUndefined(); expect(second.changed).toBeUndefined(); expect(second.cursor).toBeUndefined();
+    expect((second.report as { at: string }).at).not.toBe((first.report as { at: string }).at);
+  } finally { clock.mockRestore(); }
+});
+
+test("a revision exception disables reuse while Recap, Timeline and Capacity still read fresh", async () => {
+  const f = fixture(), provider = await open(f.family);
+  const before = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(before.error).toBeUndefined();
+  const revision = spyOn(revisionModule, "snapshotRevision").mockImplementation(() => { throw Error("injected inventory race"); });
+  const brief = spyOn(briefModule, "sessionStartBrief");
+  try {
+    for (const panel of ["timeline", "capacity"]) {
+      const fresh = await provider.snapshot({ after: 0, panel, project: f.project });
+      expect(fresh.error, panel).toBeUndefined(); expect(fresh.changed).toBeUndefined();
+    }
+    expect(revision).not.toHaveBeenCalled();
+    const fresh = await provider.snapshot({ after: Number(before.cursor), panel: "recap", project: f.project });
+    expect(fresh.error).toBeUndefined(); expect(fresh.changed).toBeUndefined(); expect(Number.isSafeInteger(fresh.cursor)).toBe(true);
+    const next = await provider.snapshot({ after: Number(fresh.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(next.changed).toBeUndefined(); expect(next.cursor).not.toBe(fresh.cursor);
+    expect(brief).toHaveBeenCalledTimes(2);
+    revision.mockRestore();
+    const recovered = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(recovered.error).toBeUndefined();
+    expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
+    expect(brief).toHaveBeenCalledTimes(3);
+  } finally { revision.mockRestore(); brief.mockRestore(); }
+});
+
+test("an unrelated home symlink makes snapshots uncacheable without blanking healthy panels", async () => {
+  const f = fixture(), provider = await open(f.family), target = join(f.root, "external.json"), link = join(f.base, "unrelated.json");
+  writeFileSync(target, JSON.stringify({ fixture: true })); symlinkSync(target, link);
+  for (const panel of ["recap", "timeline", "capacity"]) {
+    const fresh = await provider.snapshot({ after: 0, panel, project: f.project });
+    expect(fresh.error, panel).toBeUndefined(); expect(fresh.changed).toBeUndefined();
+    if (panel === "recap") expect((fresh.brief as briefModule.BriefResult).context).toStartWith("Untrusted project memory data");
+  }
+  rmSync(link);
+  const recovered = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(recovered.error).toBeUndefined();
+  expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
+});
+
+test("a capture write during Recap returns the read snapshot uncached, then the next poll caches", async () => {
+  const f = fixture(), provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) {
+      const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+      try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "capture landed during Recap" }); } finally { capture.close(); }
+    }
+    return value;
+  });
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(first.changed).toBeUndefined();
+    expect(JSON.stringify(first)).not.toContain("capture landed during Recap"); expect(reads).toBe(1);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(JSON.stringify(next)).toContain("capture landed during Recap");
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(2);
+  } finally { brief.mockRestore(); }
+});
+
+test("expiry crossing during Recap affects reuse without blanking the data just read", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let restoreBrief: (() => void) | undefined;
+  try {
+    const f = fixture(), store = new MemoryStore({ memoryDir: f.base });
+    try {
+      const id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "expires while Recap returns", about: [] });
+      store.demote(id, "person", f.project, new Date(now + 1000).toISOString());
+    } finally { store.close(); }
+    const provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+    const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+      const value = await original(options); if (++reads === 1) now += 1001; return value;
+    });
+    restoreBrief = () => { brief.mockRestore(); };
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("expires while Recap returns"); expect(reads).toBe(1);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(JSON.stringify(next)).not.toContain("expires while Recap returns");
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(2);
+  } finally { restoreBrief?.(); clock.mockRestore(); }
+});
+
+test("an action during Recap causes one fresh post-action read", async () => {
+  const f = fixture(), provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) expect(await provider.action({ action: "reject", id: f.memory, project: f.project })).toMatchObject({ ok: true });
+    return value;
+  });
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("1 candidate pending");
+    expect(JSON.stringify(first)).not.toContain("2 candidates pending"); expect(reads).toBe(2);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined();
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(3);
+  } finally { brief.mockRestore(); }
+});
+
+test("post-action Recap rereads project selection when the last candidate-only project disappears", async () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-console-candidate-only-")); roots.push(root);
+  const family = join(root, "hub"), base = join(family, "memory"), project = "candidate-only";
+  const candidates = new CandidateStore({ memoryDir: base });
+  const id = candidates.put({ project, kind: "memory", text: "only waiting fixture" }, "public"); candidates.close();
+  const provider = await open(family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) expect(await provider.action({ action: "reject", id, project })).toMatchObject({ ok: true });
+    return value;
+  });
+  try {
+    const changed = await provider.snapshot({ after: 0, panel: "recap", project });
+    expect(changed.error).toBeUndefined(); expect(changed.projects).toEqual([]); expect(changed.project).toBeNull();
+    expect(changed.brief).toBeUndefined(); expect(Number.isSafeInteger(changed.cursor)).toBe(true); expect(reads).toBe(1);
+  } finally { brief.mockRestore(); }
+});
+
+test("Timeline refreshes referenced-file stale markers without a memory-store write", async () => {
+  const f = fixture(), file = join(f.base, "public.txt");
+  writeFileSync(file, "fixture source"); utimesSync(file, new Date(0), new Date(0));
+  const store = new MemoryStore({ memoryDir: f.base }); let id: string;
+  try { id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "referenced file marker", about: ["path:public.txt"] }); }
+  finally { store.close(); }
+  const provider = await open(f.family), first = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+  expect(first.error).toBeUndefined(); expect(first.cursor).toBeUndefined();
+  expect((first.entries as { id: string; stale?: boolean }[]).find(row => row.id === id)!.stale).toBeUndefined();
+  utimesSync(file, new Date(), new Date(Date.now() + 60_000));
+  const changed = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+  expect(changed.error).toBeUndefined(); expect(changed.changed).toBeUndefined(); expect(changed.cursor).toBeUndefined();
+  expect((changed.entries as { id: string; stale?: boolean }[]).find(row => row.id === id)!.stale).toBe(true);
+});
+
+test("provider open warms Review once and successful actions invalidate its cached rows", async () => {
+  const f = fixture(), started = performance.now(), provider = await open(f.family);
+  expect(performance.now() - started).toBeLessThan(5000);
+  const first = await provider.snapshot({ after: 0, panel: "review", project: f.project });
+  expect((first.rows as { id: string }[]).some(row => row.id === f.memory)).toBe(true);
+  expect(await provider.action({ action: "reject", id: f.memory, project: f.project })).toMatchObject({ ok: true });
+  const changed = await provider.snapshot({ after: Number(first.cursor), panel: "review", project: f.project });
+  expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+  expect((changed.rows as { id: string }[]).some(row => row.id === f.memory)).toBe(false);
+});
+
+test("a cached Recap cannot retain a short note after its exact expiry without a write", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), store = new MemoryStore({ memoryDir: f.base });
+    try {
+      const id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "exact expiry recap marker", about: [] });
+      store.demote(id, "person", f.project, new Date(now + 1000).toISOString());
+    } finally { store.close(); }
+    const provider = await open(f.family), first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("exact expiry recap marker");
+    now += 1001;
+    const expired = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(expired.error).toBeUndefined(); expect(expired.changed).not.toBe(false);
+    expect(JSON.stringify(expired)).not.toContain("exact expiry recap marker");
+  } finally { clock.mockRestore(); }
+});
+
+test("project discovery still prunes expired shown candidates before the Recap count", async () => {
+  const f = fixture(), now = Date.now(), candidates = new CandidateStore({ memoryDir: f.base, now: () => now - 40 * 86400_000 });
+  const old = candidates.put({ project: f.project, kind: "memory", text: "expired shown fixture" }, "public"); candidates.close();
+  const db = new Database(join(f.base, "candidates.db"));
+  try { db.query("UPDATE candidates SET shown_at = ? WHERE id = ?").run(now - 8 * 86400_000, old); } finally { db.close(); }
+  const provider = await open(f.family), review = await provider.snapshot({ after: 0, panel: "review", project: f.project });
+  expect((review.rows as { id: string }[]).map(row => row.id).sort()).toEqual([f.memory, f.fail].sort());
+  const recap = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  expect(recap.error).toBeUndefined(); expect(JSON.stringify(recap)).toContain("2 candidates pending");
+  expect(JSON.stringify(recap)).not.toContain("3 candidates pending");
+});
+
+test("Timeline re-reads instead of caching a row whose expiry crosses the MCP return", async () => {
+  const f = fixture(); let now = Date.now(), calls = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now), original = mcpModule.createMemoryMcp;
+  const factory = spyOn(mcpModule, "createMemoryMcp").mockImplementation(options => {
+    const reader = original(options), timeline = reader.tools.amem_timeline;
+    reader.tools.amem_timeline = async args => {
+      calls++;
+      if (calls !== 1) return timeline(args);
+      const expiresAt = now + 1000;
+      const selected = [{ id: "e".repeat(32), tier: "short", kind: "finding", text: "expires during return", expiresAt: new Date(expiresAt).toISOString() }];
+      await Promise.resolve(); now = expiresAt + 1;
+      return selected;
+    };
+    return reader;
+  });
+  try {
+    const provider = await open(f.family), first = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+    expect(first.error).toBeUndefined(); expect(first.cursor).toBeUndefined();
+    const recovered = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+    expect(recovered.error).toBeUndefined(); expect(JSON.stringify(recovered)).not.toContain("expires during return");
+    const third = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+    expect(third.changed).toBeUndefined(); expect(third.cursor).toBeUndefined();
+    expect(calls).toBe(3);
+  } finally { factory.mockRestore(); clock.mockRestore(); }
+});
 
 test("Recap matches a direct brief under machine policy and leaves the memory home unchanged", async () => {
   const f = fixture(), hidden = new MemoryStore({ memoryDir: f.base });

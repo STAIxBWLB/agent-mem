@@ -5,6 +5,9 @@
  */
 import { createHash } from "node:crypto";
 import { InboxCache } from "./inbox-cache.ts";
+import { SnapshotCache } from "./snapshot-cache.ts";
+import { snapshotRevision } from "./snapshot-revision.ts";
+import { canonicalJSON, readSelector } from "../memory/generation.ts";
 import { candidateText, candidateTargets as targetsOf, visibleCandidate as visible } from "./inbox.ts";
 export { candidateText } from "./inbox.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -13,7 +16,8 @@ import { createMemoryMcp } from "../mcp-memory.ts";
 import { sessionStartBrief } from "../session-brief.ts";
 import { withBriefSnapshot } from "../memory/doctor.ts";
 import { MCP_TOOLS } from "../mcp.ts";
-import { CandidateStore, type Candidate, type CandidateInput } from "../memory/candidates.ts";
+import { CandidateStore, withPendingCandidates, type Candidate, type CandidateInput } from "../memory/candidates.ts";
+import { pendingSummary } from "../memory/candidate-pending.ts";
 import { candidateOverlapsBatch } from "../memory/candidate-overlaps.ts";
 import { capacityReport } from "../memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile } from "../memory/capture.ts";
@@ -111,15 +115,22 @@ export const plugin = {
       try { return run(store); } finally { store.close(); }
     };
 
+    const snapshots = new SnapshotCache(() => snapshotRevision(base));
+    let catalog: { revision: string; list: string[]; until: number; sampledAt: number } | undefined;
+    let catalogExpiry = Infinity;
+    const expiryOf = (views: View[]) => views.reduce((until, view) => view.expiresAt === null ? until : Math.min(until, Date.parse(view.expiresAt)), Infinity);
     /** Projects with notes in an unsplit (shared-v1 or generation) home: that store is one file set for every project, with no shard per project. */
     function sharedStoreProjects(): string[] {
       if (existsSync(join(base, "shards.json")) || !["log", "local", "generations"].some(dir => existsSync(join(base, dir)))) return [];
       const store = new MemoryStore({ memoryDir: base, deferPromotions: true });
-      // ponytail: reads every live note on each snapshot; keep a per-index-revision cache if a large shared home makes polls slow.
-      try { return [...new Set(store.list({ limit: Number.MAX_SAFE_INTEGER }).map(view => view.project))]; } finally { store.close(); }
+      try {
+        const views = store.list({ limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true });
+        catalogExpiry = Math.min(catalogExpiry, expiryOf(views));
+        return [...new Set(views.filter(view => !view.supersededBy).map(view => view.project))];
+      } finally { store.close(); }
     }
-    // ponytail: the catalog scan walks every shard on each snapshot; cache it by shard mtimes if polls get slow on a large home.
     function projects(): string[] {
+      catalogExpiry = Infinity;
       if (!existsSync(base)) return [];
       const keys = new Set<string>(), waiting = new Set<string>();
       try { for (const p of readCatalogFresh(base)) keys.add(p.key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
@@ -127,9 +138,26 @@ export const plugin = {
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
+    function projectList(): { list: string[]; cacheable: boolean } {
+      let revision: string;
+      try { revision = snapshotRevision(base); }
+      catch { catalog = undefined; return { list: projects(), cacheable: false }; }
+      const now = Date.now();
+      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return { list: [...catalog.list], cacheable: true };
+      const list = projects();
+      // A missing witness affects reuse only; ordinary fresh reads remain available.
+      try {
+        if (snapshotRevision(base) === revision) {
+          catalog = { revision, list: [...list], sampledAt: now, until: catalogExpiry };
+          return { list, cacheable: true };
+        }
+      } catch { /* Uncacheable; do not turn an inventory race into a panel failure. */ }
+      catalog = undefined;
+      return { list, cacheable: false };
+    }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
-    let chosen: string | undefined;
+    let chosen: string | undefined, actionVersion = 0;
     /** An active project whose curated store holds a note of its own, also when no listing source named it. */
     const exists = (key: string) => {
       if (projectState(base, key) !== "active") return false;
@@ -163,11 +191,12 @@ export const plugin = {
     }
 
     const projectOf = new Map<string, string>();
-    async function pending(project: string, detail: boolean) {
+    async function pending(project: string, detail: boolean, onExpiry?: (at: number) => void) {
       if (!hasCandidates()) return { rows: [], hidden: 0 };
       const p = policy(), store = openCuratedForRead(base, project);
       try {
-        const all = withCandidates(project, c => c.list({ project, status: "pending" }));
+        if (store && onExpiry) onExpiry(expiryOf(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
+        const all = withPendingCandidates(base, reader => reader.list([project, ...aliasedKeys(base, project)]));
         const shown = all.filter(c => visible(c, project, store, p));
         for (const c of shown) projectOf.set(c.id, project);
         const overlaps = detail && store ? await candidateOverlapsBatch(shown, store, { project, policy, policyVersion }) : [];
@@ -204,14 +233,18 @@ export const plugin = {
         ...(view?.title ? { detail: oneLine(view.text, 120) } : {}), ...(view?.at ?? capture?.at ? { at: view?.at ?? capture?.at } : {}), link: { panel: "find", params: { project, q } } };
     }
 
-    async function panel(name: string, args: Args, project: string): Promise<Args> {
+    async function panel(name: string, args: Args, project: string, onExpiry?: (at: number) => void): Promise<Args> {
       switch (name) {
-        case "review": return { ...(await pending(project, true)), selected: str(args.id) ?? null };
+        case "review": return { ...(await pending(project, true, onExpiry)), selected: str(args.id) ?? null };
         case "recap": {
           const revision = policyVersion(), generatedAt = new Date().toISOString();
           assertProjectActive(base, project);
-          const brief = await withBriefSnapshot(base, project, measureOnly => sessionStartBrief({ cwd: base, base, project,
-            repository: false, policy: configuredPolicyOptions(base), measureOnly }));
+          if (onExpiry && pendingSummary(base, [project, ...aliasedKeys(base, project)], Date.now(), true, onExpiry) === null)
+            onExpiry(-Infinity); // Unknown candidate timing disables reuse, never the fresh projection.
+          const brief = await withBriefSnapshot(base, project, measureOnly => {
+            if (measureOnly.curated && onExpiry) onExpiry(expiryOf(measureOnly.curated.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
+            return sessionStartBrief({ cwd: base, base, project, repository: false, policy: configuredPolicyOptions(base), measureOnly });
+          });
           assertProjectActive(base, project);
           if (policyVersion() !== revision) throw Error("recap policy changed");
           return { brief, generatedAt, repoAbsent: true };
@@ -395,35 +428,76 @@ export const plugin = {
       return { ok: false, error: `unknown action ${String(input.action)}` };
     }
 
-    return {
-      assets: { js: asset("./panel.js"), css: asset("./panel.css") },
-      close: () => inboxCache.close(),
-      async snapshot(input) {
-        const args = input as Args;
-        if (input.panel === "inbox") {
-          const snapshot = await inboxCache.snapshot();
-          for (const item of snapshot.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
-          return { ...snapshot };
+    const preparedReads = new Set<string>();
+    const cachedPanels = new Set(["review", "recap", "work"]);
+    async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
+      const args = input as Args;
+      if (input.panel === "inbox") {
+        const value = await inboxCache.snapshot();
+        for (const item of value.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
+        return { ...value };
+      }
+      let list: string[] = [], project: string | undefined;
+      try {
+        if (input.panel === "timeline" || input.panel === "work") {
+          const requested = str(args.project), selected = requested ? resolveAlias(base, requested) : chosen;
+          const bindingOf = (key: string) => canonicalJSON([key, readSelector(base).revision, aliasedKeys(base, key)]);
+          if (!selected || !preparedReads.has(bindingOf(selected))) {
+            // Settle cold MCP schemas/pruning before the first cache revision read.
+            // This is ordinary setup, never a published revision or a retained lease.
+            const initial = pick(args, projects());
+            if (initial) {
+              const prepared = createMemoryMcp({ cwd: base, base, project: initial }); prepared.close();
+              if (preparedReads.size >= 16) preparedReads.delete(preparedReads.values().next().value!);
+              preparedReads.add(bindingOf(initial)); catalog = undefined;
+            }
+          }
         }
-        const list = projects(), project = pick(args, list);
+        const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
+        list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
           const q = str(args.q);
           if (!q || !project) return { hits: [], total: 0 };
           const limit = Math.min(10, Math.max(1, Number(args.limit) || 10));
           const result = await read(project, "amem_search", { query: q, limit }) as { hits: Args[] };
-          const hits = result.hits.map(hit => searchHit(hit, project, q));
+          const hits = result.hits.map(hit => searchHit(hit, project!, q));
           return { hits, total: hits.length };
         }
-        if (input.panel === "capacity") return { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) };
-        if (!project) return { projects: list, project: null };
-        try { return { projects: list, project, ...(await panel(input.panel, args, project)) }; }
-        catch (e) {
-          ctx.log(`amem: ${input.panel} for ${project} failed: ${errorText(e)}`);
-          return { projects: list, project, error: "Memory is unavailable for this project right now; details are in the terminal." };
-        }
-      },
+        const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
+          ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
+          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry)) };
+        // Capacity samples resources/time; Timeline probes arbitrary referenced files.
+        // Neither has a cheap complete revision, so both stay uncached.
+        if (!cachedPanels.has(input.panel)) return await load();
+        const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
+        let projectionVersion = actionVersion;
+        const projection = async () => {
+          if (projectionVersion !== actionVersion) {
+            list = projects(); project = pick(args, list); catalog = undefined;
+            projectionVersion = actionVersion;
+          }
+          let until = Math.min(catalogExpiry,
+            withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
+          const data = await load(at => { until = Math.min(until, at); });
+          return { data, until };
+        };
+        return selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
+      } catch (e) {
+        ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
+        return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
+      }
+    }
+    // The measured cold Review path opens the curated index and computes overlaps.
+    // Warm only the initial selection, once; never enumerate every project's bodies.
+    try { projects(); await snapshot({ panel: "review", after: 0 }); }
+    catch (e) { ctx.log(`amem: review warm-up unavailable: ${errorText(e)}`); }
+    return {
+      assets: { js: asset("./panel.js"), css: asset("./panel.css") },
+      close: async () => { catalog = undefined; preparedReads.clear(); await Promise.all([snapshots.close(), inboxCache.close()]); },
+      snapshot,
       async action(input) {
+        actionVersion++; snapshots.invalidate(); catalog = undefined;
         const result = await performAction(input);
         if (result.ok) {
           const id = str(input.id);
