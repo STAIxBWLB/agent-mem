@@ -17,13 +17,16 @@ const cleanup:(()=>void)[]=[];
 const diagnosticRoots=new Set<string>(), cadenceCalls:CadenceCallDiagnostic[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();diagnosticRoots.clear();cadenceCalls.length=0;});
 const cli=fileURLToPath(new URL("../src/cli.ts",import.meta.url));
-function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false){
+// #345: 60 s exceeds twice the observed 28.554 s hosted-macOS full sync.
+// This functional e2e keeps 30 s child cleanup headroom; the product default stays 30 s.
+const CADENCE_E2E_DEADLINE_MS=60_000, CADENCE_E2E_TIMEOUT_MS=240_000;
+function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false,syncDeadlineMs?:number){
   const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
   const diagnostic=diagnosticRoots.has(f.root), started=performance.now();
   const load=diagnostic?`${cadenceDiagnosticPrelude(f.env.HOME!)}const {runCli}=await import(${JSON.stringify(cli)});`:`import {runCli} from ${JSON.stringify(cli)};`;
   const report=diagnostic?`finally{const p=globalThis.__cadenceProbe;p.mark("cli-finished",{stops:p.signals.map(s=>({deadlineMs:s.deadlineMs,cause:s.cause()??null,aborted:s.signal.aborted}))});}`:"";
-  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
-  const result=Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env${syncDeadlineMs===undefined?"":`,syncDeadlineMs:${syncDeadlineMs}`}});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
+  const result=Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:syncDeadlineMs===undefined?60_000:syncDeadlineMs+30_000});
   if(diagnostic)cadenceCalls.push(collectCadenceCallDiagnostic({call:cadenceCalls.length+1,command:args[0]??"unknown",ifDue:args.includes("--if-due"),force:args.includes("--force"),elapsedMs:performance.now()-started,exitCode:result.exitCode,signalCode:result.signalCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}));
   return result;
 }
@@ -73,7 +76,7 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const rootmap=JSON.parse(readFileSync(join(f.base,"sync-placement-writer-roots.json"),"utf8"));expect(rootmap.roots).toHaveLength(2);
   const {remote,url}=localCliRemote(f),sent=success(run(f,["sync","--remote",url,"--json"]));
   expect(sent.ok,JSON.stringify(sent)).toBe(true);expect(sent.placementPublication).toMatchObject({exported:1,withheld:1});expect(reachableInspectionRowIds(remote)).toEqual([f.allowed]);
-  const cadence=success(run(f,["sync","--if-due","--force","--json"]));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
+  const cadence=success(run(f,["sync","--if-due","--force","--json"],false,CADENCE_E2E_DEADLINE_MS));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});
   const blocked=run(f,["sync","--json"]);expect(blocked.exitCode).not.toBe(0);expect(blocked.stderr.toString()).toContain("amem migrate --sync-placement --dry-run");
@@ -92,9 +95,10 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   expect(success(run(f,["sync","--json"])).ok).toBe(true);
   const writer=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});let fresh:string;
   try{fresh=writer.note({op:"note",project:f.project,scope:"project",tier:"long",kind:"finding",peer:"person",source:"person",text:"cadence publication after renewal",about:[]});}finally{writer.close();}
-  expect(success(run(f,["sync","--if-due","--force","--json"])).ok).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
+  expect(success(run(f,["sync","--if-due","--force","--json"],false,CADENCE_E2E_DEADLINE_MS)).ok).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
+  expect(cadenceCalls.filter(call=>call.ifDue&&call.outcome.ok===true&&call.outcome.skipped===null).map(call=>call.observedDeadlinesMs)).toEqual([[CADENCE_E2E_DEADLINE_MS],[CADENCE_E2E_DEADLINE_MS]]);
   expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
-}),120_000); // Several actual local-Git publications plus fresh writer measurements; this is functional, not R2 timing proof.
+}),CADENCE_E2E_TIMEOUT_MS); // Two 60 s cadence budgets, 90 s child envelopes, plus activation/plain sync and cleanup; functional, not R2 timing proof.
 
 test("missing prerequisites/floor and missing explicit CLI root refuse with next steps",async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);
