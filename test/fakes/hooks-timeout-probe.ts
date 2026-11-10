@@ -63,7 +63,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     // Never accept a zombie as success: its PID must actually disappear too.
     const until = performance.now() + 500;
     while ([...nativePids, ...groups].some(alive) && performance.now() < until) await Bun.sleep(10);
-    if ([...nativePids, ...groups].some(alive)) {
+    const survivorError = () => {
       // Keep the same barrier and failure. A leader exit receipt alone cannot identify
       // a surviving command, orphan or zombie; retain the fresh numeric process state.
       const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
@@ -73,13 +73,14 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
         return row && (owned.has(Number(row[1])) || groups.includes(Number(row[3])))
           ? [{ pid: Number(row[1]), ppid: Number(row[2]), pgid: Number(row[3]), stat: row[4] }] : [];
       }).slice(0, 128);
-      throw new Error("owned timeout descendant or leader survived the exit barrier: " + JSON.stringify({ ...diagnostic(),
+      return new Error("owned timeout descendant or leader survived the exit barrier: " + JSON.stringify({ ...diagnostic(),
         descendantReceipt: receipt, processCensus: { exitCode: census.exitCode, signalCode: census.signalCode, processes } }));
-    }
+    };
+    if ([...nativePids, ...groups].some(alive)) throw survivorError();
     if (!receipt.complete) {
       const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
       check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
-      check(timeoutOwnedGroupsGone(census.stdout.toString(), groups), "owned timeout descendant or leader survived the exit barrier");
+      if (!timeoutOwnedGroupsGone(census.stdout.toString(), groups)) throw survivorError();
     }
     const spool = join(f.base, "hook-spool");
     const retained = [spool, join(spool, ".capacity")].flatMap(dir => (existsSync(dir) ? readdirSync(dir) : [])
