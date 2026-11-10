@@ -141,9 +141,9 @@ export const plugin = {
       const revision = snapshotRevision(base), now = Date.now();
       if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return [...catalog.list];
       const list = projects();
-      // ponytail: accepting-candidate retention and catalog resource samples refresh
-      // within 60 s; an authoritative catalog revision/expiry port is the upgrade.
-      if (snapshotRevision(base) === revision) catalog = { revision, list: [...list], sampledAt: now, until: Math.min(catalogExpiry, now + 60_000) };
+      // Pending-summary time revisions trigger the original candidate pruning;
+      // curated project disappearance is bounded by the exact next note expiry.
+      if (snapshotRevision(base) === revision) catalog = { revision, list: [...list], sampledAt: now, until: catalogExpiry };
       else catalog = undefined;
       return list;
     }
@@ -431,7 +431,7 @@ export const plugin = {
     }
 
     const preparedReads = new Set<string>();
-    const cachedPanels = new Set(["review", "recap", "capacity", "timeline", "work"]);
+    const cachedPanels = new Set(["review", "recap", "timeline", "work"]);
     async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
       const args = input as Args;
       if (input.panel === "inbox") {
@@ -441,6 +441,20 @@ export const plugin = {
       }
       let list: string[] = [], project: string | undefined;
       try {
+        if (input.panel === "timeline" || input.panel === "work") {
+          const requested = str(args.project), selected = requested ? resolveAlias(base, requested) : chosen;
+          const bindingOf = (key: string) => canonicalJSON([key, readSelector(base).revision, aliasedKeys(base, key)]);
+          if (!selected || !preparedReads.has(bindingOf(selected))) {
+            // Settle cold MCP schemas/pruning before the first cache revision read.
+            // This is ordinary setup, never a published revision or a retained lease.
+            const initial = pick(args, projects());
+            if (initial) {
+              const prepared = createMemoryMcp({ cwd: base, base, project: initial }); prepared.close();
+              if (preparedReads.size >= 16) preparedReads.delete(preparedReads.values().next().value!);
+              preparedReads.add(bindingOf(initial)); catalog = undefined;
+            }
+          }
+        }
         list = projectList(); project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
@@ -451,30 +465,18 @@ export const plugin = {
           const hits = result.hits.map(hit => searchHit(hit, project!, q));
           return { hits, total: hits.length };
         }
-        if (project && (input.panel === "timeline" || input.panel === "work")) {
-          const binding = canonicalJSON([project, readSelector(base).revision, aliasedKeys(base, project)]);
-          if (!preparedReads.has(binding)) {
-            // Existing MCP setup may create a cold schema or prune expired candidates.
-            // Settle it before the cache's revision fence; retain no handle or lease.
-            const prepared = createMemoryMcp({ cwd: base, base, project }); prepared.close();
-            if (preparedReads.size >= 16) preparedReads.delete(preparedReads.values().next().value!);
-            preparedReads.add(binding); catalog = undefined;
-            return snapshot(input);
-          }
-        }
         const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
           ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
           : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry)) };
+        // Disk/pressure and rolling growth windows have no cheap complete revision.
+        // Capacity stays fresh and uncached until an authoritative resource revision exists.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
         return await snapshots.snapshot(key, input.after, async () => {
-          const sampledAt = Date.now();
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           const data = await load(at => { until = Math.min(until, at); });
-          // Resource advice also samples external disk/pressure and a rolling growth
-          // window. ponytail: at most 60 s old; upgrade with a resource revision port.
-          return { data, until: Math.min(until, dataExpiry(input.panel, data), input.panel === "capacity" ? sampledAt + 60_000 : Infinity) };
+          return { data, until: Math.min(until, dataExpiry(input.panel, data)) };
         });
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
@@ -483,7 +485,7 @@ export const plugin = {
     }
     // The measured cold Review path opens the curated index and computes overlaps.
     // Warm only the initial selection, once; never enumerate every project's bodies.
-    try { await snapshot({ panel: "review", after: 0 }); }
+    try { projects(); await snapshot({ panel: "review", after: 0 }); }
     catch (e) { ctx.log(`amem: review warm-up unavailable: ${errorText(e)}`); }
     return {
       assets: { js: asset("./panel.js"), css: asset("./panel.css") },

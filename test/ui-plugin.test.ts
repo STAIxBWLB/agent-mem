@@ -95,7 +95,7 @@ test("Recap memoizes its screened projection and unchanged cursor polls take und
 
 test("all revision panels honor after, query selection and external source or policy changes", async () => {
   const f = fixture(), provider = await open(f.family);
-  for (const panel of ["review", "recap", "capacity", "timeline", "work"]) {
+  for (const panel of ["review", "recap", "timeline", "work"]) {
     const first = await provider.snapshot({ after: 0, panel, project: f.project });
     expect(first.error, panel).toBeUndefined(); expect(Number.isSafeInteger(first.cursor), panel).toBe(true);
     expect(await provider.snapshot({ after: Number(first.cursor), panel, project: f.project }), panel).toEqual({ changed: false, cursor: first.cursor });
@@ -113,6 +113,19 @@ test("all revision panels honor after, query selection and external source or po
   const narrowed = await provider.snapshot({ after: Number(captured.cursor), panel: "recap", project: f.project });
   expect(narrowed.error).toBeUndefined(); expect(narrowed.changed).not.toBe(false);
   expect(JSON.stringify(narrowed)).not.toContain("external capture revision marker");
+});
+
+test("Capacity stays uncached when its external and rolling-time inputs have no complete revision", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), provider = await open(f.family);
+    const first = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+    expect(first.error).toBeUndefined(); expect(first.cursor).toBeUndefined();
+    now++;
+    const second = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+    expect(second.error).toBeUndefined(); expect(second.changed).toBeUndefined(); expect(second.cursor).toBeUndefined();
+    expect((second.report as { at: string }).at).not.toBe((first.report as { at: string }).at);
+  } finally { clock.mockRestore(); }
 });
 
 test("provider open warms Review once and successful actions invalidate its cached rows", async () => {
