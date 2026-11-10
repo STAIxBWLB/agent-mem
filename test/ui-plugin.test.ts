@@ -14,6 +14,7 @@ import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import * as mcpModule from "../src/mcp-memory.ts";
 import * as revisionModule from "../src/ui/snapshot-revision.ts";
+import { pendingSummary } from "../src/memory/candidate-pending.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
@@ -92,6 +93,30 @@ test("Recap memoizes its screened projection and unchanged cursor polls take und
     expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
     expect(JSON.stringify(changed)).toContain("external recap revision marker"); expect(calls).toHaveBeenCalledTimes(2);
   } finally { calls.mockRestore(); }
+});
+
+test("Recap expires at the selected project's candidate day boundary even when another project masks the home summary", async () => {
+  const day = 86400_000, start = Date.now(); let now = start;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), olderProject = memoryProjectKey(join(f.root, "older-project"));
+    ensureShardDescriptor(f.base, olderProject);
+    const old = new CandidateStore({ memoryDir: f.base, now: () => start - 40 * day });
+    try { old.put({ project: olderProject, kind: "memory", text: "Unshown older project candidate" }, "public"); }
+    finally { old.close(); }
+    const provider = await open(f.family), global = pendingSummary(f.base, undefined, now);
+    expect(global.oldestExpiresInDays).toBe(7);
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first.brief)).toContain("oldest expires in 30 days");
+    now = start + day - 1;
+    expect(await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: first.cursor });
+    now++;
+    expect(pendingSummary(f.base, undefined, now)).toEqual(global);
+    const changed = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(changed.error).toBeUndefined(); expect(changed.changed).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+    expect(JSON.stringify(changed.brief)).toContain("oldest expires in 29 days");
+    expect(await provider.snapshot({ after: Number(changed.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: changed.cursor });
+  } finally { clock.mockRestore(); }
 });
 
 test("all revision panels honor after, query selection and external source or policy changes", async () => {

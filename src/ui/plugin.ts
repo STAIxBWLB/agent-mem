@@ -17,6 +17,7 @@ import { sessionStartBrief } from "../session-brief.ts";
 import { withBriefSnapshot } from "../memory/doctor.ts";
 import { MCP_TOOLS } from "../mcp.ts";
 import { CandidateStore, withPendingCandidates, type Candidate, type CandidateInput } from "../memory/candidates.ts";
+import { pendingSummary } from "../memory/candidate-pending.ts";
 import { candidateOverlapsBatch } from "../memory/candidate-overlaps.ts";
 import { capacityReport } from "../memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile } from "../memory/capture.ts";
@@ -238,6 +239,8 @@ export const plugin = {
         case "recap": {
           const revision = policyVersion(), generatedAt = new Date().toISOString();
           assertProjectActive(base, project);
+          if (onExpiry && pendingSummary(base, [project, ...aliasedKeys(base, project)], Date.now(), true, onExpiry) === null)
+            onExpiry(-Infinity); // Unknown candidate timing disables reuse, never the fresh projection.
           const brief = await withBriefSnapshot(base, project, measureOnly => {
             if (measureOnly.curated && onExpiry) onExpiry(expiryOf(measureOnly.curated.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
             return sessionStartBrief({ cwd: base, base, project, repository: false, policy: configuredPolicyOptions(base), measureOnly });

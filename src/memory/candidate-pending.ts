@@ -66,7 +66,9 @@ export function expiresAt(createdAt: number, shownAt: number | null, now: number
  */
 export function pendingSummary(base: string, projects: readonly string[] | undefined, now: number): PendingSummary;
 export function pendingSummary(base: string, projects: readonly string[] | undefined, now: number, strict: true): PendingSummary | null;
-export function pendingSummary(base: string, projects: readonly string[] | undefined, now: number, strict?: true): PendingSummary | null {
+/** Optional cache bound for this scope's displayed ceil-days; does not stamp or prune candidates. */
+export function pendingSummary(base: string, projects: readonly string[] | undefined, now: number, strict: true, onExpiry: (at: number) => void): PendingSummary | null;
+export function pendingSummary(base: string, projects: readonly string[] | undefined, now: number, strict?: true, onExpiry?: (at: number) => void): PendingSummary | null {
   const file = join(base, "candidates.db");
   if (!existsSync(file)) return EMPTY_PENDING;
   const unreadable = strict ? null : EMPTY_PENDING;
@@ -87,7 +89,9 @@ export function pendingSummary(base: string, projects: readonly string[] | undef
       if (row.at + CANDIDATE_AGE_MS - now <= CANDIDATE_DUE_MS) due++;   // by age: an unshown row is protected past it, but the person should hear it is old
       if (row.shown_at === null) unshown++;
     }
-    return { count: rows.length, oldestExpiresInDays: Math.max(0, Math.ceil((soonest - now) / DAY_MS)), dueWithin7Days: due, unshown };
+    const oldestExpiresInDays = Math.max(0, Math.ceil((soonest - now) / DAY_MS));
+    if (oldestExpiresInDays > 0) onExpiry?.(soonest - (oldestExpiresInDays - 1) * DAY_MS);
+    return { count: rows.length, oldestExpiresInDays, dueWithin7Days: due, unshown };
   } catch { return unreadable; }   // fail open: a locked or unreadable sidecar costs the brief this line, never the brief
   finally { try { db?.close(); } catch { /* nothing to close */ } }
 }
