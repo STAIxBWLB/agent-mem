@@ -44,7 +44,7 @@ Bun.plugin({name:'observe-brief-import',setup(builder){builder.onLoad({filter:/[
 `);
     // The host port isolates ordering from the native wall budget; the actual native
     // probe still requires exactly three children under its unchanged real deadline.
-    const result = f.runFunctional("SessionStart", { prompt: "metadata before curated import" }, { BUN_OPTIONS: `--preload=${observer.preload}` }, 500);
+    const result = f.runFunctional("SessionStart", { prompt: "metadata before curated import" }, { BUN_OPTIONS: `--preload=${observer.preload}` });
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(JSON.parse(readFileSync(imported, "utf8"))).toEqual(Array.from({ length: 3 }, () => ({ kind: "native", detached: true })));
     expect(observer.read()).toHaveLength(3);
