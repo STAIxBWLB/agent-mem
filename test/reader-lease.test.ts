@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, symlinkSync, unlinkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertNoLiveReaders, registerReaderLease } from "../src/memory/reader-lease.ts";
+import { realPath } from "../src/memory/platform.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
 const cleanup: (() => void)[] = [];
@@ -82,4 +83,47 @@ test("the default migration check does not inspect an unknown shard lease; activ
   expect(assertNoLiveReaders(dir)).toEqual({ removed: 0 });
   expect(() => assertNoLiveReaders(dir, { includeShards: true })).toThrow("unverifiable");
   expect(readFileSync(file, "utf8")).toBe("{}\n");
+});
+
+function samePhysicalHome(firstHome: string, secondHome: string, scope: "legacy" | "shard", closeAliasFirst: boolean): void {
+  const options = scope === "shard" ? { scope: "shard" as const } : {};
+  const first = registerReaderLease(firstHome, options), second = registerReaderLease(secondHome, options);
+  cleanup.push(first, second);
+  const folder = scope === "shard" ? "shard-readers" : "readers";
+  const names = () => readdirSync(join(firstHome, folder));
+  expect(names()).toHaveLength(1);
+  expect(names()[0]).toMatch(/^[1-9][0-9]*-[a-f0-9]{64}\.json$/);
+  const close = closeAliasFirst ? second : first, remaining = closeAliasFirst ? first : second;
+  close(); close();
+  expect(names()).toHaveLength(1);
+  remaining.verify();
+  for (const dir of [firstHome, secondHome]) expect(() => assertNoLiveReaders(dir, { includeShards: true })).toThrow("reader is live");
+  const third = registerReaderLease(closeAliasFirst ? secondHome : firstHome, options); cleanup.push(third);
+  third.verify(); third(); remaining.verify(); expect(names()).toHaveLength(1);
+  remaining(); expect(names()).toEqual([]);
+  expect(assertNoLiveReaders(secondHome, { includeShards: true })).toEqual({ removed: 0 });
+}
+for (const scope of ["legacy", "shard"] as const) for (const closeAliasFirst of [false, true]) {
+  test(`#353 parent alias shares ${scope} lease until last close (${closeAliasFirst ? "alias" : "canonical"} first)`, () => {
+    const root = home(), physical = join(root, "physical"), alias = join(root, "alias");
+    mkdirSync(physical); symlinkSync(physical, alias, "dir");
+    samePhysicalHome(join(physical, "memory"), join(alias, "memory"), scope, closeAliasFirst);
+  });
+  test.skipIf(process.platform !== "darwin" || !existsSync("/var/tmp") || !existsSync("/private/var/tmp"))(
+    `#353 macOS private-var shares ${scope} lease (${closeAliasFirst ? "alias" : "canonical"} first)`, () => {
+    const alias = mkdtempSync("/var/tmp/amem-reader-spelling-"); cleanup.push(() => rmSync(alias, { recursive: true, force: true }));
+    const physical = realPath(alias);
+    expect(physical).not.toBe(alias);
+    samePhysicalHome(physical, alias, scope, closeAliasFirst);
+  });
+}
+test("#353 retargeting a parent alias cannot redirect last-reader cleanup to another home", () => {
+  const root = home(), firstHome = join(root, "first"), otherHome = join(root, "other"), alias = join(root, "alias");
+  mkdirSync(firstHome); mkdirSync(otherHome); symlinkSync(firstHome, alias, "dir");
+  const first = registerReaderLease(alias), other = registerReaderLease(otherHome); cleanup.push(first, other);
+  unlinkSync(alias); symlinkSync(otherHome, alias, "dir");
+  first(); expect(leaseNames(firstHome)).toEqual([]);
+  other.verify(); expect(leaseNames(otherHome)).toHaveLength(1);
+  expect(() => assertNoLiveReaders(otherHome)).toThrow("reader is live");
+  other(); expect(leaseNames(otherHome)).toEqual([]);
 });

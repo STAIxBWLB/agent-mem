@@ -8,6 +8,7 @@ import { migrateShards, shardMigrationStatus } from "../src/memory/shard-migrati
 import { shardDir, userShardDir } from "../src/memory/shard.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { applyPrune, planPrune, pruneId, pruneRowHash, type PruneRow } from "../src/memory/prune.ts";
+import { realPath } from "../src/memory/platform.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
 
 const A = "github.com/example/routing-followup";
@@ -353,6 +354,37 @@ test("#119 interrupted active resume deactivates every split reader until idempo
   await migrateShards(options(dir, "apply"));
   const existing = openShardStore({ home: dir, project: A });
   try {
+    expect(existing.list({ project: A }).map(row => row.id)).toContain(source.id);
+    const appended = later(source.row, "old-layout append before interrupted active resume");
+    appendFileSync(source.file, encoded(appended));
+    await expect(migrateShards({ ...options(dir, "resume"), checkpoint: stage => {
+      if (stage === "after-shard") throw new Error("interrupt active resume after a shard");
+    } })).rejects.toThrow("interrupt active resume after a shard");
+    expect(JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8")).phase).toBe("captured");
+    expect(shardMigrationStatus(source.memory)).toMatchObject({ active: false, phase: "captured", pending: { rows: 1 } });
+    expect(() => openShardStore({ home: dir, project: A })).toThrow();
+    expect(() => existing.list({ project: A })).toThrow();
+    expect(() => existing.note(note(A, "must never append while split is incomplete"))).toThrow();
+    await migrateShards(options(dir, "resume"));
+    await migrateShards(options(dir, "resume"));
+    expect(JSON.parse(readFileSync(join(source.memory, "shards.json"), "utf8")).phase).toBe("active");
+    const reopened = openShardStore({ home: dir, project: A });
+    try {
+      expect(reopened.list({ project: A }).filter(row => row.id === appended.id)).toHaveLength(1);
+      expect(reopened.list({ project: A }).some(row => row.text === "must never append while split is incomplete")).toBe(false);
+    } finally { reopened.close(); }
+  } finally { existing.close(); }
+});
+
+test("#353 parent-alias reader survives canonical close and strict interrupted resume", async () => {
+  const root = home(), physical = join(root, "physical"), dir = join(root, "alias");
+  mkdirSync(physical); symlinkSync(physical, dir, "dir");
+  const source = seed(dir);
+  await migrateShards(options(dir, "apply"));
+  const existing = openShardStore({ home: dir, project: A });
+  try {
+    const canonical = openShardStore({ memoryDir: realPath(source.memory), project: A });
+    canonical.close();
     expect(existing.list({ project: A }).map(row => row.id)).toContain(source.id);
     const appended = later(source.row, "old-layout append before interrupted active resume");
     appendFileSync(source.file, encoded(appended));
