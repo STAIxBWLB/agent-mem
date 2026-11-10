@@ -83,3 +83,123 @@ test("the bounded selection cache evicts an old result and never shares its curs
   await cache.snapshot("0", 0, read);
   expect(calls).toBe(18);
 });
+
+test("unavailable revisions discard old entries and independently return full fresh replies until recovery", async () => {
+  let unavailable = false, reads = 0;
+  const cache = new SnapshotCache(() => { if (unavailable) throw Error("revision unavailable"); return "source"; });
+  const read = async () => ({ data: { value: ++reads }, until: Infinity });
+  const old = await cache.snapshot("recap", 0, read);
+  unavailable = true;
+  const replies = await Promise.all(Array.from({ length: 10 }, () => cache.snapshot("recap", Number(old.cursor), read)));
+  expect(reads).toBe(11);
+  expect(new Set(replies.map(reply => reply.cursor)).size).toBe(10);
+  for (const reply of replies) {
+    expect(Number.isSafeInteger(reply.cursor)).toBe(true); expect(reply.cursor).not.toBe(old.cursor);
+    expect(Number(reply.cursor)).toBeGreaterThan(0);
+    expect(reply.changed).toBeUndefined(); expect(typeof reply.value).toBe("number");
+  }
+  expect((Reflect.get(cache, "entries") as Map<string, unknown>).size).toBe(0);
+  expect((Reflect.get(cache, "flights") as Map<string, unknown>).size).toBe(0);
+  unavailable = false;
+  const recovered = await cache.snapshot("recap", Number(replies[0]!.cursor), read);
+  expect(recovered.value).toBe(12);
+  expect(await cache.snapshot("recap", Number(recovered.cursor), read)).toEqual({ changed: false, cursor: recovered.cursor });
+  expect(reads).toBe(12);
+});
+
+test("explicit fresh reads never consult a revision or reuse a flight even if that revision recovers", async () => {
+  let probes = 0, reads = 0;
+  const cache = new SnapshotCache(() => { probes++; return "source"; });
+  const read = async () => ({ data: { value: ++reads, changed: false, rows: ["screened"] }, until: Infinity });
+  const replies = await Promise.all([cache.fresh(read), cache.fresh(read)]);
+  expect(probes).toBe(0); expect(reads).toBe(2); expect(replies[0]!.cursor).not.toBe(replies[1]!.cursor);
+  expect(replies.every(reply => reply.changed === undefined)).toBe(true);
+  (replies[0]!.rows as string[]).push("caller mutation"); expect(replies[1]!.rows).toEqual(["screened"]);
+  expect((Reflect.get(cache, "entries") as Map<string, unknown>).size).toBe(0);
+  expect((Reflect.get(cache, "flights") as Map<string, unknown>).size).toBe(0);
+  const recovered = await cache.snapshot("recap", Number(replies[0]!.cursor), async () => ({ data: { value: ++reads }, until: Infinity }));
+  expect(recovered.value).toBe(3); expect(probes).toBe(3);
+});
+
+for (const failedProbe of [2, 3]) test(`revision failure at probe ${failedProbe} discards its unverifiable body and rereads fresh`, async () => {
+  let probes = 0, reads = 0;
+  const cache = new SnapshotCache(() => { if (++probes === failedProbe) throw Error("revision failed"); return "source"; });
+  const read = async () => ({ data: { value: ++reads }, until: Infinity });
+  const reply = await cache.snapshot("recap", 0, read);
+  expect(reply.value).toBe(2); expect(reply.changed).toBeUndefined(); expect(probes).toBe(failedProbe);
+  expect((Reflect.get(cache, "entries") as Map<string, unknown>).size).toBe(0);
+  expect((Reflect.get(cache, "flights") as Map<string, unknown>).size).toBe(0);
+  const recovered = await cache.snapshot("recap", Number(reply.cursor), read);
+  expect(recovered.value).toBe(3);
+  expect(await cache.snapshot("recap", Number(recovered.cursor), read)).toEqual({ changed: false, cursor: recovered.cursor });
+});
+
+test("revision loss during a shared read gives every waiter a separate fresh computation", async () => {
+  let unavailable = false, reads = 0, release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const cache = new SnapshotCache(() => { if (unavailable) throw Error("revision lost"); return "source"; });
+  const read = async () => { const value = ++reads; await blocked; return { data: { value }, until: Infinity }; };
+  const pending = Array.from({ length: 5 }, () => cache.snapshot("recap", 0, read));
+  expect(reads).toBe(1); unavailable = true; release();
+  const replies = await Promise.all(pending);
+  expect(reads).toBe(6); expect(new Set(replies.map(reply => reply.cursor)).size).toBe(5);
+  expect(replies.every(reply => Number(reply.value) > 1 && reply.changed === undefined)).toBe(true);
+});
+
+test("read errors, policy refusals and successful revision mismatches never become revision fallbacks", async () => {
+  for (const unavailable of [false, true]) {
+    let probes = 0, reads = 0;
+    const cache = new SnapshotCache(() => { probes++; if (unavailable) throw Error("revision failed"); return "source"; });
+    const failure = Error("console revision unavailable");
+    await expect(cache.snapshot("recap", 0, async () => { reads++; throw failure; })).rejects.toBe(failure);
+    expect(reads).toBe(1); expect(probes).toBe(1);
+    await expect(cache.snapshot("recap", 0, async () => { reads++; return { data: { error: "policy refusal" }, until: Infinity }; })).rejects.toThrow("snapshot unavailable");
+    expect(reads).toBe(2); expect(probes).toBe(2);
+  }
+  let probes = 0, reads = 0;
+  const cache = new SnapshotCache(() => { probes++; if (probes > 2) throw Error("later revision failed"); return probes === 1 ? "before" : "after"; });
+  await expect(cache.snapshot("recap", 0, async () => ({ data: { value: ++reads }, until: Infinity }))).rejects.toThrow("inputs changed");
+  expect(reads).toBe(1); expect(probes).toBe(2);
+});
+
+test("a failed revision probe cannot mask an action, close, expiry or rollback arriving at that boundary", async () => {
+  for (const failedProbe of [2, 3]) for (const change of ["action", "close", "expiry", "rollback"] as const) {
+    let probes = 0, reads = 0, now = 10, closing: Promise<void> | undefined;
+    const cache = new SnapshotCache(() => {
+      if (++probes === failedProbe) {
+        if (change === "action") cache.invalidate();
+        if (change === "close") closing = cache.close();
+        if (change === "expiry") now = 20;
+        if (change === "rollback") now = 9;
+        throw Error("revision failed too");
+      }
+      return "source";
+    }, () => now);
+    await expect(cache.snapshot("recap", 0, async () => ({ data: { value: ++reads }, until: 20 }))).rejects.toThrow("inputs changed");
+    expect(reads).toBe(1); if (closing) await closing;
+  }
+});
+
+test("fresh reads retain expiry, rollback, action and close fences and active-read limits", async () => {
+  for (const change of ["action", "close", "expiry", "rollback"] as const) {
+    let now = 10, release!: () => void, closed = false;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const cache = new SnapshotCache(() => { throw Error("unavailable"); }, () => now);
+    const request = cache.snapshot("recap", 0, async () => { await blocked; return { data: { value: "fresh" }, until: 20 }; });
+    let closing: Promise<void> | undefined;
+    if (change === "action") cache.invalidate();
+    if (change === "close") { closing = cache.close().then(() => { closed = true; }); await Promise.resolve(); expect(closed).toBe(false); }
+    if (change === "expiry") now = 20;
+    if (change === "rollback") now = 9;
+    release(); await expect(request).rejects.toThrow("inputs changed");
+    if (closing) { await closing; expect(closed).toBe(true); await expect(cache.fresh(async () => ({ data: {}, until: Infinity }))).rejects.toThrow("closed"); }
+  }
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const cache = new SnapshotCache(() => { throw Error("unavailable"); });
+  const read = async () => { await blocked; return { data: { ready: true }, until: Infinity }; };
+  const requests = Array.from({ length: 16 }, () => cache.fresh(read));
+  await expect(cache.fresh(read)).rejects.toThrow("concurrency limit");
+  release(); expect((await Promise.all(requests)).every(reply => reply.ready === true)).toBe(true);
+  await cache.close();
+});
