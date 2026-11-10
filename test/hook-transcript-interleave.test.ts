@@ -459,7 +459,8 @@ for (const control of [
     const result = f.runFunctional(control.hookEvent, { session_id: sessionId, transcript_path: transcript }, observed.env);
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     const trace = observed.rows(), scan = trace.find(row => row.kind === "scan")!;
-    if (control.tagMode !== "preserve") expect(scan.effective).toBe(control.effective);
+    expect(scan.received).toBe(control.received);
+    expect(scan.effective).toBe(control.effective);
     expect(trace.filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(1);
     expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
     expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe("deadline");
