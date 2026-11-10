@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { timeoutDescendantReceipt, timeoutOwnedGroupsGone, timeoutOwnedGroupBarrier } from "./fakes/hooks-timeout-probe.ts";
+import { timeoutDescendantReceipt, timeoutOwnedGroupsGone, timeoutOwnedGroupBarrier, timeoutProbeBranch } from "./fakes/hooks-timeout-probe.ts";
 
 test("timeout descendant receipts distinguish complete, incomplete and empty positive-PID lists", () => {
   expect(timeoutDescendantReceipt("12\n34\n", 2)).toEqual({ pids: [12, 34], valid: true, complete: true, incomplete: false });
@@ -52,4 +52,66 @@ test("a persistent unreceipted group member fails without renewing the exit barr
   expect(pauses).toBe(2);
   expect(left).toBe(0);
   await expect(timeoutOwnedGroupBarrier([42], () => 0, () => "malformed", async () => {})).rejects.toThrow("R1 process table unavailable");
+});
+
+
+function timeoutObservation() {
+  const evidence = [
+    { phase: "preload" as const, pid: 10, loads: 1 },
+    { phase: "precheck" as const, pid: 10, loads: 1, remainingUs: 1812, host: 0 },
+    { phase: "deadline_skip" as const, pid: 10, loads: 1, remainingUs: 1812, host: 0 },
+  ];
+  return { control: false, expected: 2, parentPid: 10, workers: [] as import("./fakes/hooks-process-observer.ts").HookWorkerProcess[], evidence,
+    lifecycle: [] as import("./fakes/hooks-process-observer.ts").HookLifecycleReceipt[], entered: false,
+    receipt: timeoutDescendantReceipt("", 2), survivors: 0 };
+}
+function spawnedTimeoutObservation() {
+  const input = timeoutObservation();
+  input.workers.push({ pid: 20, detached: true, kind: "native", argv: [] });
+  const evidence: import("./fakes/hooks-process-observer.ts").HookProcessEvidence[] = [input.evidence[0]!,
+    { phase: "attempt", pid: 10, loads: 1, exact: 1, native: 1 },
+    { phase: "returned", pid: 10, loads: 1, exact: 1, native: 1, childPid: 20 }];
+  for (const phase of ["spawn-attempt", "spawn", "kill-request", "exit", "reap-end"] as const)
+    input.lifecycle.push({ phase, parentPid: 10, childPid: phase === "spawn-attempt" ? 0 : 20, kind: "native", atMs: 1, ...(phase === "reap-end" ? { reaped: 1 } : {}) });
+  return { ...input, evidence };
+}
+test("pre-admission requires this invocation's positive guard evidence, zero attempts and children", () => {
+  const input = timeoutObservation();
+  expect(timeoutProbeBranch(input)).toBe("pre-admission");
+  for (const evidence of [input.evidence.slice(0, 1), input.evidence.map(row => ({ ...row, remainingUs: 5000 })),
+    input.evidence.map(row => ({ ...row, pid: 11 })), input.evidence.map(row => ({ ...row, loads: 2 }))])
+    expect(() => timeoutProbeBranch({ ...input, evidence })).toThrow();
+  expect(timeoutProbeBranch({ ...input, evidence: [input.evidence[0]!, { phase: "session-native-deadline-skip", pid: 10, loads: 1, remainingUs: -100 }] })).toBe("pre-admission");
+  expect(() => timeoutProbeBranch({ ...input, lifecycle: [{ phase: "spawn-attempt", parentPid: 10, childPid: 0, kind: "native", atMs: 1 }] })).toThrow();
+});
+test("spawned-not-entered requires complete lifecycle and zero survivors even without a PID witness", () => {
+  const input = spawnedTimeoutObservation();
+  expect(timeoutProbeBranch(input)).toBe("spawned-not-entered");
+  expect(() => timeoutProbeBranch({ ...input, survivors: 1 })).toThrow();
+  for (const phase of ["spawn", "exit", "reap-end"] as const)
+    expect(() => timeoutProbeBranch({ ...input, lifecycle: input.lifecycle.filter(row => row.phase !== phase) })).toThrow();
+  expect(() => timeoutProbeBranch({ ...input, receipt: timeoutDescendantReceipt("bad", 2) })).toThrow();
+});
+test("cleanup controls cannot substitute a deadline refusal, missing child or missing entry receipt", () => {
+  expect(() => timeoutProbeBranch({ ...timeoutObservation(), control: true })).toThrow();
+  const input = spawnedTimeoutObservation();
+  expect(() => timeoutProbeBranch({ ...input, control: true })).toThrow();
+  expect(() => timeoutProbeBranch({ ...input, control: true, entered: true, receipt: timeoutDescendantReceipt("30", 2) })).toThrow();
+  const complete = { ...input, control: true, expected: 1, entered: true, receipt: timeoutDescendantReceipt("30", 1) };
+  expect(timeoutProbeBranch(complete)).toBe("admitted-blocked");
+  expect(() => timeoutProbeBranch({ ...complete, entered: false })).toThrow();
+  expect(() => timeoutProbeBranch({ ...complete, survivors: 1 })).toThrow();
+  expect(() => timeoutProbeBranch({ ...complete, receipt: timeoutDescendantReceipt("30 30", 2) })).toThrow();
+});
+
+
+test("a census cannot accept disappearance observed after the same exit deadline", async () => {
+  let left = 1;
+  expect(await timeoutOwnedGroupBarrier([42], () => left, () => { left -= 20; return "1 1\n"; }, async () => {})).toBe(false);
+  let scans = 0;
+  expect(await timeoutOwnedGroupBarrier([42], () => -1, () => { scans++; return "1 1\n"; }, async () => {})).toBe(false);
+  expect(scans).toBe(0);
+});
+test("an entered witness with an empty PID receipt is contradictory evidence", () => {
+  expect(() => timeoutProbeBranch({ ...spawnedTimeoutObservation(), entered: true })).toThrow("entered witness has no descendant PID receipt");
 });
