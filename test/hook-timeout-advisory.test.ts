@@ -103,3 +103,15 @@ test("cleanup controls cannot substitute a deadline refusal, missing child or mi
   expect(() => timeoutProbeBranch({ ...complete, survivors: 1 })).toThrow();
   expect(() => timeoutProbeBranch({ ...complete, receipt: timeoutDescendantReceipt("30 30", 2) })).toThrow();
 });
+
+
+test("a census cannot accept disappearance observed after the same exit deadline", async () => {
+  let left = 1;
+  expect(await timeoutOwnedGroupBarrier([42], () => left, () => { left -= 20; return "1 1\n"; }, async () => {})).toBe(false);
+  let scans = 0;
+  expect(await timeoutOwnedGroupBarrier([42], () => -1, () => { scans++; return "1 1\n"; }, async () => {})).toBe(false);
+  expect(scans).toBe(0);
+});
+test("an entered witness with an empty PID receipt is contradictory evidence", () => {
+  expect(() => timeoutProbeBranch({ ...spawnedTimeoutObservation(), entered: true })).toThrow("entered witness has no descendant PID receipt");
+});

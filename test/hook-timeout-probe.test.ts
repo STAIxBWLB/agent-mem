@@ -9,7 +9,7 @@ for (const [event, phase, branch] of [
 ] as const) test(`real ${event} ${phase} timeout retains every strict outcome with a mandatory cleanup control`, async () => {
   const f = hookFixture(), run = f.run;
   // Delay only the actual native invocation. Its mandatory control uses its own
-  // fixture and must reach every child/entry under the existing host seam.
+  // fixture and must reach every child/entry under the published bin bootstrap and existing host seam.
   f.run = (name, payload, extra = {}) => {
     const preload = extra.BUN_OPTIONS!.slice("--preload=".length), code = readFileSync(preload, "utf8");
     const anchor = phase === "loader" ? " const source=readFileSync(path,'utf8'),guard=" : "const sleeper='sleep 30 &";

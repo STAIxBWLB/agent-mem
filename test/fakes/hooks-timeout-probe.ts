@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { hookCapturePending } from "../../src/hook-spool.ts";
 import { readMetrics } from "../../src/memory/metrics.ts";
 import { validRssSources } from "../../src/hook-resources.ts";
 import { reportBudgetAdvisory } from "../../scripts/hook-timing-check.ts";
 import { measuredHookRss, measuredBudgetHookRss } from "../../scripts/hook-rss-check.ts";
-import { hookFixture } from "./hooks-fixture.ts";
+import { hookBin, hookFixture } from "./hooks-fixture.ts";
 import type { HookProcessEvidence, HookLifecycleReceipt, HookWorkerProcess } from "./hooks-process-observer.ts";
 import { hookProcessObserver } from "./hooks-process-observer.ts";
 import { hookProcessDiagnostic } from "../../scripts/hook-process-diagnostic.ts";
@@ -41,7 +41,11 @@ export function timeoutOwnedGroupsGone(table: string, groups: readonly number[])
 /** An unreceipted orphan gets only the remainder of the same PID exit barrier. */
 export async function timeoutOwnedGroupBarrier(groups: readonly number[], remaining: () => number, census: () => string, pause: () => Promise<unknown>): Promise<boolean> {
   for (;;) {
-    if (timeoutOwnedGroupsGone(census(), groups)) return true;
+    if (remaining() < 0) return false;
+    const gone = timeoutOwnedGroupsGone(census(), groups);
+    // A slow ps cannot turn disappearance after the deadline into timely cleanup.
+    if (remaining() < 0) return false;
+    if (gone) return true;
     if (remaining() <= 0) return false;
     await pause();
   }
@@ -79,6 +83,7 @@ export function timeoutProbeBranch(input: {
       && rows.some(row => row.phase === "reap-end" && row.reaped === 1), "timeout owned child lifecycle incomplete");
     check(evidence.some(row => row.phase === "returned" && row.childPid === worker.pid), "timeout spawn return unavailable");
   }
+  check(!input.entered || receipt.pids.length > 0, "timeout entered witness has no descendant PID receipt");
   check(receipt.pids.length <= workers.length, "timeout descendant receipt exceeds owned children");
   return input.entered && receipt.pids.length > 0 ? "admitted-blocked" : "spawned-not-entered";
 }
@@ -87,20 +92,33 @@ export function timeoutProbeBranch(input: {
  * budget step uses the published executable with its unchanged real deadline. */
 export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
   // Required for every real-deadline sample, on both OSes. This calls the same
-  // checkout's hookMain through the existing explicit host seam; never resets the
-  // bin/amem.js clock below. Failure is fatal, with no added retries or advisory.
+  // published bin bootstrap through hookMain's existing explicit host seam; never
+  // resets the bin/amem.js clock below. Failure is fatal, with no added retries or advisory.
   if (!functional) {
     const control = hookFixture();
     try { await hookTimeoutProbe(control, event, true, invocation); }
     finally { control.close(); }
   }
   const observer = hookProcessObserver(f.root, true, undefined, true, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
+  const controlLoaded = join(f.root, "timeout-control-loaded");
+  if (functional) {
+    // Change only the explicit host argument in this control's in-memory bootstrap.
+    // The published entrypoint, stdin, imports, started clock and product are intact.
+    appendFileSync(observer.preload, `
+Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filter:/[/]bin[/]amem[.]js$/},({path})=>{
+ if(path!==${JSON.stringify(hookBin)})throw Error('timeout control executable mismatch');
+ const source=readFileSync(path,'utf8'),anchor='await hookMain(args.slice(1), started)';
+ if(source.split(anchor).length!==2)throw Error('timeout control host seam anchor changed');
+ writeFileSync(${JSON.stringify(controlLoaded)},'loaded',{mode:0o600});
+ return {loader:'js',contents:source.replace(anchor,'await hookMain(args.slice(1), started, {deadlineMs:2000})')};
+});}});
+`);
+  }
   let nativePids: number[] = [], groups: number[] = [];
   try {
     const start = performance.now();
-    const result = functional
-      ? f.runFunctional(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` })
-      : f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
+    const result = f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
+    check(!functional || existsSync(controlLoaded), "timeout control did not load the published executable host seam");
     const wallMs = performance.now() - start, workers = observer.read();
     const diagnostic = () => hookProcessDiagnostic({ event, ...invocation, parentPid: result.pid, variant: functional ? "timeout-functional" : "timeout-native",
       expectedOwnedChildren: functional ? (event === "SessionStart" ? 3 : 2) : null, expectation: functional ? "fixture-contract" : "observed-spawn-attempts", workers, evidence: observer.evidence(), lifecycle: observer.lifecycle(result.pid),
@@ -137,7 +155,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     {
       let groupCensusAtBarrier = "";
       const gone = await timeoutOwnedGroupBarrier(groups.length ? groups : [result.pid], () => until - performance.now(), () => {
-        const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+        const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: Math.max(1, Math.ceil(until - performance.now())) });
         check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
         groupCensusAtBarrier = census.stdout.toString();
         return groupCensusAtBarrier;
@@ -173,7 +191,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     const rss = functional || branch !== "admitted-blocked" || workers.length !== expected ? measuredHookRss(metric, cliRssMB)
       : measuredBudgetHookRss(metric, cliRssMB, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `timeout ${event}`);
     // Every invocation reports coverage, including legitimate refusals before fixture entry.
-    console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, control: functional, branch,
+    console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, parentPid: result.pid, control: functional, branch,
       observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0 }));
     return { event, branch, wallMs, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
   } finally {
