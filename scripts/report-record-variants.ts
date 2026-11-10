@@ -122,13 +122,14 @@ export function aggregateRecordVariants(samples: unknown[]) {
       turnsWithRecords: x.turnsWithRecordsRows ? x.turnsWithRecords : null,
       turnShare: turnComplete ? ratio(x.turnsWithRecords, x.observedTurns) : null,
       observedShare: ratio(x.turnsWithRecords, x.observedTurns),
+      incompleteStopTurns: x.turnRows - x.observedTurns,
       validRecords: x.recordRows ? x.validRecords : null,
       basisShare: x.recordRows && x.basisRows === x.recordRows ? ratio(x.basisRecords, x.validRecords) : null,
       unverifiedShare: x.recordRows && x.unverifiedRows === x.recordRows ? ratio(x.unverifiedRecords, x.validRecords) : null,
       meanBriefBytes: x.briefSamples ? ratio(x.briefBytes, x.briefSamples) : null,
       disabledSessions: x.enabledRows ? x.disabledSessions : null,
       instructionEmittedSessions: x.instructionRows ? x.instructionEmittedSessions : null,
-      denominatorCounts: { sessions: x.sessionRows ? x.sessions : null, allStopTurns: x.turns, observedStopTurns: x.observedTurns, exactStopTurns: x.observedTurns, validRecords: x.recordRows ? x.validRecords : null, briefSamples: x.briefSamples },
+      denominatorCounts: { sessions: x.sessionRows ? x.sessions : null, allStopTurns: x.turns, observedStopTurns: x.observedTurns, exactStopTurns: x.observedTurns, incompleteStopTurns: x.turnRows - x.observedTurns, validRecords: x.recordRows ? x.validRecords : null, briefSamples: x.briefSamples },
       denominators: { recordsPerSession: "validRecords / sessions", turnShare: "complete-scan turnsWithRecords / exactStopTurns; null when any Stop scan is incomplete or unknown", observedShare: "complete-scan turnsWithRecords / observedTurns; incomplete scans excluded", basisShare: "basisRecords / validRecords", unverifiedShare: "unverifiedRecords / validRecords", meanBriefBytes: "sum(recordBriefBytes) / samples containing recordBriefBytes" },
     }];
   }));

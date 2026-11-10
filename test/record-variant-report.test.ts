@@ -113,8 +113,8 @@ test("partial scans keep parsed counts but never enter exact Stop turn denominat
       { event: "Stop", variant: "a", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 0, recordUnverifiedRecords: 0 },
       { event: "Stop", variant: "a", recordTurns: 1, recordScanIncomplete: 1, recordTurnsWithRecords: parsed, recordValidRecords: parsed, recordBasisRecords: 0, recordUnverifiedRecords: 0, transcriptStopReason: reason },
     ]);
-    expect(report.variants.a).toMatchObject({ turns: 2, observedTurns: 1, turnsWithRecords: 1, turnShare: null, observedShare: 1,
-      validRecords: 1 + parsed, denominatorCounts: { allStopTurns: 2, exactStopTurns: 1, observedStopTurns: 1 } });
+    expect(report.variants.a).toMatchObject({ turns: 2, observedTurns: 1, turnsWithRecords: 1, turnShare: null, observedShare: 1, incompleteStopTurns: 1,
+      validRecords: 1 + parsed, denominatorCounts: { allStopTurns: 2, exactStopTurns: 1, observedStopTurns: 1, incompleteStopTurns: 1 } });
     expect(report.scanCoverage).toMatchObject({ complete: false, incompleteRows: 1 });
   }
 });
@@ -122,6 +122,20 @@ test("partial scans keep parsed counts but never enter exact Stop turn denominat
 test("legacy numeric counters without scan coverage cannot claim an exact negative turn", () => {
   const report = aggregateRecordVariants([{ event: "Stop", variant: "b", recordTurns: 1, recordTurnsWithRecords: 0,
     recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 }]);
-  expect(report.variants.b).toMatchObject({ turnShare: null, observedShare: null, denominatorCounts: { allStopTurns: 1, exactStopTurns: 0 } });
+  expect(report.variants.b).toMatchObject({ turnShare: null, observedShare: null, denominatorCounts: { allStopTurns: 1, exactStopTurns: 0, incompleteStopTurns: 1 } });
   expect(report.scanCoverage).toMatchObject({ complete: false, incompleteRows: 1 });
+});
+
+test("each variant keeps a complete-scan share and adjacent incomplete-turn count", () => {
+  const stop = { event: "Stop", recordTurns: 1, recordBasisRecords: 0, recordUnverifiedRecords: 0 };
+  const report = aggregateRecordVariants([
+    { ...stop, variant: "a", recordScanIncomplete: 0, recordValidRecords: 1, recordTurnsWithRecords: 1 },
+    { ...stop, variant: "a", recordScanIncomplete: 0, recordValidRecords: 0, recordTurnsWithRecords: 0 },
+    { ...stop, variant: "a", recordScanIncomplete: 1, recordValidRecords: 0, recordTurnsWithRecords: 0 },
+    { ...stop, variant: "b", recordScanIncomplete: 0, recordValidRecords: 1, recordTurnsWithRecords: 1 },
+  ]);
+  expect(report.variants.a).toMatchObject({ turnShare: null, observedShare: 0.5, incompleteStopTurns: 1,
+    denominatorCounts: { allStopTurns: 3, observedStopTurns: 2, exactStopTurns: 2, incompleteStopTurns: 1 } });
+  expect(report.variants.b).toMatchObject({ turnShare: 1, observedShare: 1, incompleteStopTurns: 0,
+    denominatorCounts: { observedStopTurns: 1, incompleteStopTurns: 0 } });
 });
