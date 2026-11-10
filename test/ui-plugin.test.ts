@@ -72,6 +72,75 @@ function tree(dir: string): string[] {
 const noteOf = (base: string, id: string, project: string) => { const store = new MemoryStore({ memoryDir: base, screen: () => "skip" }); try { return store.get(id, project); } finally { store.close(); } };
 const statusOf = (base: string, id: string, project: string) => { const c = new CandidateStore({ memoryDir: base }); try { return c.get(id, project)?.status; } finally { c.close(); } };
 
+test("Recap memoizes its screened projection and unchanged cursor polls take under 100 ms", async () => {
+  const f = fixture(), provider = await open(f.family), calls = spyOn(briefModule, "sessionStartBrief");
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(Number.isSafeInteger(first.cursor)).toBe(true);
+    const started = performance.now();
+    expect(await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: first.cursor });
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(await provider.snapshot({ after: 0, panel: "recap", project: f.project })).toEqual(first);
+    expect(calls).toHaveBeenCalledTimes(1);
+    const store = new MemoryStore({ memoryDir: f.base });
+    try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "external recap revision marker", about: [] }); }
+    finally { store.close(); }
+    const changed = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+    expect(JSON.stringify(changed)).toContain("external recap revision marker"); expect(calls).toHaveBeenCalledTimes(2);
+  } finally { calls.mockRestore(); }
+});
+
+test("all revision panels honor after, query selection and external source or policy changes", async () => {
+  const f = fixture(), provider = await open(f.family);
+  for (const panel of ["review", "recap", "capacity", "timeline", "work"]) {
+    const first = await provider.snapshot({ after: 0, panel, project: f.project });
+    expect(first.error, panel).toBeUndefined(); expect(Number.isSafeInteger(first.cursor), panel).toBe(true);
+    expect(await provider.snapshot({ after: Number(first.cursor), panel, project: f.project }), panel).toEqual({ changed: false, cursor: first.cursor });
+  }
+  const review = await provider.snapshot({ after: 0, panel: "review", project: f.project, id: f.memory });
+  const selected = await provider.snapshot({ after: Number(review.cursor), panel: "review", project: f.project, id: f.fail });
+  expect(selected.selected).toBe(f.fail); expect(selected.cursor).not.toBe(review.cursor);
+  const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+  const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "external capture revision marker" }); } finally { capture.close(); }
+  const captured = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+  expect(captured.error).toBeUndefined(); expect(captured.cursor).not.toBe(first.cursor);
+  expect(JSON.stringify(captured)).toContain("external capture revision marker");
+  writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["external capture revision marker"] }));
+  const narrowed = await provider.snapshot({ after: Number(captured.cursor), panel: "recap", project: f.project });
+  expect(narrowed.error).toBeUndefined(); expect(narrowed.changed).not.toBe(false);
+  expect(JSON.stringify(narrowed)).not.toContain("external capture revision marker");
+});
+
+test("provider open warms Review once and successful actions invalidate its cached rows", async () => {
+  const f = fixture(), started = performance.now(), provider = await open(f.family);
+  expect(performance.now() - started).toBeLessThan(5000);
+  const first = await provider.snapshot({ after: 0, panel: "review", project: f.project });
+  expect((first.rows as { id: string }[]).some(row => row.id === f.memory)).toBe(true);
+  expect(await provider.action({ action: "reject", id: f.memory, project: f.project })).toMatchObject({ ok: true });
+  const changed = await provider.snapshot({ after: Number(first.cursor), panel: "review", project: f.project });
+  expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
+  expect((changed.rows as { id: string }[]).some(row => row.id === f.memory)).toBe(false);
+});
+
+test("a cached Recap cannot retain a short note after its exact expiry without a write", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const f = fixture(), store = new MemoryStore({ memoryDir: f.base });
+    try {
+      const id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "exact expiry recap marker", about: [] });
+      store.demote(id, "person", f.project, new Date(now + 1000).toISOString());
+    } finally { store.close(); }
+    const provider = await open(f.family), first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("exact expiry recap marker");
+    now += 1001;
+    const expired = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(expired.error).toBeUndefined(); expect(expired.changed).not.toBe(false);
+    expect(JSON.stringify(expired)).not.toContain("exact expiry recap marker");
+  } finally { clock.mockRestore(); }
+});
+
 test("Recap matches a direct brief under machine policy and leaves the memory home unchanged", async () => {
   const f = fixture(), hidden = new MemoryStore({ memoryDir: f.base });
   hidden.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "recap-denied-token", about: [] }); hidden.close();
