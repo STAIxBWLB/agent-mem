@@ -194,6 +194,55 @@ for (const phase of phases) test("retained transport phase fault resumes without
   expect(held(f, f.ids.allowed!)?.exposure).toBe("published");
 });
 
+test("a real deadline after durable publication intent retains an unknown attempt without publishing and resumes that exact plan", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("deadline-retained allowed original")), declined: store.note(note("NEVER_PUBLIC_DEADLINE")) }) });
+  const controller = new AbortController(), options = { ...f.opts(remote), signal: controller.signal };
+  const observed: PlacementSyncPhase[] = [], originalRows = [...f.capture().rows.values()].map(row => canonicalJSON(row.row)).sort();
+  let saved: ReturnType<typeof retainedPublication> | undefined, planNames: string[] = [], planBytes = "", intentBytes: Buffer | undefined;
+  const result = await syncPlacementMemory(f.store, options, async phase => {
+    observed.push(phase);
+    if (phase !== "before-cas") return;
+    expect(saved).toBeUndefined(); saved = retainedPublication(f);
+    expect(saved).toMatchObject({ phase: "publication-intent", pending: false });
+    expect(saved.facts.map(fact => fact.phase)).toEqual(["artifact-built", "publication-intent"]);
+    planNames = f.plans(); planBytes = canonicalJSON(saved.bundle);
+    const dir = join(f.home, "sync-placement", "epochs", f.epochHash), attempt = saved.bundle.root.seal;
+    intentBytes = readFileSync(join(dir, `publication-${attempt}-intent.json`));
+    expect(readFileSync(join(dir, `publication-${attempt}-receipt.json`))).toHaveLength(0); // Reserved slot, not a completed receipt.
+    expect(refs(remote)).toEqual([]);
+    // The operation has this same signal from its start; only the test's exact phase boundary arms the real timer.
+    const deadline = AbortSignal.timeout(1);
+    await new Promise<void>(resolve => {
+      if (deadline.aborted) resolve(); else deadline.addEventListener("abort", () => resolve(), { once: true });
+    });
+    expect(deadline.aborted).toBe(true); expect(deadline.reason).toMatchObject({ name: "TimeoutError" });
+    controller.abort(deadline.reason);
+    expect(controller.signal.reason).toBe(deadline.reason);
+  });
+  expect(saved).toBeDefined(); expect(controller.signal.aborted).toBe(true);
+  const attempt = saved!.bundle.root.seal, dir = join(f.home, "sync-placement", "epochs", f.epochHash);
+  expect(result).toMatchObject({ ok: false, pushed: false, placementPublication: { attemptHash: attempt, outcome: "unknown" } });
+  expect(result.error).toContain("retained attempt");
+  expect(observed).toEqual(["before-plan-fsync", "plan-fsynced", "artifact-built", "before-cas"]);
+  const retained = retainedPublication(f);
+  expect(retained).toMatchObject({ phase: "publication-intent", pending: false });
+  expect(canonicalJSON(retained.bundle)).toBe(planBytes); expect(f.plans()).toEqual(planNames);
+  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`))).toEqual(intentBytes!);
+  expect(readFileSync(join(dir, `publication-${attempt}-receipt.json`))).toHaveLength(0);
+  expect(retained.facts.some(fact => fact.phase === "completed")).toBe(false);
+  expect(refs(remote)).toEqual([]); expect(verifiedPublicRows(remote).size).toBe(0);
+  expect([...f.capture().rows.values()].map(row => canonicalJSON(row.row)).sort()).toEqual(originalRows);
+  const resumed = await syncMemory(f.store, f.opts(remote));
+  expect(resumed).toMatchObject({ ok: true, pushed: true, placementPublication: { attemptHash: attempt, outcome: "committed" } });
+  const completed = retainedPublication(f);
+  expect(completed).toMatchObject({ phase: "completed", pending: false });
+  expect(canonicalJSON(completed.bundle)).toBe(planBytes); expect(f.plans()).toEqual(planNames);
+  expect(readFileSync(join(dir, `publication-${attempt}-intent.json`))).toEqual(intentBytes!);
+  expect(verifiedPublicRows(remote).has(f.ids.allowed!)).toBe(true);
+  expect(held(f, f.ids.declined!)?.held).toBe(true);
+  assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_DEADLINE"]);
+}, 60_000);
+
 for (const drift of ["policy", "host-epoch", "source"] as const) test("fresh pre-CAS " + drift + " drift refuses without publishing or resealing", async () => {
   const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("PRE_CAS_POLICY_CANARY")) }) }); let changed = false;
   const result = await syncPlacementMemory(f.store, f.opts(remote), phase => {
