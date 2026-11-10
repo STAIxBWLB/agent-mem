@@ -106,18 +106,10 @@ function bounded(reads: ReplayRead[]): void {
   expect(reads.length).toBeLessThanOrEqual(32);
   expect(reads.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(256 * 1024);
 }
-function pending(f: Fixture): { event: string; excerpt: string }[] {
+function pending(f: Fixture): { event: string; excerpt: string; session?: string }[] {
   const dir = join(f.base, "hook-spool");
   return [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder).filter(name => name.startsWith("hook-")).map(name => {
-    const record = JSON.parse(readFileSync(join(folder, name), "utf8")) as { capture: { event: string; excerpt: string } }; return record.capture;
-  }) : []);
-}
-
-interface PendingTranscript { event: string; excerpt: string; session?: string }
-function pendingTranscript(f: Fixture): PendingTranscript[] {
-  const dir = join(f.base, "hook-spool");
-  return [dir, join(dir, ".capacity")].flatMap(folder => existsSync(folder) ? readdirSync(folder).filter(name => name.startsWith("hook-")).map(name => {
-    const row = JSON.parse(readFileSync(join(folder, name), "utf8")) as { capture: PendingTranscript }; return row.capture;
+    const record = JSON.parse(readFileSync(join(folder, name), "utf8")) as { capture: { event: string; excerpt: string; session?: string } }; return record.capture;
   }) : []);
 }
 
