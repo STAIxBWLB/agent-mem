@@ -68,6 +68,7 @@ function observeStageFirst(f: Fixture, tagMode: "preserve" | "missing" | "unknow
   writeFileSync(preload, `import {appendFileSync,readFileSync} from 'node:fs';
 const worker=${JSON.stringify(worker)},trace=${JSON.stringify(trace)},tagMode=${JSON.stringify(tagMode)};
 if(process.argv[1]===worker){
+ if(process.env.HOME!==${JSON.stringify(f.env.HOME)})throw Error('stage-first control requires fixture HOME; run through hookFixture');
  (globalThis as any).__stageFirstIpc=(scan:any)=>{
   const received=scan?.event ?? null;
   if(scan&&tagMode==='missing')delete scan.event;
@@ -89,7 +90,7 @@ if(process.argv[1]===worker){
   if(source.split(replayAnchor).length!==2)throw Error('task203 replay anchor changed; rebase on the worker refactor and reselect the bounded replay insertion point');
   source=source.replace(replayAnchor,replayAnchor+'\\n      await (globalThis as any).__stageFirstReplay(waitForReady);\\n      return false;');
   return {loader:'ts',contents:source};
- }});
+ });}});
 }
 const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&argv[2]===worker?spawn([argv[0],argv[1],'--preload',${JSON.stringify(preload)},...argv.slice(2)],options):spawn(argv,options);
 `);
