@@ -141,7 +141,13 @@ function decodeCandidate(row: CandidateRow, unknownKind: () => void): Candidate 
 }
 const CANDIDATE_EXPIRED_SQL = "at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))";
 const CANDIDATE_PRIORITY_SQL = "CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC";
-export interface PendingCandidateReader { projects(): string[]; list(projects: readonly string[]): Candidate[]; nextExpiry(): number | null }
+/** Project discovery may include accepting and unknown waiting kinds; body reads remain pending-known only. */
+export interface PendingCandidateReader { projects(options?: { allWaiting?: true }): string[]; list(projects: readonly string[]): Candidate[]; nextExpiry(): number | null }
+function allWaitingProjects(options: { allWaiting?: true } | undefined): boolean {
+  if (options !== undefined && (!options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).some(key => key !== "allWaiting") || options.allWaiting !== undefined && options.allWaiting !== true)) throw Error("invalid candidate project options");
+  return options?.allWaiting === true;
+}
 /** Internal inbox read port. It neither creates/migrates a database nor prunes or stamps any row.
  * The port is valid only during the synchronous callback. No immutable fallback may hide current WAL frames. */
 export function withPendingCandidates<T>(memoryDir: string, run: (reader: PendingCandidateReader) => T): T {
@@ -150,7 +156,7 @@ export function withPendingCandidates<T>(memoryDir: string, run: (reader: Pendin
   if (!stat) {
     let closed = false;
     const assertOpen = () => { if (closed) throw new Error("pending candidate reader is closed"); };
-    try { return run({ projects() { assertOpen(); return []; }, list(projects) {
+    try { return run({ projects(options) { assertOpen(); allWaitingProjects(options); return []; }, list(projects) {
       assertOpen(); if (!Array.isArray(projects) || projects.some(project => !text(project, 400))) throw new Error("invalid candidate project scope"); return [];
     }, nextExpiry() { assertOpen(); return null; } }); } finally { closed = true; }
   }
@@ -173,10 +179,11 @@ export function withPendingCandidates<T>(memoryDir: string, run: (reader: Pendin
         if (row.expiry !== null && (!Number.isFinite(row.expiry) || row.expiry <= now)) throw new Error("pending candidate expiry unavailable");
         return row.expiry;
       },
-      projects() {
+      projects(options) {
         assertOpen();
-        const rows = db.query(`${live(false)} SELECT DISTINCT project FROM retained WHERE retention_rank <= ? AND status = 'pending' AND kind IN (SELECT value FROM json_each(?)) ORDER BY project`)
-          .all(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.count, JSON.stringify(KINDS)) as { project: string }[];
+        const allWaiting = allWaitingProjects(options);
+        const rows = db.query(`${live(false)} SELECT DISTINCT project FROM retained WHERE retention_rank <= ? AND ${allWaiting ? "status IN ('pending', 'accepting')" : "status = 'pending' AND kind IN (SELECT value FROM json_each(?))"} ORDER BY project`)
+          .all(now - CANDIDATE_RETENTION.ageMs, now - CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_RETENTION.count, ...(allWaiting ? [] : [JSON.stringify(KINDS)])) as { project: string }[];
         if (rows.some(row => !text(row.project, 400))) throw new Error("pending candidate project unavailable");
         return rows.map(row => row.project);
       },
