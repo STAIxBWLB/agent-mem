@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { InboxCache } from "./inbox-cache.ts";
 import { SnapshotCache } from "./snapshot-cache.ts";
 import { snapshotRevision } from "./snapshot-revision.ts";
-import { canonicalJSON } from "../memory/generation.ts";
+import { canonicalJSON, readSelector } from "../memory/generation.ts";
 import { candidateText, candidateTargets as targetsOf, visibleCandidate as visible } from "./inbox.ts";
 export { candidateText } from "./inbox.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -115,7 +115,7 @@ export const plugin = {
     };
 
     const snapshots = new SnapshotCache(() => snapshotRevision(base));
-    let catalog: { revision: string; list: string[]; until: number } | undefined;
+    let catalog: { revision: string; list: string[]; until: number; sampledAt: number } | undefined;
     let catalogExpiry = Infinity;
     const expiryOf = (views: View[]) => views.reduce((until, view) => view.expiresAt === null ? until : Math.min(until, Date.parse(view.expiresAt)), Infinity);
     /** Projects with notes in an unsplit (shared-v1 or generation) home: that store is one file set for every project, with no shard per project. */
@@ -134,16 +134,16 @@ export const plugin = {
       const keys = new Set<string>(), waiting = new Set<string>();
       try { for (const p of readCatalogFresh(base)) keys.add(p.key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
       try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
-      if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
+      if (hasCandidates()) for (const key of withPendingCandidates(base, reader => reader.projects({ allWaiting: true }))) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
     function projectList(): string[] {
       const revision = snapshotRevision(base), now = Date.now();
-      if (catalog?.revision === revision && now < catalog.until) return [...catalog.list];
+      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return [...catalog.list];
       const list = projects();
       // ponytail: accepting-candidate retention and catalog resource samples refresh
       // within 60 s; an authoritative catalog revision/expiry port is the upgrade.
-      if (snapshotRevision(base) === revision) catalog = { revision, list: [...list], until: Math.min(catalogExpiry, now + 60_000) };
+      if (snapshotRevision(base) === revision) catalog = { revision, list: [...list], sampledAt: now, until: Math.min(catalogExpiry, now + 60_000) };
       else catalog = undefined;
       return list;
     }
@@ -428,6 +428,7 @@ export const plugin = {
       return { ok: false, error: `unknown action ${String(input.action)}` };
     }
 
+    const preparedReads = new Set<string>();
     const cachedPanels = new Set(["review", "recap", "capacity", "timeline", "work"]);
     async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
       const args = input as Args;
@@ -447,6 +448,17 @@ export const plugin = {
           const result = await read(project, "amem_search", { query: q, limit }) as { hits: Args[] };
           const hits = result.hits.map(hit => searchHit(hit, project!, q));
           return { hits, total: hits.length };
+        }
+        if (project && (input.panel === "timeline" || input.panel === "work")) {
+          const binding = canonicalJSON([project, readSelector(base).revision, aliasedKeys(base, project)]);
+          if (!preparedReads.has(binding)) {
+            // Existing MCP setup may create a cold schema or prune expired candidates.
+            // Settle it before the cache's revision fence; retain no handle or lease.
+            const prepared = createMemoryMcp({ cwd: base, base, project }); prepared.close();
+            if (preparedReads.size >= 16) preparedReads.delete(preparedReads.values().next().value!);
+            preparedReads.add(binding); catalog = undefined;
+            return snapshot(input);
+          }
         }
         const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
           ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
@@ -472,7 +484,7 @@ export const plugin = {
     catch (e) { ctx.log(`amem: review warm-up unavailable: ${errorText(e)}`); }
     return {
       assets: { js: asset("./panel.js"), css: asset("./panel.css") },
-      close: async () => { catalog = undefined; await Promise.all([snapshots.close(), inboxCache.close()]); },
+      close: async () => { catalog = undefined; preparedReads.clear(); await Promise.all([snapshots.close(), inboxCache.close()]); },
       snapshot,
       async action(input) {
         snapshots.invalidate(); catalog = undefined;

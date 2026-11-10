@@ -30,6 +30,17 @@ test("expiry changes a cursor even without a source write", async () => {
   expect(expired.value).toBe(2); expect(expired.cursor).not.toBe(first.cursor);
 });
 
+test("a clock rollback revalidates instead of retaining a later projection forever", async () => {
+  let now = 20, calls = 0;
+  const cache = new SnapshotCache(() => "source", () => now);
+  const read = async () => ({ data: { at: now, calls: ++calls }, until: Infinity });
+  const first = await cache.snapshot("recap", 0, read);
+  now = 10;
+  const rolledBack = await cache.snapshot("recap", Number(first.cursor), read);
+  expect(rolledBack.at).toBe(10); expect(rolledBack.calls).toBe(2);
+  expect(first.at).toBe(20);
+});
+
 test("a write or action during a read prevents publication of its old screened body", async () => {
   for (const change of ["source", "action", "close"] as const) {
     let revision = "before", release!: () => void;
@@ -51,6 +62,18 @@ test("errors and already-expired computations are never memoized", async () => {
   for (const until of [0, 1, Number.NaN])
     await expect(cache.snapshot("recap", 0, async () => ({ data: {}, until }))).rejects.toThrow("inputs changed");
   expect((await cache.snapshot("recap", 0, async () => ({ data: { recovered: true }, until: Infinity })))).toMatchObject({ recovered: true });
+});
+
+test("close waits for an invalidated in-flight projection to release its resources", async () => {
+  const cache = new SnapshotCache(() => "source"); let release!: () => void, finished = false;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const flight = cache.snapshot("recap", 0, async () => { await blocked; finished = true; return { data: {}, until: Infinity }; });
+  cache.invalidate();
+  let closed = false;
+  const closing = cache.close().then(() => { closed = true; });
+  await Promise.resolve(); expect(closed).toBe(false);
+  release(); await expect(flight).rejects.toThrow("inputs changed"); await closing;
+  expect(finished).toBe(true); expect(closed).toBe(true);
 });
 
 test("the bounded selection cache evicts an old result and never shares its cursor across keys", async () => {

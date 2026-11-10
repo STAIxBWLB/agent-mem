@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 type Data = Record<string, unknown>;
-interface Entry { generation: number; data: Data; revision: string; cursor: number; until: number; bytes: number }
+interface Entry { sampledAt: number; generation: number; data: Data; revision: string; cursor: number; until: number; bytes: number }
 export interface SnapshotValue { data: Data; until: number }
 
 /** Provider-local screened snapshots. No disk cache, timer, watcher or retained store. */
@@ -18,7 +18,7 @@ export class SnapshotCache {
   async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>): Promise<Data> {
     if (this.closed) throw Error("console snapshots are closed");
     const revision = this.revision(), cached = this.entries.get(key);
-    if (cached && cached.revision === revision && this.now() < cached.until) {
+    if (cached && cached.revision === revision && this.now() >= cached.sampledAt && this.now() < cached.until) {
       this.entries.delete(key); this.entries.set(key, cached);
       return this.reply(cached, after);
     }
@@ -27,15 +27,15 @@ export class SnapshotCache {
     let flight = this.flights.get(flightKey);
     if (!flight) {
       if (this.active.size >= 16) throw Error("console snapshot concurrency limit");
-      const generation = this.generation;
+      const generation = this.generation, sampledAt = this.now();
       flight = (async () => {
         const value = await read();
-        if (this.closed || generation !== this.generation || this.revision() !== revision || !(this.now() < value.until))
+        if (this.closed || generation !== this.generation || this.revision() !== revision || !(this.now() >= sampledAt && this.now() < value.until))
           throw Error("console snapshot inputs changed");
         if (value.data.error !== undefined) throw Error("console snapshot unavailable");
-        const data = structuredClone(value.data), bytes = Buffer.byteLength(JSON.stringify(data));
-        const cursor = Number.parseInt(createHash("sha256").update(JSON.stringify([key, revision, value.until])).digest("hex").slice(0, 13), 16) + 1;
-        const entry = { generation, data, revision, cursor, until: value.until, bytes };
+        const data = structuredClone(value.data), serialized = JSON.stringify(data), bytes = Buffer.byteLength(serialized);
+        const cursor = Number.parseInt(createHash("sha256").update(JSON.stringify([key, revision, value.until])).update(serialized).digest("hex").slice(0, 13), 16) + 1;
+        const entry = { sampledAt, generation, data, revision, cursor, until: value.until, bytes };
         // ponytail: 16 selections and 4 MiB per provider. Larger views are served once;
         // upgrade with paged panel results rather than retaining an unbounded corpus.
         if (bytes <= 4 * 1024 * 1024) {
@@ -53,7 +53,7 @@ export class SnapshotCache {
     }
     try {
       const entry = await flight;
-      if (this.closed || entry.generation !== this.generation || this.revision() !== entry.revision || !(this.now() < entry.until))
+      if (this.closed || entry.generation !== this.generation || this.revision() !== entry.revision || !(this.now() >= entry.sampledAt && this.now() < entry.until))
         throw Error("console snapshot inputs changed");
       return this.reply(entry, after);
     }
