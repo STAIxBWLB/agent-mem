@@ -172,9 +172,17 @@ async function measure() {
         if ([...expected].every(value => available.has(value))) { complete = true; break; }
       }
       if (!complete) {
-        const last = samples.at(-1)!;
+        const runSamples = samples.filter(row => row.event === event && row.logicalRun === logicalRun), last = runSamples.at(-1)!;
+        // Prove the whole scanned prefix from this run's cursor and durable keys; an absent summary alone is not evidence.
+        const scanned = [...summaryEnds].filter(([, end]) => end <= last.offset);
         const message = "transcript summaries not durable within " + MAX_FOLLOW_UPS + " follow-up invocations";
-        if (!reportBudgetAdvisory("not-durable", `${event}:${logicalRun}: ${message}`, { telemetryValid: Number.isFinite(last.wallMs) && Number.isFinite(last.rssMB), survivors: 0 })) throw Error(message);
+        if (!reportBudgetAdvisory("not-durable", `${event}:${logicalRun}: ${message}`, {
+          telemetryValid: Number.isFinite(last.wallMs) && Number.isFinite(last.rssMB), survivors: 0,
+          logicalRunTelemetryValid: runSamples.every(row => Number.isFinite(row.wallMs) && row.wallMs >= 0 && Number.isFinite(row.rssMB) && row.rssMB > 0),
+          transcriptEvent: event, spoolFullStops: runSamples.filter(row => row.stopReason === "spool_full").length,
+          cursorSource: last.offsetSource, cursorOffset: last.offset, summaryPrefixEnd: Math.max(...summaryEnds.values()),
+          scannedSummaries: scanned.length, durableScannedSummaries: scanned.filter(([value]) => previousAvailable.has(value)).length,
+        })) throw Error(message);
         incompleteRuns[event] = (incompleteRuns[event] ?? 0) + 1;
         continue;
       }
