@@ -10,12 +10,15 @@ test("native SessionStart records an expired pre-helper deadline without loading
   const imported = join(f.root, "brief-imported");
   try {
     // A cold loader stall consumes the real executable deadline, never extends it.
-    writeFileSync(observer.preload, `
-Bun.plugin({name:'delay-hook-load',setup(builder){
- builder.onLoad({filter:/[/]hooks[.]ts$/},()=>{Bun.sleepSync(200);});
+    const preload = readFileSync(observer.preload, "utf8");
+    const anchor = " const source=readFileSync(path,'utf8'),guard=";
+    expect(preload.split(anchor)).toHaveLength(2);
+    writeFileSync(observer.preload, preload.replace(anchor, " Bun.sleepSync(200);" + anchor));
+    appendFileSync(observer.preload, `
+Bun.plugin({name:'observe-expired-brief-import',setup(builder){
  builder.onLoad({filter:/[/]session-brief[.]ts$/},()=>{writeFileSync(${JSON.stringify(imported)},'imported');});
 }});
-` + readFileSync(observer.preload, "utf8"));
+`);
     const result = f.run("SessionStart", { prompt: "expired before metadata" }, { BUN_OPTIONS: `--preload=${observer.preload}` });
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
