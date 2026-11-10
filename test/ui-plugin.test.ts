@@ -168,6 +168,68 @@ test("an unrelated home symlink makes snapshots uncacheable without blanking hea
   expect(await provider.snapshot({ after: Number(recovered.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: recovered.cursor });
 });
 
+test("a capture write during Recap returns the read snapshot uncached, then the next poll caches", async () => {
+  const f = fixture(), provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) {
+      const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+      try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "capture landed during Recap" }); } finally { capture.close(); }
+    }
+    return value;
+  });
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(first.changed).toBeUndefined();
+    expect(JSON.stringify(first)).not.toContain("capture landed during Recap"); expect(reads).toBe(1);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(JSON.stringify(next)).toContain("capture landed during Recap");
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(2);
+  } finally { brief.mockRestore(); }
+});
+
+test("expiry crossing during Recap affects reuse without blanking the data just read", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let restoreBrief: (() => void) | undefined;
+  try {
+    const f = fixture(), store = new MemoryStore({ memoryDir: f.base });
+    try {
+      const id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "expires while Recap returns", about: [] });
+      store.demote(id, "person", f.project, new Date(now + 1000).toISOString());
+    } finally { store.close(); }
+    const provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+    const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+      const value = await original(options); if (++reads === 1) now += 1001; return value;
+    });
+    restoreBrief = () => { brief.mockRestore(); };
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("expires while Recap returns"); expect(reads).toBe(1);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined(); expect(JSON.stringify(next)).not.toContain("expires while Recap returns");
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(2);
+  } finally { restoreBrief?.(); clock.mockRestore(); }
+});
+
+test("an action during Recap causes one fresh post-action read", async () => {
+  const f = fixture(), provider = await open(f.family), original = briefModule.sessionStartBrief; let reads = 0;
+  const brief = spyOn(briefModule, "sessionStartBrief").mockImplementation(async options => {
+    const value = await original(options);
+    if (++reads === 1) expect(await provider.action({ action: "reject", id: f.memory, project: f.project })).toMatchObject({ ok: true });
+    return value;
+  });
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(JSON.stringify(first)).toContain("1 candidate pending");
+    expect(JSON.stringify(first)).not.toContain("2 candidates pending"); expect(reads).toBe(2);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined();
+    expect(await provider.snapshot({ after: Number(next.cursor), panel: "recap", project: f.project })).toEqual({ changed: false, cursor: next.cursor });
+    expect(reads).toBe(3);
+  } finally { brief.mockRestore(); }
+});
+
 test("Timeline refreshes referenced-file stale markers without a memory-store write", async () => {
   const f = fixture(), file = join(f.base, "public.txt");
   writeFileSync(file, "fixture source"); utimesSync(file, new Date(0), new Date(0));
