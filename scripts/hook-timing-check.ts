@@ -58,15 +58,18 @@ export interface BudgetFailureEvidence {
   unavailableRssSources?: number; receiptIncomplete?: boolean; wallMs?: number;
   reasonOnlyStreak?: number; drainPass?: number; expectedInvocations?: number; databaseRows?: number; hookPendingRows?: number; capturePendingRows?: number;
   accountedInvocations?: number; acknowledgedPendingRows?: number; pendingAliases?: number; accountingComplete?: boolean; unreadableItems?: number; duplicateItems?: number; unaccountedItems?: number; countedRetirements?: number;
+  transcriptEvent?: string; logicalRunTelemetryValid?: boolean; spoolFullStops?: number; cursorSource?: string; cursorOffset?: number; summaryPrefixEnd?: number;
+  scannedSummaries?: number; durableScannedSummaries?: number;
 }
-/** ponytail: #226's four abandonment/timing classes remain hosted-macOS-only. #293 adds only reason-only
+/** ponytail: #226's original abandonment/timing classes default to hosted macOS. #293 adds only reason-only
  * transcript stalls and exactly-accounted contended drains on exact hosted Linux/macOS markers.
+ * #357 adds only the evidenced StopBurst unfinished-prefix/backpressure case on hosted Linux.
  * Every other verdict stays strict. Read the main red rate after one week; retire #293's exception after
  * a liveness redesign passes 20 strict runs on each affected hosted OS and the person approves retirement.
  * Retirement: remove this exception only when a #226 redesign passes 20 strict uninstrumented hosted-macOS
  * runs and the owner decides to retire it. */
 export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
-  const runner = hostedTimingRunner(env), both = kind === "transcript-stall" || kind === "contended-drain";
+  const runner = hostedTimingRunner(env), both = kind === "transcript-stall" || kind === "contended-drain" || kind === "not-durable";
   if (!(both ? runner !== undefined : runner === "macOS") || evidence.telemetryValid !== true
     || !Number.isSafeInteger(evidence.survivors) || evidence.survivors !== 0) return false;
   for (const count of [evidence.abandonedOwnedWorkers, evidence.unavailableRssSources])
@@ -84,7 +87,17 @@ export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvide
       && evidence.expectedInvocations === evidence.databaseRows! + evidence.hookPendingRows! + evidence.capturePendingRows! - evidence.acknowledgedPendingRows!
       && evidence.unreadableItems === 0 && evidence.duplicateItems === 0 && evidence.unaccountedItems === 0 && evidence.countedRetirements === 0;
   }
-  if (kind === "not-durable") return true;
+  if (kind === "not-durable") {
+    if (runner === "macOS") return true;
+    // ponytail: #357 permits only StopBurst's unfinished-prefix/backpressure ceiling after 64 follow-ups on hosted Linux.
+    // Retire after a product fix gives 10 consecutive strict-green hosted Ubuntu runs, or a later person ruling.
+    return evidence.transcriptEvent === "StopBurst" && evidence.logicalRunTelemetryValid === true && evidence.cursorSource === "cursor"
+      && Number.isSafeInteger(evidence.spoolFullStops) && evidence.spoolFullStops! > 0
+      && Number.isSafeInteger(evidence.cursorOffset) && evidence.cursorOffset! > 0
+      && Number.isSafeInteger(evidence.summaryPrefixEnd) && evidence.summaryPrefixEnd! > evidence.cursorOffset!
+      && Number.isSafeInteger(evidence.scannedSummaries) && evidence.scannedSummaries! > 0
+      && Number.isSafeInteger(evidence.durableScannedSummaries) && evidence.durableScannedSummaries === evidence.scannedSummaries;
+  }
   if (kind === "transcript-wall-max") return evidence.wallMs !== undefined && evidence.wallMs > 300;
   if (kind !== "rss-unknown" && kind !== "owned-descendant-receipt") return false;
   const abandoned = Number.isSafeInteger(evidence.abandonedOwnedWorkers) && evidence.abandonedOwnedWorkers! > 0;
