@@ -11,14 +11,21 @@ import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
 import { readSyncState, nextSyncAt, SYNC_BACKOFF_BASE_MS } from "../src/memory/sync-cadence.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
+import { cadenceDiagnosticPrelude, collectCadenceCallDiagnostic, withCadenceFailureDiagnostics, type CadenceCallDiagnostic } from "./fakes/cadence-diagnostic.ts";
 
 const cleanup:(()=>void)[]=[];
-afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
+const diagnosticRoots=new Set<string>(), cadenceCalls:CadenceCallDiagnostic[]=[];
+afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();diagnosticRoots.clear();cadenceCalls.length=0;});
 const cli=fileURLToPath(new URL("../src/cli.ts",import.meta.url));
 function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false){
   const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
-  const source=`import {runCli} from ${JSON.stringify(cli)};try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
-  return Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+  const diagnostic=diagnosticRoots.has(f.root), started=performance.now();
+  const load=diagnostic?`${cadenceDiagnosticPrelude(f.env.HOME!)}const {runCli}=await import(${JSON.stringify(cli)});`:`import {runCli} from ${JSON.stringify(cli)};`;
+  const report=diagnostic?`finally{const p=globalThis.__cadenceProbe;p.mark("cli-finished",{stops:p.signals.map(s=>({deadlineMs:s.deadlineMs,cause:s.cause()??null,aborted:s.signal.aborted}))});}`:"";
+  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
+  const result=Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+  if(diagnostic)cadenceCalls.push(collectCadenceCallDiagnostic({call:cadenceCalls.length+1,command:args[0]??"unknown",ifDue:args.includes("--if-due"),force:args.includes("--force"),elapsedMs:performance.now()-started,exitCode:result.exitCode,signalCode:result.signalCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}));
+  return result;
 }
 /** Native visibility still runs. Only this fake-home command environment maps GitHub transport to local Git. */
 function localCliRemote(f:ReturnType<typeof hookFixture>){
@@ -55,8 +62,9 @@ for(const conflict of ["--shards","--public-prune-view","--deactivate","--genera
   expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("forward-only");expect(existsSync(f.base)).toBe(false);
 });
 
-test("person activation supports plain and cadence sync with an unreceipted writer; drift fails closed",async()=>{
+test("person activation supports plain and cadence sync with an unreceipted writer; drift fails closed",()=>withCadenceFailureDiagnostics(cadenceCalls,async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);
+  diagnosticRoots.add(f.root);
   const extra=unregisteredWriter(f);
   const args=["migrate","--sync-placement","--writer-root",activationOwnRoot,"--writer-root",extra,"--json"];
   const before=inspectionFilesystemSnapshot(f.base),preview=success(run(f,[...args,"--dry-run"]));
@@ -86,7 +94,7 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   try{fresh=writer.note({op:"note",project:f.project,scope:"project",tier:"long",kind:"finding",peer:"person",source:"person",text:"cadence publication after renewal",about:[]});}finally{writer.close();}
   expect(success(run(f,["sync","--if-due","--force","--json"])).ok).toBe(true);expect(reachableInspectionRowIds(remote)).toEqual([f.allowed,fresh!].sort());
   expect(JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead).toBe(epoch);expect(readFileSync(join(f.base,"sync-placement-writer-roots.json"))).toEqual(initialMap);expect(readFileSync(join(f.base,"sync-placement","active.json"))).toEqual(fence);
-},120_000); // Several actual local-Git publications plus fresh writer measurements; this is functional, not R2 timing proof.
+}),120_000); // Several actual local-Git publications plus fresh writer measurements; this is functional, not R2 timing proof.
 
 test("missing prerequisites/floor and missing explicit CLI root refuse with next steps",async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);
