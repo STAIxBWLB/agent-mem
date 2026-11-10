@@ -26,7 +26,7 @@ for (const mode of ["a", "b", "alternate"] as const) test(`numeric ${mode} metri
   ] } }) + "\n");
   const input = { session_id, transcript_path, cwd: f.cwd };
   await runHook("Stop", input, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
-  expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordVariant: expected, recordTurns: 1, recordTurnsWithRecords: 1,
+  expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordVariant: expected, recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1,
     recordValidRecords: 2, recordBasisRecords: 1, recordUnverifiedRecords: 1 });
   await runHook("SessionEnd", input, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
   expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordVariant: expected, recordTurns: 0, recordValidRecords: 0 });
@@ -68,7 +68,7 @@ test("missing scan counts remain unknown while every accepted Stop is still a tu
   const f = fixture("a");
   await runHook("Stop", { session_id: "without-transcript" }, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
   const sample = readVariantMetrics(f.base).at(-1)!;
-  expect(sample).toMatchObject({ recordVariant: "a", recordTurns: 1 });
+  expect(sample).toMatchObject({ recordVariant: "a", recordTurns: 1, recordScanIncomplete: 1 });
   expect(sample.recordValidRecords).toBeUndefined();
   expect(sample.recordTurnsWithRecords).toBeUndefined();
 });
@@ -78,7 +78,7 @@ test("policy-declined hook invocations retain units without fabricating parsed c
   const f = fixture("b"), options = { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => false } } };
   await runHook("Stop", { session_id: "declined" }, options, { deadlineMs: 2000 });
   const stop = readVariantMetrics(f.base).at(-1)!;
-  expect(stop).toMatchObject({ recordVariant: "b", recordTurns: 1 });
+  expect(stop).toMatchObject({ recordVariant: "b", recordTurns: 1, recordScanIncomplete: 1 });
   expect(stop.recordValidRecords).toBeUndefined();
   await runHook("SessionStart", { source: "resume", session_id: "declined" }, options, { deadlineMs: 2000 });
   expect(readVariantMetrics(f.base).at(-1)).toMatchObject({ recordVariant: "b", recordSessions: 1, recordInstructionEmitted: 0, recordBriefBytes: 0 });
@@ -93,4 +93,17 @@ test("metric metadata cannot invoke getters on a refused payload", async () => {
   });
   await runHook("SessionStart", input, { cwd: f.cwd, base: f.base, policy: { host: { screen: async () => false } } }, { deadlineMs: 2000 });
   expect(reads).toBe(0);
+});
+
+test("a bounded scan with an unread Record journals incomplete coverage", async () => {
+  const f = fixture("a"), transcript_path = join(f.root, "bounded-transcript.jsonl");
+  const ordinary = JSON.stringify({ type: "user", message: { role: "user", content: "bounded ordinary transcript line" } }) + "\n";
+  const tail = JSON.stringify({ type: "assistant", message: { id: "unread-record", role: "assistant", content: [{ type: "text", text: "amem: finding | - | unread tail Record" }] } }) + "\n";
+  writeFileSync(transcript_path, ordinary.repeat(5000) + tail);
+  await runHook("Stop", { session_id: "partial-turn", transcript_path, cwd: f.cwd }, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
+  const sample = readVariantMetrics(f.base).at(-1)!;
+  expect(sample).toMatchObject({ recordTurns: 1, recordScanIncomplete: 1, recordValidRecords: 0, recordTurnsWithRecords: 0 });
+  const report = (await import("../scripts/report-record-variants.ts")).aggregateRecordVariants([sample]);
+  expect(report.variants.a).toMatchObject({ turnShare: null, denominatorCounts: { exactStopTurns: 0 } });
+  expect(report.scanCoverage.complete).toBe(false);
 });

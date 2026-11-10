@@ -7,7 +7,7 @@ import { join } from "node:path";
 /** Rolling resource samples; importing this leaf never loads a memory store or capacity probe. */
 export interface RecordVariantMetric {
   recordVariant?: "a" | "b";
-  recordEnabled?: number; recordSessions?: number; recordTurns?: number; recordTurnsWithRecords?: number;
+  recordEnabled?: number; recordSessions?: number; recordTurns?: number; recordTurnsWithRecords?: number; recordScanIncomplete?: number;
   recordValidRecords?: number; recordBasisRecords?: number; recordUnverifiedRecords?: number;
   recordInstructionInvalid?: number; recordInstructionEmitted?: number; recordBriefBytes?: number;
 }

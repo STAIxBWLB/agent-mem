@@ -68,13 +68,15 @@ export function aggregateRecordVariants(samples: unknown[]) {
         if (count(value.recordSessions) && value.recordInstructionEmitted === 1) delta.instructionEmittedSessions += value.recordSessions;
       }
     }
+    if ("recordScanIncomplete" in value && (!count(value.recordScanIncomplete) || value.recordScanIncomplete > 1)) malformed = true;
+    if (value.recordScanIncomplete === 1) incomplete = true;
     add("recordBriefBytes", "briefBytes", "briefSamples");
     add("recordTurns", "turns");
     if ("recordTurns" in value && count(value.recordTurns)) {
       if (value.recordTurns === 1) {
         delta.turnRows++;
         if ("recordTurnsWithRecords" in value && (!count(value.recordTurnsWithRecords) || value.recordTurnsWithRecords > 1)) malformed = true;
-        const turnCountsComplete = count(value.recordValidRecords) && count(value.recordBasisRecords) && count(value.recordUnverifiedRecords) && count(value.recordTurnsWithRecords) && value.recordTurnsWithRecords <= 1;
+        const turnCountsComplete = value.recordScanIncomplete === 0 && count(value.recordValidRecords) && count(value.recordBasisRecords) && count(value.recordUnverifiedRecords) && count(value.recordTurnsWithRecords) && value.recordTurnsWithRecords <= 1;
         if (turnCountsComplete) {
           delta.turnCounterRows++;
           delta.observedTurns++;
@@ -118,7 +120,7 @@ export function aggregateRecordVariants(samples: unknown[]) {
       turns: x.turnRows ? x.turns : null,
       observedTurns: x.observedTurns || null,
       turnsWithRecords: x.turnsWithRecordsRows ? x.turnsWithRecords : null,
-      turnShare: turnComplete ? ratio(x.turnsWithRecords, x.turns) : null,
+      turnShare: turnComplete ? ratio(x.turnsWithRecords, x.observedTurns) : null,
       observedShare: ratio(x.turnsWithRecords, x.observedTurns),
       validRecords: x.recordRows ? x.validRecords : null,
       basisShare: x.recordRows && x.basisRows === x.recordRows ? ratio(x.basisRecords, x.validRecords) : null,
@@ -126,8 +128,8 @@ export function aggregateRecordVariants(samples: unknown[]) {
       meanBriefBytes: x.briefSamples ? ratio(x.briefBytes, x.briefSamples) : null,
       disabledSessions: x.enabledRows ? x.disabledSessions : null,
       instructionEmittedSessions: x.instructionRows ? x.instructionEmittedSessions : null,
-      denominatorCounts: { sessions: x.sessionRows ? x.sessions : null, allStopTurns: x.turns, observedStopTurns: x.observedTurns, validRecords: x.recordRows ? x.validRecords : null, briefSamples: x.briefSamples },
-      denominators: { recordsPerSession: "validRecords / sessions", turnShare: "turnsWithRecords / turns; null when Stop counters are incomplete", observedShare: "known turnsWithRecords / observedTurns", basisShare: "basisRecords / validRecords", unverifiedShare: "unverifiedRecords / validRecords", meanBriefBytes: "sum(recordBriefBytes) / samples containing recordBriefBytes" },
+      denominatorCounts: { sessions: x.sessionRows ? x.sessions : null, allStopTurns: x.turns, observedStopTurns: x.observedTurns, exactStopTurns: x.observedTurns, validRecords: x.recordRows ? x.validRecords : null, briefSamples: x.briefSamples },
+      denominators: { recordsPerSession: "validRecords / sessions", turnShare: "complete-scan turnsWithRecords / exactStopTurns; null when any Stop scan is incomplete or unknown", observedShare: "complete-scan turnsWithRecords / observedTurns; incomplete scans excluded", basisShare: "basisRecords / validRecords", unverifiedShare: "unverifiedRecords / validRecords", meanBriefBytes: "sum(recordBriefBytes) / samples containing recordBriefBytes" },
     }];
   }));
   const incompleteRows = totals.a.incompleteRows + totals.b.incompleteRows;

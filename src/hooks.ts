@@ -82,7 +82,7 @@ function metricInputString(input: unknown, key: "source" | "session_id"): string
 
 /** Invocation units remain observable even when policy or a deadline declines optional work. */
 function recordMetricUnits(event: string, input: unknown): RecordVariantMetric {
-  if (event === "Stop" || event === "SessionEnd") return { recordTurns: Number(event === "Stop") };
+  if (event === "Stop" || event === "SessionEnd") return { recordTurns: Number(event === "Stop"), recordScanIncomplete: 1 };
   return event === "SessionStart" ? { recordSessions: Number(metricInputString(input, "source") === "startup" || metricInputString(input, "source") === "resume"), recordBriefBytes: 0, recordInstructionEmitted: 0 } : {};
 }
 
@@ -97,8 +97,10 @@ function recordMetricIdentity(event: string, input: unknown, base: string, cwd: 
   } catch { return units; } // Telemetry cannot turn a successful hook into a refusal.
 }
 function recordScanMetric(event: string, progress?: HookTranscriptProgress): RecordVariantMetric {
-  return progress?.recordValidRecords === undefined ? {} : {
-    recordValidRecords: progress.recordValidRecords, recordBasisRecords: progress.recordBasisRecords!, recordUnverifiedRecords: progress.recordUnverifiedRecords!,
+  if (event !== "Stop" && event !== "SessionEnd") return {};
+  const recordScanIncomplete = Number(!progress || progress.stopReason !== undefined || progress.recordValidRecords === undefined);
+  return progress?.recordValidRecords === undefined ? { recordScanIncomplete } : {
+    recordScanIncomplete, recordValidRecords: progress.recordValidRecords, recordBasisRecords: progress.recordBasisRecords!, recordUnverifiedRecords: progress.recordUnverifiedRecords!,
     ...(event === "Stop" ? { recordTurnsWithRecords: Number(progress.recordValidRecords > 0) } : {}),
   };
 }

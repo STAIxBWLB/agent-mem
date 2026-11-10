@@ -12,7 +12,7 @@ function temp() { const dir = mkdtempSync(join(tmpdir(), "record-report-")); dir
 test("aggregates exact hook fields and includes SessionEnd records outside turn denominator", () => {
   const report = aggregateRecordVariants([
     { kind: "hook", recordVariant: "a", recordEnabled: 1, recordSessions: 1, recordInstructionEmitted: 1, recordBriefBytes: 412 },
-    { kind: "hook", recordVariant: "a", recordEnabled: 1, recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 2, recordBasisRecords: 1, recordUnverifiedRecords: 1 },
+    { kind: "hook", recordVariant: "a", recordEnabled: 1, recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 2, recordBasisRecords: 1, recordUnverifiedRecords: 1 },
     { kind: "hook", recordVariant: "a", recordEnabled: 1, recordTurns: 0, recordValidRecords: 3, recordBasisRecords: 2, recordUnverifiedRecords: 1 },
     { kind: "hook", recordVariant: "b", recordEnabled: 1, recordSessions: 0, recordInstructionEmitted: 0, recordBriefBytes: 0 },
   ]);
@@ -23,7 +23,7 @@ test("aggregates exact hook fields and includes SessionEnd records outside turn 
 test("keeps zero denominators null and missing Stop counters incomplete", () => {
   const report = aggregateRecordVariants([
     { kind: "hook", recordVariant: "a", recordSessions: 0, recordTurns: 1, recordValidRecords: 1 },
-    { kind: "hook", recordVariant: "b", recordTurns: 1, recordValidRecords: 0, recordTurnsWithRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 },
+    { kind: "hook", recordVariant: "b", recordTurns: 1, recordValidRecords: 0, recordScanIncomplete: 0, recordTurnsWithRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 },
   ]);
   expect(report.variants.a).toMatchObject({ recordsPerSession: null, turnShare: null, observedShare: null, basisShare: null, meanBriefBytes: null });
   expect(report.variants.b).toMatchObject({ turnShare: 0, observedShare: 0, basisShare: null });
@@ -32,8 +32,8 @@ test("keeps zero denominators null and missing Stop counters incomplete", () => 
 test("counts legacy, unattributed and malformed rows without partial arithmetic", () => {
   const report = aggregateRecordVariants([
     { kind: "hook", at: "old" }, { kind: "hook", recordVariant: "old", recordSessions: 9 }, null,
-    { kind: "hook", recordVariant: "a", recordTurns: 1, recordValidRecords: -1, recordBasisRecords: 2, recordUnverifiedRecords: 1, recordTurnsWithRecords: 1 },
-    { kind: "hook", recordVariant: "b", recordTurns: 1, recordValidRecords: 0, recordTurnsWithRecords: 1 },
+    { kind: "hook", recordVariant: "a", recordTurns: 1, recordValidRecords: -1, recordBasisRecords: 2, recordUnverifiedRecords: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1 },
+    { kind: "hook", recordVariant: "b", recordTurns: 1, recordValidRecords: 0, recordScanIncomplete: 0, recordTurnsWithRecords: 1 },
   ]);
   expect(report).toMatchObject({ ignoredRows: 0, unknownRows: 2, malformedRows: 3, scanCoverage: { totalRows: 5, hookRows: 4, complete: false, unknownRows: 2, malformedRows: 3 } });
   expect(report.variants.a).toMatchObject({ turns: null, validRecords: null });
@@ -43,9 +43,9 @@ test("counts legacy, unattributed and malformed rows without partial arithmetic"
 test("validates binary counters and requires a complete Stop counter group", () => {
   const report = aggregateRecordVariants([
     { kind: "hook", recordVariant: "a", recordSessions: 2, recordEnabled: 1 },
-    { kind: "hook", recordVariant: "a", recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1 },
-    { kind: "hook", recordVariant: "b", recordTurns: 1, recordTurnsWithRecords: 2, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 },
-    { kind: "hook", recordVariant: "b", recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 },
+    { kind: "hook", recordVariant: "a", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1 },
+    { kind: "hook", recordVariant: "b", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 2, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 },
+    { kind: "hook", recordVariant: "b", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 },
   ]);
   expect(report.malformedRows).toBe(2);
   expect(report.incompleteRows).toBe(1);
@@ -64,7 +64,7 @@ test("report JSON excludes arbitrary text, identifiers and paths", () => {
 
 test("CLI reads bounded regular files without writing input and reports fixed errors", () => {
   const dir = temp(), file = join(dir, "metrics.jsonl"), cli = join(process.cwd(), "scripts/report-record-variants.ts");
-  const row = JSON.stringify({ kind: "hook", recordVariant: "a", recordSessions: 1, recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 });
+  const row = JSON.stringify({ kind: "hook", recordVariant: "a", recordSessions: 1, recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0 });
   writeFileSync(file, `${row}\n`, { mode: 0o600 });
   const before = { size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, content: readFileSync(file, "utf8") };
   const good = spawnSync("bun", [cli, "--metrics", file], { encoding: "utf8" });
@@ -100,9 +100,28 @@ test("invalid selection is numeric and invalid flag values refuse the whole metr
 test("week journal event/variant rows report cap-limited coverage", () => {
   const report = aggregateRecordVariants([
     { at: "2026-11-10T00:00:00.000Z", event: "SessionStart", variant: "b", recordSessions: 1, recordBriefBytes: 432 },
-    { at: "2026-11-10T00:01:00.000Z", event: "Stop", variant: "b", recordTurns: 1, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0, capTrimmed: 1 },
+    { at: "2026-11-10T00:01:00.000Z", event: "Stop", variant: "b", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 1, recordUnverifiedRecords: 0, capTrimmed: 1 },
   ]);
   expect(report.variants.b).toMatchObject({ sessions: 1, validRecords: 1, turnShare: 1, meanBriefBytes: 432 });
   expect(report.window).toMatchObject({ file: "record-variants.jsonl", retentionDays: 8, capBytes: 4194304, capForcedTrim: true });
   expect(report.scanCoverage.complete).toBe(false);
+});
+
+test("partial scans keep parsed counts but never enter exact Stop turn denominators", () => {
+  for (const reason of ["cap", "deadline", "spool_full"]) for (const parsed of [0, 1]) {
+    const report = aggregateRecordVariants([
+      { event: "Stop", variant: "a", recordTurns: 1, recordScanIncomplete: 0, recordTurnsWithRecords: 1, recordValidRecords: 1, recordBasisRecords: 0, recordUnverifiedRecords: 0 },
+      { event: "Stop", variant: "a", recordTurns: 1, recordScanIncomplete: 1, recordTurnsWithRecords: parsed, recordValidRecords: parsed, recordBasisRecords: 0, recordUnverifiedRecords: 0, transcriptStopReason: reason },
+    ]);
+    expect(report.variants.a).toMatchObject({ turns: 2, observedTurns: 1, turnsWithRecords: 1, turnShare: null, observedShare: 1,
+      validRecords: 1 + parsed, denominatorCounts: { allStopTurns: 2, exactStopTurns: 1, observedStopTurns: 1 } });
+    expect(report.scanCoverage).toMatchObject({ complete: false, incompleteRows: 1 });
+  }
+});
+
+test("legacy numeric counters without scan coverage cannot claim an exact negative turn", () => {
+  const report = aggregateRecordVariants([{ event: "Stop", variant: "b", recordTurns: 1, recordTurnsWithRecords: 0,
+    recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 }]);
+  expect(report.variants.b).toMatchObject({ turnShare: null, observedShare: null, denominatorCounts: { allStopTurns: 1, exactStopTurns: 0 } });
+  expect(report.scanCoverage).toMatchObject({ complete: false, incompleteRows: 1 });
 });

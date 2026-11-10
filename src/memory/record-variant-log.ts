@@ -6,8 +6,8 @@ import type { MetricSample } from "./metrics.ts";
 export const RECORD_VARIANTS_FILE = "record-variants.jsonl";
 export const RECORD_VARIANTS_MAX_BYTES = 4 * 1024 * 1024;
 export const RECORD_VARIANTS_DAYS = 8;
-const DAY = 86400_000, ROW_BYTES = 1024;
-const FIELDS = ["recordEnabled", "recordSessions", "recordTurns", "recordTurnsWithRecords", "recordValidRecords", "recordBasisRecords", "recordUnverifiedRecords", "recordInstructionInvalid", "recordInstructionEmitted", "recordBriefBytes", "recordInstructionBytes", "recordInstructionEstimatedTokens"] as const;
+const DAY = 86400_000, ROW_BYTES = 1024, CAP_TRIM_BYTES = 3 * 1024 * 1024;
+const FIELDS = ["recordEnabled", "recordSessions", "recordTurns", "recordTurnsWithRecords", "recordScanIncomplete", "recordValidRecords", "recordBasisRecords", "recordUnverifiedRecords", "recordInstructionInvalid", "recordInstructionEmitted", "recordBriefBytes", "recordInstructionBytes", "recordInstructionEstimatedTokens"] as const;
 type Event = "SessionStart" | "Stop" | "SessionEnd";
 interface JournalRow { at: string; event: Event; variant: "a" | "b"; capTrimmed?: number; [key: string]: string | number | undefined }
 function row(value: unknown): JournalRow | undefined {
@@ -44,8 +44,10 @@ function trim(base: string, fd: number, size: number, cutoff: number): void {
   rows[rows.length - 1]!.trimmed = 1;
   let encoded = rows.map(value => JSON.stringify(value) + "\n");
   let bytes = encoded.reduce((sum, line) => sum + Buffer.byteLength(line), 0), from = 0;
-  while (from < encoded.length && bytes + 32 > RECORD_VARIANTS_MAX_BYTES) bytes -= Buffer.byteLength(encoded[from++]!);
-  if (from || size > RECORD_VARIANTS_MAX_BYTES) {
+  const capacityTrim = size >= RECORD_VARIANTS_MAX_BYTES;
+  const target = capacityTrim ? CAP_TRIM_BYTES : RECORD_VARIANTS_MAX_BYTES;
+  while (from < encoded.length && bytes + 32 > target) bytes -= Buffer.byteLength(encoded[from++]!);
+  if (from || capacityTrim) {
     rows[rows.length - 1]!.capTrimmed = 1;
     encoded[encoded.length - 1] = JSON.stringify(rows[rows.length - 1]) + "\n";
   }

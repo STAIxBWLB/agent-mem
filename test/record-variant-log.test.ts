@@ -26,18 +26,23 @@ test("cap trim keeps the file bounded and reports lost coverage", () => {
   const line = JSON.stringify({ at: new Date(NOW).toISOString(), event: "Stop", variant: "a", recordTurns: 1, recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0, recordTurnsWithRecords: 0 }) + "\n";
   writeFileSync(file, line.repeat(Math.ceil(RECORD_VARIANTS_MAX_BYTES / line.length)), { mode: 0o600 });
   appendRecordVariant(base, "SessionStart", sample, NOW);
-  expect(statSync(file).size).toBeLessThanOrEqual(RECORD_VARIANTS_MAX_BYTES);
+  expect(statSync(file).size).toBeLessThanOrEqual(3 * 1024 * 1024);
+  const inode = statSync(file).ino;
+  for (let n = 0; n < 1000; n++) appendRecordVariant(base, "SessionStart", sample, NOW + n);
+  expect(statSync(file).ino).toBe(inode);
+  expect(statSync(file).size).toBeLessThan(RECORD_VARIANTS_MAX_BYTES);
   const got = rows(base), report = aggregateRecordVariants(got);
-  expect(got.at(-1)).toMatchObject({ event: "SessionStart", variant: "b", capTrimmed: 1 });
+  expect(got.some(row => row.event === "SessionStart" && row.variant === "b" && row.capTrimmed === 1)).toBe(true);
   expect(report.window.capForcedTrim).toBe(true);
+  expect(report.window.trimCount).toBe(1);
   expect(report.scanCoverage.complete).toBe(false);
 });
 test("only selected numeric fields enter one appended observation", () => {
   const base = home();
-  appendRecordVariant(base, "Stop", { ...sample, recordTurns: 1, recordValidRecords: 2, excerpt: "private-canary", session: "private-session" } as typeof sample, NOW);
+  appendRecordVariant(base, "Stop", { ...sample, recordTurns: 1, recordScanIncomplete: 1, recordValidRecords: 2, excerpt: "private-canary", session: "private-session" } as typeof sample, NOW);
   const raw = readFileSync(join(base, RECORD_VARIANTS_FILE), "utf8");
   expect(raw).not.toContain("private-");
-  expect(rows(base)).toEqual([{ at: new Date(NOW).toISOString(), event: "Stop", variant: "b", recordSessions: 1, recordTurns: 1, recordValidRecords: 2, recordBriefBytes: 442 }]);
+  expect(rows(base)).toEqual([{ at: new Date(NOW).toISOString(), event: "Stop", variant: "b", recordSessions: 1, recordTurns: 1, recordScanIncomplete: 1, recordValidRecords: 2, recordBriefBytes: 442 }]);
 });
 
 
