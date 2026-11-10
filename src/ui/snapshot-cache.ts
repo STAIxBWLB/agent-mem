@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 type Data = Record<string, unknown>;
 interface Entry { sampledAt: number; generation: number; epoch: number; data: Data; revision: string; cursor: number; until: number; bytes: number }
 export interface SnapshotValue { data: Data; until: number }
+interface Reading extends SnapshotValue { sampledAt: number; generation: number; entry?: Entry }
 
 /** Provider-local screened snapshots. No disk cache, timer, watcher or retained store. */
 export class SnapshotCache {
   private entries = new Map<string, Entry>();
-  private flights = new Map<string, Promise<Entry>>();
+  private flights = new Map<string, Promise<Reading>>();
   private active = new Set<Promise<unknown>>();
   private generation = 0;
   private epoch = 0;
@@ -31,57 +32,75 @@ export class SnapshotCache {
     this.reuseUnavailable = false;
     return revision;
   }
-  private current(generation: number, sampledAt: number, until: number): void {
+  private timely(sampledAt: number, until: number): boolean {
     const now = this.now();
-    if (this.closed || generation !== this.generation || !(now >= sampledAt && now < until))
-      throw Error("console snapshot inputs changed");
+    return now >= sampledAt && now < until;
+  }
+  private readable(value?: SnapshotValue): void {
+    if (this.closed) throw Error("console snapshots are closed");
+    if (value?.data.error !== undefined) throw Error("console snapshot unavailable");
   }
   private track<T>(work: Promise<T>): Promise<T> {
     this.active.add(work);
     void work.then(() => this.active.delete(work), () => this.active.delete(work));
     return work;
   }
-  /** A request with no complete revision always computes independently and never publishes a reusable entry. */
-  async fresh(read: () => Promise<SnapshotValue>): Promise<Data> {
-    if (this.closed) throw Error("console snapshots are closed");
-    this.disableReuse();
+  private freshReply(data: Data): Data {
+    this.readable();
+    if (this.freshCursor >= Number.MAX_SAFE_INTEGER) throw Error("console fresh cursor limit");
+    const copy = structuredClone(data);
+    delete copy.changed;
+    return { ...copy, cursor: ++this.freshCursor };
+  }
+  private readFresh(read: () => Promise<SnapshotValue>, retryAction: boolean): Promise<Data> {
+    this.readable();
     if (this.active.size >= 16) throw Error("console snapshot concurrency limit");
-    const generation = this.generation, sampledAt = this.now();
+    const generation = this.generation;
     return this.track((async () => {
-      const value = await read();
-      this.current(generation, sampledAt, value.until);
-      if (value.data.error !== undefined) throw Error("console snapshot unavailable");
-      if (this.freshCursor >= Number.MAX_SAFE_INTEGER) throw Error("console fresh cursor limit");
-      const data = structuredClone(value.data);
-      delete data.changed; // Fresh data must never carry the unchanged transport marker.
-      return { ...data, cursor: ++this.freshCursor };
+      let value = await read();
+      this.readable(value);
+      // One post-action reread only. Further changes still yield full uncached data, never a retry loop.
+      if (retryAction && generation !== this.generation) { value = await read(); this.readable(value); }
+      return this.freshReply(value.data);
     })());
   }
+  /** A request with no complete revision computes independently without consulting another revision or retaining data. */
+  async fresh(read: () => Promise<SnapshotValue>): Promise<Data> {
+    this.readable(); this.disableReuse();
+    return this.readFresh(read, true);
+  }
+  private dropEntry(key: string, entry: Entry | undefined): void {
+    if (entry && this.entries.get(key) === entry) { this.entries.delete(key); this.bytes -= entry.bytes; }
+  }
   async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>): Promise<Data> {
-    if (this.closed) throw Error("console snapshots are closed");
+    this.readable();
     const revision = this.sourceRevision();
+    this.readable();
     if (revision === undefined) return this.fresh(read);
     const cached = this.entries.get(key);
-    if (cached && cached.revision === revision && this.now() >= cached.sampledAt && this.now() < cached.until) {
+    if (cached && cached.revision === revision && this.timely(cached.sampledAt, cached.until)) {
       this.entries.delete(key); this.entries.set(key, cached);
       return this.reply(cached, after);
     }
     // Revision is part of the flight key: a new write never joins an older read.
-    const flightKey = JSON.stringify([this.generation, revision, key]);
+    const flightKey = JSON.stringify([this.generation, this.epoch, revision, key]);
     let flight = this.flights.get(flightKey);
     if (!flight) {
       if (this.active.size >= 16) throw Error("console snapshot concurrency limit");
       const generation = this.generation, epoch = this.epoch, sampledAt = this.now();
       flight = (async () => {
         const value = await read();
-        this.current(generation, sampledAt, value.until);
-        if (value.data.error !== undefined) throw Error("console snapshot unavailable");
+        this.readable(value);
         const observed = this.sourceRevision();
-        this.current(generation, sampledAt, value.until);
-        if (observed === undefined) throw REVISION_UNAVAILABLE;
-        if (observed !== revision) throw Error("console snapshot inputs changed");
-        if (epoch !== this.epoch) throw REVISION_UNAVAILABLE;
-        const data = structuredClone(value.data), serialized = JSON.stringify(data), bytes = Buffer.byteLength(serialized);
+        this.readable(value);
+        const data = structuredClone(value.data); delete data.changed;
+        const reading: Reading = { data, until: value.until, sampledAt, generation };
+        if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !this.timely(sampledAt, value.until)) {
+          this.dropEntry(key, cached);
+          if (this.flights.get(flightKey) === flight) this.flights.delete(flightKey);
+          return reading;
+        }
+        const serialized = JSON.stringify(data), bytes = Buffer.byteLength(serialized);
         const cursor = Number.parseInt(createHash("sha256").update(JSON.stringify([key, revision, value.until])).update(serialized).digest("hex").slice(0, 13), 16) + 1;
         const entry = { sampledAt, generation, epoch, data, revision, cursor, until: value.until, bytes };
         // ponytail: 16 selections and 4 MiB per provider. Larger views are served once;
@@ -93,21 +112,24 @@ export class SnapshotCache {
           }
           this.entries.set(key, entry); this.bytes += bytes;
         }
-        return entry;
+        reading.entry = entry;
+        return reading;
       })();
       this.flights.set(flightKey, flight);
       this.track(flight);
     }
     try {
-      let entry: Entry;
-      try { entry = await flight; }
-      catch (error) { if (error !== REVISION_UNAVAILABLE) throw error; return this.fresh(read); }
-      this.current(entry.generation, entry.sampledAt, entry.until);
+      const reading = await flight;
+      this.readable(reading);
+      if (reading.generation !== this.generation) { this.dropEntry(key, reading.entry); return this.readFresh(read, false); }
+      const entry = reading.entry;
+      if (!entry) return this.freshReply(reading.data);
       const observed = this.sourceRevision();
-      this.current(entry.generation, entry.sampledAt, entry.until);
-      if (observed === undefined) return this.fresh(read);
-      if (observed !== entry.revision) throw Error("console snapshot inputs changed");
-      if (entry.epoch !== this.epoch) return this.fresh(read);
+      this.readable(reading);
+      if (reading.generation !== this.generation) { this.dropEntry(key, entry); return this.readFresh(read, false); }
+      if (observed !== entry.revision || entry.epoch !== this.epoch || !this.timely(entry.sampledAt, entry.until)) {
+        this.dropEntry(key, entry); return this.freshReply(reading.data);
+      }
       return this.reply(entry, after);
     }
     finally { if (this.flights.get(flightKey) === flight) this.flights.delete(flightKey); }
@@ -117,5 +139,3 @@ export class SnapshotCache {
     return after === entry.cursor ? { changed: false, cursor: entry.cursor } : { ...structuredClone(entry.data), cursor: entry.cursor };
   }
 }
-
-const REVISION_UNAVAILABLE = Symbol("console revision unavailable");
