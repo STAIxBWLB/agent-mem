@@ -37,6 +37,15 @@ export function timeoutOwnedGroupsGone(table: string, groups: readonly number[])
   return gone;
 }
 
+/** An unreceipted orphan gets only the remainder of the same PID exit barrier. */
+export async function timeoutOwnedGroupBarrier(groups: readonly number[], remaining: () => number, census: () => string, pause: () => Promise<unknown>): Promise<boolean> {
+  for (;;) {
+    if (timeoutOwnedGroupsGone(census(), groups)) return true;
+    if (remaining() <= 0) return false;
+    await pause();
+  }
+}
+
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
 export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
@@ -63,7 +72,7 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
     // Never accept a zombie as success: its PID must actually disappear too.
     const until = performance.now() + 500;
     while ([...nativePids, ...groups].some(alive) && performance.now() < until) await Bun.sleep(10);
-    const survivorError = () => {
+    const survivorError = (groupCensusAtBarrier?: string) => {
       // Keep the same barrier and failure. A leader exit receipt alone cannot identify
       // a surviving command, orphan or zombie; retain the fresh numeric process state.
       const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
@@ -74,13 +83,22 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
           ? [{ pid: Number(row[1]), ppid: Number(row[2]), pgid: Number(row[3]), stat: row[4] }] : [];
       }).slice(0, 128);
       return new Error("owned timeout descendant or leader survived the exit barrier: " + JSON.stringify({ ...diagnostic(),
-        descendantReceipt: receipt, processCensus: { exitCode: census.exitCode, signalCode: census.signalCode, processes } }));
+        descendantReceipt: receipt,
+        groupCensusAtBarrier: groupCensusAtBarrier?.split("\n").flatMap(line => {
+          const row = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+          return row && groups.includes(Number(row[2])) ? [{ pid: Number(row[1]), pgid: Number(row[2]) }] : [];
+        }).slice(0, 128), processCensus: { exitCode: census.exitCode, signalCode: census.signalCode, processes } }));
     };
     if ([...nativePids, ...groups].some(alive)) throw survivorError();
     if (!receipt.complete) {
-      const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
-      check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
-      if (!timeoutOwnedGroupsGone(census.stdout.toString(), groups)) throw survivorError();
+      let groupCensusAtBarrier = "";
+      const gone = await timeoutOwnedGroupBarrier(groups, () => until - performance.now(), () => {
+        const census = Bun.spawnSync(["/bin/ps", "-axo", "pid=,pgid="], { stdout: "pipe", stderr: "pipe", timeout: 1000 });
+        check(census.exitCode === 0 && !census.signalCode, "R1 process table unavailable");
+        groupCensusAtBarrier = census.stdout.toString();
+        return groupCensusAtBarrier;
+      }, () => Bun.sleep(10));
+      if (!gone) throw survivorError(groupCensusAtBarrier);
     }
     const spool = join(f.base, "hook-spool");
     const retained = [spool, join(spool, ".capacity")].flatMap(dir => (existsSync(dir) ? readdirSync(dir) : [])
