@@ -2,7 +2,7 @@ import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readProfileJSON, writeProfileJSON } from "./generation.ts";
 import { readerAdmissionDatabase } from "./mutation.ts";
-import { processLiveness, processSignature } from "./platform.ts";
+import { processLiveness, processSignature, realPath } from "./platform.ts";
 import { waitForPublicPruneWriter } from "./public-prune-view.ts";
 import { profileLockRecoveryError, safeProfileLockMessage } from "./profile-lock-diagnostic.ts";
 
@@ -57,7 +57,7 @@ function admitReader(memoryDir: string): void {
   } catch (error) { if(safeProfileLockMessage(error))throw error;throw profileLockRecoveryError(memoryDir) ?? new Error("profile lock prevents reader admission; finish or resume the migration with amem migrate --resume"); }
 }
 
-/** One lease per process/home/namespace, reference-counted across handles.
+/** One lease per process/physical home/namespace, reference-counted across handles.
  * Shard scope shares root admission and native identity; it grants no authority.
  * An unref'd timer does not keep the process resident. */
 export function registerReaderLease(memoryDir: string, options: { busyTimeoutMs?: number; signature?: string; scope?: "shard" } = {}): ReaderLease {
@@ -74,9 +74,11 @@ export function registerReaderLease(memoryDir: string, options: { busyTimeoutMs?
   // Host-only: the supplied hash must already describe this process's pinned native ps identity.
   const signature = inherited ?? options.signature ?? processSignature(pid);
   if (!signature) throw new Error("cannot establish reader lease identity");
+  mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
+  // Pin the map key and renewal/verify/close closures to one physical home, not its caller spelling.
+  memoryDir = realPath(memoryDir);
   const file = fileFor(memoryDir, process.pid, signature, scope);
   const busyTimeoutMs = open.get(file)?.busyTimeoutMs ?? requestedTimeout;
-  mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
   withFence(memoryDir, () => {
     admitReader(memoryDir);
     const current = open.get(file);
