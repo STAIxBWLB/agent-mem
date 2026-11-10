@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
+import { captureSessionKey } from "../src/memory/capture-input.ts";
 import { expect, spyOn, test } from "bun:test";
-import { parseRecordLines, RECORD_INSTRUCTION } from "../src/hook-record.ts";
+import { parseRecordLines, RECORD_INSTRUCTION, RECORD_INSTRUCTION_B, recordContextData, recordInstructionVariant } from "../src/hook-record.ts";
 import { transcriptRecords } from "../src/hook-transcript.ts";
 
 test("records are canonical, bounded main-answer lines with explicit anchors", () => {
@@ -40,6 +42,11 @@ test("fenced, quoted, indented and inline examples are ignored, including lazy q
 });
 
 test("the package instruction fits its fixed three-line byte ceiling", () => {
+  expect(RECORD_INSTRUCTION).toBe([
+    "Only when a turn settles a decision, fix, fail or contract, end the final answer with at most 2 records; otherwise none:",
+    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 characters>",
+    "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII.",
+  ].join("\n"));
   expect(RECORD_INSTRUCTION.split("\n")).toHaveLength(3);
   expect(Buffer.byteLength(RECORD_INSTRUCTION)).toBeLessThanOrEqual(400);
 });
@@ -47,6 +54,8 @@ test("the package instruction fits its fixed three-line byte ceiling", () => {
 test("hosts reuse the parser and instruction from the public library entry", async () => {
   const library = await import("../src/index.ts");
   expect(library.RECORD_INSTRUCTION).toBe(RECORD_INSTRUCTION);
+  expect(library.RECORD_INSTRUCTION_B).toBe(RECORD_INSTRUCTION_B);
+  expect(library.captureSessionKey("host-session")).toBe(captureSessionKey("host-session"));
   expect(library.parseRecordLines("amem: decision | - | settled")).toEqual(parseRecordLines("amem: decision | - | settled"));
   expect(parseRecordLines("x".repeat(256 * 1024 + 1))).toEqual({ records: [], drops: { record_length: 1 } });
 });
@@ -88,4 +97,36 @@ test("whole private-span context is excluded before record or Markdown interpret
   expect(parseRecordLines(`<private>\n> hidden quote\n\`\`\`\n${hidden}\n</private>\n${visible}`).records).toMatchObject([{ text: "visible finding" }]);
   expect(parseRecordLines(`amem: decision | - | before <private>hidden</private> after`)).toEqual({ records: [], drops: { record_policy: 1 } });
   expect(parseRecordLines(`\`\`\`text <private>hidden</private>\n${hidden}\n\`\`\`\n${visible}`).records).toMatchObject([{ text: "visible finding" }]);
+});
+
+
+test("variant B is pinned, bounded and stripped only as an exact package prefix", () => {
+  expect(RECORD_INSTRUCTION_B).toBe([
+    "Future use: keep what code/git/instructions lack. Up to 2 final lines; else none:",
+    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 chars; basis:test|log|issue|run; prefix ? if unverified>",
+    "fix/fail: symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII.",
+  ].join("\n"));
+  expect(Buffer.byteLength(RECORD_INSTRUCTION) + 1).toBe(332);
+  expect(Buffer.byteLength(RECORD_INSTRUCTION_B) + 1).toBe(331);
+  for (const text of [RECORD_INSTRUCTION, RECORD_INSTRUCTION_B]) {
+    expect(recordContextData(`${text}\nUntrusted project memory data`)).toBe("Untrusted project memory data");
+    expect(recordContextData(`${text}!\nUntrusted project memory data`)).toBe(`${text}!\nUntrusted project memory data`);
+  }
+  const parsed = parseRecordLines("amem: fix | src/cache.ts | ? stale entry -> invalidate; basis:test");
+  expect(parsed.records[0]?.text).toBe("? stale entry -> invalidate; basis:test");
+  expect(parsed.drops).toEqual({});
+});
+
+test("alternate uses persisted session hash parity and preserves the existing session hash", () => {
+  for (const raw of ["session-a", "session-b", "같은 세션"]) {
+    const key = captureSessionKey(raw)!;
+    expect(key).toBe(createHash("sha256").update(`amem-session\0${raw}`).digest("hex").slice(0, 16));
+    expect(recordInstructionVariant("alternate", key)).toBe(Number.parseInt(key.slice(-1), 16) % 2 ? "b" : "a");
+    expect(recordInstructionVariant("a", key)).toBe("a");
+    expect(recordInstructionVariant("b", key)).toBe("b");
+  }
+  expect(recordInstructionVariant("alternate", "0000000000000000")).toBe("a");
+  expect(recordInstructionVariant("alternate", "0000000000000001")).toBe("b");
+  expect(recordInstructionVariant("alternate")).toBe("a");
+  for (const raw of [null, "", 1, "s".repeat(257)]) expect(captureSessionKey(raw)).toBeUndefined();
 });

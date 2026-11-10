@@ -1,0 +1,3535 @@
+{
+  "schema": "agent-mem.record-instruction-variants/v1",
+  "measuredHead": "d983635b771a39985d972de6434efcd4f68d2150",
+  "mainControl": "9a1792a0a05903afe23482329dcd83cc81cc9a31",
+  "harnessSha256": "7f90ce0999e6faec6d539d11ba187dd97d5673924eff824cef39e5725172b114",
+  "scope": "Full public original-input regression and synthetic gold-located Record-text effect; no model or live-week writing measurement",
+  "strictComparatorUnchanged": true,
+  "defaultVariant": "a",
+  "ac3Passed": false,
+  "runs": [
+    {
+      "name": "s-main",
+      "report": {
+        "artifact": "s-main.json",
+        "sha256": "69d007cba53423ec3ee29d471ed1947fa5750d206db119744897f619cf3c0c5e"
+      },
+      "sourceCommit": "9a1792a0a05903afe23482329dcd83cc81cc9a31",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+      "datasetBytes": 277383467,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": null
+    },
+    {
+      "name": "s-candidate",
+      "report": {
+        "artifact": "s-candidate.json",
+        "sha256": "9b6dc4a923a1cc214ea08c2a2df9d6ca0f1fd1c4adb57f44e0e4952c59a00940"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+      "datasetBytes": 277383467,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": null
+    },
+    {
+      "name": "s-a",
+      "report": {
+        "artifact": "s-a.json",
+        "sha256": "6569ac32d1b807e854b0e65a42c9e8d0619b7cc925777fd05b55b13c8c11b584"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "173921dfcd0e0809fdee85dbff8d3ff04f092525d3eed1a805e209410149b84f",
+      "datasetBytes": 256785635,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": {
+        "variant": "a",
+        "records": 766,
+        "seedSha256": "d5a81aaf1a7f620beb5afc29bc49d649d2c4c076d001f17ac0833dcc26b2b7f6",
+        "bm25Control": "canonical-a-projection",
+        "input": "shared derived input; actual seeded form is independently hashed"
+      }
+    },
+    {
+      "name": "s-b",
+      "report": {
+        "artifact": "s-b.json",
+        "sha256": "e942e1597dde1117f5b12b02ecec75fbd3fd66ff4b1104cf505de8b863ae7d8d"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "173921dfcd0e0809fdee85dbff8d3ff04f092525d3eed1a805e209410149b84f",
+      "datasetBytes": 256785635,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": {
+        "variant": "b",
+        "records": 766,
+        "seedSha256": "a185d1cb90e0aee02eadec81ababd66d369324397d24baf1c7727282f5fc55d4",
+        "bm25Control": "canonical-a-projection",
+        "input": "shared derived input; actual seeded form is independently hashed"
+      }
+    },
+    {
+      "name": "m-main",
+      "report": {
+        "artifact": "m-main.json",
+        "sha256": "1cce51717e483f7f3ddecc25380ec0a462468406f14fa71d8e1d45016a8f7bdc"
+      },
+      "sourceCommit": "9a1792a0a05903afe23482329dcd83cc81cc9a31",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+      "datasetBytes": 2737100077,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": null
+    },
+    {
+      "name": "m-candidate",
+      "report": {
+        "artifact": "m-candidate.json",
+        "sha256": "8c91b81d622e0c044dadb0ca510da7980c26b0e89e63e9f1aa7e31ff7e4a032a"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+      "datasetBytes": 2737100077,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": null
+    },
+    {
+      "name": "m-a",
+      "report": {
+        "artifact": "m-a.json",
+        "sha256": "e843bce23a42944dcf3e1d6c41f724cbbc3a1d07fa8fd5c4d7a776c59d1e8b09"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "2e5ac605456f16f12f28c0e2d8769eb2e9794dbd3ab36875e761d801ba92c2a3",
+      "datasetBytes": 2533766846,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": {
+        "variant": "a",
+        "records": 766,
+        "seedSha256": "e313cf61f496f493d9e56c5cf1275522cc5c0bd18d2871fa04f6710421768bea",
+        "bm25Control": "canonical-a-projection",
+        "input": "shared derived input; actual seeded form is independently hashed"
+      }
+    },
+    {
+      "name": "m-b",
+      "report": {
+        "artifact": "m-b.json",
+        "sha256": "3acc6cd1b1c3392e46a0ecffab7f54e8ed5b1542949ff7f9f048d55a1cc20903"
+      },
+      "sourceCommit": "d983635b771a39985d972de6434efcd4f68d2150",
+      "manifestVersion": "0.23.1",
+      "platform": "linux",
+      "bun": "1.4.2",
+      "datasetSha256": "2e5ac605456f16f12f28c0e2d8769eb2e9794dbd3ab36875e761d801ba92c2a3",
+      "datasetBytes": 2533766846,
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "complete": true,
+      "failedPaths": 0,
+      "recordFixture": {
+        "variant": "b",
+        "records": 766,
+        "seedSha256": "03d7b9118e621d35a9881341429b049d4873b9801e16208b5c784a886e0f0ce9",
+        "bm25Control": "canonical-a-projection",
+        "input": "shared derived input; actual seeded form is independently hashed"
+      }
+    }
+  ],
+  "datasets": {
+    "s": {
+      "source": {
+        "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+        "bytes": 277383467
+      },
+      "derived": {
+        "sha256": "173921dfcd0e0809fdee85dbff8d3ff04f092525d3eed1a805e209410149b84f",
+        "bytes": 256785635
+      },
+      "script": {
+        "sha256": "f0c8d4fa7e1470449e9845301efa5faff35bf520873c6e856d5fb74156a64f48"
+      },
+      "harnessDigest": "6f876fe803a2ec6a0ceff92ac3729f08f2999183c74c40ad7a521008cc708882",
+      "counts": {
+        "questions": 500,
+        "records": 766,
+        "skippedFixtureCandidates": 0
+      },
+      "rule": "Select up to two source-order has_answer=true turns in answer_session_ids for non-abstention questions; insert one false assistant fixture after each if its source-only normalized fact parses and passes the secret screen; retain all original turns in order.",
+      "artifact": "s-derived-provenance.json",
+      "artifactSha256": "61cb1c54121ff638f8add261e580e5853c8595dc265f4656b19219a423cf2c57"
+    },
+    "m": {
+      "source": {
+        "sha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+        "bytes": 2737100077
+      },
+      "derived": {
+        "sha256": "2e5ac605456f16f12f28c0e2d8769eb2e9794dbd3ab36875e761d801ba92c2a3",
+        "bytes": 2533766846
+      },
+      "script": {
+        "sha256": "f0c8d4fa7e1470449e9845301efa5faff35bf520873c6e856d5fb74156a64f48"
+      },
+      "harnessDigest": "6f876fe803a2ec6a0ceff92ac3729f08f2999183c74c40ad7a521008cc708882",
+      "counts": {
+        "questions": 500,
+        "records": 766,
+        "skippedFixtureCandidates": 0
+      },
+      "rule": "Select up to two source-order has_answer=true turns in answer_session_ids for non-abstention questions; insert one false assistant fixture after each if its source-only normalized fact parses and passes the secret screen; retain all original turns in order.",
+      "artifact": "m-derived-provenance.json",
+      "artifactSha256": "ff84abf02d0d5279c59a2446ae90b729becde598f53e05f9fd11a80def2b3657"
+    }
+  },
+  "comparisons": {
+    "s-regression": {
+      "artifact": "s-regression.json",
+      "sha256": "7f45499871ab1c19802701ac6b5ac290e0d2f67f1b9ef7af16a14e7b9c8cfda5",
+      "complete": true,
+      "pass": true,
+      "scope": "full-longmemeval",
+      "rule": "strict-no-loss",
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "dataset": {
+        "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+        "bytes": 277383467
+      },
+      "ordering": {
+        "mcp": {
+          "equal": true,
+          "changedQuestions": 0,
+          "eligibleQuestions": 470
+        },
+        "library": {
+          "equal": true,
+          "changedQuestions": 0,
+          "eligibleQuestions": 470
+        }
+      },
+      "rowCount": 98,
+      "negativeRows": 0,
+      "positiveRows": 0,
+      "minDelta": 0,
+      "maxDelta": 0,
+      "allDeltasZero": true
+    },
+    "s-effect": {
+      "artifact": "s-effect.json",
+      "sha256": "f242e9c5c01d652b63bf4233e7c495ff75884ee179de770ae5eb9feba4ab670c",
+      "complete": true,
+      "pass": false,
+      "scope": "full-longmemeval",
+      "rule": "strict-no-loss",
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "dataset": {
+        "sha256": "173921dfcd0e0809fdee85dbff8d3ff04f092525d3eed1a805e209410149b84f",
+        "bytes": 256785635
+      },
+      "ordering": {
+        "mcp": {
+          "equal": false,
+          "changedQuestions": 41,
+          "eligibleQuestions": 470
+        },
+        "library": {
+          "equal": false,
+          "changedQuestions": 41,
+          "eligibleQuestions": 470
+        }
+      },
+      "rowCount": 98,
+      "negativeRows": 14,
+      "positiveRows": 1,
+      "minDelta": -0.003937007874015741,
+      "maxDelta": 3.2317726791464274e-05,
+      "columns": [
+        "type",
+        "backend",
+        "metric",
+        "n",
+        "baseline",
+        "candidate",
+        "delta",
+        "pass"
+      ],
+      "rows": [
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAnyAt5",
+          470,
+          0.9617021276595744,
+          0.9617021276595744,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAllAt5",
+          470,
+          0.8085106382978723,
+          0.8085106382978723,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAnyAt10",
+          470,
+          0.9787234042553191,
+          0.9787234042553191,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAllAt10",
+          470,
+          0.8808510638297873,
+          0.8808510638297873,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "ndcgAnyAt10",
+          470,
+          0.598837894617126,
+          0.5986161786248471,
+          -0.0002217159922789369,
+          false
+        ],
+        [
+          "overall",
+          "mcp",
+          "MRR",
+          470,
+          0.9224678568071625,
+          0.9224678568071625,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "turnRecallAt10",
+          470,
+          0.7393971631205672,
+          0.7393971631205672,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAnyAt5",
+          470,
+          0.9617021276595744,
+          0.9617021276595744,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAllAt5",
+          470,
+          0.8085106382978723,
+          0.8085106382978723,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAnyAt10",
+          470,
+          0.9787234042553191,
+          0.9787234042553191,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAllAt10",
+          470,
+          0.8765957446808511,
+          0.8765957446808511,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "ndcgAnyAt10",
+          470,
+          0.5987699090302578,
+          0.5987208936597821,
+          -4.901537047574678e-05,
+          false
+        ],
+        [
+          "overall",
+          "library",
+          "MRR",
+          470,
+          0.9231495707611731,
+          0.9220787878380747,
+          -0.0010707829230983679,
+          false
+        ],
+        [
+          "overall",
+          "library",
+          "turnRecallAt10",
+          470,
+          0.7409929078014182,
+          0.7409929078014182,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAnyAt5",
+          72,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAllAt5",
+          72,
+          0.7916666666666666,
+          0.7916666666666666,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAnyAt10",
+          72,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAllAt10",
+          72,
+          0.9166666666666666,
+          0.9166666666666666,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "ndcgAnyAt10",
+          72,
+          0.6053228591320048,
+          0.6052515018040617,
+          -7.135732794305572e-05,
+          false
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "MRR",
+          72,
+          0.9819444444444445,
+          0.9819444444444445,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "turnRecallAt10",
+          72,
+          0.761574074074074,
+          0.761574074074074,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAnyAt5",
+          72,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAllAt5",
+          72,
+          0.7916666666666666,
+          0.7916666666666666,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAnyAt10",
+          72,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAllAt10",
+          72,
+          0.9027777777777778,
+          0.9027777777777778,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "ndcgAnyAt10",
+          72,
+          0.6052774469040116,
+          0.6052317487932177,
+          -4.5698110793912505e-05,
+          false
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "MRR",
+          72,
+          0.9796296296296296,
+          0.9796296296296296,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "turnRecallAt10",
+          72,
+          0.7546296296296295,
+          0.7546296296296295,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAnyAt5",
+          121,
+          0.9586776859504132,
+          0.9586776859504132,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAllAt5",
+          121,
+          0.6776859504132231,
+          0.6776859504132231,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAnyAt10",
+          121,
+          0.9834710743801653,
+          0.9834710743801653,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAllAt10",
+          121,
+          0.8099173553719008,
+          0.8099173553719008,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "ndcgAnyAt10",
+          121,
+          0.5964413429712638,
+          0.5960463333201298,
+          -0.0003950096511340373,
+          false
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "MRR",
+          121,
+          0.9083856561129289,
+          0.9083856561129289,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "turnRecallAt10",
+          121,
+          0.6108815426997247,
+          0.6108815426997247,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAnyAt5",
+          121,
+          0.9586776859504132,
+          0.9586776859504132,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAllAt5",
+          121,
+          0.6776859504132231,
+          0.6776859504132231,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAnyAt10",
+          121,
+          0.9834710743801653,
+          0.9834710743801653,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAllAt10",
+          121,
+          0.8016528925619835,
+          0.8016528925619835,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "ndcgAnyAt10",
+          121,
+          0.5941423523025405,
+          0.594132490058922,
+          -9.862243618541378e-06,
+          false
+        ],
+        [
+          "multi-session",
+          "library",
+          "MRR",
+          121,
+          0.908455769819406,
+          0.908455769819406,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "turnRecallAt10",
+          121,
+          0.612947658402204,
+          0.612947658402204,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAnyAt5",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAllAt5",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAnyAt10",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAllAt10",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "ndcgAnyAt10",
+          56,
+          0.7938961432918459,
+          0.7939284610186373,
+          3.2317726791464274e-05,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "MRR",
+          56,
+          0.9910714285714286,
+          0.9910714285714286,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "turnRecallAt10",
+          56,
+          0.8928571428571429,
+          0.8928571428571429,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAnyAt5",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAllAt5",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAnyAt10",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAllAt10",
+          56,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "ndcgAnyAt10",
+          56,
+          0.7963426325435216,
+          0.7963426325435216,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "MRR",
+          56,
+          0.9910714285714286,
+          0.9910714285714286,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "turnRecallAt10",
+          56,
+          0.9107142857142857,
+          0.9107142857142857,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAnyAt5",
+          30,
+          0.8,
+          0.8,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAllAt5",
+          30,
+          0.8,
+          0.8,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAnyAt10",
+          30,
+          0.8666666666666667,
+          0.8666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAllAt10",
+          30,
+          0.8666666666666667,
+          0.8666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "ndcgAnyAt10",
+          30,
+          0.3181078074870859,
+          0.3166810656396646,
+          -0.001426741847421309,
+          false
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "MRR",
+          30,
+          0.6695259516312148,
+          0.6695259516312148,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "turnRecallAt10",
+          30,
+          0.47777777777777775,
+          0.47777777777777775,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAnyAt5",
+          30,
+          0.8,
+          0.8,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAllAt5",
+          30,
+          0.8,
+          0.8,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAnyAt10",
+          30,
+          0.8666666666666667,
+          0.8666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAllAt10",
+          30,
+          0.8666666666666667,
+          0.8666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "ndcgAnyAt10",
+          30,
+          0.31737238359043507,
+          0.31734591451848965,
+          -2.646907194542303e-05,
+          false
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "MRR",
+          30,
+          0.6688059599308309,
+          0.6686970274689572,
+          -0.00010893246187371197,
+          false
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "turnRecallAt10",
+          30,
+          0.47777777777777775,
+          0.47777777777777775,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAnyAt5",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAllAt5",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAnyAt10",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAllAt10",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "ndcgAnyAt10",
+          64,
+          0.5894374021718078,
+          0.5894003835231691,
+          -3.701864863869808e-05,
+          false
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "MRR",
+          64,
+          0.9895833333333334,
+          0.9895833333333334,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "turnRecallAt10",
+          64,
+          0.9375,
+          0.9375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAnyAt5",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAllAt5",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAnyAt10",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAllAt10",
+          64,
+          1,
+          1,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "ndcgAnyAt10",
+          64,
+          0.5884804324030659,
+          0.5884804324030659,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "MRR",
+          64,
+          0.9895833333333334,
+          0.9895833333333334,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "turnRecallAt10",
+          64,
+          0.9375,
+          0.9375,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAnyAt5",
+          127,
+          0.9448818897637795,
+          0.9448818897637795,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAllAt5",
+          127,
+          0.7637795275590551,
+          0.7637795275590551,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAnyAt10",
+          127,
+          0.968503937007874,
+          0.968503937007874,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAllAt10",
+          127,
+          0.8188976377952756,
+          0.8188976377952756,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "ndcgAnyAt10",
+          127,
+          0.5824862214572476,
+          0.582423930396328,
+          -6.22910609195948e-05,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "MRR",
+          127,
+          0.8978434364364742,
+          0.8978434364364742,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "turnRecallAt10",
+          127,
+          0.7435695538057743,
+          0.7435695538057743,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAnyAt5",
+          127,
+          0.9448818897637795,
+          0.9448818897637795,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAllAt5",
+          127,
+          0.7637795275590551,
+          0.7637795275590551,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAnyAt10",
+          127,
+          0.968503937007874,
+          0.968503937007874,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAllAt10",
+          127,
+          0.8188976377952756,
+          0.8188976377952756,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "ndcgAnyAt10",
+          127,
+          0.5840279514533738,
+          0.5838881124257337,
+          -0.0001398390276401429,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "MRR",
+          127,
+          0.9017819263386752,
+          0.8978449184646594,
+          -0.003937007874015741,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "turnRecallAt10",
+          127,
+          0.7435695538057743,
+          0.7435695538057743,
+          0,
+          true
+        ]
+      ]
+    },
+    "m-regression": {
+      "artifact": "m-regression.json",
+      "sha256": "a6925abc3611ed646859ace907aeca9e93bd69529d8b51e97a19e6a468995835",
+      "complete": true,
+      "pass": true,
+      "scope": "full-longmemeval",
+      "rule": "strict-no-loss",
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "dataset": {
+        "sha256": "9d79e5524794a2e6900a3aa9cb7d9152c5a3e8319c9a87c25494ba1eacee495f",
+        "bytes": 2737100077
+      },
+      "ordering": {
+        "mcp": {
+          "equal": true,
+          "changedQuestions": 0,
+          "eligibleQuestions": 470
+        },
+        "library": {
+          "equal": true,
+          "changedQuestions": 0,
+          "eligibleQuestions": 470
+        }
+      },
+      "rowCount": 98,
+      "negativeRows": 0,
+      "positiveRows": 0,
+      "minDelta": 0,
+      "maxDelta": 0,
+      "allDeltasZero": true
+    },
+    "m-effect": {
+      "artifact": "m-effect.json",
+      "sha256": "bed228fdd9a73a8e80cd0bb37b21609c543b112eda15a288a0fb50ec1295f553",
+      "complete": true,
+      "pass": false,
+      "scope": "full-longmemeval",
+      "rule": "strict-no-loss",
+      "questions": 500,
+      "eligible": 470,
+      "abstentions": 30,
+      "dataset": {
+        "sha256": "2e5ac605456f16f12f28c0e2d8769eb2e9794dbd3ab36875e761d801ba92c2a3",
+        "bytes": 2533766846
+      },
+      "ordering": {
+        "mcp": {
+          "equal": false,
+          "changedQuestions": 50,
+          "eligibleQuestions": 470
+        },
+        "library": {
+          "equal": false,
+          "changedQuestions": 56,
+          "eligibleQuestions": 470
+        }
+      },
+      "rowCount": 98,
+      "negativeRows": 21,
+      "positiveRows": 0,
+      "minDelta": -0.022380952380952335,
+      "maxDelta": 0,
+      "columns": [
+        "type",
+        "backend",
+        "metric",
+        "n",
+        "baseline",
+        "candidate",
+        "delta",
+        "pass"
+      ],
+      "rows": [
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAnyAt5",
+          470,
+          0.9127659574468086,
+          0.9127659574468086,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAllAt5",
+          470,
+          0.6957446808510638,
+          0.6957446808510638,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAnyAt10",
+          470,
+          0.9361702127659575,
+          0.9361702127659575,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "mcp",
+          "sessionRecallAllAt10",
+          470,
+          0.7595744680851064,
+          0.7574468085106383,
+          -0.0021276595744681437,
+          false
+        ],
+        [
+          "overall",
+          "mcp",
+          "ndcgAnyAt10",
+          470,
+          0.4771274298109695,
+          0.47681810486289306,
+          -0.0003093249480764504,
+          false
+        ],
+        [
+          "overall",
+          "mcp",
+          "MRR",
+          470,
+          0.8531206220955704,
+          0.8529043390936969,
+          -0.00021628300187348515,
+          false
+        ],
+        [
+          "overall",
+          "mcp",
+          "turnRecallAt10",
+          470,
+          0.640531914893617,
+          0.640531914893617,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAnyAt5",
+          470,
+          0.9148936170212766,
+          0.9148936170212766,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAllAt5",
+          470,
+          0.6957446808510638,
+          0.6957446808510638,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAnyAt10",
+          470,
+          0.9361702127659575,
+          0.9361702127659575,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "sessionRecallAllAt10",
+          470,
+          0.7595744680851064,
+          0.7595744680851064,
+          0,
+          true
+        ],
+        [
+          "overall",
+          "library",
+          "ndcgAnyAt10",
+          470,
+          0.47731354529433184,
+          0.4769654546505072,
+          -0.00034809064382462784,
+          false
+        ],
+        [
+          "overall",
+          "library",
+          "MRR",
+          470,
+          0.8512856677634839,
+          0.8496216142288516,
+          -0.0016640535346322816,
+          false
+        ],
+        [
+          "overall",
+          "library",
+          "turnRecallAt10",
+          470,
+          0.6447872340425531,
+          0.6447872340425531,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAnyAt5",
+          72,
+          0.9861111111111112,
+          0.9861111111111112,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAllAt5",
+          72,
+          0.5833333333333334,
+          0.5833333333333334,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAnyAt10",
+          72,
+          0.9861111111111112,
+          0.9861111111111112,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "sessionRecallAllAt10",
+          72,
+          0.6527777777777778,
+          0.6527777777777778,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "ndcgAnyAt10",
+          72,
+          0.5078368091368294,
+          0.5076839522258756,
+          -0.0001528569109537914,
+          false
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "MRR",
+          72,
+          0.9588196389666979,
+          0.9588196389666979,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "mcp",
+          "turnRecallAt10",
+          72,
+          0.625,
+          0.625,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAnyAt5",
+          72,
+          0.9861111111111112,
+          0.9861111111111112,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAllAt5",
+          72,
+          0.5833333333333334,
+          0.5833333333333334,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAnyAt10",
+          72,
+          0.9861111111111112,
+          0.9861111111111112,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "sessionRecallAllAt10",
+          72,
+          0.6527777777777778,
+          0.6527777777777778,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "ndcgAnyAt10",
+          72,
+          0.50834087364169,
+          0.5080402623332309,
+          -0.0003006113084591533,
+          false
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "MRR",
+          72,
+          0.9591049382716051,
+          0.9591049382716051,
+          0,
+          true
+        ],
+        [
+          "knowledge-update",
+          "library",
+          "turnRecallAt10",
+          72,
+          0.625,
+          0.625,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAnyAt5",
+          121,
+          0.9090909090909091,
+          0.9090909090909091,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAllAt5",
+          121,
+          0.5206611570247934,
+          0.5206611570247934,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAnyAt10",
+          121,
+          0.9504132231404959,
+          0.9504132231404959,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "sessionRecallAllAt10",
+          121,
+          0.6198347107438017,
+          0.6115702479338843,
+          -0.008264462809917439,
+          false
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "ndcgAnyAt10",
+          121,
+          0.4461392868875545,
+          0.44540490976131486,
+          -0.0007343771262396381,
+          false
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "MRR",
+          121,
+          0.8108304439601601,
+          0.8108266213594154,
+          -3.822600744718407e-06,
+          false
+        ],
+        [
+          "multi-session",
+          "mcp",
+          "turnRecallAt10",
+          121,
+          0.5078512396694216,
+          0.5078512396694216,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAnyAt5",
+          121,
+          0.9173553719008265,
+          0.9173553719008265,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAllAt5",
+          121,
+          0.5206611570247934,
+          0.5206611570247934,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAnyAt10",
+          121,
+          0.9504132231404959,
+          0.9504132231404959,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "sessionRecallAllAt10",
+          121,
+          0.6198347107438017,
+          0.6198347107438017,
+          0,
+          true
+        ],
+        [
+          "multi-session",
+          "library",
+          "ndcgAnyAt10",
+          121,
+          0.4454821803837477,
+          0.4452779965469857,
+          -0.00020418383676201746,
+          false
+        ],
+        [
+          "multi-session",
+          "library",
+          "MRR",
+          121,
+          0.8034620757132435,
+          0.8032602634826064,
+          -0.00020181223063708842,
+          false
+        ],
+        [
+          "multi-session",
+          "library",
+          "turnRecallAt10",
+          121,
+          0.5078512396694216,
+          0.5078512396694216,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAnyAt5",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAllAt5",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAnyAt10",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "sessionRecallAllAt10",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "ndcgAnyAt10",
+          56,
+          0.7172068926799319,
+          0.7172068926799319,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "MRR",
+          56,
+          0.9647556390977444,
+          0.9647556390977444,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "mcp",
+          "turnRecallAt10",
+          56,
+          0.8392857142857143,
+          0.8392857142857143,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAnyAt5",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAllAt5",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAnyAt10",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "sessionRecallAllAt10",
+          56,
+          0.9821428571428571,
+          0.9821428571428571,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "ndcgAnyAt10",
+          56,
+          0.7208476894094219,
+          0.7208476894094219,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "MRR",
+          56,
+          0.9647556390977444,
+          0.9647556390977444,
+          0,
+          true
+        ],
+        [
+          "single-session-assistant",
+          "library",
+          "turnRecallAt10",
+          56,
+          0.875,
+          0.875,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAnyAt5",
+          30,
+          0.5666666666666667,
+          0.5666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAllAt5",
+          30,
+          0.5666666666666667,
+          0.5666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAnyAt10",
+          30,
+          0.7333333333333333,
+          0.7333333333333333,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "sessionRecallAllAt10",
+          30,
+          0.7333333333333333,
+          0.7333333333333333,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "ndcgAnyAt10",
+          30,
+          0.1876435615948827,
+          0.18733348504991273,
+          -0.0003100765449699783,
+          false
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "MRR",
+          30,
+          0.43035714285714294,
+          0.42976190476190484,
+          -0.0005952380952380931,
+          false
+        ],
+        [
+          "single-session-preference",
+          "mcp",
+          "turnRecallAt10",
+          30,
+          0.26666666666666666,
+          0.26666666666666666,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAnyAt5",
+          30,
+          0.5666666666666667,
+          0.5666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAllAt5",
+          30,
+          0.5666666666666667,
+          0.5666666666666667,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAnyAt10",
+          30,
+          0.7333333333333333,
+          0.7333333333333333,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "sessionRecallAllAt10",
+          30,
+          0.7333333333333333,
+          0.7333333333333333,
+          0,
+          true
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "ndcgAnyAt10",
+          30,
+          0.18973008840179226,
+          0.1875108749330932,
+          -0.0022192134686990495,
+          false
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "MRR",
+          30,
+          0.4527177700348432,
+          0.43033681765389087,
+          -0.022380952380952335,
+          false
+        ],
+        [
+          "single-session-preference",
+          "library",
+          "turnRecallAt10",
+          30,
+          0.26666666666666666,
+          0.26666666666666666,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAnyAt5",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAllAt5",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAnyAt10",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "sessionRecallAllAt10",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "ndcgAnyAt10",
+          64,
+          0.45801515955942224,
+          0.45801515955942224,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "MRR",
+          64,
+          0.943530701754386,
+          0.943530701754386,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "mcp",
+          "turnRecallAt10",
+          64,
+          0.8515625,
+          0.8515625,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAnyAt5",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAllAt5",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAnyAt10",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "sessionRecallAllAt10",
+          64,
+          0.984375,
+          0.984375,
+          0,
+          true
+        ],
+        [
+          "single-session-user",
+          "library",
+          "ndcgAnyAt10",
+          64,
+          0.45550403364734793,
+          0.45516826070242833,
+          -0.00033577294491959897,
+          false
+        ],
+        [
+          "single-session-user",
+          "library",
+          "MRR",
+          64,
+          0.9331597222222222,
+          0.931811951754386,
+          -0.0013477704678361846,
+          false
+        ],
+        [
+          "single-session-user",
+          "library",
+          "turnRecallAt10",
+          64,
+          0.8515625,
+          0.8515625,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAnyAt5",
+          127,
+          0.889763779527559,
+          0.889763779527559,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAllAt5",
+          127,
+          0.6850393700787402,
+          0.6850393700787402,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAnyAt10",
+          127,
+          0.8976377952755905,
+          0.8976377952755905,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "sessionRecallAllAt10",
+          127,
+          0.7480314960629921,
+          0.7480314960629921,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "ndcgAnyAt10",
+          127,
+          0.4613931101589287,
+          0.46110795189606896,
+          -0.00028515826285974155,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "MRR",
+          127,
+          0.8385685013595887,
+          0.8379123333805861,
+          -0.0006561679790025865,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "mcp",
+          "turnRecallAt10",
+          127,
+          0.6700787401574805,
+          0.6700787401574805,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAnyAt5",
+          127,
+          0.889763779527559,
+          0.889763779527559,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAllAt5",
+          127,
+          0.6850393700787402,
+          0.6850393700787402,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAnyAt10",
+          127,
+          0.8976377952755905,
+          0.8976377952755905,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "sessionRecallAllAt10",
+          127,
+          0.7480314960629921,
+          0.7480314960629921,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "ndcgAnyAt10",
+          127,
+          0.46158935549046426,
+          0.4613595407534208,
+          -0.00022981473704347666,
+          false
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "MRR",
+          127,
+          0.8385805198365216,
+          0.8385805198365216,
+          0,
+          true
+        ],
+        [
+          "temporal-reasoning",
+          "library",
+          "turnRecallAt10",
+          127,
+          0.6700787401574805,
+          0.6700787401574805,
+          0,
+          true
+        ]
+      ]
+    }
+  },
+  "losses": {
+    "s": {
+      "scope": "S full public derived A/B",
+      "head": "d983635b771a39985d972de6434efcd4f68d2150",
+      "questions": [
+        "0bc8ad92",
+        "184da446",
+        "2788b940",
+        "2b8f3739",
+        "311778f1",
+        "32260d93",
+        "3ba21379",
+        "4d6b87c8",
+        "5a7937c8",
+        "830ce83f",
+        "8979f9ec",
+        "afdc33df",
+        "d6233ab6",
+        "d7c942c3",
+        "f0e564bc",
+        "f35224e0",
+        "gpt4_1916e0ea",
+        "gpt4_2487a7cb",
+        "gpt4_45189cb4",
+        "gpt4_f49edff3",
+        "gpt4_fe651585"
+      ],
+      "losses": [
+        {
+          "id": "0bc8ad92",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.23977623142261698,
+          "b": 0.23741929457920627,
+          "delta": -0.0023569368434107063
+        },
+        {
+          "id": "184da446",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.551195317389526,
+          "b": 0.5495768792740995,
+          "delta": -0.0016184381154265015
+        },
+        {
+          "id": "2788b940",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5880472600052921,
+          "b": 0.5873416403374581,
+          "delta": -0.000705619667834001
+        },
+        {
+          "id": "2788b940",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5873416403374581,
+          "b": 0.5867034745012066,
+          "delta": -0.0006381658362514253
+        },
+        {
+          "id": "2b8f3739",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4942683443232385,
+          "b": 0.49137440299492585,
+          "delta": -0.002893941328312666
+        },
+        {
+          "id": "311778f1",
+          "type": "single-session-user",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5656559089187376,
+          "b": 0.5632867154058607,
+          "delta": -0.0023691935128768993
+        },
+        {
+          "id": "32260d93",
+          "type": "single-session-preference",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.058823529411764705,
+          "b": 0.05555555555555555,
+          "delta": -0.0032679738562091526
+        },
+        {
+          "id": "32260d93",
+          "type": "single-session-preference",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.07813048333652867,
+          "b": 0.07733641117816338,
+          "delta": -0.000794072158365286
+        },
+        {
+          "id": "3ba21379",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5060368296335324,
+          "b": 0.504005464014721,
+          "delta": -0.0020313656188113427
+        },
+        {
+          "id": "3ba21379",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.49995556728624596,
+          "b": 0.4987305753059284,
+          "delta": -0.001224991980317558
+        },
+        {
+          "id": "4d6b87c8",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6201064260684394,
+          "b": 0.6195587387286247,
+          "delta": -0.0005476873398146953
+        },
+        {
+          "id": "5a7937c8",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6670308346391466,
+          "b": 0.66654312282914,
+          "delta": -0.0004877118100066191
+        },
+        {
+          "id": "830ce83f",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5891264847627641,
+          "b": 0.5878675864044066,
+          "delta": -0.0012588983583574631
+        },
+        {
+          "id": "8979f9ec",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6117067218185388,
+          "b": 0.610328809882399,
+          "delta": -0.0013779119361397862
+        },
+        {
+          "id": "afdc33df",
+          "type": "single-session-preference",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.498749522768543,
+          "b": 0.49727431983907666,
+          "delta": -0.001475202929466346
+        },
+        {
+          "id": "d6233ab6",
+          "type": "single-session-preference",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.08384814963539756,
+          "b": 0.042521097142223456,
+          "delta": -0.04132705249317411
+        },
+        {
+          "id": "d7c942c3",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.47229252862223675,
+          "b": 0.4705459184458949,
+          "delta": -0.0017466101763418673
+        },
+        {
+          "id": "f0e564bc",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.7969081040191944,
+          "b": 0.796425880382103,
+          "delta": -0.0004822236370913835
+        },
+        {
+          "id": "f35224e0",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.708864132523099,
+          "b": 0.6664602074736766,
+          "delta": -0.042403925049422364
+        },
+        {
+          "id": "gpt4_1916e0ea",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5799563469122404,
+          "b": 0.5778525502346887,
+          "delta": -0.0021037966775516725
+        },
+        {
+          "id": "gpt4_2487a7cb",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5619698638757638,
+          "b": 0.5569347816280404,
+          "delta": -0.00503508224772331
+        },
+        {
+          "id": "gpt4_45189cb4",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.530176244754303,
+          "b": 0.5145204849215466,
+          "delta": -0.015655759832756466
+        },
+        {
+          "id": "gpt4_f49edff3",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6610122778051805,
+          "b": 0.6604933321595379,
+          "delta": -0.0005189456456425878
+        },
+        {
+          "id": "gpt4_fe651585",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 1,
+          "b": 0.5,
+          "delta": -0.5
+        }
+      ],
+      "artifact": "s-loss-questions.json",
+      "artifactSha256": "b7fd4e59d44eb9d775ee46f8467f1ae2dd9827b36ff0ba999268d728261a42ee"
+    },
+    "m": {
+      "scope": "M full public derived A/B",
+      "head": "d983635b771a39985d972de6434efcd4f68d2150",
+      "questions": [
+        "07741c44",
+        "184da446",
+        "18bc8abd",
+        "1d4e3b97",
+        "28dc39ac",
+        "3fdac837",
+        "45dc21b6",
+        "5d3d2817",
+        "60036106",
+        "6071bd76",
+        "6b7dfb22",
+        "720133ac",
+        "73d42213",
+        "75f70248",
+        "88432d0a",
+        "a3332713",
+        "b01defab",
+        "ccb36322",
+        "d24813b1",
+        "d851d5ba",
+        "dd2973ad",
+        "ef9cf60a",
+        "gpt4_213fd887",
+        "gpt4_2c50253f",
+        "gpt4_2f584639",
+        "gpt4_2f91af09",
+        "gpt4_45189cb4",
+        "gpt4_68e94287",
+        "gpt4_8c8961ae",
+        "gpt4_93159ced",
+        "gpt4_a1b77f9c",
+        "gpt4_d12ceb0e",
+        "gpt4_fe651585"
+      ],
+      "losses": [
+        {
+          "id": "07741c44",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.609515576275398,
+          "b": 0.593261938864968,
+          "delta": -0.016253637410429955
+        },
+        {
+          "id": "184da446",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.616251650435287,
+          "b": 0.6149165248521382,
+          "delta": -0.001335125583148744
+        },
+        {
+          "id": "184da446",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6179201859969202,
+          "b": 0.616251650435287,
+          "delta": -0.0016685355616332664
+        },
+        {
+          "id": "18bc8abd",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.41574320353771366,
+          "b": 0.41416247076192914,
+          "delta": -0.0015807327757845213
+        },
+        {
+          "id": "1d4e3b97",
+          "type": "single-session-preference",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.2901742993145304,
+          "b": 0.28462628299866466,
+          "delta": -0.005548016315865767
+        },
+        {
+          "id": "28dc39ac",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.3410397766940963,
+          "b": 0.33961536313566487,
+          "delta": -0.0014244135584314255
+        },
+        {
+          "id": "28dc39ac",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.33710080357775196,
+          "b": 0.3348078942108394,
+          "delta": -0.0022929093669125655
+        },
+        {
+          "id": "3fdac837",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.16666666666666666,
+          "b": 0.14285714285714285,
+          "delta": -0.023809523809523808
+        },
+        {
+          "id": "3fdac837",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.11290203642837203,
+          "b": 0.10590833795966888,
+          "delta": -0.006993698468703152
+        },
+        {
+          "id": "45dc21b6",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5025006961507845,
+          "b": 0.4953079146292994,
+          "delta": -0.007192781521485114
+        },
+        {
+          "id": "5d3d2817",
+          "type": "single-session-user",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.3333333333333333,
+          "b": 0.25,
+          "delta": -0.08333333333333331
+        },
+        {
+          "id": "5d3d2817",
+          "type": "single-session-user",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.19101707266987142,
+          "b": 0.16952760419501675,
+          "delta": -0.021489468474854667
+        },
+        {
+          "id": "60036106",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5123927162836115,
+          "b": 0.5044278747281895,
+          "delta": -0.007964841555421986
+        },
+        {
+          "id": "6071bd76",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5199569732502317,
+          "b": 0.5193377073584514,
+          "delta": -0.0006192658917802962
+        },
+        {
+          "id": "6071bd76",
+          "type": "knowledge-update",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5193377073584514,
+          "b": 0.5187740596286692,
+          "delta": -0.0005636477297822351
+        },
+        {
+          "id": "6b7dfb22",
+          "type": "single-session-preference",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 1,
+          "b": 0.3333333333333333,
+          "delta": -0.6666666666666667
+        },
+        {
+          "id": "6b7dfb22",
+          "type": "single-session-preference",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.18038951854077967,
+          "b": 0.11381311447980799,
+          "delta": -0.06657640406097168
+        },
+        {
+          "id": "720133ac",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.3072201674764992,
+          "b": 0.2846783237219703,
+          "delta": -0.02254184375452889
+        },
+        {
+          "id": "73d42213",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4073787323537069,
+          "b": 0.4061846877046575,
+          "delta": -0.0011940446490494305
+        },
+        {
+          "id": "73d42213",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4123915768254202,
+          "b": 0.36987047968319675,
+          "delta": -0.04252109714222346
+        },
+        {
+          "id": "73d42213",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "sessionRecallAllAt10",
+          "a": 1,
+          "b": 0,
+          "delta": -1
+        },
+        {
+          "id": "75f70248",
+          "type": "single-session-preference",
+          "backend": "mcp",
+          "metric": "MRR",
+          "a": 0.14285714285714285,
+          "b": 0.125,
+          "delta": -0.01785714285714285
+        },
+        {
+          "id": "75f70248",
+          "type": "single-session-preference",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.058464198618511806,
+          "b": 0.054709918585277496,
+          "delta": -0.00375428003323431
+        },
+        {
+          "id": "88432d0a",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.025,
+          "b": 0.024390243902439025,
+          "delta": -0.0006097560975609762
+        },
+        {
+          "id": "88432d0a",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "MRR",
+          "a": 0.021739130434782608,
+          "b": 0.02127659574468085,
+          "delta": -0.00046253469010175755
+        },
+        {
+          "id": "a3332713",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.7078223750477755,
+          "b": 0.7064476499132918,
+          "delta": -0.0013747251344836675
+        },
+        {
+          "id": "b01defab",
+          "type": "knowledge-update",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5632644893617014,
+          "b": 0.5598285040380041,
+          "delta": -0.003435985323697266
+        },
+        {
+          "id": "ccb36322",
+          "type": "single-session-user",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.05555555555555555,
+          "b": 0.05263157894736842,
+          "delta": -0.0029239766081871343
+        },
+        {
+          "id": "d24813b1",
+          "type": "single-session-preference",
+          "backend": "library",
+          "metric": "MRR",
+          "a": 0.07142857142857142,
+          "b": 0.06666666666666667,
+          "delta": -0.004761904761904759
+        },
+        {
+          "id": "d851d5ba",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.7400918538340933,
+          "b": 0.7393590809455117,
+          "delta": -0.0007327728885815343
+        },
+        {
+          "id": "dd2973ad",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.43787434058045166,
+          "b": 0.43517164567572536,
+          "delta": -0.0027026949047262994
+        },
+        {
+          "id": "ef9cf60a",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5351627393974255,
+          "b": 0.524254920645328,
+          "delta": -0.010907818752097564
+        },
+        {
+          "id": "gpt4_213fd887",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4669244001344445,
+          "b": 0.4621253554644874,
+          "delta": -0.004799044669957064
+        },
+        {
+          "id": "gpt4_2c50253f",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.2027979993149347,
+          "b": 0.20235660600711067,
+          "delta": -0.0004413933078240284
+        },
+        {
+          "id": "gpt4_2f584639",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4880467274095148,
+          "b": 0.4875645037724234,
+          "delta": -0.000482223637091439
+        },
+        {
+          "id": "gpt4_2f91af09",
+          "type": "multi-session",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.5915267540017702,
+          "b": 0.5814232813391572,
+          "delta": -0.010103472662613022
+        },
+        {
+          "id": "gpt4_45189cb4",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "MRR",
+          "a": 0.3333333333333333,
+          "b": 0.25,
+          "delta": -0.08333333333333331
+        },
+        {
+          "id": "gpt4_45189cb4",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.21379571814766818,
+          "b": 0.19230624967281348,
+          "delta": -0.021489468474854695
+        },
+        {
+          "id": "gpt4_68e94287",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.43181385786443593,
+          "b": 0.41032438938958127,
+          "delta": -0.021489468474854667
+        },
+        {
+          "id": "gpt4_8c8961ae",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.619568180791179,
+          "b": 0.6190804689811724,
+          "delta": -0.0004877118100066191
+        },
+        {
+          "id": "gpt4_93159ced",
+          "type": "temporal-reasoning",
+          "backend": "mcp",
+          "metric": "ndcgAnyAt10",
+          "a": 0.6225560792962277,
+          "b": 0.6083181601979017,
+          "delta": -0.014237919098325946
+        },
+        {
+          "id": "gpt4_a1b77f9c",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.8282487219327752,
+          "b": 0.8273803758276745,
+          "delta": -0.0008683461051006702
+        },
+        {
+          "id": "gpt4_d12ceb0e",
+          "type": "multi-session",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.4231904779692784,
+          "b": 0.4203789342838487,
+          "delta": -0.002811543685429685
+        },
+        {
+          "id": "gpt4_fe651585",
+          "type": "temporal-reasoning",
+          "backend": "library",
+          "metric": "ndcgAnyAt10",
+          "a": 0.18833632907048092,
+          "b": 0.1872303336607855,
+          "delta": -0.001105995409695415
+        }
+      ],
+      "artifact": "m-loss-questions.json",
+      "artifactSha256": "4a7377cc24d64dd458bcba5b0b3451115b2d97a129c2927c625d180e1d06ec3e"
+    }
+  },
+  "verification": {
+    "typecheck": "pass",
+    "boundary": {
+      "status": "pass",
+      "sourceFiles": 162
+    },
+    "focused": {
+      "pass": 227,
+      "fail": 0,
+      "files": 22
+    },
+    "pack": {
+      "status": "pass",
+      "files": 172
+    },
+    "fullSuite": {
+      "status": "failed",
+      "pass": 3506,
+      "skip": 21,
+      "fail": 2,
+      "errors": 1,
+      "expectations": 48918,
+      "tests": 3529,
+      "files": 315,
+      "durationSeconds": 1320.52,
+      "artifact": "final-full.log",
+      "sha256": "2d3a1115c9339079e57cae9ce7743ea6412614163344ddd40b3c7177d03cf742",
+      "failures": [
+        "(fail) two independently activated homes exchange allowed project/user originals while forgotten and task-field canaries remain local [5072.38ms]",
+        "# Unhandled error between tests",
+        "(fail) source-local already-public row keeps its frozen hold when policy drifts after plan fsync [5093.49ms]"
+      ],
+      "attribution": "Unattributed default 5 s sync-placement timeouts; also present on the source-identical data-only control branch. No deadlines or limits changed."
+    },
+    "gcCounterbalance": [
+      {
+        "arm": "main",
+        "artifact": "gc-1-main.log",
+        "sha256": "7133a1bab57f03178b551f97e41663c3a19a372d6d9f1cf8299e9a5f9020802b",
+        "lines": [
+          "(fail) a cap shrink trims oldest rows first, in bounded batches, and the report says when a shard is still over its cap [5785.34ms]",
+          "  ^ this test timed out after 5000ms.",
+          "Ran 1 test across 1 file. [5.81s]"
+        ]
+      },
+      {
+        "arm": "candidate",
+        "artifact": "gc-2-candidate.log",
+        "sha256": "0a21b7627bbd1bbff96180fc60d62b26706ced2fad1b4f8eb94567d8691fe07b",
+        "lines": [
+          "(fail) a cap shrink trims oldest rows first, in bounded batches, and the report says when a shard is still over its cap [5933.08ms]",
+          "  ^ this test timed out after 5000ms.",
+          "Ran 1 test across 1 file. [5.96s]"
+        ]
+      },
+      {
+        "arm": "candidate",
+        "artifact": "gc-3-candidate.log",
+        "sha256": "7dd2512bfcd7f171021d97e913e3461f3de8e57be8795e233744310a90ba9e5c",
+        "lines": [
+          "(fail) a cap shrink trims oldest rows first, in bounded batches, and the report says when a shard is still over its cap [6750.97ms]",
+          "  ^ this test timed out after 5000ms.",
+          "Ran 1 test across 1 file. [6.78s]"
+        ]
+      },
+      {
+        "arm": "main",
+        "artifact": "gc-4-main.log",
+        "sha256": "e263a24009ef8cba7ad92fa7d1986b40c8e6f33e84e8915151287c519343dca7",
+        "lines": [
+          "(fail) a cap shrink trims oldest rows first, in bounded batches, and the report says when a shard is still over its cap [5716.87ms]",
+          "  ^ this test timed out after 5000ms.",
+          "Ran 1 test across 1 file. [5.74s]"
+        ]
+      }
+    ]
+  },
+  "phaseExitCodes": [
+    {
+      "phase": "gc-1-main",
+      "exit": 1
+    },
+    {
+      "phase": "gc-2-candidate",
+      "exit": 1
+    },
+    {
+      "phase": "gc-3-candidate",
+      "exit": 1
+    },
+    {
+      "phase": "gc-4-main",
+      "exit": 1
+    },
+    {
+      "phase": "s-main",
+      "exit": 0
+    },
+    {
+      "phase": "s-candidate",
+      "exit": 0
+    },
+    {
+      "phase": "s-regression",
+      "exit": 0
+    },
+    {
+      "phase": "s-a",
+      "exit": 0
+    },
+    {
+      "phase": "s-b",
+      "exit": 0
+    },
+    {
+      "phase": "s-effect",
+      "exit": 1
+    },
+    {
+      "phase": "m-main",
+      "exit": 0
+    },
+    {
+      "phase": "m-candidate",
+      "exit": 0
+    },
+    {
+      "phase": "m-regression",
+      "exit": 0
+    },
+    {
+      "phase": "m-a",
+      "exit": 0
+    },
+    {
+      "phase": "m-b",
+      "exit": 0
+    },
+    {
+      "phase": "m-effect",
+      "exit": 1
+    },
+    {
+      "phase": "final-full",
+      "exit": 1
+    }
+  ],
+  "historicalGeneralMetricsRetention": {
+    "triggerBytes": 65536,
+    "keepRowsOnTrim": 200,
+    "guaranteesSevenDaysAt35SessionsPerDay": false,
+    "changed": false,
+    "note": "Frozen d983635 general metrics tail; I1 follow-up moves Record observations to a separate journal."
+  },
+  "currentVariantJournalRetention": {
+    "days": 8,
+    "hardCapBytes": 4194304,
+    "capTrimReported": true,
+    "validation": "Age, 4 MiB cap, cap-trim reporting, numeric-only projection and hook integration tests passed at follow-up head.",
+    "triggerDays": 9,
+    "keptDaysOnTrim": 8,
+    "replacement": "temp+rename; concurrent append loss is an accepted documented ceiling",
+    "trimCounter": "observed trim markers, not losses"
+  },
+  "followupValidation": {
+    "head": "2cb1848a82db5701759d8b1be56017f5a5e17ae9",
+    "typecheck": "pass",
+    "boundary": {
+      "status": "pass",
+      "sourceFiles": 163
+    },
+    "focused": {
+      "pass": 43,
+      "skip": 1,
+      "fail": 0,
+      "files": 5
+    },
+    "command": "bun test --timeout 20000",
+    "fullSuite": {
+      "pass": 3513,
+      "skip": 22,
+      "fail": 0,
+      "tests": 3535,
+      "files": 316,
+      "expectations": 48970,
+      "durationSeconds": 1296.47
+    },
+    "pack": {
+      "status": "pass",
+      "files": 173
+    },
+    "logs": [
+      {
+        "artifact": "task193-2cb1848-full.log",
+        "bytes": 466434,
+        "sha256": "05d77132d36df9be069518fdea390e3509d5717d6df9ab28f5b5fc0cebf66d89"
+      },
+      {
+        "artifact": "task193-2cb1848-pack.log",
+        "bytes": 8229,
+        "sha256": "3f1c9a5055500aded2d5398432a497975dcc34de7e70ea05fc8c12e5a304fde2"
+      }
+    ],
+    "scope": "I1 journal retention and I2 file admission only; public experiment, parser and retrieval implementation unchanged."
+  },
+  "nativeR2Followup": {
+    "measuredHead": "5650063598d5b8023b8518d4b09645e77b27f423",
+    "mainControl": "9a1792a0a05903afe23482329dcd83cc81cc9a31",
+    "arms": {
+      "main": {
+        "groups": [
+          {
+            "group": "hooks:plain",
+            "n": 40,
+            "wallP95Ms": 84.51248799999985,
+            "rssP95MB": 86.9375,
+            "wallMaxMs": 92.663271984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:spoolAndExit",
+            "n": 15,
+            "wallP95Ms": 78.07896500000061,
+            "rssP95MB": 89.40625,
+            "wallMaxMs": 73.785761984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStart",
+            "n": 20,
+            "wallP95Ms": 63.48089600000003,
+            "rssP95MB": 50.0625,
+            "wallMaxMs": 60.541944109375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStartRepoLog",
+            "n": 20,
+            "wallP95Ms": 66.00572800000009,
+            "rssP95MB": 52.6015625,
+            "wallMaxMs": 62.236543125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:drain",
+            "n": 1,
+            "wallP95Ms": 88.65619200000037,
+            "rssP95MB": 88.96875,
+            "wallMaxMs": 84.64016484375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcode",
+            "n": 40,
+            "wallP95Ms": 80.93148499999916,
+            "rssP95MB": 87.1796875,
+            "wallMaxMs": 91.890394984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcodeJournal",
+            "n": 40,
+            "wallP95Ms": 91.95444599999973,
+            "rssP95MB": 89.4609375,
+            "wallMaxMs": 101.318600703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "transcript:Stop",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 97.85354399999983,
+            "rssP95MB": 94.78515625,
+            "wallMaxMs": 98.249103703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:SessionEnd",
+            "n": 40,
+            "invocations": 41,
+            "wallP95Ms": 106.36542599999939,
+            "rssP95MB": 94.921875,
+            "wallMaxMs": 111.749198984375,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:StopBurst",
+            "n": 40,
+            "invocations": 356,
+            "wallP95Ms": 114.58030299999518,
+            "rssP95MB": 109.66796875,
+            "wallMaxMs": 119.15152884375,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          }
+        ],
+        "proofs": {
+          "hooks": {
+            "artifacts": [
+              "main-hooks.log",
+              "main-hooks-proof.jsonl"
+            ],
+            "logSha256": "607268b46a1555deb16ed5480f2c6d927aa89a97013d5e11a5052ce9af6545e0",
+            "observations": 3,
+            "journalPresent": 0,
+            "rows": 0,
+            "events": {}
+          },
+          "transcript": {
+            "artifacts": [
+              "main-transcript.log",
+              "main-transcript-proof.jsonl"
+            ],
+            "logSha256": "02d68d757b87f5c9b2b6bfb2324a6943d5a464fd9a20f0e206d0e9828c84cbf7",
+            "observations": 41,
+            "journalPresent": 0,
+            "rows": 0,
+            "events": {}
+          }
+        }
+      },
+      "candidate": {
+        "groups": [
+          {
+            "group": "hooks:plain",
+            "n": 40,
+            "wallP95Ms": 79.16194600000017,
+            "rssP95MB": 86.64453125,
+            "wallMaxMs": 91.969368984375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:spoolAndExit",
+            "n": 15,
+            "wallP95Ms": 77.50101300000006,
+            "rssP95MB": 88.96484375,
+            "wallMaxMs": 73.63253684375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStart",
+            "n": 20,
+            "wallP95Ms": 64.50120599999991,
+            "rssP95MB": 50.34765625,
+            "wallMaxMs": 61.086298703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:sessionStartRepoLog",
+            "n": 20,
+            "wallP95Ms": 66.34830600000078,
+            "rssP95MB": 52.65625,
+            "wallMaxMs": 63.23420584375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:drain",
+            "n": 1,
+            "wallP95Ms": 93.98931399999947,
+            "rssP95MB": 88.66796875,
+            "wallMaxMs": 89.58154584375,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcode",
+            "n": 40,
+            "wallP95Ms": 79.04259000000093,
+            "rssP95MB": 86.984375,
+            "wallMaxMs": 88.128214703125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "hooks:jcodeJournal",
+            "n": 40,
+            "wallP95Ms": 95.38884299999881,
+            "rssP95MB": 89.56640625,
+            "wallMaxMs": 92.149517125,
+            "ceilingMB": 150
+          },
+          {
+            "group": "transcript:Stop",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 95.40849000000003,
+            "rssP95MB": 96.2265625,
+            "wallMaxMs": 102.699346703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:SessionEnd",
+            "n": 40,
+            "invocations": 40,
+            "wallP95Ms": 94.6403250000003,
+            "rssP95MB": 94.7109375,
+            "wallMaxMs": 94.550256703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          },
+          {
+            "group": "transcript:StopBurst",
+            "n": 40,
+            "invocations": 355,
+            "wallP95Ms": 114.94178500000271,
+            "rssP95MB": 109.41796875,
+            "wallMaxMs": 114.417833703125,
+            "ceilingMB": 150,
+            "incompleteRuns": 0
+          }
+        ],
+        "proofs": {
+          "hooks": {
+            "artifacts": [
+              "candidate-hooks.log",
+              "candidate-hooks-proof.jsonl"
+            ],
+            "logSha256": "25c4d1ca4101bd0e9630c98e68e12f51593deedc5ff094edab4a74749aeb6e11",
+            "observations": 3,
+            "journalPresent": 2,
+            "rows": 41,
+            "events": {
+              "SessionStart": 41
+            }
+          },
+          "transcript": {
+            "artifacts": [
+              "candidate-transcript.log",
+              "candidate-transcript-proof.jsonl"
+            ],
+            "logSha256": "fee8f1827ff6b26fad36ce79181187bb5f59f688d327494cf64cdf6d028efc9b",
+            "observations": 41,
+            "journalPresent": 41,
+            "rows": 435,
+            "events": {
+              "Stop": 395,
+              "SessionEnd": 40
+            }
+          }
+        }
+      }
+    },
+    "deltas": [
+      {
+        "group": "hooks:plain",
+        "wallP95Ms": -5.3505419999996775,
+        "rssP95MB": -0.29296875
+      },
+      {
+        "group": "hooks:spoolAndExit",
+        "wallP95Ms": -0.5779520000005505,
+        "rssP95MB": -0.44140625
+      },
+      {
+        "group": "hooks:sessionStart",
+        "wallP95Ms": 1.0203099999998813,
+        "rssP95MB": 0.28515625
+      },
+      {
+        "group": "hooks:sessionStartRepoLog",
+        "wallP95Ms": 0.3425780000006853,
+        "rssP95MB": 0.0546875
+      },
+      {
+        "group": "hooks:drain",
+        "wallP95Ms": 5.3331219999990935,
+        "rssP95MB": -0.30078125
+      },
+      {
+        "group": "hooks:jcode",
+        "wallP95Ms": -1.8888949999982287,
+        "rssP95MB": -0.1953125
+      },
+      {
+        "group": "hooks:jcodeJournal",
+        "wallP95Ms": 3.4343969999990804,
+        "rssP95MB": 0.10546875
+      },
+      {
+        "group": "transcript:Stop",
+        "wallP95Ms": -2.4450539999998,
+        "rssP95MB": 1.44140625
+      },
+      {
+        "group": "transcript:SessionEnd",
+        "wallP95Ms": -11.725100999999086,
+        "rssP95MB": -0.2109375
+      },
+      {
+        "group": "transcript:StopBurst",
+        "wallP95Ms": 0.36148200000752695,
+        "rssP95MB": -0.25
+      }
+    ],
+    "interpretation": "Matched main/candidate on one runner; all four scripts exit rss-miss against old committed seeds, no baseline/limit edits. Wall and absolute ceilings pass on both arms; report observed deltas, not zero movement."
+  }
+}

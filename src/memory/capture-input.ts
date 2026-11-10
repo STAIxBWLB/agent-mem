@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { looksSecret } from "./screen.ts";
 import { isDenied } from "./platform.ts";
 import { stripPrivateSpans } from "./private-spans.ts";
@@ -19,6 +20,12 @@ const TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]
 const ROW_OVERHEAD_BYTES = 96;
 /** The session key is a fixed-width hash prefix, so it adds a bounded amount covered by the row overhead. */
 export const SESSION_KEY = /^[a-f0-9]{16}$/;
+
+/** Existing capture attribution hash; never persist the raw native session id. */
+export function captureSessionKey(raw: unknown): string | undefined {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 256
+    ? createHash("sha256").update(`amem-session\0${raw}`).digest("hex").slice(0, 16) : undefined;
+}
 
 export interface CaptureFields {
   agent: string; event: string;

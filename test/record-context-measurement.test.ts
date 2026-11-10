@@ -23,6 +23,8 @@ test("read-only context measurement reuses native cap, opt-out and notice format
     const text = readFileSync(reportFile, "utf8"), report = JSON.parse(text);
     expect(text).not.toContain("private-copy-canary"); expect(text).not.toContain(copy);
     expect(report.fixture.noLarger).toBe(true);
+    expect(report.fixture.variants).toMatchObject({ sameData: true, bytesDelta: -1, reservationBytes: 332,
+      a: { instructionBytes: 332 }, b: { instructionBytes: 331 } });
     for (const side of [report.realCopy.before, report.realCopy.after]) {
       expect(side).toMatchObject({ instructionBytes: 0, maximum: 500, intakeAttempted: false, formatterExportsOnly: true });
       expect(side.totalBytes).toBeLessThanOrEqual(500);
