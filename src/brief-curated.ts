@@ -3,6 +3,7 @@ import { configuredPolicyOptions } from "./memory/config.ts";
 import type { MemoryStore, View } from "./memory/store.ts";
 import { displayText } from "./brief-capture.ts";
 import { BRIEF_CACHE_BYTES, writeBriefCache, type BriefCacheRow } from "./brief-cache.ts";
+import { PREFERENCE_SLOT } from "./memory/preference-brief.ts";
 
 const PAGE_ROWS = 32, MAX_PAGES = 4, SECTION_RECORDS = 4, RECORD_BYTES = 768, MAX_AGE = 24 * 60 * 60 * 1000;
 
@@ -23,10 +24,57 @@ export function validCachedCurated(row: BriefCacheRow, project: string, now = Da
   return JSON.stringify(shown.data) === JSON.stringify(row.data) && shown.partial === row.partial;
 }
 
+/**
+ * #370: the preference slot's rows are this project's own plus any preference shared with every project, so a shared row written under
+ * another project is valid here. Liveness, supersession, expiry and the canonical display are the curated rule, reused as-is.
+ */
+export function validCachedPreference(row: BriefCacheRow, project: string, now = Date.now()): boolean {
+  const source = row.source as View | null;
+  if (!source || source.kind !== "preference" || (source.project !== project && source.scope !== "shared")) return false;
+  return validCachedCurated({ ...row, source: { ...source, project } }, project, now);
+}
+
 export function curatedCacheFresh(cache: { curated?: { builtAt: number; binding: string; expiresAt: number | null } }, binding: string, now: number): boolean {
-  const metadata = cache.curated;
+  return briefCacheFresh(cache.curated, binding, now);
+}
+
+/** Both prebuilt stamps age the same way: at most 24 hours, and never past a named expiry of a row they carry. */
+export function briefCacheFresh(metadata: { builtAt: number; binding: string; expiresAt: number | null } | undefined, binding: string, now: number): boolean {
   return !!metadata && metadata.binding === binding && Number.isFinite(metadata.builtAt) && metadata.builtAt <= now
     && now - metadata.builtAt < MAX_AGE && (metadata.expiresAt === null || Number.isFinite(metadata.expiresAt) && metadata.expiresAt > now);
+}
+
+/**
+ * #370: the SessionStart preference slot's sidecar, written by the same off-hook preparation as the curated cache and read by the native
+ * hook without opening a store. Its own file name, so a released reader neither parses it (it only opens `brief-curated.json`) nor
+ * invalidates it; a missed invalidation from such a reader ages out at the same 24-hour bound as the curated cache.
+ */
+export function buildPreferenceBriefCache(store: Pick<MemoryStore, "readPreferences" | "withDeferredPromotions">,
+  options: { base: string; project: string; directory: string; binding: string; cwd?: string; now?: () => number; policy?: StandalonePolicyOptions }): void {
+  if (options.policy?.host) throw new Error("prebuilt preference brief requires synchronous standalone policy; remove host policy or use the async session brief");
+  const now = (options.now ?? Date.now)(), policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
+  const rows: BriefCacheRow[] = [], expires: number[] = [];
+  let partial = false, bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough: 1, partial: false, rows: [], preferences: { builtAt: now, binding: options.binding, expiresAt: null } })) + 1;
+  store.withDeferredPromotions(() => {
+    // Newest first with no paging: the slot must not hide an old preference behind newer notes of other kinds.
+    const page = store.readPreferences(options.project, PREFERENCE_SLOT);
+    partial ||= page.truncated;
+    for (const source of page.rows) {
+      if (!policy.screenStandalone(source)) continue;
+      const shown = noteDisplay(source);
+      if (!policy.screenStandalone(shown.data)) continue;
+      const row = { source, data: shown.data, partial: shown.partial }, rowBytes = Buffer.byteLength(JSON.stringify(row)) + (rows.length ? 1 : 0);
+      const displayBytes = Buffer.byteLength(JSON.stringify({ section: "curated", evidence: true, data: shown.data })); // the brief emits these as curated evidence lines
+      if (displayBytes > RECORD_BYTES || bytes + rowBytes > BRIEF_CACHE_BYTES) { partial = true; continue; }
+      rows.push(row); bytes += rowBytes; partial ||= shown.partial;
+      if (source.expiresAt !== null) expires.push(Date.parse(source.expiresAt));
+    }
+  });
+  const expiresAt = expires.length ? Math.min(...expires) : null;
+  writeBriefCache({ directory: options.directory, project: options.project, section: "preferences" }, {
+    schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough: Math.max(1, now), partial, rows,
+    preferences: { builtAt: now, binding: options.binding, expiresAt },
+  });
 }
 
 export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "withDeferredPromotions">,
@@ -42,6 +90,8 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
       for (const source of page.rows) {
         if (source.project !== options.project) { partial = true; continue; }
         if (source.supersededBy || source.expiresAt !== null && Date.parse(source.expiresAt) <= now) continue;
+        // #370: a preference is emitted by its own slot, so it never spends one of this section's rows (or its byte budget).
+        if (source.kind === "preference") continue;
         if (!policy.screenStandalone(source)) continue;
         if (rows.length >= SECTION_RECORDS) { partial = true; complete = true; break; }
         const shown = noteDisplay(source);

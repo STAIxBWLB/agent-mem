@@ -4,6 +4,7 @@ import { preparePublicPruneInput, persistPublicPruneInput } from "../src/memory/
 import { readSelector } from "../src/memory/generation.ts";
 import { resolveShardProfile } from "../src/memory/shard.ts";
 import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -158,7 +159,7 @@ test("doctor detects an index that differs from a rebuild of the logs", async ()
   const r = rig(); r.note("one"); r.note("two");
   expect((await doctor(r)).sections.index.status).toBe("ok");
   const { Database } = await import("bun:sqlite");
-  const db = new Database(join(r.memory, "index.db")); db.run("DELETE FROM entries WHERE rowid = (SELECT MIN(rowid) FROM entries)"); db.close();
+  const db = new Database(join(r.memory, indexFileName(false))); db.run("DELETE FROM entries WHERE rowid = (SELECT MIN(rowid) FROM entries)"); db.close();
   const sick = await doctor(r);
   expect(sick.sections.index.status).toBe("attention"); expect(sick.sections.index.hint).toContain("amem rebuild");
   expect(sick.status).toBe("attention");

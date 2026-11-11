@@ -7,6 +7,7 @@ import { rebuildCatalog } from "../src/memory/catalog.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { shardDir } from "../src/memory/shard.ts";
 import { MemoryStore, openShardStore, setMachineLabel, type NoteInput } from "../src/memory/store.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const A = "github.com/example/curated-a", B = "github.com/example/curated-b";
 const cleanup: (() => void)[] = [];
@@ -86,7 +87,7 @@ test("#15 catalog rebuild derives curated counts even when the disposable shard 
   const dir = home(); legacy(dir); await migrate(dir);
   const before = rebuildCatalog({ home: dir }).find(row => row.key === A)!;
   expect(before.curatedEntries).toBe(1);
-  const index = join(shardDir(join(dir, "memory"), A), "index.db");
+  const index = join(shardDir(join(dir, "memory"), A), indexFileName(false));
   for (const suffix of ["", "-wal", "-shm"]) rmSync(index + suffix, { force: true });
   const after = rebuildCatalog({ home: dir }).find(row => row.key === A)!;
   expect(after.curatedEntries).toBe(before.curatedEntries);
@@ -115,7 +116,7 @@ test("#15 catalog inspection never initializes curated metadata for a capture-on
 
 test("#15 unreadable curated index storage fails catalog derivation instead of reporting an empty shard", async () => {
   const dir = home(); legacy(dir); await migrate(dir);
-  const index = join(shardDir(join(dir, "memory"), A), "index.db");
+  const index = join(shardDir(join(dir, "memory"), A), indexFileName(false));
   for (const suffix of ["", "-wal", "-shm"]) rmSync(index + suffix, { force: true });
   mkdirSync(index);
   expect(() => rebuildCatalog({ home: dir })).toThrow();

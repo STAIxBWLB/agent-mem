@@ -334,6 +334,8 @@ export interface ReadWindow {
   anchor?: string;
   prefix?: string;
   id?: string;
+  /** One note kind only: the brief's preference slot must not page past newer notes of other kinds to find its rows. */
+  kind?: string;
   /** Exhaustive screened scans need stable identity order, not a chronological relevance window. */
   order?: "id";
   after?: { position: number; id: string };
@@ -349,6 +351,7 @@ export function readWindowSql(window: ReadWindow, id: "id" | "ref", identity: "t
   if (window.since) { where.push("julianday(at) >= julianday(?)"); bind.push(window.since); }
   if (window.id !== undefined) { where.push(`${id} = ?`); bind.push(window.id); }
   if (window.prefix !== undefined) { where.push(`substr(${id}, 1, length(?)) = ?`); bind.push(window.prefix, window.prefix); }
+  if (window.kind !== undefined) { where.push("kind = ?"); bind.push(window.kind); }
   if (window.after && window.order === "id") { where.push(`${id} > ?`); bind.push(window.after.id); }
   else if (window.after) {
     where.push("(candidate_position > ? OR (candidate_position = ? AND candidate_id > ?))");

@@ -4,6 +4,7 @@ import { arch, cpus, platform, release, totalmem, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { entryId, KINDS, MEMORY_SCHEMA, MemoryStore, type Graph, type NoteEntry, type View } from "../src/memory/store.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PROJECT = "bench/project-1", MACHINE = "0123456789abcdef", FANOUT = "path:bench/fanout.ts";
@@ -76,7 +77,8 @@ function fixture(root: string, n: number): Fixture {
 
 const open = (home: string) => new MemoryStore({ home, now: () => NOW, screen: () => "skip" });
 function discardIndex(home: string): void {
-  for (const file of ["index.db", "index.db-wal", "index.db-shm"]) rmSync(join(home, "memory", file), { force: true });
+  const file = indexFileName(false);
+  for (const name of [file, file + "-wal", file + "-shm"]) rmSync(join(home, "memory", name), { force: true });
 }
 function views(rows: View[], expected: number): { count: number; digest: string } {
   assert(rows.length === Math.min(50, expected) && rows.length > 0, "read/search returned an unexpected count");

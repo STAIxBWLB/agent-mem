@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "bun:test";
 import { MemoryStore } from "../../src/memory/store.ts";
+import { indexFileName } from "../../src/memory/index-file.ts";
 import { realPath } from "../../src/memory/platform.ts";
 import { GOLDEN_NOW, type GoldenFixture } from "./fixtures.ts";
 
 export type DerivedTables = Record<string, Record<string, unknown>[]>;
 /** Every derived table, including complete-prefix hashes and byte offsets. No user-view-only equality. */
 export function derivedTables(dir: string): DerivedTables {
-  const db = new Database(join(dir, "index.db"), { readonly: true });
+  const db = new Database(join(dir, indexFileName(false)), { readonly: true });
   db.run("PRAGMA busy_timeout = 3000");
   try {
     const names = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[];

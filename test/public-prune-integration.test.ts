@@ -10,6 +10,7 @@ import { MemoryStore, openShardStore, entryId, type NoteInput } from "../src/mem
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { readSelector } from "../src/memory/generation.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { resolveShardProfile } from "../src/memory/shard.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { preparePublicPruneInput, persistPublicPruneInput } from "../src/memory/public-prune-inputs.ts";
@@ -59,7 +60,7 @@ test("R20 actual get/list/search/history/intent/relations and rebuild share the 
   const store = openShardStore({ memoryDir: f.memoryDir, project: f.project, now, screen: () => "keep" });
   try {
     expect(store.profile.foreignPruneFormat).toBe("agent-mem.public-prune-witness/v1");
-    expect(existsSync(join(store.dir, "index-v2.db"))).toBe(true); expect(existsSync(join(store.dir, "index.db"))).toBe(true);
+    expect(existsSync(join(store.dir, indexFileName(true)))).toBe(true); expect(existsSync(join(store.dir, indexFileName(false)))).toBe(true);
     const check = () => {
       expect(store.get(f.graph.note.id, f.project)).toBeUndefined(); expect(store.get(f.equal.id, f.project)?.id).toBe(f.equal.id);
       expect(store.list({ project: f.project, includeSuperseded: true }).map(v => v.id)).not.toContain(f.graph.note.id);
@@ -88,7 +89,7 @@ for (const what of ["map", "set", "input", "tree", "blob"] as const) test(`R15 l
     : join(f.profile.dir, "public-prune-objects", (what === "tree" ? f.graph.rootTree.oid : f.graph.input.source.manifestBlob) + ".git");
   unlinkSync(file);
   try { expect(() => store.list({ project: f.project })).toThrow(); } finally { store.close(); }
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(f.profile.dir, "index-v2.db" + suffix), { force: true });
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(f.profile.dir, indexFileName(true) + suffix), { force: true });
   expect(() => { const next = openShardStore({ memoryDir: f.memoryDir, project: f.project, now }); next.close(); }).toThrow();
 });
 
@@ -119,7 +120,7 @@ test("R21 warm v2 reads do no network/process work, never rewrite native sources
 
 test("R19 the v2 index cannot alias the historical index through a hardlink", async () => {
   const f = await fixture(); await f.activate();
-  const historical = join(f.profile.dir, "index.db"), projected = join(f.profile.dir, "index-v2.db"), bytes = readFileSync(historical);
+  const historical = join(f.profile.dir, indexFileName(false)), projected = join(f.profile.dir, indexFileName(true)), bytes = readFileSync(historical);
   unlinkSync(projected); linkSync(historical, projected);
   expect(() => { const next = openShardStore({memoryDir:f.memoryDir,project:f.project,now}); next.close(); }).toThrow("v2 index path unavailable");
   expect(readFileSync(historical)).toEqual(bytes);

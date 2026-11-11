@@ -7,6 +7,7 @@ import { MEMORY_SCHEMA, entryId, type NoteEntry } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { shardDir } from "../src/memory/shard.ts";
 import { fts5Available } from "../src/memory/search-fts.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const PROJECTS = 20, ENTRIES = 200_000, PER_PROJECT = ENTRIES / PROJECTS, MACHINE = "ac8ac8ac8ac8ac8a";
 const mb = (bytes: number) => Math.round(bytes / 1048576 * 100) / 100;
@@ -28,7 +29,7 @@ try {
   }
   const migration = await migrateShards({ memoryDir, mode: "apply", generation: "a".repeat(32), authorizedPerson: true, tty: true });
   const target = "github.com/acme/p0", needle = `needle${ENTRIES - PROJECTS}`;
-  for (let i = 1; i < PROJECTS; i++) writeFileSync(join(shardDir(memoryDir, `github.com/acme/p${i}`), "index.db"), "poison: sibling must not be opened");
+  for (let i = 1; i < PROJECTS; i++) writeFileSync(join(shardDir(memoryDir, `github.com/acme/p${i}`), indexFileName(false)), "poison: sibling must not be opened");
   const child = spawnSync(process.execPath, [join(import.meta.dir, "shard-ac8-child.ts")], { env: { ...process.env, AMEM_AC8_HOME: home, AMEM_AC8_PROJECT: target, AMEM_AC8_NEEDLE: needle }, encoding: "utf8", timeout: 120_000 });
   if (child.status !== 0) throw new Error(`AC8 child exited ${child.status}: ${child.stderr?.slice(0, 500)}`);
   const measured = JSON.parse(child.stdout.trim().split("\n").at(-1)!) as { openMs: number; idle: number; maxRSS: number; p95Ms: number; hits: number; siblings: number; engine: string; fts5: boolean };

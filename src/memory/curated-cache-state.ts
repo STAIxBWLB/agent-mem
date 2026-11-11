@@ -25,9 +25,10 @@ export function invalidateCuratedCaches(base: string): string[] {
       if (!/^[a-f0-9]{16}$/.test(machine)) continue;
       const scope = join(machines, machine), info = lstatSync(scope);
       if (!info.isDirectory() || info.isSymbolicLink()) continue;
-      const file = join(scope, "brief-curated.json");
-      if (!lstatSync(file, { throwIfNoEntry: false })) continue;
-      rmSync(file, { force: true });
+      // The preference slot (#370) is its own file here; a reader that only knows the curated one leaves it to age out.
+      const files = ["brief-curated.json", "brief-preferences.json"].map(name => join(scope, name));
+      if (!files.some(file => lstatSync(file, { throwIfNoEntry: false }))) continue;
+      for (const file of files) rmSync(file, { force: true });
       if (descriptor) projects.add(descriptor.key);
     }
   }

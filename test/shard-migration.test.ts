@@ -7,6 +7,7 @@ import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards, shardMigrationStatus } from "../src/memory/shard-migration.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { shardDir } from "../src/memory/shard.ts";
 import { runCli } from "../src/cli.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
@@ -23,6 +24,8 @@ function home(): string {
 function note(project: string, text: string, shared = false): NoteInput {
   return { op: "note", project, scope: shared ? "shared" : "project", tier: "long", kind: "finding", peer: "kimi", source: "hub", text, about: [] };
 }
+/** #370: the released reader's kind union predates later kinds; these late appends are about segment bytes, not that union. */
+const legacyNote = (store: InstanceType<typeof LegacyMemoryStore>, value: NoteInput) => store.note(value as never);
 function seed(dir: string): { a: string; b: string } {
   const store = new MemoryStore({ home: dir, screen: () => "keep" });
   const a = store.note(note(A, "alpha curated")), b = store.note(note(B, "beta curated"));
@@ -86,7 +89,7 @@ test("status and resume carry old-format appends idempotently", async () => {
   const dir = home(); seed(dir);
   await migrateShards(options(dir, "apply"));
   const old = new LegacyMemoryStore({ home: dir });
-  old.note(note(A, "late alpha from old writer"));
+  legacyNote(old, note(A, "late alpha from old writer"));
   old.close();
   const pending = shardMigrationStatus(join(dir, "memory"));
   expect(pending.active).toBe(true);
@@ -129,7 +132,7 @@ test("bare amem migrate --shards previews without writes; --apply and status dri
   expect(listed.some((row) => row.text === "alpha curated")).toBe(true);
   expect(listed.some((row) => row.text === "beta curated")).toBe(false);
   const old = new LegacyMemoryStore({ home: dir });
-  old.note(note(A, "late through CLI status"));
+  legacyNote(old, note(A, "late through CLI status"));
   old.close();
   const pending = JSON.parse(await runCli(["status", "--json"], context)) as { pending: { byShard: Record<string, number> } };
   expect(pending.pending.byShard[A]).toBe(1);
@@ -142,7 +145,7 @@ test("two project shards write independently and each incremental index equals i
   const dir = home(); seed(dir);
   await migrateShards(options(dir, "apply"));
   const a = openShardStore({ home: dir, project: A }), b = openShardStore({ home: dir, project: B });
-  const holder = new Database(join(a.dir, "index.db"));
+  const holder = new Database(join(a.dir, indexFileName(false)));
   holder.run("PRAGMA busy_timeout = 0");
   holder.run("BEGIN EXCLUSIVE");
   try {

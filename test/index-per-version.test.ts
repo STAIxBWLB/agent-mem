@@ -15,8 +15,9 @@ const userVersion = (file: string) => { const db = new Database(file, { readonly
 const note = (text: string) => ({ op: "note" as const, project: "p", scope: "project" as const, tier: "long" as const, kind: "finding" as const, peer: "person", text, about: [], source: "person" as const });
 
 test("each index version has its own file; version 3 keeps the released names", () => {
-  expect(INDEX_VERSION).toBe(3);
-  expect([indexFileName(false), indexFileName(true)]).toEqual(["index.db", "index-v2.db"]);
+  expect(INDEX_VERSION).toBe(4);
+  expect([indexFileName(false), indexFileName(true)]).toEqual(["index-v4.db", "index-v2-i4.db"]);
+  expect([indexFileName(false, 3), indexFileName(true, 3)]).toEqual(["index.db", "index-v2.db"]);
   const names = [false, true].flatMap(foreign => [3, 4, 5].map(version => indexFileName(foreign, version)));
   expect(new Set(names).size).toBe(names.length);
   expect(indexFileName(false, 4)).toBe("index-v4.db"); expect(indexFileName(true, 4)).toBe("index-v2-i4.db");
@@ -38,14 +39,16 @@ test("a newer version's index beside this one is neither opened nor dropped, and
   expect(userVersion(future)).toBe(INDEX_VERSION + 1); expect(readFileSync(future).length).toBeGreaterThanOrEqual(futureBytes.length);
 });
 
-test("this release and the published 0.18.0 (N-1) share the version-3 index without a rebuild", async () => {
+test("this release keeps the version-4 index beside 0.18.0's version-3 file, and neither drops the other", async () => {
   const home = mkdtempSync(join(tmpdir(), "amem-index-v018-")); roots.push(home);
   const v018 = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018/src/memory/store.ts")).href;
   const run = (code: string) => { const result = Bun.spawnSync([process.execPath, "-e", code], { env: { ...process.env, AMEM_HOME: home }, stdout: "pipe", stderr: "pipe" });
     expect(result.stderr.toString()).toBe(""); expect(result.exitCode).toBe(0); return result.stdout.toString(); };
   run(`const { MemoryStore } = await import(${JSON.stringify(v018)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)}, screen: () => "keep" }); s.note(${JSON.stringify(note("shared by 0.18.0"))}); s.close();`);
-  const ours = join(home, indexFileName(false)), schema = schemaVersion(ours);
+  // #370 moves this release to `INDEX_VERSION` 4, so the two no longer share one warm file: 0.18.0 keeps `index.db` and this release builds
+  // `index-v4.db` (#199 AC4). Opening and appending here never opens, advances or deletes the version-3 file.
+  const theirs = join(home, indexFileName(false, 3)), ours = join(home, indexFileName(false)), theirSchema = schemaVersion(theirs);
   const mine = new MemoryStore({ memoryDir: home, screen: () => "keep" }); try { mine.note(note("shared by this release")); } finally { mine.close(); }
+  expect(schemaVersion(theirs)).toBe(theirSchema); expect(userVersion(theirs)).toBe(3); expect(userVersion(ours)).toBe(INDEX_VERSION);
   expect(run(`const { MemoryStore } = await import(${JSON.stringify(v018)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)} }); console.log(s.list({ project: "p" }).length); s.close();`).trim()).toBe("2");
-  expect(schemaVersion(ours)).toBe(schema);
 });

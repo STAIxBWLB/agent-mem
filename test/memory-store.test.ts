@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { entryId, extractNodes, looksSecret, MemoryStore, type NoteInput, type PromotionScreen } from "../src/memory/store.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { memoryCommand } from "./core-test-support.ts";
 
 // #258: the hub's own memory store: tiers, promotion, expiry, a graph rebuilt from append-only logs.
@@ -93,7 +94,7 @@ test("an incremental index equals a rebuild from the logs, in any order, and bad
   s.rebuild();
   expect(s.dump()).toBe(incremental);
   // A fresh index (another process, a deleted index.db) reads to the same rows.
-  for (const f of readdirSync(join(home, "memory")).filter((n) => n.startsWith("index.db"))) rmSync(join(home, "memory", f));
+  for (const f of readdirSync(join(home, "memory")).filter((n) => n.startsWith(indexFileName(false)))) rmSync(join(home, "memory", f));
   const fresh = store(home, clock);
   expect(fresh.dump()).toBe(incremental);
 });
@@ -588,7 +589,7 @@ test("unapproved task notes expire at the backstop; injected command read policy
 test("review of #352: a note written while the index is locked shows on the next read", () => {
   const home = temp("busy"), clock = { t: Date.parse("2026-10-01T00:00:00Z") };
   const s = store(home, clock);
-  const other = new Database(join(home, "memory", "index.db"));
+  const other = new Database(join(home, "memory", indexFileName(false)));
   other.run("BEGIN IMMEDIATE");
   s.note(note({ tier: "long", kind: "decision", text: "written while locked" })); // the line is saved; the index waits
   other.run("COMMIT");
@@ -601,7 +602,7 @@ test("review of #352: a long-lived store reads what another process wrote, with 
   const daemon = store(home, clock), cli = store(home, clock);
   expect(daemon.list()).toEqual([]);
   // The CLI writes while the index is locked, so its own refresh fails, and then it exits.
-  const lock = new Database(join(home, "memory", "index.db"));
+  const lock = new Database(join(home, "memory", indexFileName(false)));
   lock.run("BEGIN IMMEDIATE");
   const id = cli.note(note({ tier: "long", kind: "decision", text: "from the cli" }));
   lock.run("COMMIT"); lock.close();
@@ -621,7 +622,7 @@ for (const anotherReader of [false, true]) {
       let suggestion = change === "suggestion verdict" ? writer.suggest(a, b, "same_topic")! : "";
       const reader = anotherReader ? store(home, clock) : writer;
       const task = "work/app#3@1";
-      const lock = new Database(join(home, "memory", "index.db"));
+      const lock = new Database(join(home, "memory", indexFileName(false)));
       lock.run("BEGIN IMMEDIATE");
       try {
         // The public mutation succeeds because its log line persists, but the index update times out.

@@ -12,6 +12,13 @@ export const FORMATS_FILE = "formats.json";
 export const FORMAT_SURFACES = ["curated", "capture", "hook-spool", "candidates", "work-lists", "sync"] as const;
 export type FormatSurface = typeof FORMAT_SURFACES[number];
 export interface FormatFloor { surface: string; minReader: string; since: string }
+/**
+ * The first release whose readers understand the `preference` note kind (#370). An older reader drops such a row and refuses its own
+ * machine's sync publish over it, so a preference write is refused until a person records a floor at or above this one.
+ */
+// ponytail: 0.25.0 is the planned next minor. A release that ships the kind elsewhere moves this constant to that release in its own
+// release PR; the writer refuses until the person records the floor, so no host writes a row its peers cannot sync past.
+export const PREFERENCE_MIN_READER = "0.25.0";
 const MAX_BYTES = 64 * 1024, SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
 export class FormatFloorError extends Error {
@@ -68,4 +75,12 @@ export function assertFormatFloor(home: string, surface: FormatSurface): void {
 export function formatFloorAtLeast(home: string, surface: FormatSurface, minimum: string): boolean {
   if (!SEMVER.test(minimum)) return false;
   return (readFormatFloors(home) ?? []).some(floor => (floor.surface === surface || floor.surface === "home") && !below(floor.minReader, minimum));
+}
+
+/**
+ * The step a person takes to raise a floor: the exact record, the file it goes in, and that this package never writes that file. It is the
+ * next step a refusal names, so the writer that refuses keeps the path and the record from one place.
+ */
+export function floorRaiseHint(home: string, surface: FormatSurface, minReader: string): string {
+  return `append {"surface":"${surface}","minReader":"${minReader}","since":"YYYY-MM-DD"} to ${join(home, FORMATS_FILE)} by hand (amem never writes that file)`;
 }

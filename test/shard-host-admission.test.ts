@@ -22,7 +22,8 @@ test("F7 a plain host store refuses an active split before opening the old-layou
     expect(() => { const store = new MemoryStore({ home }); store.close(); }).toThrow(/openShardStore/);
     expect(() => { const store = new MemoryStore({ home, profile: "shared-v1" }); store.close(); }).toThrow(/openShardStore/);
     expect(readFileSync(file)).toEqual(before);
-    const old = new LegacyStore({ home }); old.note(note(A, "an older writer remains byte-compatible")); old.close();
+    // #370: the released reader's kind union predates later kinds; this assertion is about segment byte compatibility.
+    const old = new LegacyStore({ home }); old.note(note(A, "an older writer remains byte-compatible") as never); old.close();
     expect(shardMigrationStatus(memory).pending.rows).toBe(1);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

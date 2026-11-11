@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { briefCacheFile, readBriefCache, type BriefCache } from "./brief-cache.ts";
-import { curatedCacheFresh } from "./brief-curated.ts";
+import { briefCacheFresh, curatedCacheFresh } from "./brief-curated.ts";
 import { assertFormatFloor, formatFloorAtLeast, FormatFloorError } from "./memory/formats.ts";
 import { captureShardDir } from "./memory/shard.ts";
 
@@ -29,4 +29,21 @@ export function readCuratedBriefCache(options: { base: string; project: string; 
     if (error instanceof FormatFloorError) return { reason: error.code === "format_floor" ? "floor: upgrade amem" : "floor: amem doctor" };
     return { reason: "curated cache stale" };
   }
+}
+
+/**
+ * #370: the SessionStart preference slot's sidecar. It needs no floor of its own: only a home whose floor already admits the `preference`
+ * kind can hold one, and every reader of `brief-preferences.json` understands that kind. A missing or stale sidecar yields no slot, never a
+ * coverage reason, so a home without preferences keeps a byte-identical brief.
+ */
+export function readPreferenceBriefCache(options: { base: string; project: string; profile: string; now: number }): BriefCache | undefined {
+  try {
+    let machine: unknown;
+    try { machine = JSON.parse(readFileSync(join(options.base, "machine.json"), "utf8")).id; } catch { /* No machine means no prebuilt section. */ }
+    if (typeof machine !== "string" || !/^[a-f0-9]{16}$/.test(machine)) return;
+    const binding = { directory: captureShardDir(options.base, options.project, machine), project: options.project, section: "preferences" as const };
+    if (!lstatSync(briefCacheFile(binding), { throwIfNoEntry: false })) return;
+    const cache = readBriefCache(binding);
+    return cache && briefCacheFresh(cache.preferences, options.profile, options.now) ? cache : undefined;
+  } catch { return undefined; }
 }
