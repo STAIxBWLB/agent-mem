@@ -732,6 +732,26 @@ export class CaptureStore {
     return { rows: rows.slice(0, limit).map(toRow), partial: partial || rows.length > limit };
   }
 
+  /**
+   * #368: the stored Record rows of exactly these turns. A candidate cites its rows by session hash and time, and the brief
+   * window holds only the newest 32, so proving a candidate with that window would read every older row as pruned. These are
+   * point lookups on the `at` index with an explicit per-turn cap: no scan, no window, and no index or spool work.
+   */
+  readRecordTurns(turns: readonly { session: string; at: string }[]): CaptureRow[] {
+    this.checkReadBinding();
+    if (!Array.isArray(turns) || turns.length < 1 || turns.length > 8 || turns.some(turn => !turn
+      || typeof turn.session !== "string" || !SESSION_KEY.test(turn.session) || typeof turn.at !== "string" || !Number.isFinite(Date.parse(turn.at)))) {
+      throw new Error("invalid record turn lookup; use 1 to 8 session hashes with a parseable time");
+    }
+    const columns = new Set((this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(column => column.name));
+    if (!columns.has("session")) return []; // a shard older than attribution cannot hold a row any candidate cites
+    const subagent = columns.has("subagent") ? " AND (subagent IS NULL OR subagent != 1)" : "";
+    const sql = `SELECT * FROM rows WHERE at = ? AND project = ? AND event = 'Record' AND session = ?${subagent} ORDER BY id LIMIT ?`;
+    const rows: RawRow[] = [];
+    for (const turn of turns) rows.push(...this.db.query(sql).all(new Date(Date.parse(turn.at)).toISOString(), this.key, turn.session, 9) as RawRow[]);
+    return rows.map(toRow);
+  }
+
   /** Serialize a derived cache snapshot/publication with summary invalidation and commits in every writer. */
   withBriefCaptureSnapshot<T>(write: (summaries: { rows: CaptureRow[]; partial: boolean }, builtThrough: number) => T): T {
     this.writable();
