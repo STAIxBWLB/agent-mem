@@ -17,11 +17,11 @@ amem sync
 
 `amem forget` masks the entry in every list, search, show, brief and MCP read on this machine. For a synced note the forget operation is synced too, so other machines hide it after their next `amem sync`. Its receipt lists the machine-local capture rows, candidates and work items in the same project that contain or overlap the forgotten text, by id and count only (never their text); you need them in step 4. `amem forget --json` gives the same list as `nearby`.
 
-What this does **not** do: the authored row stays in the local log, in every derived index until it is rebuilt, and in the sync remote's Git history. `amem doctor` shows a `masked` row with the forget and prune counts as a reminder.
+What this does **not** do: the authored row stays in the local log and the sync remote's Git history. Its text can remain in derived indexes even after rebuilding or vacuuming. `amem doctor` shows a `masked` row with the forget and prune counts as a reminder.
 
 ## 3. Local bytes, if they must go
 
-**Default: accept that the masked row stays on disk.** Steps 1 and 2 already make the leak harmless and invisible to every amem reader. Rebuilding the home is lossy, and in a home that holds more than one project it puts every other project at risk. Do the rebuild below only if the bytes must leave this machine, and only after you have accepted the losses it lists.
+**Default: accept that the masked row stays on disk.** Steps 1 and 2 revoke or rotate the credential and mask the curated entry. Reported machine-local capture, candidate and work copies remain until handled in step 4. Rebuilding the home is lossy, and in a home that holds more than one project it puts every other project at risk. Do the rebuild below only if the bytes must leave this machine, and only after you have accepted the losses it lists.
 
 A rebuild cannot carry over:
 
@@ -72,7 +72,7 @@ These are outside the curated log and never synced. Use the ids from the forget 
 - **Candidates** (`<home>/candidates.db`): review proposals. Reject listed pending candidates with `amem review reject <full-candidate-id>`; a rejected or accepted candidate's row stays in `candidates.db` until its retention removes it. Deleting `candidates.db` (with amem stopped) removes every candidate for every project; it is disposable.
 - **Work lists** (`<home>/projects/<key-hash>/work/`): the forget receipt lists matching items as `work:<list-hash>#<task-hash>`, each the first 12 hex characters of the SHA-256 of the list name and the task name (either can hold the leak, so neither is printed). To find an item, compare `printf %s '<name>' | shasum -a 256` against the hashes; a list whose name holds the text lists every item in it. Work lists are append-only; closing an item hides it but keeps its line. Removing the bytes means removing the project's `work/` directory, which drops all of its work lists.
 - **Exports**: delete every `amem project export` file that holds the row, including the one from step 3.
-- **Derived indexes** (`index.db`, `search*.db`): `amem rebuild` regenerates them from the logs; SQLite can keep old text in free pages and the WAL until the file is rebuilt or vacuumed, so a fresh home (step 3) is the reliable way to drop it.
+- **Derived indexes** (`index.db`, `search*.db`): `amem rebuild` regenerates them from the logs, including masked authored text. Rebuilding or vacuuming does not guarantee removal while the authoritative row remains, and SQLite can retain text in free pages and the WAL. A fresh home built from cleaned exports (step 3) is the reliable way to drop it from the active home.
 
 ## 5. The sync remote
 

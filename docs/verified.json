@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "77871c1d7a1ea66984b6422c73036ee3d736db1d",
+      "verifiedAgainst": "4a0733e9c0f2f78bba8cb3ac02e0f3d6da68c588",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "77871c1d7a1ea66984b6422c73036ee3d736db1d",
+      "verifiedAgainst": "4a0733e9c0f2f78bba8cb3ac02e0f3d6da68c588",
       "paths": [
         "package.json",
         "bin/",
@@ -30,7 +30,7 @@
       ]
     },
     "docs/purge.md": {
-      "verifiedAgainst": "e3854befc27db70d7cf45551eb445ea582a69794",
+      "verifiedAgainst": "4a0733e9c0f2f78bba8cb3ac02e0f3d6da68c588",
       "paths": [
         "src/memory/forget-nearby.ts",
         "src/memory/commands.ts",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "e3854befc27db70d7cf45551eb445ea582a69794",
+      "verifiedAgainst": "4a0733e9c0f2f78bba8cb3ac02e0f3d6da68c588",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
@@ -64,7 +64,7 @@
       ]
     },
     "docs/jcode.md": {
-      "verifiedAgainst": "05841a3a5ac81314023dbc655ba9e6e7ca341b9c",
+      "verifiedAgainst": "4a0733e9c0f2f78bba8cb3ac02e0f3d6da68c588",
       "paths": [
         "src/hook-jcode.ts",
         "src/hooks.ts",
