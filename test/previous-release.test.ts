@@ -3,9 +3,11 @@ import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "../src/memory/sync-placement-format.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, cpSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { PREFERENCE_MIN_READER } from "../src/memory/formats.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { drainHookCaptures, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -174,6 +176,92 @@ await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: "old p
 try { console.log(JSON.stringify({ ids: s.list({ project: ${JSON.stringify(f.project)} }).map(c => c.id), skipped: s.skippedUnknownKinds })); } finally { s.close(); }`))).toEqual({ ids: [id!], skipped: 1 });
     const mine = new CandidateStore({ memoryDir: f.base });
     try { expect(mine.list({ project: f.project }).map(candidate => candidate.id)).toEqual([id!]); expect(mine.skippedUnknownKinds).toBe(1); } finally { mine.close(); }
+  });
+
+  // #370 AC4: the previous release meets the new kind. The row is written by the introducing release's own writer — a copy of this build's
+  // `src` whose manifest is PREFERENCE_MIN_READER, the shipping configuration once this branch releases — because this build's opener
+  // refuses a floor above its own version by design (formats.ts).
+  const preferenceWriter = (f: ReturnType<typeof fixture>, text: string) => {
+    const isolated = mkdtempSync(join(tmpdir(), "amem-n1-preference-"));
+    try {
+      cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+      writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-writer", version: PREFERENCE_MIN_READER, type: "module" }));
+      // The person's record: without it this writer refuses as well, and with it the write is the shipping configuration's.
+      writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: PREFERENCE_MIN_READER, since: "2026-11-11" }]) + "\n");
+      const child = Bun.spawnSync([process.execPath, "-e", `const { MemoryStore } = await import(${JSON.stringify(pathToFileURL(join(isolated, "src/memory/store.ts")).href)});
+const store = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)}, deferPromotions: true });
+try { store.note({ op: "note", project: ${JSON.stringify(f.project)}, scope: "project", tier: "long", kind: "preference", peer: "person", source: "person", text: ${JSON.stringify(text)}, about: [] }); } finally { store.close(); }`],
+        { cwd: isolated, env: { ...f.env }, stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      // Non-vacuity: every arm below is about this row, so prove it reached this machine's own segment.
+      const machine = (JSON.parse(readFileSync(join(f.base, "machine.json"), "utf8")) as { id: string }).id;
+      expect(readFileSync(join(f.base, "log", `${machine}.jsonl`), "utf8")).toContain('"kind":"preference"');
+    } finally { rmSync(isolated, { recursive: true, force: true }); }
+  };
+  /** An ordinary note from this build: no floor needed, so a preference home keeps rows a read must still return. */
+  const ordinaryNote = (f: ReturnType<typeof fixture>, text: string) => {
+    const store = new MemoryStore({ memoryDir: f.base, screen: () => "keep" });
+    try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text, about: [] }); } finally { store.close(); }
+  };
+  const prevSync = (f: ReturnType<typeof fixture>, remote: string) => JSON.parse(run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const { syncMemory } = await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+const store = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)} });
+try { const result = await syncMemory(store, { remote: ${JSON.stringify(remote)}, visibility: async () => "private" });
+  console.log(JSON.stringify({ ok: result.ok, pushed: result.pushed, entries: result.entries, error: result.error ?? null })); } finally { store.close(); }`)) as { ok: boolean; pushed: boolean; entries: number; error: string | null };
+
+  test("#370 (a): one preference row in this machine's own segment makes the previous release's sync refuse, and a home without one publishes", async () => {
+    const f = fixture(), remote = createInspectionRemote(f.root, "n1-preference-sync.git");
+    ordinaryNote(f, "a rule the person keeps");
+    preferenceWriter(f, "always answer in Korean");
+    // The refusal under test is the own-segment screen, so this arm drops the person's floor record: what is left is a home this older
+    // release would otherwise publish.
+    rmSync(join(f.base, "formats.json"));
+    const refused = prevSync(f, remote);
+    expect(refused).toMatchObject({ ok: false, pushed: false, entries: 0 });
+    expect(refused.error).toContain("not readable as complete valid rows");
+    // Control: the same home shape carrying only the ordinary note publishes, so the refusal is the preference row's.
+    const control = fixture();
+    ordinaryNote(control, "a rule the person keeps");
+    const published = prevSync(control, createInspectionRemote(control.root, "n1-preference-control.git"));
+    expect(published.ok).toBe(true); expect(published.error).toBeNull(); expect(published.entries).toBeGreaterThan(0);
+  });
+
+  test("#370 (b): the kind's floor makes the previous release refuse at store open with format_floor, not at sync", () => {
+    const f = fixture();
+    ordinaryNote(f, "a rule the person keeps");
+    preferenceWriter(f, "always answer in Korean");
+    const observed = JSON.parse(run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))});
+let error = null;
+try { new MemoryStore({ memoryDir: ${JSON.stringify(f.base)} }).close(); } catch (caught) { error = { code: caught.code ?? null, message: String(caught.message) }; }
+console.log(JSON.stringify({ error }));`)) as { error: { code: string | null; message: string } | null };
+    expect(observed.error?.code).toBe("format_floor");
+    expect(observed.error?.message).toContain(PREFERENCE_MIN_READER);
+  });
+
+  test("#370 (c): the previous release's incremental index equals a rebuild and a rebuild from a deleted index, all dropping the preference row", () => {
+    const f = fixture(), expected = ["an ordinary decision", "another ordinary decision"];
+    ordinaryNote(f, "an ordinary decision"); ordinaryNote(f, "another ordinary decision");
+    preferenceWriter(f, "always answer in Korean");
+    rmSync(join(f.base, "formats.json"));
+    const listed = () => JSON.parse(run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const store = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)} });
+try { const incremental = store.list({ project: ${JSON.stringify(f.project)} }).map(view => view.text);
+  store.rebuild();
+  console.log(JSON.stringify({ incremental, rebuilt: store.list({ project: ${JSON.stringify(f.project)} }).map(view => view.text) })); } finally { store.close(); }`)) as { incremental: string[]; rebuilt: string[] };
+    const first = listed();
+    // The unknown kind is dropped from the view, and the incremental index agrees with a full rebuild of the same segment.
+    expect([...first.incremental].sort()).toEqual(expected);
+    expect([...first.rebuilt].sort()).toEqual(expected);
+    // A rebuild from a deleted index returns the same rows: every state is folded from the segments, never from the index.
+    rmSync(join(f.base, indexFileName(false, 3)));
+    expect([...listed().incremental].sort()).toEqual(expected);
+    // The index read the whole segment and stopped at its size, preference line included.
+    const machine = (JSON.parse(readFileSync(join(f.base, "machine.json"), "utf8")) as { id: string }).id;
+    const db = new Database(join(f.base, indexFileName(false, 3)), { readonly: true });
+    try {
+      const offset = (db.query("SELECT offset FROM segments WHERE file = ?").get(`log/${machine}.jsonl`) as { offset: number } | null)?.offset;
+      expect(offset).toBe(statSync(join(f.base, "log", `${machine}.jsonl`)).size);
+    } finally { db.close(); }
   });
 
   test("format floors: a hook-spool floor above both releases stops each from staging or draining, and lifting it drains", async () => {
