@@ -153,6 +153,24 @@ jobs:
           read -r AMEM_PREV_VERSION AMEM_PREV_ROOT < <(bun scripts/previous-release.ts "$RUNNER_TEMP/amem-prev")
           echo "previous release: $AMEM_PREV_VERSION"
           AMEM_PREV_ROOT="$AMEM_PREV_ROOT" bun test --timeout 20000 test/previous-release.test.ts
+      - name: Transcript phase diagnostic (reported only; strict budget remains above)
+        if: always() && !cancelled()
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          phase_status=0
+          bun scripts/measure-transcript-phases.ts | tee transcript-phase-diagnostic.jsonl || phase_status=$?
+          {
+            echo '## Transcript phase observer cost (reported only)'
+            echo 'Numeric phase receipts are in the job log. Strict transcript gates are unchanged.'
+            echo 'Paired deltas include timing-dependent work differences and are never subtracted from a strict result.'
+            echo '```json'
+            grep '"diagnostic":"transcript-phase-observer-cost/v1"' transcript-phase-diagnostic.jsonl || true
+            grep '"diagnostic":"transcript-phase-bound/v1"' transcript-phase-diagnostic.jsonl || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$phase_status"
       # npm 11 normalizes the manifest at publish and warns (0.3.1: "./bin/amem.js"); keep package.json already normalized.
       - name: package.json needs no npm auto-correction
         if: always() && !cancelled()
