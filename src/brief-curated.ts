@@ -63,10 +63,13 @@ export function buildPreferenceBriefCache(store: Pick<MemoryStore, "readPreferen
       if (!policy.screenStandalone(source)) continue;
       const shown = noteDisplay(source);
       if (!policy.screenStandalone(shown.data)) continue;
+      // #370: a standing instruction is shown whole or not at all, the rule `amem_brief` applies. `noteDisplay` clips at 240 bytes, so a
+      // clipped rule is dropped and the section reports truncation rather than emitting half a rule that reads as the whole one.
+      if (shown.partial) { partial = true; continue; }
       const row = { source, data: shown.data, partial: shown.partial }, rowBytes = Buffer.byteLength(JSON.stringify(row)) + (rows.length ? 1 : 0);
       const displayBytes = Buffer.byteLength(JSON.stringify({ section: "curated", evidence: true, data: shown.data })); // the brief emits these as curated evidence lines
       if (displayBytes > RECORD_BYTES || bytes + rowBytes > BRIEF_CACHE_BYTES) { partial = true; continue; }
-      rows.push(row); bytes += rowBytes; partial ||= shown.partial;
+      rows.push(row); bytes += rowBytes;
       if (source.expiresAt !== null) expires.push(Date.parse(source.expiresAt));
     }
   });

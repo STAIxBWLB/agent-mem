@@ -52,6 +52,10 @@ try {
   out.sidecar = { kinds: (preferences?.rows ?? []).map(row => row.data.kind), partial: (preferences?.rows ?? []).map(row => row.partial), binding: typeof preferences?.preferences?.binding, curatedRows: curated?.rows.length ?? -1 };
   const native = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000 });
   out.native = { kinds: native.context.split("\\n").filter(line => line.startsWith('{"section":"curated"')).map(line => JSON.parse(line).data.kind), coverage: native.coverage };
+  // A person-recorded floor above this reader refuses the prebuilt slot before any of its rows is served.
+  writeFileSync(join(job.memory, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "100.0.0", since: "2026-11-11" }]) + "\\n");
+  const aboveFloor = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000 });
+  out.aboveFloor = { kinds: aboveFloor.context.split("\\n").filter(line => line.startsWith('{"section":"curated"')).map(line => JSON.parse(line).data.kind), coverage: aboveFloor.coverage };
 } finally { store.close(); }
 writeFileSync(job.out, JSON.stringify(out));
 `;
@@ -75,6 +79,7 @@ test("amem_brief shows current preferences without an anchor, and the SessionSta
     tight: { text: string; items: number; truncated: boolean };
     sidecar: { kinds: string[]; partial: boolean[]; binding: string; curatedRows: number };
     native: { kinds: string[]; coverage: Record<string, string> };
+    aboveFloor: { kinds: string[]; coverage: Record<string, string> };
   };
   // Current preferences only: the superseded and forgotten ones are left out, the shared one from another project is kept, and the rule too
   // long for its whole slot line is dropped rather than clipped into half a rule.
@@ -88,13 +93,15 @@ test("amem_brief shows current preferences without an anchor, and the SessionSta
   expect(result.tight.text).toBe("");
   expect(result.tight.items).toBe(0);
   expect(result.tight.truncated).toBe(true);
-  // The SessionStart sidecar is its own file: it carries the current rows newest first, the over-long one through the curated display's own
-  // clip (marked partial), and a preference never takes a row of the curated section beside it.
-  expect(result.sidecar.kinds).toEqual(["preference", "preference", "preference"]);
-  expect(result.sidecar.partial).toEqual([false, false, true]);
+  // The SessionStart sidecar is its own file: it carries the current rows newest first, drops the over-long rule whole — the same rule
+  // amem_brief applies — and a preference never takes a row of the curated section beside it.
+  expect(result.sidecar.kinds).toEqual(["preference", "preference"]);
+  expect(result.sidecar.partial).toEqual([false, false]);
   expect(result.sidecar.binding).toBe("string");
   expect(result.sidecar.curatedRows).toBe(0);
-  // The hook brief reserves the slot's share ahead of its curated rows, so the third row does not fit and the section is partial.
+  // The hook brief emits both whole rules from that sidecar.
   expect(result.native.kinds).toEqual(["preference", "preference"]);
-  expect(result.native.coverage.curated).toBe("partial");
+  // A person-recorded floor above this reader refuses the prebuilt slot rather than serving rows from it.
+  expect(result.aboveFloor.kinds).toEqual([]);
+  expect(result.aboveFloor.coverage.curated).not.toBe("complete");
 });
