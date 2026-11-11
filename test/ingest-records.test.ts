@@ -28,7 +28,7 @@ function fixture(kind: IngestKind) {
       : kind === "kimi" ? (() => { const uuid = randomUUID(), agentId = extras.agentId ?? "main"; return [
         { type: "context.append_loop_event", time: Date.parse(at), agentId, event: { type: "step.begin", uuid } },
         { type: "context.append_loop_event", time: Date.parse(at), agentId, event: { type: "content.part", stepUuid: uuid, part: { type: "text", text } } },
-        { type: "context.append_loop_event", time: Date.parse(at), agentId, event: { type: "step.end", uuid, messageId: randomUUID(), finishReason: extras.finishReason ?? "completed" } },
+        { type: "context.append_loop_event", time: Date.parse(at), agentId, event: { type: "step.end", uuid, messageId: randomUUID(), finishReason: extras.finishReason ?? "end_turn" } },
       ]; })()
         : [{ uuid: randomUUID(), parentUuid: null, sessionId: session, version: "0.26.1", timestamp: at, type: "assistant", cwd: f.cwd, message: { role: "model", parts: [{ text }] }, ...extras }];
   const write = (...rows: unknown[]) => writeFileSync(file, (header ? line(header) : "") + rows.map(line).join(""));
@@ -40,7 +40,7 @@ function fixture(kind: IngestKind) {
 for (const kind of ["codex", "pi", "kimi"] as const) {
   test(`${kind}: valid main final Records use capture staging, malformed lines refuse, and tool/nonfinal rows never yield Records`, async () => {
     const f = fixture(kind);
-    const nonfinal = kind === "codex" ? { phase: "commentary" } : kind === "pi" ? { stopReason: "toolUse", content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: { text: valid } }] } : { finishReason: "tool_calls" };
+    const nonfinal = kind === "codex" ? { phase: "commentary" } : kind === "pi" ? { stopReason: "toolUse", content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: { text: valid } }] } : { finishReason: "tool_use" };
     f.write(...f.message(valid + "\n" + malformed), ...f.message(valid.replace("stale cache", "not final"), nonfinal));
     const result = await f.run(), records = f.rows().filter(row => row.event === "Record");
     expect(result.errors).toBe(0); expect(records).toHaveLength(1);
@@ -69,6 +69,28 @@ for (const kind of ["codex", "pi", "kimi"] as const) {
     expect(brief.context).toContain('"event":"Record"'); expect(brief.context).toContain("stale cache"); expect(Buffer.byteLength(brief.context)).toBeLessThanOrEqual(1200);
   });
 }
+
+test("Kimi 1.5 completes on end_turn; tool_use, error and interrupted stay finality-unavailable", async () => {
+  const f = fixture("kimi");
+  f.write(...f.message(valid), ...f.message(valid.replace("stale cache", "tool turn"), { finishReason: "tool_use" }),
+    ...f.message(valid.replace("stale cache", "error turn"), { finishReason: "error" }), ...f.message(valid.replace("stale cache", "interrupted turn"), { finishReason: "interrupted" }));
+  const result = await f.run();
+  expect(result.errors).toBe(0);
+  expect(result.records).toMatchObject({ supported: true, found: 4, staged: 1, duplicatesSkipped: 0, refused: { "finality-unavailable": 3 } });
+  expect(f.rows().filter(row => row.event === "Record").map(row => row.excerpt)).toEqual([valid]);
+});
+
+test("a Codex header's multi-kilobyte base_instructions does not refuse the session or its Records", async () => {
+  const f = fixture("codex");
+  // Real session_meta lines carry about 21.8 KB here, over the screen's 16 KiB single-string bound.
+  (f.header as any).payload.base_instructions = "x".repeat(21_866);
+  (f.header as any).payload.git = { repository_url: "git@github.com:someone/amem.git", commit_hash: "0".repeat(40) };
+  f.write(...f.message(valid));
+  const result = await f.run();
+  expect(result.errors).toBe(0);
+  expect(result.records).toMatchObject({ supported: true, found: 1, staged: 1, duplicatesSkipped: 0, refused: {} });
+  expect(f.rows().filter(row => row.event === "Record").map(row => row.excerpt)).toEqual([valid]);
+});
 
 test("Qwen native text has no finality marker: report refusal, preserve ordinary capture, ignore thought/tool/subagent text", async () => {
   const f = fixture("qwen");

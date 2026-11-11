@@ -112,6 +112,11 @@ export function parseRecordLines(text: string, shouldStop?: () => boolean): Pars
 
 /** Additive numeric intake receipt; an unsupported reader never turns text into capture. */
 export type RecordIntakeRefusal = RecordDropReason | "finality-unavailable";
+/**
+ * Whether a drop reason records a Record parsing refusal rather than a lost capture. Those stay observable metrics but
+ * never reach the SessionStart loss notice: a deliberate `finality-unavailable` refusal is not capture that went missing.
+ */
+export const recordRefusalReason = (reason: string): reason is RecordIntakeRefusal => reason.startsWith("record_") || reason === "finality-unavailable";
 export interface RecordIntakeCounts {
   supported: boolean; found: number; staged: number; duplicatesSkipped: number;
   refused: Partial<Record<RecordIntakeRefusal, number>>;

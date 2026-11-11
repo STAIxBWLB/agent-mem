@@ -45,6 +45,18 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 const MAX_RECORD = 256 * 1024, MAX_RECORDS = 4096, MAX_DISCOVERY = 4096, MAX_DEPTH = 8, ANCHOR_BYTES = 1024;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
+/** Every field a native header can lend to identity, child attribution or scope. Nothing else is read from it. */
+const HEADER_FIELDS = ["type", "id", "source", "cwd", "version", "originator", "cli_version", "parent_thread_id", "parentSession", "subagent_role", "subagent_nickname", "agentId", "agent_id", "agentRunId", "isSidechain", "subagent"] as const;
+/**
+ * A real Codex `session_meta` carries about 21.8 KB of `base_instructions`, and the standalone screen refuses any single
+ * string over 16 KiB, so screening the whole header line refuses the session and every Record in it. The header line is
+ * never published; only the fields above are read, so those are what the screen judges.
+ */
+function headerScreen(kind: "codex" | "pi", raw: Record<string, any>): Record<string, unknown> {
+  const meta = kind === "codex" && object(raw.payload) ? raw.payload : raw, picked: Record<string, unknown> = {};
+  for (const key of HEADER_FIELDS) { const value = key === "type" ? raw.type : key in meta ? meta[key] : raw[key]; if (value !== undefined) picked[key] = value; }
+  return picked;
+}
 const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 const blank = (): Position => ({ identity: "", offset: 0, anchor: "", scope: "unknown", protocol: "", cutoff: "", skipping: 0 });
 const sourceIdentity = (stat: Stats) => hash(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
@@ -388,7 +400,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             const binding = recordMainHeader(kind as "codex" | "pi", raw);
             const meta = object(raw) && kind === "codex" ? raw.payload : raw;
             if (!object(meta) || scopeOf(meta.cwd) !== "own") binding.main = false;
-            mainHeader = { binding, permitted: bytes.length > 0 && await policy.screen(raw), bytes };
+            mainHeader = { binding, permitted: bytes.length > 0 && await policy.screen(object(raw) ? headerScreen(kind as "codex" | "pi", raw) : raw), bytes };
           }
           return mainHeader;
         };
@@ -472,7 +484,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
           if (object(raw)) {
             const context = kind === "codex" && ["session_meta", "turn_context"].includes(raw.type) ? raw.payload
               : kind === "pi" && raw.type === "session" ? raw : undefined;
-            const permitted = await policy.screen(raw);
+            const permitted = await policy.screen(context === undefined ? raw : headerScreen(kind as "codex" | "pi", raw));
             guard(); metadataGuard();
             const known = kind !== "qwen" || qwenRecord(raw);
             if (kind === "qwen") position.scope = permitted && known ? scopeOf(raw.cwd) : "unknown";

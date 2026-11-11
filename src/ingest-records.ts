@@ -21,6 +21,11 @@ export function recordMainHeader(kind: "codex" | "pi", raw: unknown): { main: bo
   const main = !isChild && nativeRecordId(meta.id) && (kind === "codex" ? ["cli", "vscode", "exec", "mcp"].includes(meta.source) : meta.version === 3);
   return { main, child: isChild, ...(nativeRecordId(meta.id) ? { session: meta.id } : {}) };
 }
+/**
+ * Kimi 1.5 completes a step with `finishReason: "end_turn"`; `tool_use`, `error` and `interrupted` are the only other
+ * values real wire files carry (669 local `agents/main/wire.jsonl` files read 2026-11-11), so `"completed"` never occurs.
+ */
+const kimiCompleted = (value: unknown): boolean => value === "end_turn";
 interface OpenStep { id: string; start: number; end: number; sources: unknown[]; parts: unknown[]; at?: string; bytes: number; refusal?: RecordIntakeRefusal }
 /** Positive native completion only. State is bounded to this new source window, never a historical backfill. */
 export class IngestRecordReader {
@@ -78,10 +83,10 @@ export class IngestRecordReader {
         this.step.sources.push(raw); this.step.end = end; this.step.at = at ?? this.step.at;
         if (!permitted) this.step.refusal = "record_policy";
         else if (at === undefined) this.step.refusal ??= "record_timestamp";
-        out.push(...this.finishStep(event.finishReason === "completed" ? undefined : "finality-unavailable"));
+        out.push(...this.finishStep(kimiCompleted(event.finishReason) ? undefined : "finality-unavailable"));
       }
       if (this.message && event.messageId === this.message.raw.message.id && nativeRecordId(event.uuid)) {
-        out.push(...this.finishMessage(event.finishReason === "completed" && permitted ? undefined : permitted ? "finality-unavailable" : "record_policy", { raw, end, at }));
+        out.push(...this.finishMessage(kimiCompleted(event.finishReason) && permitted ? undefined : permitted ? "finality-unavailable" : "record_policy", { raw, end, at }));
       }
       return out;
     }
