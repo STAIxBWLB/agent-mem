@@ -16,8 +16,7 @@ export interface FormatFloor { surface: string; minReader: string; since: string
  * The first release whose readers understand the `preference` note kind (#370). An older reader drops such a row and refuses its own
  * machine's sync publish over it, so a preference write is refused until a person records a floor at or above this one.
  */
-// ponytail: 0.25.0 is the planned next minor. A release that ships the kind elsewhere moves this constant to that release in its own
-// release PR; the writer refuses until the person records the floor, so no host writes a row its peers cannot sync past.
+// The writer refuses until the person records the floor, so no host writes a row its peers cannot sync past.
 export const PREFERENCE_MIN_READER = "0.25.0";
 const MAX_BYTES = 64 * 1024, SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
