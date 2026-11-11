@@ -110,6 +110,22 @@ test("a floor at the introducing release refuses this build at store open, befor
 
 // A reader whose own version is above the floor: the release that ships the kind. Its `src` copy sits beside a fake package.json, because
 // formats.ts reads this release's version from that file when the module loads.
+/** An isolated copy of this build's `src` beside a 99.0.0 manifest, so a home carrying the kind's floor can be written and read. */
+function futureReader(r: ReturnType<typeof rig>, source: string) {
+  const isolated = join(r.root, "future"), job = join(r.root, "job.json"), out = join(r.root, "probe.json");
+  cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+  // A fake manifest only: these proofs are about the kind, its floor and its readers, never about a released version string.
+  writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-probe", version: "99.0.0", type: "module" }));
+  writeFileSync(join(isolated, "probe.ts"), source);
+  return (payload: unknown) => {
+    writeFileSync(job, JSON.stringify({ ...(payload as object), memory: r.memory, cwd: r.cwd, project: r.project, out }));
+    const child = Bun.spawnSync([process.execPath, join(isolated, "probe.ts"), job], { cwd: isolated, stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(0);
+    return JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown>;
+  };
+}
+
 const PROBE = `
 import { readFileSync, writeFileSync } from "node:fs";
 import { MemoryStore } from "./src/memory/store.ts";
@@ -148,16 +164,7 @@ writeFileSync(job.out, JSON.stringify(out));
 test("a reader at the introducing release writes both own-segment paths, accepts a queued preference and indexes it like a rebuild", async () => {
   const r = rig();
   floor(r.memory, PREFERENCE_MIN_READER, "curated");
-  const isolated = join(r.root, "future"), out = join(r.root, "probe.json"), job = join(r.root, "job.json");
-  cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
-  // A fake manifest only: this proof is about the kind's floor and readers, never about a released version string.
-  writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-probe", version: "99.0.0", type: "module" }));
-  writeFileSync(join(isolated, "probe.ts"), PROBE);
-  writeFileSync(job, JSON.stringify({ memory: r.memory, cwd: r.cwd, project: r.project, out }));
-  const child = Bun.spawnSync([process.execPath, join(isolated, "probe.ts"), job], { cwd: isolated, stdout: "pipe", stderr: "pipe", timeout: 60_000 });
-  expect(child.stderr.toString()).toBe("");
-  expect(child.exitCode).toBe(0);
-  const result = JSON.parse(readFileSync(out, "utf8")) as { ids: string[]; kinds: string[]; supersededBy: string | null; imported: boolean; indexEqual: boolean; dumpEqual: boolean; rows: number; accepted: { status?: string; kind: string | null; tier: string | null } };
+  const result = futureReader(r, PROBE)({}) as unknown as { ids: string[]; kinds: string[]; supersededBy: string | null; imported: boolean; indexEqual: boolean; dumpEqual: boolean; rows: number; accepted: { status?: string; kind: string | null; tier: string | null } };
   expect(result.supersededBy).toBe(result.ids[1]!);
   expect(result.kinds).toEqual(["preference", "preference"]);
   expect(result.imported).toBe(true);
@@ -167,3 +174,38 @@ test("a reader at the introducing release writes both own-segment paths, accepts
   expect(result.indexEqual).toBe(true);
   expect(result.dumpEqual).toBe(true);
 });
+
+// #370 review I1: liveness cannot be decided in SQL — supersession folds from a newer row's `supersedes`, and a forgotten successor
+// releases its target again — so the read pages by `at` and resolves liveness before it takes the newest `limit`.
+const READ_PROBE = `
+import { readFileSync, writeFileSync } from "node:fs";
+import { MemoryStore } from "./src/memory/store.ts";
+const job = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const row = (text, at, over = {}) => ({ op: "note", project: job.project, scope: "project", tier: "long", kind: "preference", peer: "person", source: "person", text, about: [], ...over });
+const store = new MemoryStore({ memoryDir: job.memory, deferPromotions: true });
+try {
+  // Five rules that stay live, then a six-deep supersede chain written after them: the newest rows are all dead but the last, so a
+  // slice taken before liveness is filled by the chain and the live rules never reach the slot.
+  for (let n = 1; n <= 5; n++) store.importNote(row("live rule " + n, "2026-11-11T00:0" + n + ":00.000Z"), "2026-11-11T00:0" + n + ":00.000Z");
+  let previous;
+  for (let n = 1; n <= 6; n++) {
+    const at = "2026-11-11T00:1" + n + ":00.000Z";
+    previous = store.importNote(row("chain rule " + n, at, previous ? { supersedes: previous } : {}), at).id;
+  }
+  const page = store.readPreferences(job.project, 5), all = store.readPreferences(job.project, 32);
+  writeFileSync(job.out, JSON.stringify({ texts: page.rows.map(view => view.text), truncated: page.truncated, everyLive: all.rows.map(view => view.text), everyTruncated: all.truncated }));
+} finally { store.close(); }
+`;
+
+test("the slot holds the newest live rules even behind a longer supersede chain than its own width", () => {
+  const r = rig();
+  floor(r.memory, PREFERENCE_MIN_READER, "curated");
+  const result = futureReader(r, READ_PROBE)({});
+  // Newest first, dead chain rows skipped, the fifth live rule cut off by the slot's width and reported as truncated.
+  expect(result.texts).toEqual(["chain rule 6", "live rule 5", "live rule 4", "live rule 3", "live rule 2"]);
+  expect(result.truncated).toBe(true);
+  // A limit wide enough to hold every live rule returns all six and truncates nothing.
+  expect(result.everyLive).toEqual(["chain rule 6", "live rule 5", "live rule 4", "live rule 3", "live rule 2", "live rule 1"]);
+  expect(result.everyTruncated).toBe(false);
+});
+

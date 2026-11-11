@@ -1214,19 +1214,30 @@ export class MemoryStore {
   readPreferences(project: string, limit: number = PREFERENCE_SLOT): { rows: View[]; truncated: boolean } {
     if (!project.trim() || project.length > 400 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32) throw Error("invalid preference read scope or limit");
     this.ensureFresh();
-    const refs = new Map<string, { id: string; at: string }>();
-    for (const store of this.readStores()) {
-      const rows = store.db.query("SELECT id,at FROM entries WHERE (project IN (SELECT value FROM json_each(?)) OR scope = 'shared') AND kind = 'preference' ORDER BY at DESC,id LIMIT ?")
-        .all(JSON.stringify(this.scopeKeys(project)), limit + 1) as { id: string; at: string }[];
-      for (const row of rows) refs.set(row.id, row);
+    const stores = this.readStores(), scope = JSON.stringify(this.scopeKeys(project)), scan = Math.max(32, limit * 4);
+    const cursors = new Map<number, { at: string; id: string }>(), done = new Set<number>(), live = new Map<string, View>();
+    // Supersession, forget, expiry and promotion fold over rows this query cannot decide in SQL, so page by `at` and resolve liveness
+    // before taking the newest `limit`: a fixed slice can otherwise be filled entirely by dead rows and leave the slot empty while a
+    // current rule still exists. Every candidate row in scope is scanned, so `truncated` means what it says.
+    while (done.size < stores.length) {
+      const refs: { id: string; at: string }[] = [];
+      stores.forEach((store, index) => {
+        if (done.has(index)) return;
+        const after = cursors.get(index);
+        const rows = store.db.query(`SELECT id,at FROM entries WHERE (project IN (SELECT value FROM json_each(?)) OR scope = 'shared') AND kind = 'preference'`
+          + `${after ? " AND (at < ? OR (at = ? AND id > ?))" : ""} ORDER BY at DESC,id LIMIT ?`)
+          .all(...(after ? [scope, after.at, after.at, after.id] : [scope]), scan) as { id: string; at: string }[];
+        if (rows.length < scan) done.add(index); else cursors.set(index, rows[rows.length - 1]!);
+        refs.push(...rows);
+      });
+      if (!refs.length) continue;
+      for (const view of this.views(false, { project, ids: refs.map(ref => ref.id) })) {
+        if (view.kind !== "preference" || view.supersededBy || !(this.inScope(view.project, project) || view.scope === "shared")) continue;
+        live.set(view.id, view);
+      }
     }
-    const ordered = [...refs.values()].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)), selected = ordered.slice(0, limit);
-    if (!selected.length) return { rows: [], truncated: ordered.length > limit };
-    const order = new Map(selected.map((row, index) => [row.id, index]));
-    const rows = this.views(false, { project, ids: selected.map(row => row.id) })
-      .filter(view => view.kind === "preference" && !view.supersededBy && (this.inScope(view.project, project) || view.scope === "shared"));
-    rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
-    return { rows, truncated: ordered.length > limit };
+    const ordered = [...live.values()].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
+    return { rows: ordered.slice(0, limit), truncated: ordered.length > limit };
   }
 
   /** Exact-project body pages for policy-aware callers. Relations still fold over complete metadata. */
