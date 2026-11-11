@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
-import { recordSourceCheck, recordWindow } from "./memory/record-candidates.ts";
+import { recordCaptureLookup, recordSourceCheck, recordWindow } from "./memory/record-candidates.ts";
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
@@ -754,8 +754,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const result = candidates.accept(id!, { project, actor, verdict: "public", store,
           policyVersion: () => JSON.stringify(configuredPolicyOptions(realPath(store.profile.home), policyCwd)),
           policy: (proposal, target, note, goal) => { assertCurrent(); return policyOf().screenStandalone({ ...proposal.input, ...(target ? { targetView: target } : {}), note, ...(goal ? { goalView: goal } : {}) }); },
-          // #368: a Record candidate quotes capture rows, so acceptance proves they are still the rows it was built from.
-          recordSource: recordSourceCheck(recordWindow(realPath(store.profile.home), project, policyCwd) ?? (() => ({ rows: [], partial: false }))),
+          // #368: a Record candidate quotes capture rows, so acceptance point-reads exactly those turns of its shard,
+          // rather than the brief window a candidate can outlive.
+          recordSource: recordSourceCheck(recordCaptureLookup(realPath(store.profile.home), policyCwd)),
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ${candidate.input.kind === "promotion" ? "promoted" : "ordinary"} note ${result.noteId}`;
       } finally { store.close(); }

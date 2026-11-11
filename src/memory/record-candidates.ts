@@ -17,6 +17,10 @@ export const RECORD_SOURCE_LIMIT = 8;
 const ANCHOR_LIMIT = 32, ANCHOR_MAX = 400, ABOUT_LIMIT = 32, EVIDENCE_LIMIT = 16, TITLE_MAX = 200;
 
 export interface RecordCandidateWindow { rows: readonly CaptureRow[]; partial: boolean }
+/** One turn a candidate cites: the session hash and the row time. Two Records of one turn share both. */
+export interface RecordTurn { session: string; at: string }
+/** The stored rows of the named turns of one project, read without the brief window's 32-row ceiling. */
+export type RecordSourceLookup = (project: string, turns: readonly RecordTurn[]) => readonly CaptureRow[];
 export type RecordCandidateInput = Extract<CandidateInput, { kind: "fail" | "memory" }>;
 /** Exactly the capture content the policy screens before the row becomes a candidate. */
 export interface RecordCandidateSource { event: "Record"; paths: string[]; excerpt: string }
@@ -73,12 +77,14 @@ function fixTitle(text: string): string {
 function propose(project: string, key: string, record: ParsedRecord, sources: RecordSource[]): RecordCandidateInput {
   const binding: RecordSourceBinding = { key, anchors: [...record.anchors], sources }, about = aboutNodes(record.anchors);
   if (record.kind === "fail") {
-    // The grammar records one symptom/cause group and one retry condition, so the left group is all a row can fill. The
-    // approach, cause and retry-when a fail note wants are the reviewer's: `amem review walk` opens them as the labelled
-    // template, and the recorded right group stays in the capture row the candidate cites.
+    // The grammar records one `<symptom/cause>` group and one `<fix/retry-when>` group, which is exactly the split a fail
+    // note needs on both ends: the left group is the symptom and the right one is the retry condition the row recorded.
+    // The approach and the cause have no source in a Record, so those two are the reviewer's, and `amem review walk`
+    // opens them in the labelled template the person edits.
     const split = record.text.indexOf(" -> ");
     return { kind: "fail", project, approach: "", symptom: split < 0 ? record.text : record.text.slice(0, split).trim(), cause: "",
-      retryWhen: "", evidenceRefs: record.anchors.slice(0, EVIDENCE_LIMIT), ...(about.length ? { about } : {}), record: binding };
+      retryWhen: split < 0 ? "" : record.text.slice(split + 4).trim(), evidenceRefs: record.anchors.slice(0, EVIDENCE_LIMIT),
+      ...(about.length ? { about } : {}), record: binding };
   }
   return { kind: "memory", project, text: record.text, noteKind: record.kind === "fix" ? "finding" : record.kind,
     ...(record.kind === "fix" ? { title: fixTitle(record.text) } : {}), ...(about.length ? { about } : {}), record: binding };
@@ -114,13 +120,14 @@ export function recordCandidates(window: RecordCandidateWindow, project: string,
 }
 
 /**
- * Acceptance-time proof that the rows a candidate quotes are still there and unchanged. A row outside the window reads as
- * missing, which is the same answer as a pruned one: the candidate's reviewer is told to rerun `amem consolidate`.
+ * Acceptance-time proof that the rows a candidate quotes are still there and unchanged. It asks for the cited turns
+ * themselves rather than the brief window: a candidate can outlive 32 newer Records, and reading its own rows as pruned
+ * would deadlock acceptance, because the fix it names (rerun `amem consolidate`) also reads that window.
  */
-export function recordSourceCheck(window: () => RecordCandidateWindow): (project: string, binding: RecordSourceBinding) => "present" | "changed" | "missing" {
+export function recordSourceCheck(lookup: RecordSourceLookup): (project: string, binding: RecordSourceBinding) => "present" | "changed" | "missing" {
   return (project, binding) => {
     const turns = new Set<string>(), present = new Set<string>();
-    for (const row of window().rows) {
+    for (const row of lookup(project, binding.sources.map(source => ({ session: source.session, at: source.at })))) {
       if (row.project !== project || typeof row.session !== "string" || typeof row.at !== "string") continue;
       const turn = `${row.session}\n${row.at}`;
       turns.add(turn);
@@ -133,18 +140,40 @@ export function recordSourceCheck(window: () => RecordCandidateWindow): (project
   };
 }
 
+/** The stored machine identity of a home, or `undefined` when it has none: the same check the capture readers make. */
+function machineIdOf(base: string): string | undefined {
+  try {
+    const value = (JSON.parse(readFileSync(join(base, "machine.json"), "utf8")) as { id?: unknown }).id;
+    return typeof value === "string" && /^[a-f0-9]{16}$/.test(value) ? value : undefined;
+  } catch { return undefined; }
+}
+function hasCaptureShard(base: string, project: string): boolean {
+  const machine = machineIdOf(base);
+  return machine !== undefined && lstatSync(join(captureShardDir(base, project, machine), "capture.db"), { throwIfNoEntry: false })?.isFile() === true;
+}
+
 /**
  * The newest `Record` window of one project, or `undefined` when this home has no capture shard to read. Read-only and
  * synchronous, so acceptance can recheck a source row without opening a writable store or authoring capture metadata.
  */
 export function recordWindow(base: string, project: string, cwd: string): (() => RecordCandidateWindow) | undefined {
-  const machine = (() => { try { return (JSON.parse(readFileSync(join(base, "machine.json"), "utf8")) as { id?: unknown }).id; } catch { return undefined; } })();
-  if (typeof machine !== "string" || !/^[a-f0-9]{16}$/.test(machine)) return undefined;
-  if (!lstatSync(join(captureShardDir(base, project, machine), "capture.db"), { throwIfNoEntry: false })?.isFile()) return undefined;
+  if (!hasCaptureShard(base, project)) return undefined;
   // ponytail: the brief window is the whole Record history `amem consolidate` sees, so the 32 newest Records are the ceiling.
   // A dedicated bounded Record scan over the shard (its own index, its own row budget) is the upgrade when that is too few.
   return () => {
     const store = new CaptureStore({ memoryDir: base, project, cwd, readOnly: true, busyTimeoutMs: 1000, maxReadRows: RECORD_CANDIDATE_WINDOW, recentReadRows: true });
     try { return store.readBriefRecords(RECORD_CANDIDATE_WINDOW); } finally { store.close(); }
+  };
+}
+
+/**
+ * The lookup acceptance uses: the cited turns of one project, point-read from its shard. A home with no capture shard
+ * answers no rows, which reads as pruned, so the refusal keeps naming the row instead of failing on a missing file.
+ */
+export function recordCaptureLookup(base: string, cwd: string): RecordSourceLookup {
+  return (project, turns) => {
+    if (!hasCaptureShard(base, project)) return [];
+    const store = new CaptureStore({ memoryDir: base, project, cwd, readOnly: true, busyTimeoutMs: 1000, maxReadRows: RECORD_CANDIDATE_WINDOW, recentReadRows: true });
+    try { return store.readRecordTurns(turns); } finally { store.close(); }
   };
 }

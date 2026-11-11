@@ -8,7 +8,7 @@ import { CaptureStore, type CaptureRow } from "../src/memory/capture.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { proposeConsolidation, type ConsolidationOptions } from "../src/memory/consolidate.ts";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
-import { recordCandidates, recordSourceCheck, type RecordCandidateWindow } from "../src/memory/record-candidates.ts";
+import { recordCandidates, recordCaptureLookup, recordSourceCheck, type RecordCandidateWindow } from "../src/memory/record-candidates.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
 const cleanup: (() => void)[] = [];
@@ -83,10 +83,10 @@ test("two Records in one turn stay two sources, and an empty-anchor Record keys 
   expect(repeat.proposals[0]!.input.record!.sources).toHaveLength(2);
 });
 
-test("a fail Record fills the symptom it recorded and leaves the rest of the template for the reviewer", () => {
+test("a fail Record fills the symptom and the retry condition it recorded, leaving approach and cause to the reviewer", () => {
   const result = recordCandidates(window([row(1, "amem: fail | src/capture.ts | writer starved under load -> retry after the queue drains")]), "project", empty);
-  expect(result.proposals[0]!.input).toMatchObject({ kind: "fail", approach: "", symptom: "writer starved under load", cause: "", retryWhen: "",
-    evidenceRefs: ["src/capture.ts"], about: ["path:src/capture.ts"] });
+  expect(result.proposals[0]!.input).toMatchObject({ kind: "fail", approach: "", symptom: "writer starved under load", cause: "",
+    retryWhen: "retry after the queue drains", evidenceRefs: ["src/capture.ts"], about: ["path:src/capture.ts"] });
 });
 
 test("a group key already queued or already decided is not proposed again, and a partial window is reported", () => {
@@ -130,7 +130,7 @@ test("accepting a fix and a fail Record candidate writes the decided kind and a 
 
   const failed = f.candidates.accept(fail, f.acceptance), body = f.store.get(failed.noteId, f.project)!;
   expect(body.kind).toBe("fail");
-  const labels = ["Approach: ", "Symptom: writer starved under load", "Cause: ", "Evidence: src/capture.ts", "Retry when: "];
+  const labels = ["Approach: ", "Symptom: writer starved under load", "Cause: ", "Evidence: src/capture.ts", "Retry when: retry after the queue drains"];
   expect(labels.every(label => body.text.includes(`${label}\n`) || body.text.endsWith(label))).toBe(true);
   expect(body.about).toEqual(["path:src/capture.ts"]);
 });
@@ -146,7 +146,7 @@ test("acceptance refuses with a named next step when the quoted row changed or w
   second.stage(1, "amem: decision | src/writer.ts | bounded writer lease avoids contention");
   const [again] = (await second.run()).candidates;
   second.prune(1);
-  expect(() => second.candidates.accept(again!.id, second.acceptance)).toThrow("record source row is missing (1 cited, pruned or outside the retained window); rerun `amem consolidate`");
+  expect(() => second.candidates.accept(again!.id, second.acceptance)).toThrow("record source row is missing (1 cited, pruned or forgotten from capture); reject this candidate");
 });
 
 test("a host with no capture read proposes no Record candidate and still consolidates", async () => {
@@ -157,13 +157,50 @@ test("a host with no capture read proposes no Record candidate and still consoli
   expect(f.candidates.list({ project: f.project })).toEqual([]);
 });
 
-test("recordSourceCheck answers from the window alone", () => {
+test("recordSourceCheck asks only for the cited turns and answers from them", () => {
   const rows = [row(1, "amem: decision | src/writer.ts | bounded writer lease avoids contention")];
-  const proposal = recordCandidates(window(rows), "project", empty).proposals[0]!, check = recordSourceCheck(() => window(rows));
+  const proposal = recordCandidates(window(rows), "project", empty).proposals[0]!;
+  const asked: unknown[] = [];
+  const check = recordSourceCheck((project, turns) => { asked.push({ project, turns }); return rows; });
   expect(check("project", proposal.input.record!)).toBe("present");
-  expect(check("other", proposal.input.record!)).toBe("missing");
-  const rewritten = recordSourceCheck(() => window([row(1, "amem: decision | src/writer.ts | another lesson")]));
-  expect(rewritten("project", proposal.input.record!)).toBe("changed");
+  // The window is never consulted: the check names the cited turn itself, so 32 newer Records cannot hide this one.
+  expect(asked).toEqual([{ project: "project", turns: [{ session: session(1), at: at(1) }] }]);
+  expect(recordSourceCheck(() => [])("project", proposal.input.record!)).toBe("missing");
+  expect(recordSourceCheck(() => [row(1, "amem: decision | src/writer.ts | another lesson")])("project", proposal.input.record!)).toBe("changed");
+});
+
+test("a realistic volume proposes across sessions and acceptance outlives the brief window", async () => {
+  const f = fixture();
+  let n = 0;
+  // Nine Records older than the window, then thirty inside it spread over four sessions (one path each, so one group
+  // each), then the two shapes a person cares about: an empty-anchor decision and a fail with a recorded retry condition.
+  for (let i = 0; i < 9; i++) f.stage(++n, `amem: decision | src/older-${i}.ts | older lesson ${i} stays outside the window`);
+  for (let i = 0; i < 30; i++) f.stage(++n, `amem: decision | src/module-${i}.ts | lesson ${i} keeps the writer lease inside its budget`, { session: session(1 + i % 4) });
+  f.stage(++n, "amem: decision | - | an empty anchor record keeps its own text");
+  f.stage(++n, "amem: fail | src/capture.ts | writer starved under load -> retry after the queue drains");
+  const report = await f.run();
+  expect(report.records).toMatchObject({ found: 32, queued: 32, grouped: 0, refused: 0, excluded: 0, truncated: true });
+
+  const inputOf = (id: string) => f.candidates.get(id, f.project)!.input;
+  const fail = inputOf(report.candidates.find(row => row.action === "record:fail")!.id);
+  expect(fail).toMatchObject({ kind: "fail", approach: "", symptom: "writer starved under load", cause: "", retryWhen: "retry after the queue drains" });
+  const anchored = report.candidates.map(row => inputOf(row.id)).filter(input => input.kind === "memory" || input.kind === "fail")
+    .filter(input => input.record!.anchors.length === 0);
+  expect(anchored).toHaveLength(1);
+  expect(anchored[0]).toMatchObject({ kind: "memory", text: "an empty anchor record keeps its own text" });
+
+  // The oldest row inside the window is what a window-based recheck would lose first.
+  const oldest = f.candidates.list({ project: f.project, limit: 500 }).find(candidate => {
+    const input = candidate.input;
+    return (input.kind === "memory" || input.kind === "fail") && input.record?.sources.some(source => source.at === at(10)) === true;
+  })!;
+  for (let i = 0; i < 33; i++) f.stage(++n, `amem: finding | src/later-${i}.ts | later lesson ${i} arrives after the candidate was queued`);
+  expect(f.capture.readBriefRecords(32).rows.some(row => row.at === at(10))).toBe(false);
+
+  // The row is out of the brief window and still in capture, so acceptance must read it as present, not as pruned.
+  const accepted = f.candidates.accept(oldest.id, f.acceptance);
+  expect(accepted.alreadyAccepted).toBe(false);
+  expect(f.store.get(accepted.noteId, f.project)!.text).toContain("lesson 0 keeps the writer lease inside its budget");
 });
 
 function fixture() {
@@ -176,7 +213,8 @@ function fixture() {
   const ids = new Map<number, number>(), read = () => capture.readBriefRecords();
   const edit = (sql: string, ...values: (string | number)[]) => { const db = new Database(join(capture.dir, "capture.db")); try { db.query(sql).run(...values); } finally { db.close(); } };
   const options: ConsolidationOptions = { project, actor: "person", policy: () => createStandalonePolicy(), policyVersion: () => "fixed" };
-  const acceptance = { project, actor: "person" as const, verdict: "public" as const, store, policy: () => true, recordSource: recordSourceCheck(read) };
+  const acceptance = { project, actor: "person" as const, verdict: "public" as const, store, policy: () => true,
+    recordSource: recordSourceCheck(recordCaptureLookup(root, root)) };
   return { root, project, store, candidates, capture, acceptance,
     stage(n: number, excerpt: string, extra: { session?: string } = {}) {
       const anchors = /^amem: [^|]+ \| ([^|]+) \|/.exec(excerpt)![1]!.trim();

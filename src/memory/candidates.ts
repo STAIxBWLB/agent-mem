@@ -96,12 +96,12 @@ function validRecord(value: RecordSourceBinding | undefined): value is RecordSou
 const validAbout = (value: unknown) => value === undefined
   || Array.isArray(value) && value.length <= 32 && value.every(node => text(node, 400));
 /**
- * A Record-derived fail candidate leaves approach, cause and retryWhen for the reviewer: the grammar records one
- * symptom/cause group and one retry condition, so the row fills the symptom and the other three stay empty, and only
- * a candidate carrying the binding may leave them empty.
+ * A Record-derived fail candidate leaves approach and cause for the reviewer: the grammar records one `<symptom/cause>`
+ * group and one `<fix/retry-when>` group, so the row fills the symptom and the retry condition, while the approach and a
+ * cause stated separately have no source. Only a candidate carrying the binding may leave those two empty.
  */
 const recordFailField = (key: "approach" | "symptom" | "cause" | "retryWhen", value: unknown, record: RecordSourceBinding | undefined) =>
-  (key === "approach" || key === "cause" || key === "retryWhen") && record !== undefined ? (value === "" || text(value)) : text(value);
+  (key === "approach" || key === "cause") && record !== undefined ? (value === "" || text(value)) : text(value);
 function validate(input: CandidateInput): void {
   if (!input || !text(input.project, 400)) throw new Error("invalid candidate project");
   if (input.kind === "correction") {
@@ -428,7 +428,7 @@ export class CandidateStore {
       if (sources === undefined) return;
       if (typeof context.recordSource !== "function") throw new Error("record source check unavailable; this host cannot verify the capture row this candidate quotes");
       const verdict = context.recordSource(context.project, sources);
-      if (verdict === "missing") throw new Error(`record source row is missing (${sources.sources.length} cited, pruned or outside the retained window); rerun \`amem consolidate\` once the transcript is readable again`);
+      if (verdict === "missing") throw new Error(`record source row is missing (${sources.sources.length} cited, pruned or forgotten from capture); reject this candidate, or rerun \`amem consolidate\` once the transcript has been ingested again`);
       if (verdict === "changed") throw new Error("record source row changed since this candidate was queued; rerun `amem consolidate` to queue a candidate over the current rows");
     };
     const execute = () => {
