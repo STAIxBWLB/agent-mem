@@ -113,7 +113,7 @@ console.log(JSON.stringify(appended));`)) as string[];
     const f = fixture(), line = "amem: decision | src/a.ts | retain native transport proof";
     const staged = [];
     for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) {
-      const record = (await stageTranscriptCapture({ agent, event: "Record", at: "2026-11-11T00:00:00.000Z", excerpt: line, paths: ["src/a.ts"] }, f.options))!;
+      const record = (await stageTranscriptCapture({ agent, event: "Record", at: new Date().toISOString(), excerpt: line, paths: ["src/a.ts"] }, f.options))!;
       expect(record.name).toStartWith("hook-v4-");
       staged.push({ record, bytes: readFileSync(join(spool(f.base), record.name)) });
     }

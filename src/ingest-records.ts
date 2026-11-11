@@ -53,7 +53,8 @@ export class IngestRecordReader {
     if (Array.isArray(parts) && parts.some(part => object(part) && (part.functionCall || part.functionResponse || part.type === "toolCall" || part.type === "tool_use" || part.type === "tool_result"))) return [];
     const text = this.kind === "qwen" ? parts.filter((part: any) => part.thought !== true && typeof part.text === "string").map((part: any) => part.text).join("\n") : textParts(parts);
     const id = this.kind === "codex" ? message.id : raw.id ?? raw.uuid;
-    return this.turn(text, start, end, at, nativeRecordId(id) ? id : String(start), [raw], !permitted ? "record_policy" : this.kind === "qwen" ? "finality-unavailable" : this.kind === "pi" && !nativeRecordId(id) || id != null && !nativeRecordId(id) ? "record_identity" : undefined,
+    const invalidIdentity = (this.kind === "pi" || id != null) && !nativeRecordId(id);
+    return this.turn(text, start, end, at, nativeRecordId(id) ? id : String(start), [raw], !permitted ? "record_policy" : this.kind === "qwen" ? "finality-unavailable" : invalidIdentity ? "record_identity" : undefined,
       this.kind === "qwen" ? undefined : true);
   }
   private kimi(raw: Record<string, any>, start: number, end: number, at: string | undefined, permitted: boolean, protocol: string): NativeRecordTurn[] {
