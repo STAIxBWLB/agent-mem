@@ -19,6 +19,8 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function home(): string { const value = realPath(mkdtempSync(join(tmpdir(), "amem-generation-contract-"))); cleanup.push(() => rmSync(value, { recursive: true, force: true })); return value; }
 function input(text: string, over: Partial<NoteInput> = {}): NoteInput { return { op: "note", project: PROJECT, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text, about: ["path:src/public.ts"], ...over }; }
+/** A released reader's kind union predates later kinds; these calls compare the segments it reads, not the type union. */
+const legacyNote = (old: OldStore, value: NoteInput): string => old.note(value as never);
 function legacyAuth(): PruneAuthorization { return { project: PROJECT, actor: "person", authorize: () => true }; }
 function rootBytes(memoryDir: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -63,9 +65,9 @@ function childRead(alias: string, parent: string, now: number): { id: string; te
   return JSON.parse(new TextDecoder().decode(result.stdout)) as { id: string; text: string; tier: string }[];
 }
 function lateWrites(old: OldStore, anchor: string) {
-  const late = old.note(input("late v1 independent note"));
+  const late = legacyNote(old, input("late v1 independent note"));
   old.demote(late, "person", PROJECT);
-  const origin = old.note(input("late v1 promoted note", { tier: "short", task: "agent-hub#1@1" }));
+  const origin = legacyNote(old, input("late v1 promoted note", { tier: "short", task: "agent-hub#1@1" }));
   const promoted = old.promote(origin, "person", PROJECT)!;
   expect(promoted).toBeDefined(); expect(promoted).not.toBe(origin);
   expect(old.supersede(anchor, promoted, "person", PROJECT)).toBe(true);
@@ -96,7 +98,7 @@ for (const reader of readers) {
       const old = legacy.store;
       if (!old) throw new Error("legacy fixture was not opened before migration");
       expect(old.machine.id).toBe(f.store.machine.id);
-      const beforeGeneration = segmentBytes(f.store.dir, "log"), legacyId = old.note(input("old bound writer stays legacy"));
+      const beforeGeneration = segmentBytes(f.store.dir, "log"), legacyId = legacyNote(old, input("old bound writer stays legacy"));
       expect(segmentBytes(f.store.dir, "log")).toEqual(beforeGeneration);
       const beforeLegacy = rootBytes(f.memoryDir), gen = f.store.note(input("new bound writer stays generation"));
       expect(rootBytes(f.memoryDir)).toEqual(beforeLegacy);

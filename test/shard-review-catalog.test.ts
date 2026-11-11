@@ -8,6 +8,7 @@ import { readCatalog, rebuildCatalog, scanCatalog } from "../src/memory/catalog.
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { shardDir } from "../src/memory/shard.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const A = "github.com/catalog-review/curated", B = "github.com/catalog-review/capture-only";
 const cleanup: (() => void)[] = [];
@@ -36,7 +37,7 @@ test("F9 captured migration keeps capture catalog readable and curated stats exp
   }
   expect(existsSync(join(captureOnly, "generation.json"))).toBe(false);
   expect(existsSync(join(captureOnly, "generation-seal.json"))).toBe(false);
-  expect(existsSync(join(captureOnly, "index.db"))).toBe(false);
+  expect(existsSync(join(captureOnly, indexFileName(false)))).toBe(false);
   await f.resume();
   const active = rebuildCatalog({ home: f.home });
   expect(active.find(row => row.key === A)).toMatchObject({ curatedAvailable: true, curatedEntries: 1 });
@@ -68,7 +69,7 @@ test("F9 rebuilding a branch-local NOT NULL curated count catalog permits unavai
 
 test("F9 an active malformed curated index still refuses fresh catalog derivation", async () => {
   const f = fixture(); await f.apply();
-  const index = join(shardDir(f.base, A), "index.db");
+  const index = join(shardDir(f.base, A), indexFileName(false));
   for (const suffix of ["", "-wal", "-shm"]) rmSync(index + suffix, { force: true });
   mkdirSync(index);
   expect(() => scanCatalog(f.base)).toThrow();

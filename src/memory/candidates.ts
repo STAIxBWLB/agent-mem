@@ -39,7 +39,7 @@ export type CandidateInput = { project: string } & (
   | { kind: "correction"; target: CandidateTarget; proposedText: string; reason: string; noteKind?: "decision" | "contract" | "fail" }
   /** `about` is the deterministic edge set a proposer already knows (the anchors a Record names), so acceptance needs no re-extraction. */
   | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string; about?: string[]; record?: RecordSourceBinding }
-  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail"; about?: string[]; record?: RecordSourceBinding }
+  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" | "preference"; about?: string[]; record?: RecordSourceBinding }
   | { kind: "decay"; target: CandidateTarget; reason: string }
   | { kind: "promotion"; target: CandidateTarget; goalId: string }
   | { kind: "consolidation"; action: "merge" | "supersession" | "recurring-fix"; targets: CandidateTarget[]; text: string; about: string[]; noteKind: "decision" | "finding" | "contract" | "fail" }
@@ -112,7 +112,7 @@ function validate(input: CandidateInput): void {
       || !recordFailField("cause", input.cause, input.record) || !recordFailField("retryWhen", input.retryWhen, input.record)
       || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
   } else if (input.kind === "memory") {
-    if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)
+    if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail", "preference"].includes(input.noteKind)
       || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about)) throw new Error("invalid memory candidate");
   } else if (input.kind === "promotion") {
     if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
@@ -447,7 +447,7 @@ export class CandidateStore {
         scope: data.kind === "correction" ? target!.scope : "project",
         // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
         tier: data.kind === "correction" && target!.local ? "short" : "long",
-        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person",
+        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" || target?.kind === "preference" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person",
         // A Record candidate carries the edges its anchors name, so the accepted note stays findable by path and symbol.
         about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : [])])],
         text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };

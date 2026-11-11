@@ -8,6 +8,7 @@ import { completionScript } from "../src/completion.ts";
 import { CandidateStore, candidateTargetRevision } from "../src/memory/candidates.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const homes: string[] = [];
 const oldHome = process.env.AGENTHUB_HOME, oldAmem = process.env.AMEM_HOME;
@@ -47,7 +48,7 @@ test("review defaults to list, supports filters and JSON, and opens no ordinary 
   expect(rows).toHaveLength(1); expect(rows[0].id).toBe(id); expect(rows[0].id).not.toBe(other);
   expect(JSON.parse(await runCli(["review", "list", "--status", "all", "--kind", "decay", "--json"], f.context))).toEqual([]);
   expect(await runCli(["review"], f.context)).toContain(id);
-  for (const path of ["index.db", "log", "local", "machine.json"]) expect(existsSync(join(f.home, path))).toBe(false);
+  for (const path of [indexFileName(false), "log", "local", "machine.json"]) expect(existsSync(join(f.home, path))).toBe(false);
 });
 
 test("review requires a full candidate id before store access, without a TTY", async () => {
@@ -127,11 +128,11 @@ test("review reject changes only the sidecar and accepts no prefix, while decay 
   expect(JSON.parse(await runCli(["review", "reject", id, "--json"], f.context))).toEqual({ candidateId: id, status: "rejected" });
   expect(JSON.parse(await runCli(["review", "--json"], f.context))).toEqual([]);
   expect(JSON.parse(await runCli(["review", "--status", "rejected", "--json"], f.context))[0].id).toBe(id);
-  expect(existsSync(join(f.home, "index.db"))).toBe(false);
+  expect(existsSync(join(f.home, indexFileName(false)))).toBe(false);
   const candidates = new CandidateStore();
   const decay = candidates.put({ project: f.project, kind: "decay", target: { id: "b".repeat(32), revision: "c".repeat(64) }, reason: "synthetic stale hint" }, "public"); candidates.close();
   await expect(runCli(["review", "accept", decay, "--policy-free"], f.context)).rejects.toThrow("listing-only");
-  expect(existsSync(join(f.home, "index.db"))).toBe(false);
+  expect(existsSync(join(f.home, indexFileName(false)))).toBe(false);
 });
 
 test("review command definitions feed parser, help and static completion together", () => {

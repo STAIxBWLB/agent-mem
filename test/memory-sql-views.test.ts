@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { MEMORY_SCHEMA, MemoryStore, entryId, type Entry, type Filter, type Kind, type NoteEntry, type NoteInput, type OpEntry, type View } from "../src/memory/store.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const DAY = 24 * 3600_000, START = Date.parse("2026-10-16T00:00:00.000Z");
 const cleanup: (() => void)[] = [];
@@ -41,7 +42,7 @@ function oldSelection(store: MemoryStore, f: Filter = {}): View[] {
     .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id)).slice(0, f.limit ?? 200);
 }
 function allTables(dir: string): Record<string, unknown[]> {
-  const db = new Database(join(dir, "index.db"), { readonly: true });
+  const db = new Database(join(dir, indexFileName(false)), { readonly: true });
   db.run("PRAGMA busy_timeout = 3000");
   try {
     const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[];

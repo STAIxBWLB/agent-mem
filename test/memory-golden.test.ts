@@ -4,6 +4,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MEMORY_SCHEMA, MemoryStore, entryId, type Entry, type NoteEntry, type OpEntry, type GoalEntry } from "../src/memory/store.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const at = (minute: number) => `2026-10-16T00:${String(minute).padStart(2, "0")}:00.000Z`;
 const signed = (entry: Omit<NoteEntry, "id"> | Omit<OpEntry, "id"> | Omit<GoalEntry, "id">): Entry => ({ ...entry, id: entryId(entry) });
@@ -13,7 +14,7 @@ const op = (operation: OpEntry["op"], target: string, by?: string, minute = 3): 
 
 /** Every SQLite table, including offsets and prefix hashes, rather than only user-visible entries. */
 function tables(dir: string): Record<string, unknown[]> {
-  const db = new Database(join(dir, "index.db"), { readonly: true });
+  const db = new Database(join(dir, indexFileName(false)), { readonly: true });
   db.run("PRAGMA busy_timeout = 3000");
   try {
     const names = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[];

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore as PublishedV02 } from "@staix/agent-mem-v02";
@@ -7,6 +7,7 @@ import { MemoryStore as PreVaultStore } from "@staix/agent-mem-pre-vault";
 import { MemoryStore, type NoteEntry } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { GENERATION_OP_CONTRACTS, OP_CONTRACTS, V1_OPS, assertSharedV1Op } from "../src/memory/ops-contract.ts";
 import { createStandalonePolicy } from "../src/memory/policy.ts";
 import { recordVaultLink, vaultCandidates, validateVaultLinkRow, vaultLinkId, type VaultLinkRow } from "../src/memory/vault.ts";
@@ -109,7 +110,12 @@ test("C2 real vault_link writer matches the frozen payload hashes identity and c
 
 test("C2 vault_link contract requires every frozen field and refuses shared-v1 without changing its registries", async () => {
   const oldRegistry = await import(new URL("./memory/ops-contract.ts", import.meta.resolve("@staix/agent-mem-pre-vault")).href);
-  expect(V1_OPS).toEqual(oldRegistry.V1_OPS); expect(OP_CONTRACTS).toEqual(oldRegistry.OP_CONTRACTS);
+  // #370 is the one deliberate widening since 0.3.1: the note kind enum gains `preference`. A reader that predates it refuses such a row,
+  // which is why the preference write is floor-gated; no op, field, required list or placement moved.
+  const widened = structuredClone(oldRegistry.OP_CONTRACTS) as unknown;
+  const fields = (widened as { note: { payloadSchema: { fields: Record<string, { values?: readonly string[] }> } } }).note.payloadSchema.fields;
+  fields.kind = { ...fields.kind!, values: [...fields.kind!.values!, "preference"] };
+  expect(V1_OPS).toEqual(oldRegistry.V1_OPS); expect(OP_CONTRACTS).toEqual(widened as typeof OP_CONTRACTS);
   expect(V1_OPS).not.toContain("vault_link" as never); expect(OP_CONTRACTS.vault_link).toBeUndefined();
   expect(() => assertSharedV1Op("vault_link")).toThrow("not allowed in shared v1");
   const contract = GENERATION_OP_CONTRACTS.vault_link;
@@ -129,13 +135,18 @@ test("C2 vault_link contract requires every frozen field and refuses shared-v1 w
 });
 
 
-test("C1 pre-vault 0.3.1 can reuse the P2-updated shared index but refuses its next full rebuild", async () => {
+test("C1 pre-vault 0.3.1 keeps its own derived index, so a writer's newer index version leaves it to rebuild and refuse an unknown link", async () => {
   const f = await fixture();
   const old = new PreVaultStore({ home: f.root, deferPromotions: true });
   try {
     expect(old.get(frozen.note.id, project)?.text).toBe(frozen.note.text);
-    await f.link(); // The P2 writer also advances the shared derived watermark.
-    expect(old.list({ project }).map(row => row.id)).toContain(frozen.note.id);
+    // #370 moves this writer to `INDEX_VERSION` 4, which names its own file: 0.24.0-era and pre-vault-0.3.1 indexes no longer share one
+    // file, so the older reader's own `index.db` is not advanced by this append and it must refresh before answering.
+    await f.link();
+    // Two files now coexist: this writer's own `index-v4.db` and the older reader's `index.db`, which this append never advances.
+    expect(existsSync(join(f.store.dir, indexFileName(false)))).toBe(true);
+    expect(existsSync(join(f.store.dir, "index.db"))).toBe(true);
+    expect(() => old.list({ project })).toThrow("legacy bridge input changed or is invalid");
     expect(() => old.rebuild()).toThrow();
   } finally { old.close(); }
 });

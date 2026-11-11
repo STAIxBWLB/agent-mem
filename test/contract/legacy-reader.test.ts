@@ -37,6 +37,8 @@ function note(store: MemoryStore | LegacyMemoryStore, text: string): View {
   return { id, at, machine: store.machine.id, project, scope: "project", tier: "long", kind: "contract", peer: "person", title: null, source: "person", text, about: ["path:src/public.ts"], task: null, supersededBy: null, supersedes: [], promotedFrom: null, expiresAt: null, local: false };
 }
 const sorted = (rows: View[]) => rows.sort((a, b) => a.id.localeCompare(b.id));
+/** #370: the published v1 `View` union predates later note kinds, so its values are compared as a runtime projection, not as that union. */
+const projected = (value: unknown): unknown => value;
 function childRead(dir: string): View[] {
   const result = Bun.spawnSync([process.execPath, fileURLToPath(new URL("./legacy-reader.ts", import.meta.url)), dir], { cwd: fileURLToPath(new URL("../..", import.meta.url)), stdout: "pipe", stderr: "pipe", timeout: 5_000 });
   expect(new TextDecoder().decode(result.stderr)).toBe("");
@@ -56,7 +58,7 @@ test("C1 a read-only published v1 reader never announces itself before new write
   expect(logs(dir)).toEqual(before);
   const writer = current(dir), expected = note(writer, "new writer ordinary v1 contract");
   const authored = logs(dir);
-  expect(reader.list({ project })).toEqual([expected]);
+  expect(projected(reader.list({ project }))).toEqual([expected]);
   expect(logs(dir)).toEqual(authored);
   expectOnlyV1Notes(dir, 1);
 });
@@ -120,7 +122,7 @@ test("C1 the actual writer refuses reserved truth-changing and unknown ops befor
     expect(logs(dir)).toEqual(before);
   }
   expect(writer.list({ project })).toEqual([expected]);
-  expect(legacy(dir).list({ project })).toEqual([expected]);
+  expect(projected(legacy(dir).list({ project }))).toEqual([expected]);
   expect(logs(dir)).toEqual(before);
   expectOnlyV1Notes(dir, 1);
 });
@@ -143,7 +145,7 @@ test("C1 all 13 real v1 writers preserve authored payloads, placement and the pu
     const received = logs(oldHome), old = new LegacyMemoryStore({ home: oldHome, now: () => now });
     try {
       for (const includeSuperseded of [false, true]) expect(sorted(old.list({ project, includeSuperseded, limit: 100 }))).toEqual(sorted(writer.list({ project, includeSuperseded, limit: 100 })));
-      for (const id of noteIds) expect(old.get(id, project)).toEqual(writer.get(id, project));
+      for (const id of noteIds) expect(projected(old.get(id, project))).toEqual(writer.get(id, project));
       for (const id of goalIds) expect(old.goalOf(id, project)).toEqual(writer.goalOf(id, project));
       expect(old.suggestions(project)).toEqual(writer.suggestions(project));
       for (const start of [...noteIds.map(id => `mem:${id}`), ...goalIds.map(id => `goal:${id}`), "path:src/public.ts"]) expect(graphProjection(old.graph(project, start, 2, 200))).toEqual(graphProjection(writer.graph(project, start, 2, 200)));

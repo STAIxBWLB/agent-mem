@@ -1,7 +1,8 @@
-import { buildCuratedBriefCache } from "../brief-curated.ts";
+import { buildCuratedBriefCache, buildPreferenceBriefCache } from "../brief-curated.ts";
+import { PREFERENCE_SLOT } from "./preference-brief.ts";
 import { curatedProfileBinding, invalidateCuratedCaches } from "./curated-cache-state.ts";
 import { assertPlacementRuntime, placementSelectorRefusal, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
-import { assertFormatFloor } from "./formats.ts";
+import { assertFormatFloor, floorRaiseHint, formatFloorAtLeast, PREFERENCE_MIN_READER } from "./formats.ts";
 import { readPublicPruneView } from "./public-prune-view.ts";
 import { INDEX_VERSION, indexFileName } from "./index-file.ts";
 import { readShardLegacySnapshot } from "./shard-bridge.ts";
@@ -41,7 +42,7 @@ import { registerReaderLease, type ReaderLease } from "./reader-lease.ts";
  */
 export const MEMORY_SCHEMA = "agent-hub.memory/v1";
 export const MEMORY_DB_BUSY_TIMEOUT_MS = 3000;
-export const KINDS = ["decision", "finding", "contract", "fail"] as const;
+export const KINDS = ["decision", "finding", "contract", "fail", "preference"] as const;
 export type Kind = (typeof KINDS)[number];
 /** Kinds that move to long-term when their task is approved; findings stay short-term unless a person promotes them. */
 export const PROMOTED_KINDS: readonly Kind[] = ["decision", "contract", "fail"];
@@ -507,7 +508,8 @@ export class MemoryStore {
           const directory = shardMachineDir(this.profile.home, project, machineId(this.profile.home).id);
           mkdirSync(directory, { recursive: true, mode: 0o700 });
           buildCuratedBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
-          if (curatedProfileBinding(this.profile.home, project) !== binding) rmSync(join(directory, "brief-curated.json"), { force: true });
+          buildPreferenceBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
+          if (curatedProfileBinding(this.profile.home, project) !== binding) for (const name of ["brief-curated.json", "brief-preferences.json"]) rmSync(join(directory, name), { force: true });
         });
       } catch { /* Failed derived publication leaves the invalidated cache unavailable; a later mutation retries. */ }
       finally { try { if (view !== opened) view?.close(); } catch { /* Preserve the authoritative mutation result. */ } }
@@ -579,6 +581,8 @@ export class MemoryStore {
         ...(note.title ? { title: stripPrivateSpans(note.title).slice(0, MAX_TITLE) } : {}),
         ...(note.tier === "short" && !note.expires ? { expires: new Date(Date.parse(at) + this.ttl).toISOString() } : {}) });
       const body = { schema: MEMORY_SCHEMA, at, machine: this.machine.id, ...normalized } as const;
+      // Before `work`: `beginAcceptance` marks the candidate accepting and a later refusal would leave it unreplayable.
+      this.assertPreferenceWritable(body);
       const view: View = { ...normalized, id: entryId(body), at, machine: body.machine, title: normalized.title ?? null,
         task: normalized.task ?? null, about: [...normalized.about], supersededBy: null,
         supersedes: normalized.supersedes ? [normalized.supersedes] : [], promotedFrom: normalized.promotedFrom ?? null,
@@ -609,8 +613,20 @@ export class MemoryStore {
     return this.appendBody(body, local);
   }
 
+  /**
+   * #370: a `preference` note is written only into a home whose person-recorded floor already names a reader that understands the kind.
+   * A released reader sharing that home drops such a row and refuses its own machine's sync publish over it, so the write fails closed
+   * here rather than leaving a row no peer can sync past. Reads, briefs and candidate queueing never reach this check.
+   */
+  private assertPreferenceWritable(body: Omit<Entry, "id">): void {
+    if (body.op !== "note" || (body as { kind?: unknown }).kind !== "preference") return;
+    if (formatFloorAtLeast(this.profile.home, "curated", PREFERENCE_MIN_READER)) return;
+    throw new Error(`a preference note needs a curated or home format floor of at least ${PREFERENCE_MIN_READER} on this memory home: an older amem reader sharing it drops the row and refuses its whole sync publish over one. Upgrade every host that shares this home, then ${floorRaiseHint(this.profile.home, "curated", PREFERENCE_MIN_READER)}; see docs/contracts.md, "Versions on one machine (#199)".`);
+  }
+
   private appendBody(body: Omit<Entry, "id">, local: boolean): string {
     if (this.bootstrapOnly) throw new Error("migration bootstrap cannot author memory");
+    this.assertPreferenceWritable(body);
     if (this.userOverlay && (body.op === "note" || body.op === "goal") && "scope" in body && body.scope === "shared") return this.userOverlay.appendBody(body, local);
     if ("target" in body && body.op !== "settle") { const owner = this.ownerOf(body.target as string); if (owner) return owner.appendBody(body, local); }
     if (this.profile.sharded && (body.op === "note" || body.op === "goal") && "scope" in body && "project" in body) {
@@ -670,6 +686,8 @@ export class MemoryStore {
       // The source tuple also recognizes legacy ids whose nodes depended on the checkout or extractor version.
       const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, stripPrivateSpans(n.text).slice(0, MAX_TEXT)) as { id: string } | null;
       if (known) return { id: known.id, added: false };
+      // The second own-segment writer after `appendBody`; an import of a row already present above refuses nothing because it writes nothing.
+      this.assertPreferenceWritable(body);
       this.markCuratedChange(n.project);
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };
@@ -1187,6 +1205,39 @@ export class MemoryStore {
       if (!row) throw new Error("exported note's authored row is unavailable");
       return row;
     });
+  }
+
+  /**
+   * #370: this project's newest live preferences, plus shared ones written under any project. A kind predicate, not a page: a project
+   * with more than a page of newer notes of other kinds would otherwise never reach its oldest preference. The brief owns the fence.
+   */
+  readPreferences(project: string, limit: number = PREFERENCE_SLOT): { rows: View[]; truncated: boolean } {
+    if (!project.trim() || project.length > 400 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32) throw Error("invalid preference read scope or limit");
+    this.ensureFresh();
+    const stores = this.readStores(), scope = JSON.stringify(this.scopeKeys(project)), scan = Math.max(32, limit * 4);
+    const cursors = new Map<number, { at: string; id: string }>(), done = new Set<number>(), live = new Map<string, View>();
+    // Supersession, forget, expiry and promotion fold over rows this query cannot decide in SQL, so page by `at` and resolve liveness
+    // before taking the newest `limit`: a fixed slice can otherwise be filled entirely by dead rows and leave the slot empty while a
+    // current rule still exists. Every candidate row in scope is scanned, so `truncated` means what it says.
+    while (done.size < stores.length) {
+      const refs: { id: string; at: string }[] = [];
+      stores.forEach((store, index) => {
+        if (done.has(index)) return;
+        const after = cursors.get(index);
+        const rows = store.db.query(`SELECT id,at FROM entries WHERE (project IN (SELECT value FROM json_each(?)) OR scope = 'shared') AND kind = 'preference'`
+          + `${after ? " AND (at < ? OR (at = ? AND id > ?))" : ""} ORDER BY at DESC,id LIMIT ?`)
+          .all(...(after ? [scope, after.at, after.at, after.id] : [scope]), scan) as { id: string; at: string }[];
+        if (rows.length < scan) done.add(index); else cursors.set(index, rows[rows.length - 1]!);
+        refs.push(...rows);
+      });
+      if (!refs.length) continue;
+      for (const view of this.views(false, { project, ids: refs.map(ref => ref.id) })) {
+        if (view.kind !== "preference" || view.supersededBy || !(this.inScope(view.project, project) || view.scope === "shared")) continue;
+        live.set(view.id, view);
+      }
+    }
+    const ordered = [...live.values()].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
+    return { rows: ordered.slice(0, limit), truncated: ordered.length > limit };
   }
 
   /** Exact-project body pages for policy-aware callers. Relations still fold over complete metadata. */

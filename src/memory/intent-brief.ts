@@ -1,8 +1,17 @@
 import { planGuardNodes, planNodesIntersect } from "./plan-guard.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
+import { INTENT_PREFERENCE_SHARE, PREFERENCE_SLOT, preferenceLine } from "./preference-brief.ts";
 import type { View } from "./store.ts";
 
-export interface IntentBriefSource { notes(): readonly View[] | Promise<readonly View[]>; truncated?(): boolean; assertCurrent?(): void }
+/** A preference line is emitted whole or not at all; this bound keeps one long rule from spending the slot's whole share. */
+const PREFERENCE_LINE_BYTES = 240;
+
+export interface IntentBriefSource {
+  notes(): readonly View[] | Promise<readonly View[]>;
+  /** #370: the standing preferences this project reads, newest first. Absent means this source has none to offer. */
+  preferences?(): readonly View[] | Promise<readonly View[]>;
+  truncated?(): boolean; assertCurrent?(): void;
+}
 export interface IntentBriefOptions {
   project: string; cwd: string; repo: string; intent: string; paths?: readonly string[]; symbols?: readonly string[];
   maxBytes?: number; policy: () => StandalonePolicy;
@@ -18,6 +27,12 @@ const empty = (state: IntentBriefResult["state"] = "known"): IntentBriefResult =
 const weight = (view: View) => view.kind === "fail" ? 0 : view.kind === "decision" ? 1 : 2;
 function live(view: View, project: string, now: number): boolean {
   return /^[a-f0-9]{32}$/.test(view.id) && Number.isFinite(Date.parse(view.at)) && view.project === project && ["fail", "decision", "contract"].includes(view.kind) && !view.supersededBy
+    && (view.expiresAt === null || Number.isFinite(Date.parse(view.expiresAt)) && Date.parse(view.expiresAt) > now);
+}
+/** A preference is project-scoped or shared with every project, so a shared one written elsewhere still counts as this project's. */
+function preferenceLive(view: View, project: string, now: number): boolean {
+  return /^[a-f0-9]{32}$/.test(view.id) && Number.isFinite(Date.parse(view.at)) && view.kind === "preference"
+    && (view.project === project || view.scope === "shared") && !view.supersededBy
     && (view.expiresAt === null || Number.isFinite(Date.parse(view.expiresAt)) && Date.parse(view.expiresAt) > now);
 }
 function staleMarker(options: IntentBriefOptions, view: View): boolean {
@@ -75,15 +90,38 @@ export async function buildIntentBrief(source: IntentBriefSource, options: Inten
     const direct = screened.filter(view => nodes.length ? view.about.some(about => nodes.some(node => planNodesIntersect(node, about))) : words.some(word => `${view.title ?? ""}\n${view.text}`.toLowerCase().includes(word)));
     const directIds = new Set(direct.map(view => view.id)), bridges = new Set(direct.flatMap(view => view.about));
     const candidates = screened.filter(view => directIds.has(view.id) || view.about.some(node => bridges.has(node))).sort((a, b) => weight(a) - weight(b) || Number(directIds.has(b.id)) - Number(directIds.has(a.id)) || b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
+    // #370: standing preferences get their own slot, because a path- or intent-ranked list never surfaces one that has no anchor. The slot
+    // reserves its share before the ranked lines are chosen, is capped at half the budget, and holds whole lines only.
+    const preferenceViews: View[] = [];
+    if (source.preferences) {
+      const offered = await source.preferences(); check();
+      if (!Array.isArray(offered)) throw Error("intent brief preference source unavailable");
+      if (offered.length > PREFERENCE_SLOT) truncated = true;
+      for (const value of offered.slice(0, PREFERENCE_SLOT)) {
+        check(); const view = memoryPolicySnapshot(value);
+        if (!view || !preferenceLive(view, context.project, current()) || seen.has(view.id) || !await policy.screen(view)) { check(); continue; } check();
+        seen.add(view.id); preferenceViews.push(view);
+      }
+    }
+    const share = Math.min(INTENT_PREFERENCE_SHARE, Math.floor(cap / 2)), preferenceLines: string[] = [], kept: View[] = [];
+    let preferenceBytes = 0;
+    for (const view of preferenceViews) {
+      check();
+      const line = preferenceLine(view, PREFERENCE_LINE_BYTES), size = line === undefined ? 0 : Buffer.byteLength(line) + 1;
+      if (line === undefined || preferenceBytes + size > share) { truncated = true; continue; }
+      preferenceLines.push(line); kept.push(view); preferenceBytes += size;
+    }
+    const ranked = cap - preferenceBytes, rankedLimit = INTENT_BRIEF_ITEM_LIMIT - kept.length;
     const items: View[] = [], lines = [HEADER]; let bytes = Buffer.byteLength(HEADER);
     for (const view of candidates) {
       check(); if (!live(view, context.project, current())) continue;
-      if (items.length === INTENT_BRIEF_ITEM_LIMIT) { truncated = true; break; }
-      const row = lineOf(view, staleMarker(options, view), Math.min(768, cap - bytes - 1)); check();
+      if (items.length === rankedLimit) { truncated = true; break; }
+      const row = lineOf(view, staleMarker(options, view), Math.min(768, ranked - bytes - 1)); check();
       if (!row) { truncated = true; continue; }
       lines.push(row.line); bytes += Buffer.byteLength(row.line) + 1; items.push(view); truncated ||= row.clipped;
     }
-    verify(); if (items.some(view => !live(view, context.project, current()))) return empty();
+    if (preferenceLines.length) { lines.push(...preferenceLines); bytes += preferenceBytes; items.push(...kept); }
+    verify(); if (items.some(view => view.kind === "preference" ? !preferenceLive(view, context.project, current()) : !live(view, context.project, current()))) return empty();
     return items.length ? { text: lines.join("\n"), items, bytes, truncated, state: "known" } : { ...empty(), truncated };
   } catch { return empty("unknown"); }
 }

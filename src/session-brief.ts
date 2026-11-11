@@ -2,8 +2,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CaptureRow, CaptureStore } from "./memory/capture.ts";
 import { readBriefCache } from "./brief-cache.ts";
-import { noteDisplay, validCachedCurated } from "./brief-curated.ts";
-import { CURATED_CACHE_MIN_READER, readCuratedBriefCache } from "./brief-curated-native.ts";
+import { noteDisplay, validCachedCurated, validCachedPreference } from "./brief-curated.ts";
+import { CURATED_CACHE_MIN_READER, readCuratedBriefCache, readPreferenceBriefCache } from "./brief-curated-native.ts";
+import { PREFERENCE_SLOT, SESSION_PREFERENCE_SHARE } from "./memory/preference-brief.ts";
 import { curatedProfileBinding } from "./memory/curated-cache-state.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
@@ -149,6 +150,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const nativeCache = !!options.nativeSession && !options.measureOnly;
     const nativeCurated = !!options.nativeSession;
     const preparedCurated: { line: string; size: number; partial: boolean }[] = [];
+    const preparedPreferences: { line: string; size: number; partial: boolean }[] = [];
     if (nativeCurated) {
       const deferredReason = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
       const prepared = readCuratedBriefCache({ base, project, profile: curatedProfileBinding(base, project),
@@ -161,6 +163,19 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
             || !await screen(row.source) || !await screen(row.data)) { coverage.curated = "partial"; continue; }
           const line = JSON.stringify({ section: "curated", evidence: true, data: row.data });
           preparedCurated.push({ line, size: Buffer.byteLength(line) + 1, partial: row.partial });
+        }
+      }
+      // #370: the preference slot's own sidecar, admitted under the same profile binding and reserved ahead of the curated rows below.
+      // A missing sidecar (no preference on this home, or no off-hook preparation yet) changes neither coverage nor a byte of the brief.
+      const preferences = readPreferenceBriefCache({ base, project, profile: curatedProfileBinding(base, project), now: (options.now ?? Date.now)() });
+      if (preferences) {
+        let reserved = 0;
+        for (const row of preferences.rows) {
+          if (preparedPreferences.length >= PREFERENCE_SLOT || !validCachedPreference(row, project, (options.now ?? Date.now)())
+            || !await screen(row.source) || !await screen(row.data)) { coverage.curated = "partial"; continue; }
+          const line = JSON.stringify({ section: "curated", evidence: true, data: row.data }), size = Buffer.byteLength(line) + 1;
+          if (Buffer.byteLength(line) > RECORD_BYTES || reserved + size > SESSION_PREFERENCE_SHARE) { coverage.curated = "partial"; continue; }
+          preparedPreferences.push({ line, size, partial: row.partial }); reserved += size;
         }
       }
       guard();
@@ -286,7 +301,12 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (!complete) coverage[section] = "partial";
       };
       if (nativeCurated) {
-        // Pre-screened before work, but allocated only now from the remaining pool.
+        // Pre-screened before work, but allocated only now from the remaining pool; the preference slot holds its share ahead of curated rows.
+        for (const row of preparedPreferences) {
+          if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.curated = "partial"; continue; }
+          lines.push(row.line); remaining -= row.size;
+          if (row.partial) coverage.curated = "partial";
+        }
         for (const row of preparedCurated) {
           if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.curated = "partial"; continue; }
           lines.push(row.line); remaining -= row.size;

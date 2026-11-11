@@ -63,7 +63,9 @@ export function decayPreview(store: MemoryStore, project: string, options: Decay
     const entries: DecayEntry[] = []; let withheld = 0, citedExemptions = 0;
     for (let index = 0; index < rows.length; index++) {
       const view = rows[index];
-      const eligible = view && (!requested || view.id === requested[index]) && view.project === project && view.tier === "long" && !view.supersededBy && Number.isFinite(Date.parse(view.at)) && Date.parse(view.at) < cutoff
+      // #370: a preference never expires automatically, so decay never demotes one; naming one as an id is refused below like any other
+      // ineligible target rather than silently skipping it.
+      const eligible = view && (!requested || view.id === requested[index]) && view.project === project && view.tier === "long" && view.kind !== "preference" && !view.supersededBy && Number.isFinite(Date.parse(view.at)) && Date.parse(view.at) < cutoff
         && !(view.task && tasks.has(view.task)) && !view.about.some(node => goalNodes.has(node) || node.startsWith("task:") && tasks.has(node.slice(5)));
       if (!eligible) { if (requested) throw Error("requested entry is not eligible for decay"); continue; }
       if (cited.has(view.id)) { citedExemptions++; if (requested) throw Error("requested entry has a retained recorded citation"); continue; }

@@ -4,13 +4,16 @@ import { join } from "node:path";
 
 /** Shared bounded transport for prebuilt brief sections; never a database or a refresh on read. */
 export const BRIEF_CACHE_BYTES = 32 * 1024;
-export interface BriefCacheBinding { directory: string; project: string; section: "capture" | "curated" }
+/** `preferences` (#370) is a separate file, so a reader that only knows `curated` never opens it. */
+export interface BriefCacheBinding { directory: string; project: string; section: "capture" | "curated" | "preferences" }
 export interface BriefCacheRow { source: unknown; data: unknown; partial: boolean }
 export interface CuratedBriefMetadata { builtAt: number; binding: string; expiresAt: number | null }
 export interface BriefCache {
   schema: "agent-mem.brief-cache/v1"; project: string; section: BriefCacheBinding["section"];
   builtThrough: number; partial: boolean; rows: BriefCacheRow[];
   curated?: CuratedBriefMetadata;
+  /** #370: the preference sidecar's stamp, in its own key so the curated file's `curated` stamp parses exactly as released readers expect. */
+  preferences?: CuratedBriefMetadata;
 }
 export function briefCacheFile(binding: BriefCacheBinding): string { return join(binding.directory, `brief-${binding.section}.json`); }
 
@@ -30,6 +33,9 @@ export function readBriefCache(binding: BriefCacheBinding): BriefCache | undefin
       || (cache.curated !== undefined && (cache.section !== "curated" || !cache.curated || !Number.isFinite(cache.curated.builtAt)
         || typeof cache.curated.binding !== "string" || !cache.curated.binding
         || !(cache.curated.expiresAt === null || Number.isFinite(cache.curated.expiresAt))))
+      || (cache.preferences !== undefined && (cache.section !== "preferences" || !cache.preferences || !Number.isFinite(cache.preferences.builtAt)
+        || typeof cache.preferences.binding !== "string" || !cache.preferences.binding
+        || !(cache.preferences.expiresAt === null || Number.isFinite(cache.preferences.expiresAt))))
       || !Array.isArray(cache.rows) || cache.rows.length > 8
       || cache.rows.some(row => !row || typeof row.partial !== "boolean" || row.source === undefined || row.data === undefined)) return;
     return cache;

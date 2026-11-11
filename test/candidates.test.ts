@@ -9,6 +9,7 @@ import { MemoryStore, type Entry, type NoteInput, type PromotionScreen, type Vie
 import { importClaudeMem } from "../src/memory/import.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 
 const START = Date.parse("2026-10-16T00:00:00.000Z"), PROJECT = "fixture/project";
 const cleanup: (() => void)[] = [];
@@ -392,7 +393,7 @@ test("sync cannot modify segments while a candidate acceptance holds the mutatio
 });
 
 test("an accepted mutation refuses a busy derived index before appending any note", () => {
-  const f = fixture(), before = bytes(f.memory), index = new Database(join(f.memory.dir, "index.db"));
+  const f = fixture(), before = bytes(f.memory), index = new Database(join(f.memory.dir, indexFileName(false)));
   index.run("BEGIN IMMEDIATE");
   try {
     expect(() => f.memory.withAcceptedNote({ op: "note", project: PROJECT, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "must not authorize from a possibly stale index", about: [] }, append => append())).toThrow();

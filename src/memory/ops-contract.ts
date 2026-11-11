@@ -58,7 +58,7 @@ function ordinaryOp(op: Entry["op"], placement: string, targets: string, precede
 const v1 = {
   note: current("note", {
     project: { type: "string", maxLength: 400 }, scope: { type: "string", values: ["project", "shared"] },
-    tier: { type: "string", values: ["short", "long"] }, kind: { type: "string", values: ["decision", "finding", "contract", "fail"] },
+    tier: { type: "string", values: ["short", "long"] }, kind: { type: "string", values: ["decision", "finding", "contract", "fail", "preference"] },
     peer: { type: "string", maxLength: 64 }, title: text, text, task: text, about: strings,
     supersedes: id, promotedFrom: id, source: { type: "string", values: ["hub", "person", "claude-mem"] }, expires: utc,
   }, ["project", "scope", "tier", "kind", "peer", "text", "about", "source"], "short -> local; long -> synced",

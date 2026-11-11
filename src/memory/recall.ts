@@ -64,10 +64,13 @@ export function recallGraph(store: MemoryStore, project: string, start: string, 
 }
 
 /** One prepared snapshot; its revision guard rejects changes after asynchronous host policy work. */
-export function createIntentBriefSource(store: MemoryStore, project: string): { notes(): View[]; assertCurrent(): void; truncated(): boolean } {
+export function createIntentBriefSource(store: MemoryStore, project: string): { notes(): View[]; preferences(): View[]; assertCurrent(): void; truncated(): boolean } {
   let snapshot: ReturnType<MemoryStore["intentSnapshot"]> | undefined;
   return {
     notes: () => { snapshot ??= store.intentSnapshot(project); return snapshot.rows; },
+    // #370: read on demand, fenced by the snapshot's own revision guard: a preference written, superseded or forgotten after the snapshot
+    // changes that revision, so `assertCurrent` clears the brief instead of showing a rule that no longer stands.
+    preferences: () => store.readPreferences(project).rows,
     assertCurrent: () => { if (!snapshot) throw Error("intent snapshot has not been prepared"); snapshot.assertCurrent(); },
     truncated: () => snapshot?.truncated ?? false,
   };
