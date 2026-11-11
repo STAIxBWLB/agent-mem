@@ -473,3 +473,35 @@ test("#302 review: 19 fast samples and one over-maximum sample pass p95 but the 
     { env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, baseline, probe: () => normal, record: () => {} })).rejects.toThrow("wall-max-miss");
   expect(runs).toBe(1);
 });
+
+test("#365: only hosted macOS StopBurst selects the evidenced CPU baseline, with a strict unknown fallback", async () => {
+  const { macosHardwareClass, loadR2Baseline, r2Verdict } = await import("../scripts/budget-attempt.ts");
+  const baseline = loadR2Baseline(), mac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+  const samples = (rss: number) => ({ rssMB: Array.from({ length: 40 }, () => rss), wallMs: Array.from({ length: 40 }, () => 100) });
+  const verdict = (cpuModel: string, rss = 103.2) => r2Verdict("transcript:StopBurst", samples(rss), { env: mac, baseline, cpuModel });
+  for (const model of ["Apple M1", " Apple M1 (Virtual) "]) expect(macosHardwareClass(model)).toBe("apple-m1");
+  for (const model of ["Apple M2 Pro", "Apple M2 Pro (Virtual)"]) expect(macosHardwareClass(model)).toBe("apple-m2-pro");
+  for (const model of ["", "unknown", "Apple M2", "Apple M2 Max", "Apple M1 Pro", "Apple M3 Pro", "Apple M2 Pro (Virtual) extra"]) {
+    expect(macosHardwareClass(model)).toBe("unknown");
+    expect(verdict(model)).toMatchObject({ pass: false, regression: { baselineMB: 93.58, hardwareClass: "unknown", baselineSource: "runner" } });
+  }
+  expect(baseline.runners["hosted-macos"]?.["transcript:StopBurst"]).toBe(93.58);
+  expect(verdict("Apple M1 (Virtual)")).toMatchObject({ pass: false, regression: { baselineMB: 93.58, hardwareClass: "apple-m1", baselineSource: "runner" } });
+  const m2 = verdict("Apple M2 Pro (Virtual)");
+  expect(m2).toMatchObject({ pass: true, regression: { cpuModel: "Apple M2 Pro (Virtual)", hardwareClass: "apple-m2-pro", baselineSource: "hardware-class", baselineMB: 103.19, limitMB: 103.19 * 1.10 } });
+  expect(verdict("Apple M2 Pro (Virtual)", 103.19 * 1.10).pass).toBe(true);
+  expect(verdict("Apple M2 Pro (Virtual)", 103.19 * 1.10 + 0.01).pass).toBe(false);
+  expect(verdict("Apple M2 Pro (Virtual)", 150).ceiling.pass).toBe(false);
+  expect(verdict("Apple M2 Pro (Virtual)", Number.NaN).ceiling.pass).toBe(false);
+  expect(r2Verdict("transcript:StopBurst", samples(103.2), { env: mac, baseline, cpuModel: "Apple M2 Pro (Virtual)" }).wallMax.enforced).toBe(true);
+  for (const runner of ["Linux", "other"]) {
+    const env = { GITHUB_ACTIONS: "true", RUNNER_OS: runner };
+    expect(r2Verdict("transcript:StopBurst", samples(90), { env, baseline, cpuModel: "Apple M2 Pro (Virtual)" }).regression)
+      .toEqual(r2Verdict("transcript:StopBurst", samples(90), { env, baseline, cpuModel: "Apple M1 (Virtual)" }).regression);
+  }
+  expect(r2Verdict("transcript:Stop", samples(70), { env: mac, baseline, cpuModel: "Apple M2 Pro (Virtual)" }).regression)
+    .toEqual(r2Verdict("transcript:Stop", samples(70), { env: mac, baseline, cpuModel: "Apple M1 (Virtual)" }).regression);
+  // An absent override retains the strict fallback; a malformed supplied override never silently passes.
+  expect(r2Verdict("transcript:StopBurst", samples(103.2), { env: mac, baseline: { schema: baseline.schema, runners: baseline.runners }, cpuModel: "Apple M2 Pro (Virtual)" }).regression.baselineMB).toBe(93.58);
+  expect(r2Verdict("transcript:StopBurst", samples(90), { env: mac, baseline: { ...baseline, hardwareClasses: { "hosted-macos": { "apple-m2-pro": { "transcript:StopBurst": 0 } } } }, cpuModel: "Apple M2 Pro (Virtual)" }).pass).toBe(false);
+});

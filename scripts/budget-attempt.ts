@@ -23,7 +23,20 @@ export function runnerKind(env: NodeJS.ProcessEnv = process.env): RunnerKind {
   if (env.GITHUB_ACTIONS === "true" && env.RUNNER_OS === "macOS") return "hosted-macos";
   return env.AMEM_RUNNER === "dgx02" ? "dgx02" : "local";
 }
-export interface R2Baseline { schema: "agent-mem.r2-baseline/v1"; runners: Partial<Record<RunnerKind, Record<string, number>>> }
+export type MacosHardwareClass = "apple-m1" | "apple-m2-pro" | "unknown";
+/** Only evidenced CPU classes qualify; future models retain the strict runner baseline. */
+export function macosHardwareClass(cpuModel: string): MacosHardwareClass {
+  switch (cpuModel.trim()) {
+    case "Apple M1": case "Apple M1 (Virtual)": return "apple-m1";
+    case "Apple M2 Pro": case "Apple M2 Pro (Virtual)": return "apple-m2-pro";
+    default: return "unknown";
+  }
+}
+export interface R2Baseline {
+  schema: "agent-mem.r2-baseline/v1";
+  runners: Partial<Record<RunnerKind, Record<string, number>>>;
+  hardwareClasses?: { "hosted-macos"?: { "apple-m2-pro"?: { "transcript:StopBurst"?: number } } };
+}
 export function loadR2Baseline(file = fileURLToPath(new URL("../docs/bench/r2-baseline.json", import.meta.url))): R2Baseline {
   const value = JSON.parse(readFileSync(file, "utf8")) as R2Baseline;
   if (value?.schema !== "agent-mem.r2-baseline/v1" || !value.runners || typeof value.runners !== "object") throw new Error(`${file} is not an R2 baseline file`);
@@ -32,16 +45,25 @@ export function loadR2Baseline(file = fileURLToPath(new URL("../docs/bench/r2-ba
 export interface R2Verdict {
   group: string; runner: RunnerKind; pass: boolean;
   ceiling: { pass: boolean; limitMB: number; peakMB: number; overCeiling: number };
-  regression: { pass: boolean; enforced: boolean; p95MB: number; baselineMB: number | null; limitMB: number | null; message?: string };
+  regression: { pass: boolean; enforced: boolean; p95MB: number; baselineMB: number | null; limitMB: number | null; message?: string; cpuModel?: string; hardwareClass?: MacosHardwareClass; baselineSource?: "hardware-class" | "runner" };
   wallMax: { pass: boolean; enforced: boolean; limitMs: number; maxMs: number; overMax: number };
 }
 /** The three R2 gates for one group. Every sample is the caller's to report; unknown telemetry fails closed. */
-export function r2Verdict(group: string, samples: { rssMB: readonly number[]; wallMs: readonly number[] }, options: { env?: NodeJS.ProcessEnv; baseline?: R2Baseline; wallEnforced?: boolean } = {}): R2Verdict {
+export function r2Verdict(group: string, samples: { rssMB: readonly number[]; wallMs: readonly number[] }, options: { env?: NodeJS.ProcessEnv; baseline?: R2Baseline; wallEnforced?: boolean; cpuModel?: string } = {}): R2Verdict {
   const runner = runnerKind(options.env), gated = GATED.includes(runner);
   const rss = rssVerdict(samples.rssMB, R2_RSS_CEILING_MB);
   const known = samples.rssMB.length > 0 && samples.rssMB.every(value => Number.isFinite(value) && value > 0);
   const ceiling = { pass: known && rss.peakMB < R2_RSS_CEILING_MB, limitMB: R2_RSS_CEILING_MB, peakMB: rss.peakMB, overCeiling: samples.rssMB.filter(value => !(value < R2_RSS_CEILING_MB)).length };
-  const baselineMB = (options.baseline ?? loadR2Baseline()).runners[runner]?.[group];
+  const baseline = options.baseline ?? loadR2Baseline();
+  let baselineMB = baseline.runners[runner]?.[group];
+  let hardware: Pick<R2Verdict["regression"], "cpuModel" | "hardwareClass" | "baselineSource"> = {};
+  // #365: only this evidenced group has a hardware-class baseline. Unknown CPUs keep the runner value.
+  if (runner === "hosted-macos" && group === "transcript:StopBurst") {
+    const cpuModel = (options.cpuModel ?? cpus()[0]?.model ?? "unknown").trim(), hardwareClass = macosHardwareClass(cpuModel);
+    const override = hardwareClass === "apple-m2-pro" ? baseline.hardwareClasses?.["hosted-macos"]?.[hardwareClass]?.["transcript:StopBurst"] : undefined;
+    if (override !== undefined) baselineMB = override;
+    hardware = { cpuModel, hardwareClass, baselineSource: override === undefined ? "runner" : "hardware-class" };
+  }
   let regression: R2Verdict["regression"];
   if (baselineMB === undefined || !Number.isFinite(baselineMB) || baselineMB <= 0) {
     const message = `no R2 baseline for ${runner} ${group}; record one: run the budget script on ${runner}, take the group's p95 from its log, and add it to docs/bench/r2-baseline.json in a PR that links that run`;
@@ -50,6 +72,7 @@ export function r2Verdict(group: string, samples: { rssMB: readonly number[]; wa
     const limitMB = baselineMB * (1 + R2_REGRESSION), within = known && rss.valueMB <= limitMB;
     regression = { pass: gated ? within : true, enforced: gated, p95MB: rss.valueMB, baselineMB, limitMB, ...(within ? {} : { message: `${group} p95 ${rss.valueMB} MB exceeds its ${runner} baseline ${baselineMB} MB by more than 10%` }) };
   }
+  regression = { ...regression, ...hardware };
   const wallKnown = samples.wallMs.length > 0 && samples.wallMs.every(value => Number.isFinite(value) && value >= 0);
   const maxMs = wallKnown ? Math.max(...samples.wallMs) : Number.NaN, wallEnforced = options.wallEnforced ?? true;
   const wallMax = { pass: !wallEnforced || wallKnown && maxMs <= R2_WALL_MAX_MS, enforced: wallEnforced, limitMs: R2_WALL_MAX_MS, maxMs, overMax: samples.wallMs.filter(value => !(value <= R2_WALL_MAX_MS)).length };
