@@ -343,6 +343,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
         cursor = lease(join(directory, hash(`${kind}\n${canonical}`) + ".db"));
         if (!cursor) { fail("cursor_busy", true); continue; }
         let position = cursor.position;
+        const recordFrom = position.identity === identity ? position.offset : 0;
         const cutoff = since ?? "", broader = position.cutoff !== "" && (cutoff === "" || cutoff < position.cutoff);
         if (position.identity !== identity || position.offset > initial.size || position.anchor !== anchor(fd, position.offset) || broader
           || kind === "qwen" && position.protocol !== QWEN_CONTRACT) position = { ...blank(), identity };
@@ -390,11 +391,12 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
           }
           return mainHeader;
         };
-        const stagedReceipts = new Map<string, { fresh: boolean; checked: boolean; current: () => void }>();
         const intakeRecords = async (turns: NativeRecordTurn[]) => {
           for (const turn of turns) {
+            const stagedReceipts = new Map<string, { fresh: boolean; checked: boolean; current: () => void }>();
             const binding = turn.header ? await header() : undefined;
             if (binding?.binding.child) continue;
+            if (since !== undefined && turn.at !== undefined && turn.at < since) continue;
             const found = turn.parsed.records.length + Object.values(turn.parsed.drops).reduce<number>((total, count) => total + (count ?? 0), 0);
             recordCounts.found += found;
             for (const [reason, count] of Object.entries(turn.parsed.drops)) recordRefusal(recordCounts, reason as RecordDropReason, count!);
@@ -402,7 +404,6 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             if (binding && !binding.permitted) refusal = "record_policy";
             else if (binding && !binding.binding.main) refusal = "record_identity";
             else if (!turn.at) refusal = "record_timestamp";
-            if (since !== undefined && turn.at !== undefined && turn.at < since) continue;
             if (!recordsEnabled(base, cwd) || !await policy.screen(turn.sources)) refusal = "record_policy";
             if (refusal) { if (turn.parsed.records.length) recordRefusal(recordCounts, refusal, turn.parsed.records.length); continue; }
             const current = () => {
@@ -413,11 +414,11 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
                 || binding && !readBytes(fd!, 0, binding.bytes.length).equals(binding.bytes)
                 || !recordsEnabled(base, cwd) || JSON.stringify(configuredPolicyOptions(base, cwd, options.policy)) !== recordPolicyStamp) throw new Error("record source changed");
             };
-            const session = captureSessionKey(`${kind}:${binding?.binding.session ?? identity}`)!;
+            const session = captureSessionKey(`${kind}:${binding?.binding.session ?? canonical}`)!;
             for (const record of turn.parsed.records) {
               let dropped = false;
               const pending = await stageTranscriptCapture({ agent: kind, event: "Record", excerpt: record.line, paths: record.anchors, at: turn.at!, session },
-                { cwd, base, policy: options.policy, deferAtCapacity: true }, hash(`${kind}\n${identity}\n${turn.identity}`),
+                { cwd, base, policy: options.policy, deferAtCapacity: true }, hash(`${kind}\n${session}\n${turn.identity}`),
                 reason => { dropped = true; recordRefusal(recordCounts, reason); }, current);
               if (!pending) { if (!dropped) recordRefusal(recordCounts, "record_policy"); continue; }
               if (pending.backlog) recordCounts.duplicatesSkipped++; else recordCounts.staged++;
@@ -504,7 +505,7 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
                 }
               }
             } else result.skipped++;
-            if (recordReader) {
+            if (recordReader && offset >= recordFrom) {
               if (!known || position.scope !== "own") await intakeRecords(recordReader.finish("record_identity"));
               else await intakeRecords(recordReader.read(raw, offset, next, timeOf(raw, kind), permitted, position.protocol));
             }

@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as spool from "../src/hook-spool.ts";
 import { ingestTranscript, type IngestKind } from "../src/ingest.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
@@ -162,4 +163,35 @@ test("tightening source-only privacy during an awaited full-envelope screen cann
   expect(changed).toBe(true); expect(result.remaining).toBe(true); expect(result.records!.staged).toBe(0);
   expect(f.rows().filter(row => row.event === "Record")).toEqual([]);
   const pending = join(f.base, "hook-spool"); expect(existsSync(pending) ? readdirSync(pending).filter(name => name.startsWith("hook-v4-")) : []).toEqual([]);
+});
+
+
+for (const kind of ["codex", "pi", "kimi"] as const) test(`${kind}: duplicate native message identity in one window reports the receipt duplicate`, async () => {
+  const f = fixture(kind), native = f.message(valid); f.write(...native, ...native);
+  const result = await f.run();
+  expect(result.records).toMatchObject({ found: 2, staged: 1, duplicatesSkipped: 1 });
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(1);
+});
+
+for (const kind of ["codex", "kimi"] as const) test(`${kind}: staging backpressure holds the source commit behind the whole Record frame`, async () => {
+  const f = fixture(kind); f.write(...f.message(valid + "\n" + valid.replace("stale cache", "other cache")));
+  const originalStage = spool.stageTranscriptCapture; let publications = 0;
+  const failed = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args) => {
+    if (++publications === 2) throw new spool.HookSpoolFull();
+    return originalStage(...args);
+  });
+  try { expect((await f.run()).remaining).toBe(true); } finally { failed.mockRestore(); }
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(0);
+  const resumed = await f.run(); expect(resumed.records).toMatchObject({ found: 2, staged: 1, duplicatesSkipped: 1 });
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(2);
+  expect((await f.run()).records!.found).toBe(0);
+});
+
+
+test("broadening the existing since filter keeps ordinary capture backfill but never backfills Records behind its cursor", async () => {
+  const f = fixture("codex"); f.write(...f.message(valid));
+  const excluded = await ingestTranscript("codex", { cwd: f.cwd, base: f.base, files: [f.file], since: new Date(Date.parse(at) + 1000).toISOString() });
+  expect(excluded.records!.found).toBe(0);
+  const broader = await f.run(); expect(broader.imported).toBe(1); expect(broader.records!.found).toBe(0);
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(0);
 });
