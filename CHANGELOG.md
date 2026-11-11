@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+## 0.24.0
+
 - On hosted Linux, report transcript summaries not durable within 64 follow-ups as advisory only for StopBurst runs with explicit spool-full stops, an incomplete cursor prefix, all scanned summaries retained, valid telemetry and zero R1 survivors. All other Linux gates and macOS behavior stay unchanged; warning receipts retain the evidence, and the group reports its incomplete-run count. Retire this ceiling after a product fix yields 10 consecutive strict-green hosted Ubuntu runs, or a later person ruling. Refs #357.
 - Correct timeout probe coverage: require a blocking-command cleanup control for each native sample and distinguish positively evidenced pre-admission and pre-command timeouts under the unchanged real deadline. Keep fail-open, exactly-once durable intake, valid telemetry and zero-survivor checks strict, with per-invocation branch diagnostics and no new advisory. Refs #362.
 - Give only the two expected-success cadence calls in the person-activation e2e a 60-second test-context deadline, with 90-second child envelopes and a 240-second test envelope. This exceeds twice the measured 28.6-second hosted macOS full sync; production keeps its 30-second default and unchanged stop, retained-attempt and fail-closed semantics. Refs #345.
@@ -20,9 +22,20 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Cache console Recap, Review and Work snapshots by authoritative source and privacy revisions, returning only `changed: false` and a numeric cursor for matching polls. Coalesce identical reads, invalidate on actions and external writes, honor note expiry. Capacity and Timeline remain uncached because resource/time readings and referenced-file stale probes have no complete cheap revision. Skip only already-correct database chmods and identical consolidation-receipt updates, preserving 0600 hardening and every real update so reads do not manufacture revisions. Project-scoped candidate day boundaries expire cached Recap text even when another project masks the home-wide summary. Unavailable revision probes and input changes during a read disable reuse without hiding fresh data; an overlapping action triggers one post-action read. Warm the initial Review selection at provider open; no persistent cache, watcher or runtime dependency is added. Refs #359.
 
-- **Compatibility with N-1, configuration:** The config schema is unchanged and `records` remains boolean-only. Older readers ignore the separate person-written selection file; existing 0.23.x readers continue A. Missing/invalid selection falls back to A with a numeric invalid-file flag; core never writes it.
+- **Compatibility with N-1 (0.23.1), configuration:** The config schema is unchanged and `records` remains boolean-only. Older readers ignore the separate person-written selection file; existing 0.23.x readers continue A. Missing/invalid selection falls back to A with a numeric invalid-file flag; core never writes it.
 
 - **Compatibility with N-1 (0.23.1), curated storage and cache:** authoritative rows, hashes, paths and derived index versions are unchanged; older readers ignore the prebuilt file. The root export is additive and explicitly writes a derived cache. Native curated admission stays deferred until the person raises the applicable 0.24.0 floor, which intentionally excludes older writers and readers for that surface.
+
+
+- **Compatibility with N-1 (0.23.1), capture and derived indexes:** row encodings, capture paths and derived index names are unchanged. `CaptureStore.countOutsideRecent({ event, since })` and the root-exported `CaptureOutsideCount` type are additive (#331). The read-only bounded count reuses `rows_brief_records_v1` and reports `available: false` when the event/index/plan cannot answer safely; it reads no content or ids. Existing recent reads and writable stores retain their behavior. Hosts must pin a release containing the API before calling it; no format-floor change is needed for this count.
+
+- **Compatibility with N-1 (0.23.1), hooks and private sidecars:** transcript cursors, capture replay/dedupe formats and the general metrics file remain compatible. SessionEnd staging changes replay order without rewriting captured data. The new `record-variants.jsonl` numeric journal is separate and older releases ignore it; the Record grammar, session hash encoding and instruction position are unchanged.
+
+- **Compatibility with N-1 (0.23.1), sync and reader leases:** shared-v1, generation and shard sync formats, activation/renewal journals, writer attestation and reader-lease filenames are unchanged. Physical-home lease accounting is in-process only. No code raises a format floor; native curated-cache admission still requires the person's explicit 0.24.0 home/curated floor after all participating writers are upgraded.
+
+- **Compatibility with N-1 (0.23.1), root exports:** `prepareCuratedBriefCache`, the Record instruction selection constants/helpers, `captureSessionKey` and `readRecordInstruction` are additive. Existing export names remain. `CaptureStore` and its additive outside-window count type remain available through the existing root capture re-export; older host pins do not acquire the new method.
+
+- **Compatibility with N-1 (0.23.1), console and setup:** console api 1, manifest shape and setup receipt formats are unchanged. Cached snapshots use the contract's existing cursor/`changed: false` response. The plugin module changed, so regenerate the console registration with `amem setup console --apply` after upgrading; after moving install roots, rerun setup against the new pinned root. Package and Claude plugin version metadata advance together.
 
 ## 0.23.1
 
