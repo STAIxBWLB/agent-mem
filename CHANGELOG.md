@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Select the hosted macOS StopBurst RSS regression baseline by CPU hardware class: keep 93.58 MB for M1 and unknown CPUs, and use the qualified M2 Pro cohort median of 103.19 MB. Retain the strict +10% gate and 150 MB ceiling; receipts name the class and applied baseline. Other groups and runners are unchanged. Refs #365.
+
 ## 0.24.0
 
 - On hosted Linux, report transcript summaries not durable within 64 follow-ups as advisory only for StopBurst runs with explicit spool-full stops, an incomplete cursor prefix, all scanned summaries retained, valid telemetry and zero R1 survivors. All other Linux gates and macOS behavior stay unchanged; warning receipts retain the evidence, and the group reports its incomplete-run count. Retire this ceiling after a product fix yields 10 consecutive strict-green hosted Ubuntu runs, or a later person ruling. Refs #357.
