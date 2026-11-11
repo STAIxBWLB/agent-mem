@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
+import { recordSourceCheck, recordWindow } from "./memory/record-candidates.ts";
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
@@ -458,8 +459,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const binding = commandBinding(store.profile.home, boundProject()), policyKey = () => JSON.stringify(configuredPolicyOptions(base, policyCwd));
       const assertCurrent = () => { binding(); assertProjectActive(base, project); if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")) throw Error("consolidation project binding changed"); };
       candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
-      const report = await proposeConsolidation(store, candidates, { project, actor, policy: policyOf, policyVersion: policyKey, assertCurrent });
-      return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.alreadyReviewed ? `; ${report.alreadyReviewed} already reviewed` : ""}${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
+      const readRecords = recordWindow(base, project, policyCwd);
+      const report = await proposeConsolidation(store, candidates, { project, actor, policy: policyOf, policyVersion: policyKey, assertCurrent, ...(readRecords ? { records: readRecords } : {}) });
+      return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.records ? `; ${report.records.queued} of ${report.records.found} Record(s)${report.records.truncated ? " in the newest 32" : ""}` : ""}${report.alreadyReviewed ? `; ${report.alreadyReviewed} already reviewed` : ""}${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
     } finally { candidates?.close(); store.close(); }
   }
   if (sub === "brief") {
@@ -752,6 +754,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const result = candidates.accept(id!, { project, actor, verdict: "public", store,
           policyVersion: () => JSON.stringify(configuredPolicyOptions(realPath(store.profile.home), policyCwd)),
           policy: (proposal, target, note, goal) => { assertCurrent(); return policyOf().screenStandalone({ ...proposal.input, ...(target ? { targetView: target } : {}), note, ...(goal ? { goalView: goal } : {}) }); },
+          // #368: a Record candidate quotes capture rows, so acceptance proves they are still the rows it was built from.
+          recordSource: recordSourceCheck(recordWindow(realPath(store.profile.home), project, policyCwd) ?? (() => ({ rows: [], partial: false }))),
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ${candidate.input.kind === "promotion" ? "promoted" : "ordinary"} note ${result.noteId}`;
       } finally { store.close(); }

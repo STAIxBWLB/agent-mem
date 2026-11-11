@@ -1,23 +1,32 @@
-import { CandidateStore, ConsolidationReviewLimit, candidateInputId, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
+import { CANDIDATE_RETENTION, CandidateStore, ConsolidationReviewLimit, candidateInputId, candidateTargetRevision, type CandidateInput } from "./candidates.ts";
 import { consolidationClusters } from "./consolidation-clusters.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { recallViewIsLive } from "./recall.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { realPath } from "./platform.ts";
 import { proposeModelConsolidations, type ModelConsolidationOptions, type ModelConsolidationReport } from "./consolidation-model.ts";
+import { recordCandidates, type RecordCandidateCounts, type RecordCandidateWindow } from "./record-candidates.ts";
 
 export interface ConsolidationOptions {
   project: string; actor: "person" | "agent"; policy: () => StandalonePolicy; policyVersion: () => string;
   allowed?: () => boolean; assertCurrent?: () => void;
   /** Person-enabled host callback only. Absent means no model work or budget reservation. */
   model?: ModelConsolidationOptions;
+  /**
+   * #368: the newest capture Record window, read again on every call. Absent means this host has no capture to read, so no
+   * Record candidate is proposed and nothing else changes.
+   */
+  records?: () => RecordCandidateWindow;
 }
+/** Record proposals are counted apart from consolidation ones, so a person can see which pass queued what. */
+export interface RecordConsolidationReport extends RecordCandidateCounts { queued: number; refused: number }
 export interface ConsolidationReport {
   schema: "amem.consolidation/v1"; project: string; candidates: { id: string; action: string; sources: string[] }[];
   engine: "fts5" | "substring"; truncated: boolean; oversized: number; localExcluded: number;
   /** Proposals whose candidate already exists as accepted, accepting or rejected: they are not queued again and are not in `candidates`. */
   alreadyReviewed: number;
   model?: ModelConsolidationReport;
+  records?: RecordConsolidationReport;
 }
 export class ConsolidationProposalError extends Error {
   constructor(readonly proposed: string[], readonly refusal?: ConsolidationReviewLimit) {
@@ -75,6 +84,27 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
       if (known && known.status !== "pending" || candidates.reviewedConsolidation(id, project)) { report.alreadyReviewed++; continue; }
       candidates.put(input, "public");
       report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
+    }
+    // #368: the same one-at-a-time discipline for Record rows. A group key already in the queue is not proposed again, so a
+    // second run over the same window writes nothing; the row and the built input are both screened before it is stored.
+    if (options.records !== undefined) {
+      check();
+      const queued = new Set<string>(), reviewed = new Set<string>();
+      for (const known of candidates.list({ project, status: "all", limit: CANDIDATE_RETENTION.count })) {
+        const key = known.input.kind === "memory" || known.input.kind === "fail" ? known.input.record?.key : undefined;
+        if (key !== undefined) (known.status === "pending" || known.status === "accepting" ? queued : reviewed).add(key);
+      }
+      const proposed = recordCandidates(options.records(), project, { queued, reviewed }), counts: RecordConsolidationReport = { ...proposed.counts, queued: 0, refused: 0 };
+      for (const proposal of proposed.proposals) {
+        check(); if (!await policy.screen(proposal.source)) { counts.refused++; continue; }
+        check(); if (!await policy.screen(proposal.input)) { counts.refused++; continue; }
+        check();
+        candidates.put(proposal.input, "public");
+        counts.queued++;
+        report.candidates.push({ id: candidateInputId(proposal.input), action: `record:${proposal.input.kind === "fail" ? "fail" : proposal.input.noteKind}`,
+          sources: (proposal.input.record?.sources ?? []).map(source => `capture:${source.session}@${source.at}`) });
+      }
+      report.records = counts;
     }
     if (options.model !== undefined) report.model = await proposeModelConsolidations(store, candidates, synced, options.model, { project, actor: options.actor, check, policy });
   } catch (error) { throw new ConsolidationProposalError(report.candidates.map(row => row.id), error instanceof ConsolidationReviewLimit ? error : undefined); }

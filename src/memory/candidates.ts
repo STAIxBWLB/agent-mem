@@ -27,10 +27,19 @@ export class ConsolidationReviewLimit extends Error {
 export const COUNTER_RETENTION = { count: 10_000, ageMs: 90 * 86400_000 } as const;
 export type CandidateVerdict = "public" | "private" | "pii" | "unknown";
 export interface CandidateTarget { id: string; revision: string }
+/** One capture `Record` row a candidate was derived from: the session hash, its row time and the hash of the stored line. */
+export interface RecordSource { session: string; at: string; textHash: string }
+/**
+ * #368 binds a Record-derived candidate to the capture rows it quotes, so acceptance can prove they are still present and
+ * unchanged. `key` is the grouping identity (kind plus anchors, or kind plus text when the Record carries no anchor), so a
+ * later `amem consolidate` over the same sources does not queue the same lesson twice.
+ */
+export interface RecordSourceBinding { key: string; anchors: string[]; sources: RecordSource[] }
 export type CandidateInput = { project: string } & (
   | { kind: "correction"; target: CandidateTarget; proposedText: string; reason: string; noteKind?: "decision" | "contract" | "fail" }
-  | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string }
-  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" }
+  /** `about` is the deterministic edge set a proposer already knows (the anchors a Record names), so acceptance needs no re-extraction. */
+  | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string; about?: string[]; record?: RecordSourceBinding }
+  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail"; about?: string[]; record?: RecordSourceBinding }
   | { kind: "decay"; target: CandidateTarget; reason: string }
   | { kind: "promotion"; target: CandidateTarget; goalId: string }
   | { kind: "consolidation"; action: "merge" | "supersession" | "recurring-fix"; targets: CandidateTarget[]; text: string; about: string[]; noteKind: "decision" | "finding" | "contract" | "fail" }
@@ -53,6 +62,11 @@ export interface CandidateAcceptance {
   policy: (candidate: Candidate, target: View | undefined, note: NoteInput, goal?: GoalView) => boolean;
   /** Required for multi-source consolidation; must change with the effective host policy. */
   policyVersion?: () => string;
+  /**
+   * #368: rechecks the capture rows a Record-derived candidate quotes, at acceptance time. Absent means the host cannot
+   * prove the source, and accepting such a candidate refuses instead of writing memory from a row nobody verified.
+   */
+  recordSource?: (project: string, binding: RecordSourceBinding) => "present" | "changed" | "missing";
 }
 export interface CandidateAcceptanceResult { candidateId: string; noteId: string; alreadyAccepted: boolean }
 
@@ -69,14 +83,37 @@ const publicOnly = (verdict: CandidateVerdict) => { if (verdict !== "public") th
 const validActor = (actor: string) => { if (actor !== "person" && actor !== "agent") throw new Error("candidate actor must be person or agent"); };
 const attributionPeer = (actor: "person" | "agent") => cliAttribution()?.peer ?? actor;
 const validTarget = (value: CandidateTarget | undefined) => value !== undefined && entryId(value.id) && candidateId(value.revision);
+const SOURCE_HASH = /^[a-f0-9]{64}$/, SESSION_HASH = /^[a-f0-9]{16}$/;
+/** A Record binding names its own rows: session hash, exact row time and stored-line hash, keyed by the grouping identity. */
+function validRecord(value: RecordSourceBinding | undefined): value is RecordSourceBinding {
+  return value !== undefined && SOURCE_HASH.test(value.key) && Array.isArray(value.sources) && value.sources.length >= 1 && value.sources.length <= 8
+    && value.sources.every(source => SESSION_HASH.test(source.session) && typeof source.at === "string" && !Number.isNaN(Date.parse(source.at)) && SOURCE_HASH.test(source.textHash))
+    // One turn may emit two Records, so a source is identified by its text as well as its session and time.
+    && new Set(value.sources.map(source => `${source.session}\n${source.at}\n${source.textHash}`)).size === value.sources.length
+    && Array.isArray(value.anchors) && value.anchors.length <= 32 && value.anchors.every(anchor => text(anchor, 400));
+}
+/** Path and symbol edges of a Record candidate, kept to the same node bound as a consolidation proposal. */
+const validAbout = (value: unknown) => value === undefined
+  || Array.isArray(value) && value.length <= 32 && value.every(node => text(node, 400));
+/**
+ * A Record-derived fail candidate leaves approach, cause and retryWhen for the reviewer: the grammar records one
+ * symptom/cause group and one retry condition, so the row fills the symptom and the other three stay empty, and only
+ * a candidate carrying the binding may leave them empty.
+ */
+const recordFailField = (key: "approach" | "symptom" | "cause" | "retryWhen", value: unknown, record: RecordSourceBinding | undefined) =>
+  (key === "approach" || key === "cause" || key === "retryWhen") && record !== undefined ? (value === "" || text(value)) : text(value);
 function validate(input: CandidateInput): void {
   if (!input || !text(input.project, 400)) throw new Error("invalid candidate project");
   if (input.kind === "correction") {
     if (!validTarget(input.target) || !text(input.proposedText) || !text(input.reason) || input.noteKind !== undefined && !["decision", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid correction candidate");
   } else if (input.kind === "fail") {
-    if (input.target !== undefined && !validTarget(input.target) || ![input.approach, input.symptom, input.cause, input.retryWhen].every(x => text(x)) || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
+    if (input.target !== undefined && !validTarget(input.target) || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about)
+      || !recordFailField("approach", input.approach, input.record) || !recordFailField("symptom", input.symptom, input.record)
+      || !recordFailField("cause", input.cause, input.record) || !recordFailField("retryWhen", input.retryWhen, input.record)
+      || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
   } else if (input.kind === "memory") {
-    if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid memory candidate");
+    if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail"].includes(input.noteKind)
+      || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about)) throw new Error("invalid memory candidate");
   } else if (input.kind === "promotion") {
     if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
   } else if (input.kind === "consolidation") {
@@ -384,6 +421,16 @@ export class CandidateStore {
     if (data.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
     if (data.kind === "promotion") return this.acceptPromotion(candidate, data, context);
     if (data.kind === "consolidation") return this.acceptConsolidation(candidate, data, context);
+    // #368: a Record-derived candidate quotes capture rows. Absent proof, or a row that moved since the queue, refuses
+    // before anything is written, and the message names the one command that queues a candidate over the current rows.
+    const sources = (data.kind === "memory" || data.kind === "fail") ? data.record : undefined;
+    const recheckSources = () => {
+      if (sources === undefined) return;
+      if (typeof context.recordSource !== "function") throw new Error("record source check unavailable; this host cannot verify the capture row this candidate quotes");
+      const verdict = context.recordSource(context.project, sources);
+      if (verdict === "missing") throw new Error(`record source row is missing (${sources.sources.length} cited, pruned or outside the retained window); rerun \`amem consolidate\` once the transcript is readable again`);
+      if (verdict === "changed") throw new Error("record source row changed since this candidate was queued; rerun `amem consolidate` to queue a candidate over the current rows");
+    };
     const execute = () => {
       const resolve = () => {
         const target = data.kind === "memory" ? undefined : data.target;
@@ -393,18 +440,22 @@ export class CandidateStore {
         return current;
       };
       const target = resolve();
+      recheckSources();
       const body = data.kind === "memory" ? data.text : data.kind === "correction" ? `${data.proposedText}\n\nReason: ${data.reason}`
         : `Approach: ${oneLine(data.approach)}\nSymptom: ${oneLine(data.symptom)}\nCause: ${oneLine(data.cause)}\nEvidence: ${data.evidenceRefs.map(oneLine).join(", ")}\nRetry when: ${oneLine(data.retryWhen)}`;
       const note: NoteInput = { op: "note", ...(data.kind === "memory" && data.title ? { title: data.title } : {}), project: data.kind === "correction" ? target!.project : context.project,
         scope: data.kind === "correction" ? target!.scope : "project",
         // A demoted synced target is logically short, but replacing it locally would narrow its reach (X04).
         tier: data.kind === "correction" && target!.local ? "short" : "long",
-        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person", about: [...target?.about ?? []],
+        kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person",
+        // A Record candidate carries the edges its anchors name, so the accepted note stays findable by path and symbol.
+        about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : [])])],
         text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
       if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
       if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
       return context.store.withAcceptedNote(note, append => {
         resolve(); // Recheck under the same mutation lock as the note and supersede appends.
+        recheckSources();
         const started = this.beginAcceptance(id, context.project);
         if (started) return { candidateId: id, noteId: started, alreadyAccepted: true };
         // ponytail: the sidecar receipt and v1 append are not one transaction. An interrupted 'accepting' row refuses
