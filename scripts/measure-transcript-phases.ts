@@ -75,6 +75,7 @@ async function run() {
   const started = performance.now(), samples: { event: Event; logicalRun: number; followUp: number; observed: boolean; wallMs: number }[] = [];
   const arms = { control: hookFixture(), observed: hookFixture() }, retained = new Set<ReturnType<typeof hookFixture>>();
   const details: { id: number; score: number; data: Record<string, unknown> }[] = [], printed = new Set<number>();
+  const coverage = { observedCalls: 0, workerEntryCalls: 0, scanCalls: 0, firstDrainCalls: 0, matchedMetricCalls: 0, truncatedCalls: 0, completedObservedRuns: 0, completedControlRuns: 0 };
   console.log(JSON.stringify({ diagnostic: "transcript-phase-protocol/v1", reportOnly: true, limits: TRANSCRIPT_PHASE_LIMITS,
     observer: "fixed-slot numeric writes + resourceUsage per mark; costs are lower bounds; preload/compile and work differences also affect paired wall deltas", strictControl: "separate unchanged measure-transcript-budget.ts remains the gate", detailPolicy: "all numeric sample summaries; full first observed invocation/logical run and largest eight observed wall/drain intervals" }));
   try {
@@ -122,6 +123,9 @@ async function run() {
             phaseCount: rows.length, firstDrainToMetricMs: projection?.firstDrainToMetricMs ?? null,
             truncated: projection?.truncated ?? false, observerCost: projection?.processes ?? null }));
           if (projection) {
+            coverage.observedCalls++; coverage.workerEntryCalls += Number(rows.some(row => row.phase === 9));
+            coverage.scanCalls += Number(rows.some(row => row.phase === 10)); coverage.firstDrainCalls += Number(rows.some(row => row.phase === 55));
+            coverage.matchedMetricCalls += Number(projection.firstDrainToMetricMs !== null); coverage.truncatedCalls += Number(projection.truncated);
             const data = { diagnostic: "transcript-phase-detail/v1", reportOnly: true, sampleId, event, logicalRun, followUp, ...projection };
             if (followUp === 0) { console.log(JSON.stringify(data)); printed.add(sampleId); }
             details.push({ id: sampleId, score: Math.max(wallMs, projection.firstDrainToMetricMs ?? 0), data });
@@ -130,10 +134,12 @@ async function run() {
           if (remaining) throw Error("transcript phase owned cleanup unproven; retain diagnostic fixture");
           if (durableSummaries === workload.expected.size) { complete = true; break; }
         }
+        if (complete) { if (arm === "observed") coverage.completedObservedRuns++; else coverage.completedControlRuns++; }
         console.log(JSON.stringify({ diagnostic: "transcript-phase-logical/v1", reportOnly: true, event, logicalRun, arm, complete }));
       }
     }
   } finally {
+    console.log(JSON.stringify({ diagnostic: "transcript-phase-coverage/v1", reportOnly: true, ...coverage }));
     for (const f of [arms.control, arms.observed]) if (!retained.has(f)) f.close();
     for (const detail of details) if (!printed.has(detail.id)) console.log(JSON.stringify({ ...detail.data, retainedBy: "largest-eight-wall-or-drain-span" }));
     for (const event of ["Stop", "SessionEnd", "StopBurst"]) for (let logicalRun = 1; logicalRun <= TRANSCRIPT_PHASE_LIMITS.runs; logicalRun++) {
