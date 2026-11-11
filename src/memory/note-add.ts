@@ -44,6 +44,8 @@ function failFields(raw: Partial<FailFields> | undefined): FailFields {
 export function buildNote(input: NoteAddInput, project: string): NoteInput {
   if (!(KINDS as readonly string[]).includes(input.kind)) refuse(`--kind takes ${KINDS.join(", ")}`);
   if (input.tier !== "short" && input.tier !== "long") refuse("--tier takes short or long");
+  // #370: a preference is a standing instruction, so it is long-term by definition. A short tier would expire it, which the kind never does.
+  if (input.kind === "preference" && input.tier !== "long") refuse("--kind preference is long-term; --tier takes long only");
   if (input.scope !== "project" && input.scope !== "shared") refuse("--scope takes project or shared");
   const title = input.title === undefined ? undefined : clean(input.title);
   if (title !== undefined && (!title || title.length > NOTE_TITLE_MAX || title.includes("\0") || LINE_BREAKS.test(title))) refuse(`--title must be one line of 1 to ${NOTE_TITLE_MAX} characters`);

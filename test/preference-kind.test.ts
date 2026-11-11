@@ -209,3 +209,41 @@ test("the slot holds the newest live rules even behind a longer supersede chain 
   expect(result.everyTruncated).toBe(false);
 });
 
+// #370 review N1: a preference is long-term by definition, so the command refuses a short tier instead of writing an expiring rule.
+test("a preference refuses a short tier, which would expire the kind that never expires", async () => {
+  const r = rig(), empty = authored(r);
+  const refusal = await message(cli(r, ["note", "add", "--kind", "preference", "--tier", "short", "always answer in Korean"]));
+  expect(refusal).toContain("long-term");
+  expect(refusal).toContain("--tier takes long only");
+  expect(authored(r)).toEqual(empty);
+  // An ordinary kind keeps both tiers: the rule is the preference's, not the command's.
+  expect(await cli(r, ["note", "add", "--kind", "finding", "--tier", "short", "a local observation"])).toContain("added finding note");
+});
+
+// #370: decay never demotes a preference. The scan needs the kind's floor, so it runs in the introducing release's copy like the write proof.
+const DECAY_PROBE = `
+import { readFileSync, writeFileSync } from "node:fs";
+import { MemoryStore } from "./src/memory/store.ts";
+import { decayPreview } from "./src/memory/decay-review.ts";
+const job = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const row = (kind, text, at) => ({ op: "note", project: job.project, scope: "project", tier: "long", kind, peer: "person", source: "person", text, about: [] });
+const store = new MemoryStore({ memoryDir: job.memory, deferPromotions: true });
+try {
+  const old = "2026-01-01T00:00:00.000Z";
+  const preference = store.importNote(row("preference", "always answer in Korean", old), old).id;
+  store.importNote(row("finding", "an ordinary old finding", old), old);
+  const plan = decayPreview(store, job.project, { days: 90, now: () => Date.parse("2026-11-11T00:00:00.000Z") });
+  let requested = null;
+  try { decayPreview(store, job.project, { days: 90, now: () => Date.parse("2026-11-11T00:00:00.000Z"), ids: [preference] }); } catch (error) { requested = String(error.message); }
+  writeFileSync(job.out, JSON.stringify({ kinds: plan.entries.map(entry => entry.view.kind), requested }));
+} finally { store.close(); }
+`;
+
+test("decay never demotes a preference, and naming one is refused like any other ineligible target", () => {
+  const r = rig();
+  floor(r.memory, PREFERENCE_MIN_READER, "curated");
+  const result = futureReader(r, DECAY_PROBE)({});
+  expect(result.kinds).toEqual(["finding"]);
+  expect(result.requested).toBe("requested entry is not eligible for decay");
+});
+
