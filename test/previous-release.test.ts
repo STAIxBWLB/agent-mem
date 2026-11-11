@@ -108,6 +108,34 @@ console.log(JSON.stringify(appended));`)) as string[];
     expect(pending(f.base)).toEqual([]);
   });
 
+  const previousVersion = root ? (JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { version: string }).version : "not configured";
+  test(`hook-v4: previous ${previousVersion} maintenance/drain preserves non-Claude Records and still drains v2/v3`, async () => {
+    const f = fixture(), line = "amem: decision | src/a.ts | retain native transport proof";
+    const staged = [];
+    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) {
+      const record = (await stageTranscriptCapture({ agent, event: "Record", at: "2026-11-11T00:00:00.000Z", excerpt: line, paths: ["src/a.ts"] }, f.options))!;
+      expect(record.name).toStartWith("hook-v4-");
+      staged.push({ record, bytes: readFileSync(join(spool(f.base), record.name)) });
+    }
+    await stageHookCapture("Stop", { last_assistant_message: "v2 native control" }, f.options);
+    await stageTranscriptCapture({ agent: "claude", event: "Recap", excerpt: "v3 summary control" }, f.options);
+    await stageTranscriptCapture({ agent: "jcode", event: "Title", excerpt: "v3 jcode control" }, f.options);
+    const appended = prevHook(f, "old maintenance barrier");
+    expect(appended).toContain("claude:old maintenance barrier");
+    expect(appended).toContain("claude:v2 native control");
+    expect(appended).toContain("claude:v3 summary control");
+    expect(appended).toContain("jcode:v3 jcode control");
+    expect(appended.some(value => value.includes(line))).toBe(false);
+    expect(pending(f.base)).toEqual(staged.map(value => value.record.name).sort());
+    for (const value of staged) expect(readFileSync(join(spool(f.base), value.record.name))).toEqual(value.bytes);
+    const rows = await drain(f);
+    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect(rows).toContain(`${agent}:${line}`);
+    expect(pending(f.base)).toEqual([]);
+    // AMEM_PREV_ROOT may point explicitly at published 0.24.0 for this upgrade proof;
+    // ordinary CI still resolves its actual N-1. Never relabel the old package or current manifest.
+    expect(JSON.parse(readFileSync(resolve(root!, "package.json"), "utf8"))).toHaveProperty("version", previousVersion);
+  });
+
   test("hook spool, old to new: a record the previous release left pending is drained by this build", async () => {
     const f = fixture();
     run(f, `const { stageHookCapture } = await import(${JSON.stringify(prev("src/hook-spool.ts"))});

@@ -109,3 +109,16 @@ export function parseRecordLines(text: string, shouldStop?: () => boolean): Pars
   }
   return result;
 }
+
+/** Additive numeric intake receipt; an unsupported reader never turns text into capture. */
+export type RecordIntakeRefusal = RecordDropReason | "finality-unavailable";
+export interface RecordIntakeCounts {
+  supported: boolean; found: number; staged: number; duplicatesSkipped: number;
+  refused: Partial<Record<RecordIntakeRefusal, number>>;
+}
+export function recordIntakeCounts(supported = true): RecordIntakeCounts {
+  return { supported, found: 0, staged: 0, refused: {}, duplicatesSkipped: 0 };
+}
+export function recordRefusal(counts: RecordIntakeCounts, reason: RecordIntakeRefusal, count = 1): void {
+  counts.refused[reason] = (counts.refused[reason] ?? 0) + count;
+}

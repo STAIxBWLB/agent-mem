@@ -7,7 +7,11 @@ import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
-import { configuredPolicyOptions } from "./memory/config.ts";
+import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
+import { captureSessionKey } from "./memory/capture-input.ts";
+import { drainHookCaptures, stageTranscriptCapture } from "./hook-spool.ts";
+import { recordIntakeCounts, recordRefusal, type RecordIntakeCounts, type RecordDropReason } from "./hook-record.ts";
+import { IngestRecordReader, recordMainHeader, type NativeRecordTurn } from "./ingest-records.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { effectiveAliases } from "./memory/shard.ts";
 
@@ -23,6 +27,7 @@ export interface IngestReceipt {
   reason?: "source_bound" | "source_unavailable" | "schema_or_time" | "cursor_busy" | "scope_changed" | "unsupported_version";
   /** With `unsupported_version` (#136): the first native writer version seen that this decoder does not support. A validated version token, never transcript text. */
   version?: string;
+  records?: RecordIntakeCounts;
 }
 
 type Scope = "own" | "foreign" | "unknown";
@@ -274,7 +279,8 @@ function extract(kind: IngestKind, raw: Record<string, any>, project: string): C
  * records remain uncommitted. Broader cutoff/replacement/truncation resets clear that discard state.
  */
 export async function ingestTranscript(kind: IngestKind, options: IngestOptions): Promise<IngestReceipt> {
-  const result: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
+  const recordCounts = recordIntakeCounts(kind !== "qwen");
+  const result: IngestReceipt = { records: recordCounts, files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
   const fail = (reason: NonNullable<IngestReceipt["reason"]>, remaining = false) => { result.errors++; result.reason ??= reason; result.remaining ||= remaining; };
   // An unsupported writer version explains its records better than the generic schema reason, so it replaces only that one; cursors and replay are untouched.
   // The version is screened by the current policy every time it would be reported, including one restored from a cursor written under an older policy.
@@ -291,7 +297,9 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
   try {
     const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome()), aliases = effectiveAliases(base);
     const aliasStamp = JSON.stringify([...aliases].sort()), requested = memoryProjectKey(cwd, { repositoryIsolation: true }), project = aliases.get(requested) ?? requested;
-    const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
+    const policyOptions = configuredPolicyOptions(base, cwd, options.policy);
+    const recordPolicyStamp = JSON.stringify(policyOptions);
+    const policy = createStandalonePolicy(policyOptions);
     const scopes = new Map<string, Scope>();
     const guard = () => { if (JSON.stringify([...effectiveAliases(base)].sort()) !== aliasStamp) throw new Error("scope changed"); };
     const scopeOf = (value: unknown): Scope => {
@@ -364,7 +372,69 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
           }
           if (!metadata) position.scope = "unknown";
         }
-        const window = readBytes(fd, position.offset, Math.min(budget, initial.size - position.offset)); budget -= window.length;
+        const from = position.offset;
+        const window = readBytes(fd, from, Math.min(budget, initial.size - from)); budget -= window.length;
+        const recordReader = recordsEnabled(base, cwd) ? new IngestRecordReader(kind) : undefined;
+        let mainHeader: { binding: ReturnType<typeof recordMainHeader>; permitted: boolean; bytes: Buffer } | undefined;
+        const header = async () => {
+          if (!mainHeader) {
+            // Read identity metadata only, never rescan historical messages or reset an existing cursor.
+            const prefix = readBytes(fd!, 0, Math.min(MAX_RECORD, initial.size)), newline = prefix.indexOf(10);
+            const bytes = newline < 0 ? Buffer.alloc(0) : prefix.subarray(0, newline + 1);
+            let raw: unknown;
+            try { raw = JSON.parse(utf8.decode(bytes)); } catch { /* No positive native session binding. */ }
+            const binding = recordMainHeader(kind as "codex" | "pi", raw);
+            const meta = object(raw) && kind === "codex" ? raw.payload : raw;
+            if (!object(meta) || scopeOf(meta.cwd) !== "own") binding.main = false;
+            mainHeader = { binding, permitted: bytes.length > 0 && await policy.screen(raw), bytes };
+          }
+          return mainHeader;
+        };
+        const stagedReceipts = new Map<string, { fresh: boolean; checked: boolean; current: () => void }>();
+        const intakeRecords = async (turns: NativeRecordTurn[]) => {
+          for (const turn of turns) {
+            const binding = turn.header ? await header() : undefined;
+            if (binding?.binding.child) continue;
+            const found = turn.parsed.records.length + Object.values(turn.parsed.drops).reduce<number>((total, count) => total + (count ?? 0), 0);
+            recordCounts.found += found;
+            for (const [reason, count] of Object.entries(turn.parsed.drops)) recordRefusal(recordCounts, reason as RecordDropReason, count!);
+            let refusal = turn.refusal;
+            if (binding && !binding.permitted) refusal = "record_policy";
+            else if (binding && !binding.binding.main) refusal = "record_identity";
+            else if (!turn.at) refusal = "record_timestamp";
+            if (since !== undefined && turn.at !== undefined && turn.at < since) continue;
+            if (!recordsEnabled(base, cwd) || !await policy.screen(turn.sources)) refusal = "record_policy";
+            if (refusal) { if (turn.parsed.records.length) recordRefusal(recordCounts, refusal, turn.parsed.records.length); continue; }
+            const current = () => {
+              guard(); metadataGuard();
+              const now = fstatSync(fd!), named = lstatSync(file);
+              if (!same(initial, now) || !same(initial, named) || now.size !== initial.size || now.mtimeMs !== initial.mtimeMs
+                || hash(readBytes(fd!, turn.start, turn.end - turn.start)) !== hash(window.subarray(turn.start - from, turn.end - from))
+                || binding && !readBytes(fd!, 0, binding.bytes.length).equals(binding.bytes)
+                || !recordsEnabled(base, cwd) || JSON.stringify(configuredPolicyOptions(base, cwd, options.policy)) !== recordPolicyStamp) throw new Error("record source changed");
+            };
+            const session = captureSessionKey(`${kind}:${binding?.binding.session ?? identity}`)!;
+            for (const record of turn.parsed.records) {
+              let dropped = false;
+              const pending = await stageTranscriptCapture({ agent: kind, event: "Record", excerpt: record.line, paths: record.anchors, at: turn.at!, session },
+                { cwd, base, policy: options.policy, deferAtCapacity: true }, hash(`${kind}\n${identity}\n${turn.identity}`),
+                reason => { dropped = true; recordRefusal(recordCounts, reason); }, current);
+              if (!pending) { if (!dropped) recordRefusal(recordCounts, "record_policy"); continue; }
+              if (pending.backlog) recordCounts.duplicatesSkipped++; else recordCounts.staged++;
+              if (!stagedReceipts.has(pending.receipt)) stagedReceipts.set(pending.receipt, { fresh: !pending.backlog, checked: false, current });
+            }
+            if (stagedReceipts.size) await drainHookCaptures({ cwd, base, project, policy: options.policy }, (input, receipt) => {
+              const staged = stagedReceipts.get(receipt);
+              staged?.current();
+              const appended = capture!.append(input, { receipt });
+              if (staged && !staged.checked && staged.fresh && "already" in appended && appended.already) {
+                recordCounts.staged--; recordCounts.duplicatesSkipped++;
+              }
+              if (staged) staged.checked = true;
+              return appended;
+            });
+          }
+        };
         let consumed = 0;
         while (consumed < window.length && records < MAX_RECORDS) {
           const end = window.indexOf(10, consumed);
@@ -384,16 +454,17 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
             if (unread > MAX_RECORD) {
               // Confirmed oversized without parsing it. Later calls discard bounded chunks through its newline.
               records++; result.read++; result.skipped++; fail("source_bound");
-              position.offset += unread; position.skipping = 1;
+              if (recordReader) await intakeRecords(recordReader.finish("record_length"));
+              position.offset = from + window.length; position.skipping = 1;
               position.anchor = anchor(fd, position.offset); cursor.save(position);
             }
             break;
           }
-          const offset = position.offset, line = window.subarray(consumed, end), next = offset + line.length + 1;
+          const offset = from + consumed, line = window.subarray(consumed, end), next = offset + line.length + 1;
           records++; result.read++;
           let raw: unknown;
           try { if (line.length > MAX_RECORD) throw new Error("record bound"); raw = JSON.parse(utf8.decode(line)); if (!object(raw)) throw new Error("record shape"); }
-          catch { fail("schema_or_time"); result.skipped++; }
+          catch { fail("schema_or_time"); result.skipped++; if (recordReader) await intakeRecords(recordReader.finish("record_invalid")); }
           if (object(raw)) {
             const context = kind === "codex" && ["session_meta", "turn_context"].includes(raw.type) ? raw.payload
               : kind === "pi" && raw.type === "session" ? raw : undefined;
@@ -433,9 +504,19 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
                 }
               }
             } else result.skipped++;
+            if (recordReader) {
+              if (!known || position.scope !== "own") await intakeRecords(recordReader.finish("record_identity"));
+              else await intakeRecords(recordReader.read(raw, offset, next, timeOf(raw, kind), permitted, position.protocol));
+            }
           }
-          position.offset = next; position.anchor = anchor(fd, next); cursor.save(position);
+          const committed = Math.min(next, recordReader?.pendingStart ?? next);
+          position.offset = committed; position.anchor = anchor(fd, committed); cursor.save(position);
           consumed = end + 1;
+        }
+        if (recordReader) {
+          await intakeRecords(recordReader.finish());
+          const committed = from + consumed;
+          if (committed > position.offset) { position.offset = committed; position.anchor = anchor(fd, committed); cursor.save(position); }
         }
         if (position.offset < initial.size) sourceRemaining = true;
       } catch { fail("source_unavailable", true); }

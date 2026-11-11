@@ -4,6 +4,9 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Extract canonical capture-only Records from positively completed main-session Codex, Pi and Kimi messages through the existing staging, receipt and replay path. Respect `records: false`, existing forward cursors, privacy, anchor and brief caps; add numeric JSON counts. Qwen and Jcode stage no Records without a native finality witness and report `finality-unavailable`; their ordinary capture remains unchanged. Refs #369.
+- Compatibility with N-1 (0.24.0): non-Claude Records use the additive format-4 `hook-v4-` prefix, which 0.24.0 leaves pending while draining unchanged format-2/3 rows. The new reader drains all three formats with the same receipts and dedupe. Existing Claude publication bytes, curated schemas and floors are unchanged. This is a minor-release compatibility item.
+
 ## 0.24.0
 
 - On hosted Linux, report transcript summaries not durable within 64 follow-ups as advisory only for StopBurst runs with explicit spool-full stops, an incomplete cursor prefix, all scanned summaries retained, valid telemetry and zero R1 survivors. All other Linux gates and macOS behavior stay unchanged; warning receipts retain the evidence, and the group reports its incomplete-run count. Retire this ceiling after a product fix yields 10 consecutive strict-green hosted Ubuntu runs, or a later person ruling. Refs #357.

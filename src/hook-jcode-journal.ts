@@ -4,16 +4,17 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { appendMetrics } from "./memory/metrics.ts";
-import { configuredPolicyOptions } from "./memory/config.ts";
+import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { HookSpoolFull, stageTranscriptCapture } from "./hook-spool.ts";
 import { cursorDatabase, HOOK_TRANSCRIPT_BYTES, privateDirectory } from "./hook-transcript.ts";
+import { parseRecordLines, recordIntakeCounts, recordRefusal, type RecordIntakeCounts, type RecordDropReason } from "./hook-record.ts";
 import type { HookTranscriptProgress } from "./hook-contract.ts";
 
 // #216: jcode writes `<sessions>/<stem>.journal.jsonl`, one `{"meta":{...},"append_messages":[...]}` line per save. Only `meta.title` and
-// `meta.compaction.summary_text` are read. Message bodies, reasoning and the snapshot are never parsed: the meta object is sliced out
-// before `,"append_messages"` (an unescaped quote cannot occur inside a JSON string, so that marker cannot hide in text).
+// `meta.compaction.summary_text` are read for capture. Enabled Record receipts inspect only main assistant text; finality is unavailable,
+// so no Record is staged. Snapshots and reasoning are never read for Records. Metadata is sliced out before `,"append_messages"` (an unescaped quote cannot occur inside a JSON string, so that marker cannot hide in text).
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const META = '{"meta":', BODIES = ',"append_messages"', TITLE_BYTES = 512;
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -43,6 +44,7 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
   const cwd = realPath(target.cwd), base = canonicalPath(options.base);
   assertFormatFloor(base, "hook-spool");
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
+  const intake = recordsEnabled(base, cwd) ? recordIntakeCounts(false) : undefined;
   const session = hash(`amem-session\0${target.session}`).slice(0, 16);
   if (!lstatSync(target.journal, { throwIfNoEntry: false })) return;
   if (lstatSync(target.journal).isSymbolicLink()) throw new Error("jcode journal unavailable");
@@ -71,6 +73,7 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     const workStart = clock();
     const due = () => clock() >= options.deadline || options.workBudgetMs !== undefined && clock() - workStart >= options.workBudgetMs;
     let unpublished = false, start = 0, skipping = partial, stopReason: HookTranscriptProgress["stopReason"], newestLine: string | undefined;
+    const recordLines: { end: number; counts: RecordIntakeCounts }[] = [];
     const compactions: { covers: unknown; text: string; at: string | undefined; subagent: boolean; dir: unknown }[] = [];
     // #216 review (codex P2): a row belongs to the project of its own line. A journal of a session that moved between projects carries other
     // `meta.working_dir` values; those rows are not staged under this hook's cwd. A missing working_dir keeps the hook's cwd (unchanged).
@@ -91,11 +94,41 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
         if (start === 0 && length >= HOOK_TRANSCRIPT_BYTES) { skipping = true; start = length; oversized++; }
         break;
       }
+      const lineStart = start;
       let line: string;
       try { line = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(start, newline)); } catch { start = newline + 1; continue; }
       start = newline + 1;
       if (!line.startsWith(META)) continue;
       const metaEnd = line.indexOf(BODIES, META.length), head = metaEnd >= 0 ? line.slice(0, metaEnd) : line;
+      if (intake && line.includes("amem:")) {
+        const meta = journalMeta(line);
+        if (meta?.parent_id === null && ownsDir(meta.working_dir)) {
+          let entry: Record<string, unknown> | undefined;
+          try { entry = object(JSON.parse(line)); } catch { /* malformed body does not change metadata capture */ }
+          const counts = recordIntakeCounts(false);
+          let incomplete = false;
+          if (Array.isArray(entry?.append_messages)) for (const value of entry.append_messages) {
+            if (due()) { incomplete = true; break; }
+            const message = object(value);
+            if (message?.role !== "assistant" || typeof message.id !== "string" || !message.id
+              || message.display_role != null || !Array.isArray(message.content)) continue;
+            // Native tool-call, background and reasoning messages are not final-answer evidence.
+            const blocks = message.content.map(object);
+            if (!blocks.length || blocks.some(block => block?.type !== "text" || typeof block.text !== "string")) continue;
+            const parsed = parseRecordLines(blocks.map(block => block!.text as string).join("\n"), due);
+            if (parsed.incomplete) { incomplete = true; break; }
+            counts.found += parsed.records.length;
+            if (parsed.records.length) recordRefusal(counts, "finality-unavailable", parsed.records.length);
+            for (const [reason, count] of Object.entries(parsed.drops)) {
+              counts.found += count;
+              recordRefusal(counts, reason as RecordDropReason, count);
+            }
+          }
+          if (incomplete) { start = lineStart; stopReason = "deadline"; break; }
+          recordLines.push({ end: start, counts });
+        }
+      }
+
       if (head.includes('"compaction":{')) {
         const meta = journalMeta(line), compaction = object(meta?.compaction);
         if (meta && compaction && typeof compaction.summary_text === "string" && compaction.summary_text.trim()) {
@@ -144,7 +177,16 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     db.query("UPDATE cursor SET offset=?,dev=?,ino=?,size=?,title=?,at=?,skipping=? WHERE id=1")
       .run(offset, String(stat.dev), String(stat.ino), stat.size, cursor.title, cursor.at, skipping ? 1 : 0);
     db.run("COMMIT");
-    return { offset, ...(stopReason ? { stopReason } : {}) };
+    if (intake) {
+      // Only acknowledged forward bytes produce receipts; a retry never recounts an unpublished prefix.
+      for (const line of recordLines) if (from + line.end <= offset) {
+        intake.found += line.counts.found;
+        for (const [reason, count] of Object.entries(line.counts.refused)) recordRefusal(intake, reason as RecordDropReason | "finality-unavailable", count);
+      }
+      if (Object.keys(intake.refused).length) appendMetrics(base, Object.entries(intake.refused).map(([reason, count]) => ({ at: new Date().toISOString(), kind: "hook" as const,
+        captureDrops: count, captureDropReason: reason as RecordDropReason | "finality-unavailable" })));
+    }
+    return { offset, ...(stopReason ? { stopReason } : {}), ...(intake ? { records: intake } : {}) };
   } finally {
     if (db) try { db.run("ROLLBACK"); } catch { /* committed */ }
     db?.close();

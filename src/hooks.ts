@@ -462,7 +462,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       recordMetric = { ...recordMetric, ...recordMetricIdentity(args[0]!, input, base, process.cwd()) };
       if (!result) return "";
       childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true;
-      transcriptProgress = "transcript" in result ? result.transcript : undefined;
+      transcriptProgress = ("transcript" in result ? result.transcript : undefined) ?? transcriptProgress;
       recordMetric = { ...recordMetric, ...recordScanMetric(args[0]!, transcriptProgress) };
       if (!result.valid || args[0] !== "SessionStart") return "";
       emittedCost = instructionCost(result.context);
