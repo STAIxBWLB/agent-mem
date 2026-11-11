@@ -13,9 +13,9 @@ import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 // #370: a curated `preference` is person-owned, long-term, and gated on the memory home's person-recorded format floor: a released reader
 // sharing the home drops an unknown kind, then refuses its own machine's whole sync publish over that row.
 //
-// This build is the release that ships the kind (`PREFERENCE_MIN_READER`), so it opens a home at that floor; the older reader's open-time
-// refusal is proven against the published N-1 in test/previous-release.test.ts. The write itself is exercised by a reader at 99.0.0 beside
-// its own copy of `src`, so these proofs never depend on the released version string.
+// At or after the release that ships the kind, this build opens a home at `PREFERENCE_MIN_READER`; the older reader's open-time refusal
+// is proven against the published N-1 in test/previous-release.test.ts. The write itself is exercised by a reader at 99.0.0 beside its own
+// copy of `src`, so these proofs never depend on the released version string.
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -100,7 +100,8 @@ test("amem_remember queues a preference candidate without a floor, and its accep
 test("this build ships the kind, so it opens a home at the introducing release's floor", () => {
   const r = rig();
   floor(r.memory, PREFERENCE_MIN_READER, "curated");
-  expect(JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version).toBe(PREFERENCE_MIN_READER);
+  // The open is the proof: it succeeds at or after the release that ships the kind, and `test/previous-release.test.ts` proves the older
+  // reader's refusal. Pinning equality here would fail the next patch release, which still opens the home.
   new MemoryStore({ memoryDir: r.memory, deferPromotions: true }).close();
 });
 
