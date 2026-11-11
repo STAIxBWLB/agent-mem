@@ -422,8 +422,10 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
                 { cwd, base, policy: options.policy, deferAtCapacity: true }, hash(`${kind}\n${session}\n${turn.identity}`),
                 reason => { dropped = true; recordRefusal(recordCounts, reason); }, current);
               if (!pending) { if (!dropped) recordRefusal(recordCounts, "record_policy"); continue; }
-              if (pending.backlog) recordCounts.duplicatesSkipped++; else recordCounts.staged++;
-              if (!stagedReceipts.has(pending.receipt)) stagedReceipts.set(pending.receipt, { fresh: !pending.backlog, checked: false, current });
+              // `backlog` only reports older pending work, so a fresh Record published behind it would be miscounted as a
+              // duplicate; the exact-duplicate witness is the only signal that this call added nothing.
+              if (pending.duplicate) recordCounts.duplicatesSkipped++; else recordCounts.staged++;
+              if (!stagedReceipts.has(pending.receipt)) stagedReceipts.set(pending.receipt, { fresh: !pending.duplicate, checked: false, current });
             }
             if (stagedReceipts.size) await drainHookCaptures({ cwd, base, project, policy: options.policy }, (input, receipt) => {
               const staged = stagedReceipts.get(receipt);

@@ -24,9 +24,9 @@ test("all five non-Claude Record agents use v4 and retain deterministic pending/
     expect(first.name).toStartWith("hook-v4-");
     const file = join(f.base, "hook-spool", first.name), bytes = readFileSync(file);
     expect(JSON.parse(bytes.toString())).toMatchObject({ schema: "agent-mem.hook-capture", format: 4, capture: { agent, event: "Record" } });
-    expect(await stageTranscriptCapture(input, f.options, "native-message")).toEqual({ ...first, backlog: true });
+    expect(await stageTranscriptCapture(input, f.options, "native-message")).toEqual({ ...first, backlog: true, duplicate: true });
     renameSync(file, file + ".draining-" + "a".repeat(24));
-    expect(await stageTranscriptCapture(input, f.options, "native-message")).toEqual({ ...first, backlog: true });
+    expect(await stageTranscriptCapture(input, f.options, "native-message")).toEqual({ ...first, backlog: true, duplicate: true });
   }
   const store = new CaptureStore({ memoryDir: f.base, project: f.project });
   try {

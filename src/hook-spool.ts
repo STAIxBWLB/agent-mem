@@ -44,7 +44,9 @@ function recordCapture(input: Pick<CaptureFields, "excerpt" | "paths">): ParsedR
     && JSON.stringify(record.anchors) === JSON.stringify(input.paths ?? []) ? record : undefined;
 }
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
-export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
+/** `backlog` reports older project work pending around a publication and says nothing about this call's record, which may
+ * be brand new; `duplicate` is the precise witness that an identical durable body already existed, so nothing was added. */
+export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true; duplicate?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
 /** #203: the agent a staged record belongs to. Claude hooks and jcode lifecycle observers share this spool, budget and replay. */
 export const HOOK_AGENTS = ["claude", "jcode"] as const;
@@ -766,7 +768,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
           if (existing.initial.size !== incomingBytes) continue;
           const held = Buffer.alloc(incomingBytes);
           if (readSync(existing.fd, held, 0, held.length, 0) === held.length && owns(existing) && held.equals(Buffer.from(bytes))) {
-            return { name, cwd, receipt: hash(bytes), backlog: true, ...(capacity ? { deferred: true as const } : {}) };
+            return { name, cwd, receipt: hash(bytes), backlog: true, duplicate: true, ...(capacity ? { deferred: true as const } : {}) };
           }
         } catch { /* Changed or unavailable evidence is not acknowledgement. */ }
         finally { if (existing) closeSync(existing.fd); }
