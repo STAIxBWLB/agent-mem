@@ -343,8 +343,9 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
         cursor = lease(join(directory, hash(`${kind}\n${canonical}`) + ".db"));
         if (!cursor) { fail("cursor_busy", true); continue; }
         let position = cursor.position;
-        const recordFrom = position.identity === identity ? position.offset : 0;
         const cutoff = since ?? "", broader = position.cutoff !== "" && (cutoff === "" || cutoff < position.cutoff);
+        // Existing ordinary --since backfill must not recruit historical Records.
+        const recordFrom = broader && position.identity === identity ? position.offset : 0;
         if (position.identity !== identity || position.offset > initial.size || position.anchor !== anchor(fd, position.offset) || broader
           || kind === "qwen" && position.protocol !== QWEN_CONTRACT) position = { ...blank(), identity };
         if (kind === "qwen") position.protocol = QWEN_CONTRACT;
