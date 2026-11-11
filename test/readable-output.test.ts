@@ -226,7 +226,7 @@ test("undo of a target without a receipt says there is nothing to restore", () =
   expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^OK +kimi: already set up; no change/m);
 });
 
-const emptyIngest: IngestReceipt = { files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
+const emptyIngest: IngestReceipt = { records: { supported: true, found: 0, staged: 0, refused: {}, duplicatesSkipped: 0 }, files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
 const migrationView = (mode: MigrationResult["mode"] = "dry-run", active = false): MigrationResult => ({
   mode, profile: { kind: active ? "generation" : "shared-v1", home: "/h/memory", dir: active ? "/h/memory/generations/g" : "/h/memory", selectorRevision: "revision", ...(active ? { generation: "a".repeat(32) } : {}) },
   counts: { validRows: 2, skippedRows: 0, byOp: { note: 2 }, byTier: { long: 2 }, tailBytes: 200, expiredRows: 0, eligibleRows: 2 }, consequence: "History stays available.",

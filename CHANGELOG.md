@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Extract canonical capture-only Records from positively completed main-session Codex, Pi and Kimi messages through the existing staging, receipt and replay path. Respect `records: false`, existing forward cursors, privacy, anchor and brief caps; add numeric JSON counts. Qwen and Jcode stage no Records without a native finality witness and report `finality-unavailable`; their ordinary capture remains unchanged. Refs #369.
+- Compatibility with N-1 (0.24.0): non-Claude Records use the additive format-4 `hook-v4-` prefix, which 0.24.0 leaves pending while draining unchanged format-2/3 rows. The new reader drains all three formats with the same receipts and dedupe. Existing Claude publication bytes, curated schemas and floors are unchanged. This is a minor-release compatibility item.
 - Select the hosted macOS StopBurst RSS regression baseline by CPU hardware class: keep 93.58 MB for M1 and unknown CPUs, and use the qualified M2 Pro cohort median of 103.19 MB. Retain the strict +10% gate and 150 MB ceiling; receipts name the class and applied baseline. Other groups and runners are unchanged. Refs #365.
 
 ## 0.24.0

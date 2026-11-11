@@ -21,7 +21,10 @@ import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
 // (they still count it toward their file and byte caps). A later format that adds fields takes a new prefix again.
 // #203: format 3 (`hook-v3-`) carries every record 0.18.0 cannot decode, today jcode-agent rows; 0.14-0.18 match neither
 // `hook-` nor `hook-v2-` for it, so they leave it alone. Claude native rows stay format 2, byte for byte, so 0.18.0 keeps draining them.
-const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-", FORMAT_V3 = 3, PREFIX_V3 = "hook-v3-";
+const SCHEMA = "agent-mem.hook-capture/v1", FAMILY = "agent-mem.hook-capture", FORMAT = 2, PREFIX = "hook-v2-", FORMAT_V3 = 3, PREFIX_V3 = "hook-v3-", FORMAT_V4 = 4, PREFIX_V4 = "hook-v4-";
+// #369: 0.24.0 retires non-Claude Records under v3; only these new Records use an unmatched prefix.
+const RECORD_AGENTS = ["codex", "kimi", "pi", "qwen", "jcode"] as const;
+const nonClaudeRecord = (agent: string, event: string) => event === "Record" && (RECORD_AGENTS as readonly string[]).includes(agent);
 const RECORD_BYTES = HOOK_INPUT_BYTES + 8192, MAX_FILES = 256, MAX_BYTES = 2 * 1024 * 1024;
 // One hook previously performed one replay of at most 32 files / 256 KiB.
 // Interleaved subpasses share these same ceilings; they do not each get a fresh allowance.
@@ -32,7 +35,7 @@ export const hookReplayBudget = (): HookReplayBudget => ({ files: HOOK_REPLAY_MA
 // ponytail: a finite native admission reserve covers deferred replay, not unlimited locked intake.
 // Upgrade: coordinated append-only capacity accounting and observable backpressure at exhaustion.
 const CAPACITY_FILES = 32, CAPACITY_BYTES = 256 * 1024;
-const namePattern = /^(hook-(?:v[23]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
+const namePattern = /^(hook-(?:v[234]-)?([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{32})\.json)(?:\.draining-[a-f0-9]{24})?$/;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const summaryEvent = (event: string) => TRANSCRIPT_CAPTURE_EVENTS.includes(event);
 function recordCapture(input: Pick<CaptureFields, "excerpt" | "paths">): ParsedRecord | undefined {
@@ -41,7 +44,9 @@ function recordCapture(input: Pick<CaptureFields, "excerpt" | "paths">): ParsedR
     && JSON.stringify(record.anchors) === JSON.stringify(input.paths ?? []) ? record : undefined;
 }
 interface Record { schema: string; format?: number; cwd: string; scope: string | null; root?: string; nonce: string; capture: NormalizedCaptureFields }
-export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true }
+/** `backlog` reports older project work pending around a publication and says nothing about this call's record, which may
+ * be brand new; `duplicate` is the precise witness that an identical durable body already existed, so nothing was added. */
+export interface PendingHookCapture { name: string; cwd: string; receipt: string; deferred?: true; backlog?: true; duplicate?: true }
 export class HookSpoolFull extends Error { constructor() { super("hook storage full"); } }
 /** #203: the agent a staged record belongs to. Claude hooks and jcode lifecycle observers share this spool, budget and replay. */
 export const HOOK_AGENTS = ["claude", "jcode"] as const;
@@ -376,7 +381,8 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.cwd !== "string" || typeof value.nonce !== "string" || !/^[a-f0-9]{32}$/.test(value.nonce)
       || value.scope !== null && (typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope))) return undefined;
     const v1 = value.schema === SCHEMA && !("format" in value), v3 = value.schema === FAMILY && value.format === FORMAT_V3;
-    const current = value.schema === FAMILY && value.format === FORMAT || v3;
+    const v4 = value.schema === FAMILY && value.format === FORMAT_V4;
+    const current = value.schema === FAMILY && value.format === FORMAT || v3 || v4;
     if (!v1 && !current) return typeof value.schema === "string" ? { value, bytes, unknown: true } : undefined;
     const keys = current ? 1 : 0;
     if (![5 + keys, 6 + keys].includes(Object.keys(value).length)
@@ -385,10 +391,12 @@ function decoded(file: OwnedFile): { value: Record; bytes: Buffer; unknown?: tru
     const c = value.capture;
     if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).length < 8 || Object.keys(c).length > 10
       || Object.keys(c).some(key => !["at", "agent", "event", "tool", "paths", "status", "excerpt", "bytes", "session", "subagent"].includes(key))
-      || !(HOOK_AGENTS as readonly string[]).includes(c.agent) || (c.agent === "claude" && !TRANSCRIPT_CAPTURE_EVENTS.includes(c.event)) === v3 || ![...HOOK_EVENTS, ...TRANSCRIPT_CAPTURE_EVENTS].includes(c.event)
+      || (v4 ? !nonClaudeRecord(c.agent, c.event) : !(HOOK_AGENTS as readonly string[]).includes(c.agent)
+        || (c.agent === "claude" && !TRANSCRIPT_CAPTURE_EVENTS.includes(c.event)) === v3)
+      || ![...HOOK_EVENTS, ...TRANSCRIPT_CAPTURE_EVENTS].includes(c.event)
       || typeof c.at !== "string" || !Number.isFinite(Date.parse(c.at)) || typeof c.excerpt !== "string"
       || !Array.isArray(c.paths) || c.paths.some(path => typeof path !== "string")) return undefined;
-    if (c.event === "Record" && (c.agent !== "claude" || c.subagent === true || !recordCapture(c))) return undefined;
+    if (c.event === "Record" && ((!v4 && c.agent !== "claude") || c.subagent === true || !recordCapture(c))) return undefined;
     const normalized = normalizeCaptureFields({ agent: c.agent, event: c.event, at: c.at, paths: c.paths, excerpt: c.excerpt,
       ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }),
       ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) });
@@ -703,8 +711,10 @@ export async function stageHookCapture(event: string, input: unknown, options: O
 }
 
 /** Transcript text is screened in full before caps, then shares the ordinary durable spool. */
-export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string, onRecordDrop?: (reason: RecordDropReason) => void): Promise<PendingHookCapture | undefined> {
-  if (options.policy?.host || belowFloor(options.base) || !TRANSCRIPT_CAPTURE_EVENTS.includes(input.event) || input.agent !== "claude" && !(input.agent === "jcode" && (input.event === "Title" || input.event === "Compact"))) return;
+export async function stageTranscriptCapture(input: CaptureFields, options: Options, receiptIdentity?: string, onRecordDrop?: (reason: RecordDropReason) => void, beforePublish?: () => void): Promise<PendingHookCapture | undefined> {
+  const nativeRecord = nonClaudeRecord(input.agent, input.event);
+  if (options.policy?.host && !nativeRecord || belowFloor(options.base) || !TRANSCRIPT_CAPTURE_EVENTS.includes(input.event)
+    || !nativeRecord && input.agent !== "claude" && !(input.agent === "jcode" && (input.event === "Title" || input.event === "Compact"))) return;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   const policy = createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
   const record = input.event === "Record";
@@ -725,21 +735,22 @@ export async function stageTranscriptCapture(input: CaptureFields, options: Opti
     { excerptBytes: configured.excerptBytes, paths: configured.capturePaths, denyPaths: configured.denyPaths });
   if (record && (capture.excerpt !== input.excerpt || JSON.stringify(capture.paths) !== JSON.stringify(input.paths ?? []))) { onRecordDrop?.("record_policy"); return; }
   if (capture.excerpt === "[secret-screened]" || !await policy.screen({ cwd, capture })) { if (record) onRecordDrop?.("record_policy"); return; }
+  beforePublish?.();
   return publishCapture(input.event, capture, { ...options, cwd, base }, hash(receiptIdentity === undefined ? JSON.stringify(capture) : JSON.stringify([capture, receiptIdentity])).slice(0, 32));
 }
 
 function publishCapture(event: string, capture: NormalizedCaptureFields, options: Options, nonce = randomBytes(16).toString("hex")): PendingHookCapture {
   const { cwd, base } = options;
   const scope = hookCaptureScope(cwd, base) ?? null;
-  const v3 = capture.agent !== "claude" || TRANSCRIPT_CAPTURE_EVENTS.includes(event);
-  const record: Record = { schema: FAMILY, format: v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
+  const v4 = nonClaudeRecord(capture.agent, event), v3 = capture.agent !== "claude" || TRANSCRIPT_CAPTURE_EVENTS.includes(event);
+  const record: Record = { schema: FAMILY, format: v4 ? FORMAT_V4 : v3 ? FORMAT_V3 : FORMAT, cwd, scope, root: physicalRoot(cwd), nonce, capture }, bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > RECORD_BYTES) throw new Error("hook record bound");
   const dir = directory(base), writing = join(dir, ".writing"); privateDirectory(dir); privateDirectory(writing);
   let destination = dir, deferred = false, backlog = false;
   const budget = maintenanceBudget(), incomingBytes = Buffer.byteLength(bytes), cwdHash = hash(cwd);
   if (event !== "SessionStart") cleanStaleWriting(writing, budget);
   const withinShare = (rows: ReturnType<typeof entries>, maximum: number) => rows.filter(row => namePattern.exec(row.name)?.[2] === cwdHash).length < maximum / 4;
-  const name = `${v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
+  const name = `${v4 ? PREFIX_V4 : v3 ? PREFIX_V3 : PREFIX}${cwdHash}-${scope ?? "0".repeat(64)}-${nonce}.json`;
   let activeInventory: ReturnType<typeof entries> | undefined, reserveInventory: ReturnType<typeof entries> | undefined;
   if (TRANSCRIPT_CAPTURE_EVENTS.includes(event)) {
     // Transcript cursor recovery can repeat a deterministic publication. An already
@@ -757,7 +768,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
           if (existing.initial.size !== incomingBytes) continue;
           const held = Buffer.alloc(incomingBytes);
           if (readSync(existing.fd, held, 0, held.length, 0) === held.length && owns(existing) && held.equals(Buffer.from(bytes))) {
-            return { name, cwd, receipt: hash(bytes), backlog: true, ...(capacity ? { deferred: true as const } : {}) };
+            return { name, cwd, receipt: hash(bytes), backlog: true, duplicate: true, ...(capacity ? { deferred: true as const } : {}) };
           }
         } catch { /* Changed or unavailable evidence is not acknowledgement. */ }
         finally { if (existing) closeSync(existing.fd); }

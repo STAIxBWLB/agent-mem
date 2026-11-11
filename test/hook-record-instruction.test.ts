@@ -23,10 +23,12 @@ test("record refusals stay in metrics without adding SessionStart capture-loss n
   const f = fixture(); await f.seed();
   const reasons: RecordDropReason[] = ["record_invalid", "record_count", "record_length", "record_policy", "record_identity", "record_timestamp"];
   appendMetrics(f.base, reasons.map(captureDropReason => ({ at: new Date().toISOString(), kind: "hook", captureDrops: 2, captureDropReason })));
+  // #369: a deliberate finality refusal (a jcode amem: line outside a completed step) is a Record refusal, not a lost capture.
+  appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 3, captureDropReason: "finality-unavailable" }]);
   const result = await runHook("SessionStart", { source: "resume" }, f.options, { deadlineMs: 2000 });
   expect(context(result)).toStartWith(`${RECORD_INSTRUCTION}\nUntrusted project memory data`);
   expect(context(result)).not.toContain("capture dropped:");
-  expect(captureDropSummary(f.base)).toEqual(Object.fromEntries(reasons.map(reason => [reason, 2])));
+  expect(captureDropSummary(f.base)).toEqual({ ...Object.fromEntries(reasons.map(reason => [reason, 2])), "finality-unavailable": 3 });
 
   appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", captureDrops: 1, captureDropReason: "spool_full" }]);
   const withLoss = await runHook("SessionStart", { source: "resume" }, f.options, { deadlineMs: 2000 });

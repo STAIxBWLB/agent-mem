@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { isHookTranscriptProgress } from "../src/hook-contract.ts";
+import { readMetrics } from "../src/memory/metrics.ts";
 import { jcodeJournalTarget } from "../src/hook-jcode.ts";
 import { scanJcodeJournal } from "../src/hook-jcode-journal.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
@@ -170,4 +172,65 @@ test("review P2: a backlog larger than one window is read forward from the curso
   const rows = r.settle(x => x.filter(y => y.event === "Compact").length >= 2 && x.some(y => y.event === "Title"));
   expect(rows.filter(x => x.event === "Compact").map(x => x.excerpt).sort()).toEqual(["summary A superseded later", "summary B newest"]);
   expect(rows.filter(x => x.event === "Title").map(x => x.excerpt)).toEqual(["final title"]);
+});
+
+
+test("Record receipt: Jcode reports unsupported candidates once without staging Record or exposing bodies", async () => {
+  const r = rig(), record = "amem: decision | - | keep a bounded journal";
+  const message = (id: string, role = "assistant", content: unknown = [{ type: "text", text: record }], extra = {}) => ({ id, role, content, ...extra });
+  const entry = (messages: unknown[], meta = {}) => JSON.stringify({ meta: { parent_id: null, working_dir: r.f.cwd,
+    updated_at: "2026-11-08T05:00:00.000Z", compaction: null, ...meta }, append_messages: messages }) + "\n";
+  writeFileSync(r.journal, entry([
+    message("main"), message("user", "user"), message("reasoning", "assistant", [{ type: "reasoning", text: record }]),
+    message("tool", "assistant", [{ type: "tool_use", text: record }]),
+    message("background", "assistant", undefined, { display_role: "background" }),
+    message("invalid", "assistant", [{ type: "text", text: "amem: invalid" }]),
+  ]) + entry([message("child")], { parent_id: "parent" }) + entry([message("foreign")], { working_dir: r.jhome }));
+  const scan = () => scanJcodeJournal(r.target, { base: r.f.base, deadline: 1e9, clock: () => 0 });
+  const first = await scan();
+  expect(first?.records).toEqual({ supported: false, found: 2, staged: 0, duplicatesSkipped: 0,
+    refused: { "finality-unavailable": 1, record_invalid: 1 } });
+  expect(isHookTranscriptProgress(first)).toBe(true);
+  expect((await scan())?.records).toEqual({ supported: false, found: 0, staged: 0, duplicatesSkipped: 0, refused: {} });
+  expect(readMetrics(r.f.base).filter(row => row.captureDropReason === "finality-unavailable")).toHaveLength(1);
+  expect(JSON.stringify(readMetrics(r.f.base))).not.toContain("keep a bounded journal");
+  expect(r.f.rows().filter(row => row.event === "Record")).toHaveLength(0);
+  appendFileSync(r.journal, entry([message("later")]));
+  expect((await scan())?.records?.refused).toEqual({ "finality-unavailable": 1 });
+});
+
+test("Record receipt: records false leaves Jcode metadata byte behavior and consumed cursor unchanged", async () => {
+  const r = rig(); mkdirSync(r.f.base, { recursive: true });
+  writeFileSync(join(r.f.base, "amem.config.json"), JSON.stringify({ records: false }));
+  writeFileSync(r.journal, JSON.stringify({ meta: { parent_id: null, working_dir: r.f.cwd },
+    append_messages: [{ id: "old", role: "assistant", content: [{ type: "text", text: "amem: decision | - | not enabled" }] }] }) + "\n");
+  const scan = () => scanJcodeJournal(r.target, { base: r.f.base, deadline: 1e9, clock: () => 0 });
+  const disabled = await scan(); expect(disabled?.records).toBeUndefined();
+  writeFileSync(join(r.f.base, "amem.config.json"), JSON.stringify({ records: true }));
+  const enabled = await scan(); expect(enabled?.offset).toBe(disabled?.offset);
+  expect(enabled?.records?.found).toBe(0); expect(readMetrics(r.f.base)).toEqual([]);
+});
+
+test("Record receipt: worker progress accepts only a closed numeric intake shape", () => {
+  const records = { supported: false, found: 1, staged: 0, duplicatesSkipped: 0, refused: { "finality-unavailable": 1 } };
+  expect(isHookTranscriptProgress({ offset: 1, records })).toBe(true);
+  for (const bad of [
+    { ...records, found: -1 }, { ...records, staged: 1 }, { ...records, text: "body" },
+    { ...records, refused: { unknown: 1 } }, { ...records, refused: { "finality-unavailable": "body" } },
+    { ...records, refused: { "finality-unavailable": 2 } }, { supported: false },
+  ]) expect(isHookTranscriptProgress({ offset: 1, records: bad })).toBe(false);
+});
+
+
+test("Record receipt: an incomplete deadline parse acknowledges no candidates and resumes forward", async () => {
+  const r = rig();
+  writeFileSync(r.journal, JSON.stringify({ meta: { parent_id: null, working_dir: r.f.cwd }, append_messages: [{ id: "answer",
+    role: "assistant", content: [{ type: "text", text: "amem: decision | - | bounded refusal" }] }] }) + "\n");
+  let calls = 0;
+  const stopped = await scanJcodeJournal(r.target, { base: r.f.base, deadline: 100, clock: () => ++calls >= 5 ? 100 : 0 });
+  expect(stopped).toMatchObject({ offset: 0, stopReason: "deadline", records: { found: 0, refused: {} } });
+  expect(readMetrics(r.f.base)).toEqual([]);
+  const resumed = await scanJcodeJournal(r.target, { base: r.f.base, deadline: 100, clock: () => 0 });
+  expect(resumed?.records).toMatchObject({ found: 1, refused: { "finality-unavailable": 1 } });
+  expect(resumed!.offset!).toBeGreaterThan(0);
 });
