@@ -1,6 +1,6 @@
 /** Isolated lifecycle proof: one owned descendant, no real memory reads. The test must close this group. */
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { processSignatureAsync, processGroupIdAsync } from "../../src/memory/platform.ts";
 
@@ -17,7 +17,10 @@ process.once("message", (message: unknown) => {
   const input = message as { type?: unknown; base?: unknown };
   if (input.type !== "run" || typeof input.base !== "string") process.exit(1);
   child = spawn(process.execPath, ["--smol", "-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-  writeFileSync(join(input.base, "ui-inbox-worker.json"), JSON.stringify({ pid: process.pid, child: child.pid }), { mode: 0o600 });
+  // Write then rename: the test polls for existence and parses at once, so the handshake must appear complete (#379).
+  const target = join(input.base, "ui-inbox-worker.json"), staged = `${target}.${process.pid}.tmp`;
+  writeFileSync(staged, JSON.stringify({ pid: process.pid, child: child.pid }), { mode: 0o600 });
+  renameSync(staged, target);
   timer = setInterval(() => {}, 1000);
 });
 void Promise.all([processSignatureAsync(process.pid), processGroupIdAsync(process.pid)]).then(([signature, group]) => {
