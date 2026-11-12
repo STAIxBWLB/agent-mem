@@ -50,11 +50,11 @@ try {
   const preferences = readBriefCache({ directory, project: job.project, section: "preferences" });
   const curated = readBriefCache({ directory, project: job.project, section: "curated" });
   out.sidecar = { kinds: (preferences?.rows ?? []).map(row => row.data.kind), partial: (preferences?.rows ?? []).map(row => row.partial), binding: typeof preferences?.preferences?.binding, curatedRows: curated?.rows.length ?? -1 };
-  const native = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000 });
+  const native = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000, now: () => clock.t });
   out.native = { kinds: native.context.split("\\n").filter(line => line.startsWith('{"section":"curated"')).map(line => JSON.parse(line).data.kind), coverage: native.coverage };
   // A person-recorded floor above this reader refuses the prebuilt slot before any of its rows is served.
   writeFileSync(join(job.memory, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "100.0.0", since: "2026-11-11" }]) + "\\n");
-  const aboveFloor = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000 });
+  const aboveFloor = await sessionStartBrief({ base: job.memory, cwd: job.cwd, project: job.project, nativeSession: { signature: processSignature(process.pid) }, timeRemaining: () => 1000, now: () => clock.t });
   out.aboveFloor = { kinds: aboveFloor.context.split("\\n").filter(line => line.startsWith('{"section":"curated"')).map(line => JSON.parse(line).data.kind), coverage: aboveFloor.coverage };
 } finally { store.close(); }
 writeFileSync(job.out, JSON.stringify(out));
