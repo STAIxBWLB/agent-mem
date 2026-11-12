@@ -13,9 +13,9 @@ import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 // #370: a curated `preference` is person-owned, long-term, and gated on the memory home's person-recorded format floor: a released reader
 // sharing the home drops an unknown kind, then refuses its own machine's whole sync publish over that row.
 //
-// A floor at `PREFERENCE_MIN_READER` is above this build's own version until the release PR that ships the kind, and a floor above the
-// reader refuses at store open by design (formats.ts). So the write itself is exercised by a reader at 99.0.0 beside its own copy of `src`,
-// and this build is used here for the refusals and for that open-time refusal.
+// At or after the release that ships the kind, this build opens a home at `PREFERENCE_MIN_READER`; the older reader's open-time refusal
+// is proven against the published N-1 in test/previous-release.test.ts. The write itself is exercised by a reader at 99.0.0 beside its own
+// copy of `src`, so these proofs never depend on the released version string.
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -97,15 +97,12 @@ test("amem_remember queues a preference candidate without a floor, and its accep
   } finally { candidates.close(); }
 });
 
-test("a floor at the introducing release refuses this build at store open, before any read or write", () => {
+test("this build ships the kind, so it opens a home at the introducing release's floor", () => {
   const r = rig();
   floor(r.memory, PREFERENCE_MIN_READER, "curated");
-  let error: { code?: string; message: string } | undefined;
-  try { new MemoryStore({ memoryDir: r.memory, deferPromotions: true }).close(); }
-  catch (caught) { error = caught as { code?: string; message: string }; }
-  expect(error?.code).toBe("format_floor");
-  expect(error?.message).toContain(PREFERENCE_MIN_READER);
-  expect(authored(r)).toEqual({});
+  // The open is the proof: it succeeds at or after the release that ships the kind, and `test/previous-release.test.ts` proves the older
+  // reader's refusal. Pinning equality here would fail the next patch release, which still opens the home.
+  new MemoryStore({ memoryDir: r.memory, deferPromotions: true }).close();
 });
 
 // A reader whose own version is above the floor: the release that ships the kind. Its `src` copy sits beside a fake package.json, because
