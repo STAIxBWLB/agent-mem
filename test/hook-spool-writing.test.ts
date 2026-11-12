@@ -59,7 +59,7 @@ test("a writer killed after its private write does not block deterministic publi
 
 for (const collision of [false, true]) test("a concurrent writer keeps its own temporary inode: " + (collision ? "forced suffix collision" : "unique suffixes"), async () => {
   const f = fixture(), marker = join(f.root, "waiting-private-name"), release = join(f.root, "release-writer");
-  const waiting = preload(f, `writeFileSync(${JSON.stringify(marker)},temporary);const end=Date.now()+5000;while(!existsSync(${JSON.stringify(release)})&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5);if(!existsSync(${JSON.stringify(release)}))throw Error('release absent');`, true);
+  const waiting = preload(f, `writeFileSync(${JSON.stringify(marker + ".staged")},temporary);renameSync(${JSON.stringify(marker + ".staged")},${JSON.stringify(marker)});const end=Date.now()+5000;while(!existsSync(${JSON.stringify(release)})&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5);if(!existsSync(${JSON.stringify(release)}))throw Error('release absent');`, true);
   const child = Bun.spawn([process.execPath, "--preload", waiting, runner(f)], { cwd: f.cwd, env: f.env, stdout: "pipe", stderr: "pipe" });
   try {
     const until = Date.now() + 3000;
