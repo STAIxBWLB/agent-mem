@@ -5,3 +5,5 @@ node_modules/
 .agenthub/state/
 .agenthub/config.local.json
 .agenthub/routing.local.toml
+.kimi-code/mcp.json
+.jcode/mcp.json
