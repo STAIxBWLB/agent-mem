@@ -180,7 +180,7 @@ let hookStartedAt = performance.now();
  * scans as soon as its first stdin line (scan options) arrives and drains after the second (the native receipt). At the
  * deadline the parent kills it and waits at most REAP_BOUND_MS; a kill skips that call's drain (counted, never a drop).
  * Host callbacks cannot cross this boundary; a host needing them calls sessionStartBrief in-process instead. */
-async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
+async function hookWorker(options: HookOptions, base: string, deadline: number, pending: PendingHookCapture, event: string, transcript?: unknown, session?: string): Promise<{ context: string; rssKB: number; rawRssKB: number; captured: boolean; valid: boolean; rssSources?: HookRssSources; transcript?: HookTranscriptProgress }> {
   const workDeadline = deadline - WORKER_CLEANUP_MS;
   if (options.policy?.host || workDeadline - performance.now() < 5) return { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false };
   const early = transcript !== undefined;
@@ -233,7 +233,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     result.rssSources.unavailable++;
     // The worker reads the configuration itself (same base, same cwd), so it screens with exactly the policy the parent did.
     // Without a receipt the worker still finishes the scan and reports it, but drains nothing.
-    send({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline, hookStartAt: performance.timeOrigin + hookStartedAt, policy });
+    send({ cwd: options.cwd, base, current: pending.name, event, identity: metadata.receipt, maxTokens, ownedGroup: true, deadlineAt: performance.timeOrigin + workDeadline, hookStartAt: performance.timeOrigin + hookStartedAt, policy, ...(session ? { session } : {}) });
     close();
     const answer = await Promise.race([
       Promise.all([exit!, output!]),
@@ -354,7 +354,9 @@ async function captureAndWork(event: string, input: unknown, options: HookOption
   // exits keep reporting nothing, so they cannot pass for bounded progress.
   const deadlineEvidence = () => transcript !== undefined && deadline - WORKER_CLEANUP_MS - performance.now() < 5;
   const withDeadline = <T extends { transcript?: HookTranscriptProgress }>(value: T): T => value.transcript === undefined && deadlineEvidence() ? { ...value, transcript: { stopReason: "deadline" } } : value;
-  const work = async (pending: PendingHookCapture) => withDeadline(await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript));
+  // #385: the hashed session key lets a repository cwd's drain attribute this session's non-project rows.
+  const session = captureSessionKey(input !== null && typeof input === "object" ? (input as { session_id?: unknown }).session_id : undefined);
+  const work = async (pending: PendingHookCapture) => withDeadline(await hookWorker({ ...options, cwd: pending.cwd }, base, deadline, pending, event, transcript, session));
   let result: Awaited<ReturnType<typeof work>> | undefined;
   let pending: PendingHookCapture | undefined;
   try { pending = await stageHookCapture(event, input, { ...options, base, deferAtCapacity: true }); }

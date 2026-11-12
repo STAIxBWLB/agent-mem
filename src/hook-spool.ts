@@ -65,6 +65,19 @@ function physicalRoot(cwd: string): string {
   return hash(`${stat.ino}:${stat.birthtimeMs}`);
 }
 
+/** #385: a cwd with no `.git` in itself or its ancestors (32 levels, the captureScope walk) belongs to no repository.
+ * Its per-directory fallback key is not a project the person works in. An unprovable walk, or a missing cwd (cwd_removed owns it), counts as a project cwd. */
+function nonProjectCwd(cwd: string): boolean {
+  try {
+    if (!lstatSync(cwd).isDirectory()) return false;
+    for (let folder = cwd, depth = 0; depth < 32; depth++) {
+      if (lstatSync(join(folder, ".git"), { throwIfNoEntry: false })) return false;
+      const parent = dirname(folder); if (parent === folder) return true; folder = parent;
+    }
+  } catch { /* Unprovable ancestry keeps the ordinary per-cwd rules. */ }
+  return false;
+}
+
 function privateDirectory(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
@@ -536,6 +549,9 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
     const match = namePattern.exec(row.name); if (match) groups.set(match[2]!, (groups.get(match[2]!) ?? 0) + 1);
   }
   const quota = () => cwdHash !== undefined && (groups.get(cwdHash) ?? 0) >= share;
+  // #385 AC3: a repository cwd under pressure may retire non-project rows; a non-project cwd never evicts for itself.
+  let admittingKnown: boolean | undefined; const orphans = new Map<string, boolean>();
+  const admittingProject = () => admittingCwd !== undefined && (admittingKnown ??= !nonProjectCwd(admittingCwd));
   const pressure = () => cwdHash !== undefined && (quota() || count >= maximum || bytes + incomingBytes > byteMaximum);
   const due = inventory.some(row => Date.now() - row.modified >= MISSING_CWD_AFTER_MS);
   const pressured = pressure();
@@ -579,6 +595,13 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
           if (age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS) {
             try { lstatSync(record.value.cwd); }
             catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
+          }
+          // #385 route B: a non-project row that no same-session project hook attributed within one hour, one without
+          // a session to match, or one crowding a repository cwd out of the spool retires with a counted reason.
+          if (!reason) {
+            if (!orphans.has(record.value.cwd)) orphans.set(record.value.cwd, nonProjectCwd(record.value.cwd));
+            if (orphans.get(record.value.cwd) && (!record.value.capture.session || age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS
+              || admittingProject() && pressure() && match[2] !== cwdHash)) reason = "nonproject_unattributed";
           }
           if (!reason && age >= RETIRE_AFTER_MS) {
             if (record.value.scope === null) reason = "scope_unknown";
@@ -786,8 +809,16 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
     if (!withinShare(reserved, CAPACITY_FILES) || reserved.length >= CAPACITY_FILES || reserved.reduce((sum, row) => sum + row.size, 0) + Buffer.byteLength(bytes) > CAPACITY_BYTES) throw new HookSpoolFull();
     deferred = true; backlog = reserved.length > 0;
   } else {
-    const inventory = activeInventory ?? entries(base);
-    if (summaryEvent(event) && (!withinShare(inventory, MAX_FILES) || inventory.length >= MAX_FILES || inventory.reduce((sum, row) => sum + row.size, 0) + incomingBytes > MAX_BYTES)) throw new HookSpoolFull();
+    let inventory = activeInventory ?? entries(base);
+    const overCap = (rows: typeof inventory) => rows.length >= MAX_FILES || rows.reduce((sum, row) => sum + row.size, 0) + incomingBytes > MAX_BYTES;
+    if (summaryEvent(event) && (!withinShare(inventory, MAX_FILES) || overCap(inventory))) {
+      // #385 AC3: a repository cwd's summary first retires non-project rows that fill the shared caps.
+      // ponytail: one bounded maintenance pass (32 files); a cap of repository rows still refuses. Upgrade: a reserved non-project tier.
+      if (!withinShare(inventory, MAX_FILES) || nonProjectCwd(cwd)) throw new HookSpoolFull();
+      const freed = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget);
+      inventory = inventory.filter(row => !freed.has(row.name));
+      if (overCap(inventory)) throw new HookSpoolFull();
+    }
     let reserved = reserveInventory ?? entries(base, true);
     // Split a nonempty two-tier backlog's inspection budget so neither tier starves.
     const retired = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget, reserved.length ? DRAIN_FILES / 2 : DRAIN_FILES);
@@ -833,7 +864,9 @@ export function hookCapturePending(base: string, name: string): boolean {
   } catch { return true; } // Unreadable evidence is pending, never an acknowledgement.
 }
 
-export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number; replayBudget?: HookReplayBudget },
+/** `session` (a captureSessionKey) lets a repository cwd's hook attribute that session's non-project rows to its project (#385 route A).
+ * `deferNonProject` leaves a non-project cwd's own rows for that attribution instead of filing them under its fallback key. */
+export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number; replayBudget?: HookReplayBudget; session?: string; deferNonProject?: boolean },
   append: (input: CaptureInput, receipt: string) => CaptureAppend): Promise<{ captured: string[]; blocked: number }> {
   const budget = options.replayBudget ?? hookReplayBudget();
   if (!Number.isSafeInteger(budget.files) || budget.files < 0 || budget.files > HOOK_REPLAY_MAX_FILES
@@ -850,8 +883,15 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   const matching = (rows: ReturnType<typeof entries>, capacity: boolean) => rows.filter(row => {
     const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
-  const rows = [...matching(entries(base, true), true), ...matching(entries(base), false)]
-    .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
+  const reserve = entries(base, true), active = entries(base), ownNonProject = nonProjectCwd(cwd);
+  const own = options.deferNonProject === true && ownNonProject ? [] : [...matching(reserve, true), ...matching(active, false)]
+    .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, foreign: false }));
+  // #385 route A: newest other-cwd rows after this cwd's own; each inspection takes a replay slot.
+  // ponytail: at most 32 newest foreign rows are inspected per hook. Upgrade: an owned session cursor over the spool.
+  const foreign = options.session === undefined || ownNonProject ? [] : [...reserve.map(row => ({ ...row, capacity: true })), ...active.map(row => ({ ...row, capacity: false }))]
+    .filter(row => { const m = namePattern.exec(row.name); return m && m[2] !== hash(cwd); })
+    .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name)).slice(0, DRAIN_FILES).map(row => ({ ...row, foreign: true }));
+  const rows = [...own, ...foreign];
   const identity = (row: typeof rows[number]) => `${namePattern.exec(row.name)![1]}:${row.dev}:${row.ino}`;
   let remaining = budget.bytes, blocked = 0;
   for (const row of rows.filter(row => !budget.seen.has(identity(row))).slice(0, budget.files)) {
@@ -862,11 +902,20 @@ export async function drainHookCaptures(options: Options & { project: string; ex
     try {
       file = openOwned(join(row.capacity ? join(dir, ".capacity") : dir, row.name));
       if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) { blocked++; continue; }
+      let foreignCwd: string | undefined;
+      if (row.foreign) {
+        // Attribute only an exact session match from a non-project cwd whose recorded scope still holds; never claim another row.
+        if (file.initial.size > RECORD_BYTES || file.initial.size > remaining) continue;
+        const probe = decoded(file)?.value;
+        if (!probe || probe.scope === null || hash(probe.cwd) !== match[2] || probe.capture.session === undefined || probe.capture.session !== options.session
+          || !nonProjectCwd(probe.cwd) || hookCaptureScope(probe.cwd, base) !== probe.scope) continue;
+        foreignCwd = probe.cwd;
+      }
       const claim = claimOwned(base, row.name, file);
       if (!claim) { blocked++; continue; }
       if (claim.initial.size <= RECORD_BYTES) { remaining -= claim.initial.size; budget.bytes -= claim.initial.size; }
       const record = decoded(claim);
-      if (!record || record.value.cwd !== cwd || record.value.scope !== match[3] || record.value.nonce !== match[4]) {
+      if (!record || record.value.cwd !== (foreignCwd ?? cwd) || record.value.scope !== match[3] || record.value.nonce !== match[4]) {
         retireClaim(base, claim, false); blocked++; continue;
       }
       // #199: an unknown or newer schema stays claimed and pending (later passes reclaim it) until the TTL, then retires with a counted reason.
@@ -892,7 +941,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         ...(c.tool === null ? {} : { tool: c.tool }), ...(c.status === null ? {} : { status: c.status }), excerpt: c.excerpt,
         ...(c.session === undefined ? {} : { session: c.session }), ...(c.subagent === undefined ? {} : { subagent: c.subagent }) };
       if (!await policy.screen(value) || !await policy.screen(input)) { retireClaim(base, claim, true); blocked++; continue; }
-      if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp || value.scope === legacyStamp && captureScope(cwd, base, false, undefined, true) !== legacyStamp) { blocked++; continue; }
+      if (!owns(claim) || hookCaptureScope(cwd, base) !== stamp || foreignCwd !== undefined && hookCaptureScope(foreignCwd, base) !== value.scope || value.scope === legacyStamp && captureScope(cwd, base, false, undefined, true) !== legacyStamp) { blocked++; continue; }
       try {
         append(input, hash(record.bytes));
       }
