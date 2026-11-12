@@ -69,18 +69,35 @@ test("#385 route A: another session's non-project rows are never attributed", as
   expect(excerpts(f).some(text => text.includes(excerpt))).toBe(false);
 }, 20000);
 
-test("#385 route B: a non-project row without a session, and one unattributed for an hour, retire with a counted reason", async () => {
+test("#385 route B: non-project rows, with or without a session, retire with a counted reason only after one hour", async () => {
   const { f, scratch } = setup();
   const { captureSessionKey } = await import("../src/memory/capture-input.ts");
-  await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt: "no session" }, { cwd: scratch, base: f.base });
   const old = new Date(Date.now() - 2 * 3600_000);
+  await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt: "young, no session" }, { cwd: scratch, base: f.base });
+  const tool = () => stageHookCapture("PostToolUse", { session_id: "p3-fixture", hook_event_name: "PostToolUse", cwd: f.cwd, tool_name: "Read", tool_input: {}, tool_response: "ok" }, { cwd: f.cwd, base: f.base });
+  await tool();
+  expect(pending(f.base).filter(row => row.cwd === scratch)).toHaveLength(1); // A young session-less row waits for its own cwd's hook.
   await stageTranscriptCapture({ agent: "claude", event: "Recap", at: old.toISOString(), excerpt: "stale session", session: captureSessionKey("gone") }, { cwd: scratch, base: f.base });
-  // Publishing the Recap already ran maintenance, which retires the session-less Title at once (route B, no age wait).
-  for (const row of pending(f.base)) utimesSync(row.file, old, old);
-  // Any later publication runs bounded maintenance; this one is an ordinary project tool event.
-  await stageHookCapture("PostToolUse", { session_id: "p3-fixture", hook_event_name: "PostToolUse", cwd: f.cwd, tool_name: "Read", tool_input: {}, tool_response: "ok" }, { cwd: f.cwd, base: f.base });
-  expect(pending(f.base).filter(row => row.cwd === scratch)).toEqual([]);
+  await stageTranscriptCapture({ agent: "claude", event: "Title", at: old.toISOString(), excerpt: "stale, no session" }, { cwd: scratch, base: f.base });
+  for (const row of pending(f.base).filter(row => row.cwd === scratch)) {
+    const at = (JSON.parse(readFileSync(row.file, "utf8")) as { capture: { at: string } }).capture.at;
+    if (Date.parse(at) < Date.now() - 3600_000) utimesSync(row.file, old, old);
+  }
+  await tool();
+  expect(pending(f.base).filter(row => row.cwd === scratch).map(row => row.event)).toEqual(["Title"]);
   expect(drops(f.base, "nonproject_unattributed")).toBe(2);
+}, 20000);
+
+test("#385: a non-project cwd's own hook still drains its rows under its fallback key (unchanged)", async () => {
+  const { f, scratch } = setup(), excerpt = "own cwd drain";
+  await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt }, { cwd: scratch, base: f.base });
+  const entry = join(f.root, "functional-hook.ts");
+  f.runFunctional("SessionStart"); // Writes the functional entry.
+  const run = Bun.spawnSync([process.execPath, "--smol", entry, "UserPromptSubmit"], { cwd: scratch, env: { ...f.env, AMEM_TEST_HOST_DEADLINE_MS: "2000" },
+    stdin: Buffer.from(JSON.stringify({ session_id: "p3-fixture", hook_event_name: "UserPromptSubmit", cwd: scratch, prompt: "x" })), stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  expect(run.exitCode, run.stderr.toString()).toBe(0);
+  expect(pending(f.base).filter(row => row.cwd === scratch)).toEqual([]);
+  expect(drops(f.base, "nonproject_unattributed")).toBe(0);
 }, 20000);
 
 test("#385 AC3: non-project rows filling the spool cannot cause HookSpoolFull for a project's summary", async () => {

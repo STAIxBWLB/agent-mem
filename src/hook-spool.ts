@@ -596,12 +596,12 @@ function retireUnresolved(base: string, admittingCwd: string | undefined, invent
             try { lstatSync(record.value.cwd); }
             catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") reason = "cwd_removed"; }
           }
-          // #385 route B: a non-project row that no same-session project hook attributed within one hour, one without
-          // a session to match, or one crowding a repository cwd out of the spool retires with a counted reason.
+          // #385 route B: a non-project row that neither its own cwd's hook nor a same-session project hook drained within
+          // one hour retires with a counted reason; so does one crowding a repository cwd out of the global caps (never its own share).
           if (!reason) {
             if (!orphans.has(record.value.cwd)) orphans.set(record.value.cwd, nonProjectCwd(record.value.cwd));
-            if (orphans.get(record.value.cwd) && (!record.value.capture.session || age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS
-              || admittingProject() && pressure() && match[2] !== cwdHash)) reason = "nonproject_unattributed";
+            if (orphans.get(record.value.cwd) && (age >= MISSING_CWD_AFTER_MS && Date.now() - row.modified >= MISSING_CWD_AFTER_MS
+              || admittingProject() && (count >= maximum || bytes + incomingBytes > byteMaximum) && match[2] !== cwdHash)) reason = "nonproject_unattributed";
           }
           if (!reason && age >= RETIRE_AFTER_MS) {
             if (record.value.scope === null) reason = "scope_unknown";
