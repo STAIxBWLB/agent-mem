@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { HookSpoolFull, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { readCaptureDrops } from "../src/memory/metrics.ts";
@@ -30,6 +30,14 @@ function drops(base: string, reason: string): number {
 }
 const excerpts = (f: ReturnType<typeof hookFixture>) => f.rows().map(row => (row as { excerpt?: string }).excerpt ?? "");
 
+test("#385 AC1: without a matching session, project-root hooks leave a non-project summary pending (the pre-fix behavior)", async () => {
+  const { f, scratch } = setup(), excerpt = "nonproject summary, no session";
+  await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt, session: "0".repeat(16) }, { cwd: scratch, base: f.base });
+  for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(f.runFunctional(event, { prompt: "continue" }).exitCode).toBe(0);
+  expect(pending(f.base).filter(row => row.cwd === scratch).map(row => row.event)).toEqual(["Title"]);
+  expect(excerpts(f).some(text => text.includes(excerpt))).toBe(false);
+}, 20000);
+
 test("#385 AC1/route A: a same-session summary from a non-project cwd reaches the project's rows from the next project hook", async () => {
   const { f, scratch } = setup(), excerpt = "nonproject summary 385";
   // hooks-fixture sends session_id "p3-fixture"; the transcript reader stores its captureSessionKey.
@@ -37,6 +45,17 @@ test("#385 AC1/route A: a same-session summary from a non-project cwd reaches th
   expect(await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt, session: captureSessionKey("p3-fixture") }, { cwd: scratch, base: f.base })).toBeDefined();
   const result = f.runFunctional("UserPromptSubmit", { prompt: "continue" });
   expect(result.exitCode, result.stderr.toString()).toBe(0);
+  expect(pending(f.base).filter(row => row.cwd === scratch)).toEqual([]);
+  expect(excerpts(f).some(text => text.includes(excerpt))).toBe(true);
+}, 20000);
+
+test("#385 route A: a stale .draining- claim from a dead drainer is picked up by the cross-cwd path", async () => {
+  const { f, scratch } = setup(), excerpt = "claimed then abandoned";
+  const { captureSessionKey } = await import("../src/memory/capture-input.ts");
+  const staged = await stageTranscriptCapture({ agent: "claude", event: "Title", at: new Date().toISOString(), excerpt, session: captureSessionKey("p3-fixture") }, { cwd: scratch, base: f.base });
+  const spool = join(f.base, "hook-spool");
+  renameSync(join(spool, staged!.name), join(spool, `${staged!.name}.draining-${"a".repeat(24)}`));
+  expect(f.runFunctional("UserPromptSubmit", { prompt: "continue" }).exitCode).toBe(0);
   expect(pending(f.base).filter(row => row.cwd === scratch)).toEqual([]);
   expect(excerpts(f).some(text => text.includes(excerpt))).toBe(true);
 }, 20000);

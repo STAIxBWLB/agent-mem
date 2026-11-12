@@ -864,9 +864,8 @@ export function hookCapturePending(base: string, name: string): boolean {
   } catch { return true; } // Unreadable evidence is pending, never an acknowledgement.
 }
 
-/** `session` (a captureSessionKey) lets a repository cwd's hook attribute that session's non-project rows to its project (#385 route A).
- * `deferNonProject` leaves a non-project cwd's own rows for that attribution instead of filing them under its fallback key. */
-export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number; replayBudget?: HookReplayBudget; session?: string; deferNonProject?: boolean },
+/** `session` (a captureSessionKey) lets a repository cwd's hook attribute that session's non-project rows to its project (#385 route A). */
+export async function drainHookCaptures(options: Options & { project: string; expectedScope?: string; current?: string; timeRemaining?: () => number; replayBudget?: HookReplayBudget; session?: string },
   append: (input: CaptureInput, receipt: string) => CaptureAppend): Promise<{ captured: string[]; blocked: number }> {
   const budget = options.replayBudget ?? hookReplayBudget();
   if (!Number.isSafeInteger(budget.files) || budget.files < 0 || budget.files > HOOK_REPLAY_MAX_FILES
@@ -884,7 +883,7 @@ export async function drainHookCaptures(options: Options & { project: string; ex
     const m = namePattern.exec(row.name); return m && m[2] === hash(cwd) && accepts(m[3]!);
   }).sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, capacity }));
   const reserve = entries(base, true), active = entries(base), ownNonProject = nonProjectCwd(cwd);
-  const own = options.deferNonProject === true && ownNonProject ? [] : [...matching(reserve, true), ...matching(active, false)]
+  const own = [...matching(reserve, true), ...matching(active, false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, foreign: false }));
   // #385 route A: newest other-cwd rows after this cwd's own; each inspection takes a replay slot.
   // ponytail: at most 32 newest foreign rows are inspected per hook. Upgrade: an owned session cursor over the spool.
