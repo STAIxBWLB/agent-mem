@@ -76,6 +76,13 @@ function tree(dir: string): string[] {
 const noteOf = (base: string, id: string, project: string) => { const store = new MemoryStore({ memoryDir: base, screen: () => "skip" }); try { return store.get(id, project); } finally { store.close(); } };
 const statusOf = (base: string, id: string, project: string) => { const c = new CandidateStore({ memoryDir: base }); try { return c.get(id, project)?.status; } finally { c.close(); } };
 
+test("the manifest declares one poll of Recap reuse without adding other panel cache policies", () => {
+  expect(plugin.manifest.panels.find(panel => panel.id === "recap")).toMatchObject({ maxAgeMs: 15_000 });
+  expect(plugin.manifest.panels.find(panel => panel.id === "recap")?.maxAgeMs).toBe(plugin.manifest.pollMs);
+  expect(plugin.manifest.panels.map(panel => panel.id)).not.toContain("inbox");
+  for (const id of ["capacity", "timeline"]) expect(plugin.manifest.panels.find(panel => panel.id === id)).not.toHaveProperty("maxAgeMs");
+});
+
 test("Recap memoizes its screened projection and unchanged cursor polls take under 100 ms", async () => {
   const f = fixture(), provider = await open(f.family), calls = spyOn(briefModule, "sessionStartBrief");
   try {

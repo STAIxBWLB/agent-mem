@@ -90,7 +90,7 @@ export const plugin = {
     api: 1 as const, tool: "amem", version: VERSION, title: "Memory", icon: "memory", pollMs: 15_000,
     panels: [
       { id: "review", title: "Review", order: 1 },
-      { id: "recap", title: "Recap", order: 2 },
+      { id: "recap", title: "Recap", order: 2, maxAgeMs: 15_000 },
       { id: "find", title: "Search", order: 3 },
       { id: "timeline", title: "Timeline", order: 4 },
       { id: "work", title: "Work lists", order: 5 },
