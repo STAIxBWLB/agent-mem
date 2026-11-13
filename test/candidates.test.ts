@@ -381,11 +381,15 @@ for (const tier of ["short", "long"] as const) test(`acceptance screens the exac
   expect({ id: persisted.id, at: persisted.at, expiresAt: persisted.expiresAt }).toEqual({ id: screened!.id, at: screened!.at, expiresAt: screened!.expiresAt });
 });
 
-test("sync cannot modify segments while a candidate acceptance holds the mutation boundary", async () => {
+for (const configured of [false, true]) test(`sync cannot modify segments while candidate acceptance holds the mutation boundary (${configured ? "configured" : "explicit"} remote)`, async () => {
   const f = fixture(), before = bytes(f.memory); let attemptedNetwork = false;
+  if (configured) {
+    expect(memoryGitSync(["-C", f.memory.dir, "init", "-q"], { encoding: "utf8" }).status).toBe(0);
+    expect(memoryGitSync(["-C", f.memory.dir, "remote", "add", "origin", "unused-fixture-remote"], { encoding: "utf8" }).status).toBe(0);
+  }
   let result: ReturnType<typeof syncMemory> | undefined;
   f.memory.withAcceptedNote({ op: "note", project: PROJECT, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "screen-only fixture", about: [] }, () => {
-    result = syncMemory(f.memory, { remote: "unused-fixture-remote", visibility: async () => { attemptedNetwork = true; return "private"; } });
+    result = syncMemory(f.memory, { ...(configured ? {} : { remote: "unused-fixture-remote" }), visibility: async () => { attemptedNetwork = true; return "private"; } });
   });
   expect(await result!).toMatchObject({ ok: false, error: "another memory mutation is running on this machine" });
   expect(attemptedNetwork).toBe(false); expect(bytes(f.memory)).toEqual(before);

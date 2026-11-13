@@ -4,7 +4,7 @@ import { assertFormatFloor } from "./formats.ts";
 import { closeSync, constants, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { rebindPublicPruneProfile } from "./generation.ts";
-import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
+import { memoryGitArgv, memoryGitEnv, memoryGitSync, processLiveness, processSignature } from "./platform.ts";
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
@@ -236,16 +236,17 @@ export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
 const NO_SYNC_REMOTE = "no sync remote: a person sets one with `amem sync --remote <private git url>`";
 
 /** Configuration-only preflight: an unconfigured transport has no outbound rows to screen. */
-async function missingSyncRemote(store: MemoryStore, opts: SyncOptions): Promise<string | undefined> {
-  if (opts.remote) return undefined;
+function missingSyncRemote(store: MemoryStore): string | undefined {
   const sharded = store.profile.sharded, generation = store.profile.kind === "generation";
   const dir = sharded ? join(store.profile.home, "shard-sync") : store.dir;
   const repository = sharded ? join(dir, "objects.git") : join(dir, ".git");
   const reason = sharded ? "no shard sync remote configured" : generation ? "no generation sync remote configured" : NO_SYNC_REMOTE;
   if (!existsSync(repository)) return reason;
   const args = [...(sharded ? ["--git-dir", repository] : []), "remote", "get-url", "origin"];
-  const remote = await (generation ? generationSyncGit : git)(dir, args, opts.signal);
-  return remote.code === 0 && remote.out ? undefined : reason;
+  // Admission below must remain synchronous until it acquires the mutation lock.
+  const remote = memoryGitSync(["-C", dir, ...args], { encoding: "utf8", timeout: STEP_MS,
+    env: memoryGitEnv(process.env, { repositoryIsolation: generation }) });
+  return remote.status === 0 && remote.stdout.trim() ? undefined : reason;
 }
 
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
@@ -256,7 +257,7 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
   if (!opts.remote) {
     try {
-      const error = await missingSyncRemote(store, opts);
+      const error = missingSyncRemote(store);
       if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
       if (error) return { ok: false, pushed: false, entries: 0, error };
     } catch { return { ok: false, pushed: false, entries: 0, error: "sync remote configuration unavailable" }; }
