@@ -273,8 +273,9 @@ export class GenerationIndex {
   }
   /** Inspect canonical outbound sources without refreshing/rebinding the derived index.
    * The returned check must run before the caller declares the whole opened-target inspection complete.
-   * Each capture accepts <=8MiB source bytes, <=20000 physical nonblank rows and <=16MiB segment reads.
-   * A fresh final capture verifies the same source again (<=32MiB segment verification I/O over both captures).
+   * Physical sources are streamed with no total byte/I/O or physical-row ceiling; canonical outbound rows
+   * are capped per target. Named single-row, retained-identity and metadata guards bound memory.
+   * A fresh final source capture rechecks every prefix/full hash after policy callbacks.
    */
   inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
     const unavailable = (): never => { throw Object.assign(new Error("outbound generation input unavailable"), { code: "input-unavailable" }); };
@@ -368,6 +369,7 @@ export class GenerationIndex {
       if (row.id !== id || hashJSON(row) !== source.hash) return unavailable();
       visit(row as unknown as Record<string, unknown>);
     }
+    identities.clear(); // Final revalidation needs source proofs only, not canonical row identities across overlays.
     return () => { protectedRead(() => { if (capture(false) !== captured) return fail(); }); };
   }
 
