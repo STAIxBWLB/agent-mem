@@ -69,6 +69,25 @@ export function coalesceGenerationSource(prior: PruneSourceRow | undefined, row:
   return { row, ...coalesceGenerationPresence(prior, row, source) };
 }
 
+function decodeInspectionEntry(bytes: Buffer, context: { source: string; path: string; local: boolean }, generation: string): Entry | undefined {
+  if (!bytes.length) return undefined;
+  const line = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  if (!line.trim()) { if (context.source === "generation") fail(); return undefined; }
+  const parsed: unknown = JSON.parse(line);
+  const op = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { op?: unknown }).op : undefined;
+  if (context.source === "generation" && op === "prune") {
+    const row = validatePruneRow(parsed, generation, context.local ? "local" : "synced");
+    if (context.path !== `${context.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
+    return undefined;
+  }
+  if (context.source === "generation" && op === "vault_link") {
+    const row = validateVaultLinkRow(parsed, generation, context.local ? "local" : "synced");
+    if (context.path !== `local/${row.machine}.jsonl`) fail();
+    return undefined;
+  }
+  return checkedEntry(parsed);
+}
+
 /** Generation-owned derived state. Legacy files are inputs, never opened as a MemoryStore. */
 export class GenerationIndex {
   readonly profile: BoundProfile;
@@ -320,24 +339,6 @@ export class GenerationIndex {
     const maxIdentities = 65_536, maxSourceFiles = 20_000;
     let selected = 0;
     const outbound = (presence?: GenerationPresence) => presence?.placement === "synced" && (presence.own || presence.legacy) ? 1 : 0;
-    const decode = (bytes: Buffer, context: { source: string; path: string; local: boolean }): Entry | undefined => {
-      if (!bytes.length) return undefined;
-      const line = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      if (!line.trim()) { if (context.source === "generation") fail(); return undefined; }
-      const parsed: unknown = JSON.parse(line);
-      const op = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { op?: unknown }).op : undefined;
-      if (context.source === "generation" && op === "prune") {
-        const row = validatePruneRow(parsed, this.profile.generation!, context.local ? "local" : "synced");
-        if (context.path !== `${context.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
-        return undefined;
-      }
-      if (context.source === "generation" && op === "vault_link") {
-        const row = validateVaultLinkRow(parsed, this.profile.generation!, context.local ? "local" : "synced");
-        if (context.path !== `local/${row.machine}.jsonl`) fail();
-        return undefined;
-      }
-      return checkedEntry(parsed);
-    };
     const capture = (collect: boolean) => {
       if (epoch() !== before) return fail();
       const reader = new SegmentReader(Infinity, { maxSourceBytes: limits.maxBytes, maxRows: maxSourceFiles });
@@ -345,7 +346,7 @@ export class GenerationIndex {
         const source = files.get(file) ?? { file, stamp: "" };
         const data = visitInspectionFile(file, prior ? [prior] : [], (bytes, location) => {
           if (!collect) return;
-          const row = decode(bytes, context); if (!row) return;
+          const row = decodeInspectionEntry(bytes, context, this.profile.generation!); if (!row) return;
           const hash = hashJSON(row), previous = identities.get(row.id);
           if (previous && previous.hash !== hash) return fail();
           if (!previous && identities.size >= maxIdentities) throw new InspectionBoundError({ kind: "retained-identities", limit: maxIdentities, observed: identities.size + 1 });

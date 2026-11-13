@@ -215,6 +215,12 @@ export function legacyEntries(segments: readonly LegacySegment[], options: { str
   return [...rows.values()];
 }
 
+function inspectArchivedSegment(inspect: LegacySegmentInspector, file: string, context: { source: string; path: string; local: boolean; commit: string }, prior: LegacyCheckpoint | undefined, expected: { offset: number; hash: string; tailBytes: number }): LegacySegment {
+  const data = inspect(file, context, prior);
+  if (data.offset !== expected.offset || data.hash !== expected.hash || data.tailBytes || expected.tailBytes) failure();
+  return data;
+}
+
 /** Raw authoritative inputs only: never constructs a legacy store, opens its index or performs network I/O. */
 function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: LegacySegmentInspector): LegacySegment[] {
   const root = realPath(homeM);
@@ -268,9 +274,9 @@ function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: Legac
       for (const prior of new Set([...(options.previousCommit ? [options.previousCommit] : []), ...[...checkpoints.values()].filter(row => row.source === remoteSource).map(row => row.commit!)])) if (!archivedAncestor(root, options.generation, prior, commit, options.reader?.sourceByteLimit)) failure();
       for (const segment of manifest.segments) {
         if (inspect) {
-          const data = inspect(join(archiveDir(root, options.generation, commit), segment.path), { source: remoteSource, path: segment.path, local: false, commit }, checkpoints.get(`${remoteSource}:${segment.path}`));
-          if (data.offset !== segment.offset || data.hash !== segment.hash || data.tailBytes || segment.tailBytes) failure();
-          result.push(data); continue;
+          result.push(inspectArchivedSegment(inspect, join(archiveDir(root, options.generation, commit), segment.path),
+            { source: remoteSource, path: segment.path, local: false, commit }, checkpoints.get(`${remoteSource}:${segment.path}`), segment));
+          continue;
         }
         const reader = options.reader ?? new SegmentReader(), incremental = options.incremental && !limits;
         const data = reader.read(join(archiveDir(root, options.generation, commit), segment.path), incremental ? checkpoints.get(`${remoteSource}:${segment.path}`) : undefined, !incremental, true);
