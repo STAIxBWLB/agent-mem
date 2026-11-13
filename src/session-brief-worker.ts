@@ -64,7 +64,7 @@ if (import.meta.main) {
     if (line === undefined) stop();
     const first = JSON.parse(line) as Record<string, unknown>;
     type Scan = { cwd: string; base: string; transcript: unknown; policy?: BriefOptions["policy"]; deadlineAt: number; event?: "Stop" | "SessionEnd" };
-    type DrainOptions = BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean; hookStartAt?: number };
+    type DrainOptions = BriefOptions & { current: string; event: string; identity?: unknown; deadlineAt: number; ownedGroup: boolean; hookStartAt?: number; session?: string };
     const scan = first.scan as Scan | undefined;
     const scanEvent = scan?.event === "Stop" || scan?.event === "SessionEnd" ? scan.event : undefined;
     const deadlineAt = scan?.deadlineAt ?? first.deadlineAt;
@@ -106,7 +106,10 @@ if (import.meta.main) {
         drain({ startMs: Math.round(now() - (options.hookStartAt ?? end)), drained: drainedCount });
         drainStarted = true;
       }
-      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining, replayBudget: budget }, (input, receipt) => {
+      const session = typeof options.session === "string" && /^[a-f0-9]{16}$/.test(options.session) ? options.session : undefined;
+      // #385 route A: attribute this session's non-project rows. ponytail: a non-project cwd's own hook still drains its own rows
+      // under that directory's fallback key (memory@..., tmp@...), which files them in a junk project; known limit, upgrade: defer them to route A.
+      const drained = await drainHookCaptures({ ...options, base: options.base!, project, expectedScope, timeRemaining: remaining, replayBudget: budget, session }, (input, receipt) => {
         store ??= new CaptureStore({ memoryDir: options.base!, project, busyTimeoutMs: 0, cwd: options.cwd });
         const appended = store.append(input, { receipt });
         summaryThrough = Math.max(summaryThrough, store.briefCommitId);
