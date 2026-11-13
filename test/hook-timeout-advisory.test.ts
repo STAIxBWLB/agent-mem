@@ -174,3 +174,23 @@ test("#362 run 42996734319: an invalid owned descendant receipt names its failed
     metricWallMs: 131.2, rssScope: "other", rssSources: sources, abandonedChildren: 3, advisoryEligible: true });
   expect(JSON.stringify(record)).not.toContain("private");
 });
+
+test("#367 option A: a deferred plain call logs one bounded numeric guard record", async () => {
+  const { plainDeferralRecord, verifyHookProcessObservation } = await import("../scripts/hook-process-check.ts");
+  // Recorded shapes: a post-metadata late guard under 5 ms (the #221 second pre-spawn exit) and a precheck deadline skip.
+  const late = [{ phase: "preload" as const, pid: 10, loads: 1 }, { phase: "precheck" as const, pid: 10, loads: 1, remainingUs: 7462, host: 0 },
+    { phase: "late_check" as const, pid: 10, loads: 1, remainingUs: 2063, host: 0 }];
+  const skip = [{ phase: "preload" as const, pid: 10, loads: 1 }, { phase: "precheck" as const, pid: 10, loads: 1, remainingUs: 1812, host: 0 },
+    { phase: "deadline_skip" as const, pid: 10, loads: 1, remainingUs: 1812, host: 0 }];
+  expect(verifyHookProcessObservation("PostToolUse", [], late, true)).toEqual({ deferred: true });
+  expect(verifyHookProcessObservation("PostToolUse", [], skip, true)).toEqual({ deferred: true });
+  const record = plainDeferralRecord({ event: "PostToolUse", invocation: 11, evidence: late, wallMs: 153.4812345, metricWallMs: 129.12834375, slow: true });
+  expect(record).toEqual({ diagnostic: "plain-deferral/v1", event: "PostToolUse", invocation: 11, guard: "late_check", remainingUs: 2063, precheckRemainingUs: 7462,
+    wallMs: 153.481, metricWallMs: 129.128, slow: true });
+  expect(plainDeferralRecord({ event: "PostToolUse", invocation: 3, evidence: skip, wallMs: 140, metricWallMs: undefined, slow: null }))
+    .toMatchObject({ guard: "deadline_skip", remainingUs: 1812, precheckRemainingUs: 1812, metricWallMs: null, slow: null });
+  // Only numbers, booleans, null and fixed enums: an unexpected event string or a non-finite value never reaches the log.
+  const odd = plainDeferralRecord({ event: "/private/path", invocation: Number.NaN, evidence: [], wallMs: Number.POSITIVE_INFINITY, metricWallMs: Number.NaN, slow: false });
+  expect(odd).toEqual({ diagnostic: "plain-deferral/v1", event: "other", invocation: null, guard: null, remainingUs: null, precheckRemainingUs: null, wallMs: null, metricWallMs: null, slow: false });
+  expect(JSON.stringify(odd)).not.toContain("private");
+});

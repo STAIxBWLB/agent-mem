@@ -70,6 +70,19 @@ export function verifyHookProcessObservation(event: "PostToolUse" | "SessionStar
   return { deferred: true };
 }
 
+/** #367 option A: one bounded numeric record per deferred plain hook call, so a recurrence separates the precheck
+ * `deadline_skip` exit from the post-metadata `late_check` exit. Numbers and fixed enums only; no paths or row text. */
+export function plainDeferralRecord(input: { event: string; invocation: number; evidence: readonly HookProcessEvidence[]; wallMs: number;
+  metricWallMs: number | undefined; slow: boolean | null }) {
+  const late = input.evidence.find(row => row.phase === "late_check"), skipped = input.evidence.find(row => row.phase === "deadline_skip");
+  const precheck = input.evidence.find(row => row.phase === "precheck");
+  const guard = late ? "late_check" : skipped ? "deadline_skip" : precheck ? "precheck" : null;
+  const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
+  return { diagnostic: "plain-deferral/v1" as const, event: input.event === "PostToolUse" ? "PostToolUse" : "other", invocation: Number.isSafeInteger(input.invocation) ? input.invocation : null,
+    guard, remainingUs: numeric((late ?? skipped ?? precheck)?.remainingUs), precheckRemainingUs: numeric(precheck?.remainingUs),
+    wallMs: numeric(input.wallMs), metricWallMs: numeric(input.metricWallMs), slow: input.slow };
+}
+
 /** Cold/pressured startup cannot turn most ordinary samples into worker-free measurements. */
 export function verifyPlainHookDeferrals(count: number, samples: number): void {
   if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(samples) || samples <= 0 || count > Math.floor(samples / 4)) throw new Error("plain optional-worker deferral exceeded 25 percent");
