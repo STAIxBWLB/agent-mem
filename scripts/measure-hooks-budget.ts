@@ -18,7 +18,7 @@ import { readMetrics } from "../src/memory/capacity.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
-import { hookTimeoutProbe } from "../test/fakes/hooks-timeout-probe.ts";
+import { hookTimeoutProbe, timeoutWallStallValues } from "../test/fakes/hooks-timeout-probe.ts";
 import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
 import { singleAttemptTiming, workloadBudget, reportBudgetAdvisory } from "./hook-timing-check.ts";
 
@@ -341,7 +341,7 @@ try {
       try {
         const value = await hookTimeoutProbe(timeoutFixture, event, false,{run:++physicalRun,logicalRun:event==="SessionStart"?1:2});
         if (!(value.rssMB < RSS_MB)) throw new Error(`actual ${event} timeout exceeded R2 peak: wall=${value.wallMs}, rss=${value.rssMB}, source=${value.rssSource}, sources=${JSON.stringify(value.rssSources)}`);
-        if (!(value.wallMs < WALL_MS)) throw new BudgetStall(`actual ${event} timeout wall below 150 ms`, { wallMs: value.wallMs, rssMB: value.rssMB, limitMs: WALL_MS, rssSource: value.rssSource, rssSourcesJson: JSON.stringify(value.rssSources) });
+        if (!(value.wallMs < WALL_MS)) { const stall = timeoutWallStallValues(event, value, WALL_MS); throw new BudgetStall(stall.message, stall.values); }
         return value;
       } finally { timeoutFixture.close(); }
     }, budgetGroupRecorder<Awaited<ReturnType<typeof hookTimeoutProbe>>>(`actual-${event}-timeout`, stalledAttempts));
