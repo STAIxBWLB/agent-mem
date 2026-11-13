@@ -79,6 +79,28 @@ for (const profile of ["shared-v1", "generation", "sharded", "sharded-v2"] as co
   expect(await actualDeclines(store)).toEqual(result.declined.map(row => row.id));
 });
 
+test("generation inspection explains a completed sync refusal above 8 MiB and below the outbound row cap", async () => {
+  const f = fixture(), generation = "8".repeat(32); f.close();
+  await migrate({ memoryDir: f.home, generation, mode: "apply", authorizedPerson: true, tty: true });
+  const store = new MemoryStore({ memoryDir: f.home, profile: { generation }, deferPromotions: true });
+  cleanup.push(() => store.close());
+  // A future content field is valid and must be screened; one outbound row does not bound its bytes.
+  const body = { schema: "agent-hub.memory/v1", op: "note", at: new Date().toISOString(), machine: store.machine.id,
+    project: "example.test/team/public", scope: "project", tier: "long", kind: "finding", peer: "fixture", source: "person",
+    text: "ordinary bounded-row fixture", about: [], future: "x".repeat(9 * 1024 * 1024) };
+  const id = entryId(body as never), own = join(store.dir, "log", `${store.machine.id}.jsonl`);
+  appendFileSync(own, JSON.stringify({ ...body, id }) + "\n");
+  expect(lstatSync(own).size).toBeGreaterThan(8 * 1024 * 1024);
+  let visibilityChecks = 0;
+  const actual = await syncMemory(store, { remote: "https://example.invalid/private.git", screen: () => false,
+    visibility: async () => { visibilityChecks++; return "private"; } });
+  expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("declines 1") });
+  expect(visibilityChecks).toBe(0);
+  const result = inspectSyncPolicy(store, { screen: () => false });
+  expect(result.complete).toBe(true);
+  if (result.complete) expect(result.declined.map(row => row.id)).toEqual([id]);
+});
+
 test("full declined set beyond eight IDs and stable sorted fingerprint are not truncated", () => {
   const f = fixture(), ids = Array.from({ length: 12 }, (_, index) => note(f.store, `private-word row ${index}`));
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private-word"] }));
