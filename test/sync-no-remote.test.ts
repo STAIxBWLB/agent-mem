@@ -30,7 +30,7 @@ for (const profile of ["shared-v1", "generation", "sharded"] as const) {
     if (profile !== "shared-v1") {
       const memoryDir = store.dir; store.close();
       if (profile === "generation") {
-        expect(await migrate({ memoryDir, generation, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
+        expect((await migrate({ memoryDir, generation, mode: "apply", authorizedPerson: true, tty: true })).profile.kind).toBe("generation");
         store = new MemoryStore({ home, profile: { generation }, deferPromotions: true });
       } else {
         expect(await migrateShards({ memoryDir, generation, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
