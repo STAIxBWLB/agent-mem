@@ -115,3 +115,62 @@ test("a census cannot accept disappearance observed after the same exit deadline
 test("an entered witness with an empty PID receipt is contradictory evidence", () => {
   expect(() => timeoutProbeBranch({ ...spawnedTimeoutObservation(), entered: true })).toThrow("entered witness has no descendant PID receipt");
 });
+
+// #362 (task 237 attribution): recorded receipt shapes from hosted runs.
+test("#362 run 42957548722: a precheck then a negative late_check with no spawn is the pre-admission zero-child branch", async () => {
+  const { timeoutProbeBranch } = await import("./fakes/hooks-timeout-probe.ts");
+  const recorded = { ...timeoutObservation(), evidence: [
+    { phase: "preload" as const, pid: 10, loads: 1 },
+    { phase: "precheck" as const, pid: 10, loads: 1, remainingUs: 7462, host: 0 },
+    { phase: "late_check" as const, pid: 10, loads: 1, remainingUs: -2063, host: 0 }] };
+  expect(timeoutProbeBranch(recorded)).toBe("pre-admission");
+  const late = recorded.evidence[2]!, precheck = recorded.evidence[1]!, preload = recorded.evidence[0]!;
+  // A non-negative remainder, a missing or later precheck, a duplicate late guard, a spawn attempt, an entry or a control all stay refused.
+  for (const evidence of [[preload, precheck, { ...late, remainingUs: 0 }], [preload, late], [preload, late, precheck], [preload, precheck, late, late],
+    [preload, precheck, { ...late, pid: 11 }]])
+    expect(() => timeoutProbeBranch({ ...recorded, evidence })).toThrow();
+  expect(() => timeoutProbeBranch({ ...recorded, entered: true })).toThrow();
+  expect(() => timeoutProbeBranch({ ...recorded, control: true })).toThrow();
+  expect(() => timeoutProbeBranch({ ...recorded, lifecycle: [{ phase: "spawn-attempt", parentPid: 10, childPid: 0, kind: "native", atMs: 1 }] })).toThrow();
+});
+
+test("#362 runs 42934443076 and 43173840052 a2: the timeout wall stall carries the measured handler wall, never the outer wall", async () => {
+  const { timeoutWallStallValues } = await import("./fakes/hooks-timeout-probe.ts");
+  const { budgetGroup, BudgetStall } = await import("../scripts/budget-attempt.ts");
+  const sources = { vmhwm: 0, vmpeakBound: 0, platformRusage: 2, rawFallback: 0, unavailable: 0 };
+  // 43173840052 a2: outer 192.831 ms; handler wall from its metric row.
+  const measured = timeoutWallStallValues("SessionStart", { wallMs: 192.831, metricWallMs: 118.4, rssMB: 42.7, rssSource: "max-production-and-platform-rusage", rssSources: sources }, 150);
+  expect(measured.message).toBe("actual SessionStart timeout wall below 150 ms");
+  expect(measured.values).toMatchObject({ wallMs: 192.831, metricWallMs: 118.4, limitMs: 150 });
+  // No metric row: the field stays absent (never 0, never the outer wall), so the group helper still fails closed.
+  for (const metricWallMs of [undefined, Number.NaN, -1]) expect("metricWallMs" in timeoutWallStallValues("SessionStart", { wallMs: 154.25, metricWallMs, rssMB: 42.7, rssSources: sources }, 150).values).toBe(false);
+  const baseline = { cpuMs: 10, spawnMs: 10, ioMs: 10, factor: 2 };
+  const normal = { cpuMs: 10, spawnMs: 10, ioMs: 10, ioSamplesMs: [10, 10, 10] as const, checksum: "55c7e25571a69216de25162f191bb2847201a09ee7efe46b5bada034acc695d5" };
+  const outcome = async (values: Record<string, string | number | boolean | null>) => {
+    const seen: string[] = [];
+    await budgetGroup("hook-workloads", () => { throw new BudgetStall("actual SessionStart timeout wall below 150 ms", values); }, () => ({ wallPass: true, rssPass: true }),
+      { env: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" }, baseline, probe: () => normal, record: attempt => { seen.push(attempt.outcome); } }).catch(() => {});
+    return seen[0];
+  };
+  expect(await outcome(measured.values)).toBe("wall-miss");
+  expect(await outcome(timeoutWallStallValues("SessionStart", { wallMs: 154.25, rssMB: 42.7, rssSources: sources }, 150).values)).toBe("wall-max-miss");
+  expect(await outcome(timeoutWallStallValues("SessionStart", { wallMs: 400, metricWallMs: 320, rssMB: 42.7, rssSources: sources }, 150).values)).toBe("wall-max-miss");
+});
+
+test("#362 run 42996734319: an invalid owned descendant receipt names its failed predicate with bounded numeric fields", async () => {
+  const { timeoutDescendantPrerequisite, timeoutDescendantRefusal, timeoutDescendantReceipt } = await import("./fakes/hooks-timeout-probe.ts");
+  const sources = { vmhwm: 0, vmpeakBound: 0, platformRusage: 2, rawFallback: 0, unavailable: 0 };
+  const receipt = timeoutDescendantReceipt("", 3), metric = { wallMs: 131.2, rssScope: "owned-images", rssSources: sources, abandonedChildren: 3 };
+  expect(timeoutDescendantPrerequisite({ control: false, receipt, metric })).toBeUndefined();
+  expect(timeoutDescendantPrerequisite({ control: true, receipt, metric })).toBe("control-run");
+  expect(timeoutDescendantPrerequisite({ control: false, receipt: timeoutDescendantReceipt("1 2 3", 3), metric })).toBe("receipt-not-incomplete");
+  expect(timeoutDescendantPrerequisite({ control: false, receipt, metric: { ...metric, wallMs: Number.NaN } })).toBe("metric-wall-invalid");
+  expect(timeoutDescendantPrerequisite({ control: false, receipt, metric: { ...metric, rssScope: "process" } })).toBe("rss-scope-not-owned-images");
+  expect(timeoutDescendantPrerequisite({ control: false, receipt, metric: { ...metric, rssSources: { vmhwm: "x" } } })).toBe("rss-sources-invalid");
+  const record = timeoutDescendantRefusal({ event: "SessionStart", predicate: "advisory-refused", branch: "admitted-blocked", control: false, expected: 3, workers: 3,
+    receipt, metric: { ...metric, rssScope: "/private/path", rssSources: { ...sources, extra: "text" } }, advisoryEligible: true });
+  expect(record).toEqual({ diagnostic: "timeout-descendant-refusal/v1", event: "SessionStart", predicate: "advisory-refused", branch: "admitted-blocked", control: false,
+    expectedOwnedChildren: 3, observedOwnedChildren: 3, receipt: { pids: 0, valid: true, incomplete: true, complete: false },
+    metricWallMs: 131.2, rssScope: "other", rssSources: sources, abandonedChildren: 3, advisoryEligible: true });
+  expect(JSON.stringify(record)).not.toContain("private");
+});

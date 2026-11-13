@@ -52,6 +52,36 @@ export async function timeoutOwnedGroupBarrier(groups: readonly number[], remain
 }
 
 export type TimeoutBranch = "admitted-blocked" | "pre-admission" | "spawned-not-entered";
+type DescendantMetric = { wallMs?: number; rssScope?: string; rssSources?: unknown; abandonedChildren?: number };
+/** #362: the first failed prerequisite of the owned-descendant advisory, by name, or undefined when all hold. */
+export function timeoutDescendantPrerequisite(input: { control: boolean; receipt: ReturnType<typeof timeoutDescendantReceipt>; metric: DescendantMetric }): string | undefined {
+  const { metric } = input;
+  if (input.control) return "control-run";
+  if (!input.receipt.incomplete) return "receipt-not-incomplete";
+  if (!(Number.isFinite(metric.wallMs) && metric.wallMs! >= 0)) return "metric-wall-invalid";
+  if (metric.rssScope !== "owned-images") return "rss-scope-not-owned-images";
+  if (!validRssSources(metric.rssSources as never)) return "rss-sources-invalid";
+  return undefined;
+}
+/** #362: the bounded numeric record logged before an `invalid owned descendant receipt` refusal. */
+export function timeoutDescendantRefusal(input: { event: string; predicate: string; branch: TimeoutBranch; control: boolean; expected: number; workers: number;
+  receipt: ReturnType<typeof timeoutDescendantReceipt>; metric: DescendantMetric; advisoryEligible: boolean }) {
+  const sources = input.metric.rssSources && typeof input.metric.rssSources === "object" ? input.metric.rssSources as Record<string, unknown> : {};
+  const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
+  return { diagnostic: "timeout-descendant-refusal/v1", event: input.event, predicate: input.predicate, branch: input.branch, control: input.control,
+    expectedOwnedChildren: input.expected, observedOwnedChildren: input.workers,
+    receipt: { pids: Math.min(input.receipt.pids.length, 64), valid: input.receipt.valid, incomplete: input.receipt.incomplete, complete: input.receipt.complete },
+    metricWallMs: numeric(input.metric.wallMs), rssScope: input.metric.rssScope === "owned-images" ? "owned-images" : input.metric.rssScope === undefined ? null : "other",
+    rssSources: Object.fromEntries(["vmhwm", "vmpeakBound", "platformRusage", "rawFallback", "unavailable"].map(key => [key, numeric(sources[key])])),
+    abandonedChildren: numeric(input.metric.abandonedChildren), advisoryEligible: input.advisoryEligible };
+}
+/** #362 (task 237): the timeout wall stall carries the measured handler wall when a metric row exists. Without one it stays
+ * absent, so the group helper keeps its fail-closed `wall-max-miss`. Outer time is never substituted for handler time. */
+export function timeoutWallStallValues(event: string, value: { wallMs: number; rssMB: number; rssSource?: string; rssSources?: unknown; metricWallMs?: number }, limitMs: number): { message: string; values: Record<string, string | number | boolean | null> } {
+  const values: Record<string, string | number | boolean | null> = { wallMs: value.wallMs, rssMB: value.rssMB, limitMs, rssSource: value.rssSource ?? null, rssSourcesJson: JSON.stringify(value.rssSources) };
+  if (typeof value.metricWallMs === "number" && Number.isFinite(value.metricWallMs) && value.metricWallMs >= 0) values.metricWallMs = value.metricWallMs;
+  return { message: `actual ${event} timeout wall below ${limitMs} ms`, values };
+}
 /** Missing coverage is never inferred from a missing file. The caller separately proves
  * output, durable capture, metrics and a fresh census under the unchanged exit barrier. */
 export function timeoutProbeBranch(input: {
@@ -70,9 +100,14 @@ export function timeoutProbeBranch(input: {
     && evidence.filter(row => row.phase === "attempt" || row.phase === "returned").every(row => row.exact === 1), "timeout spawn observation incomplete");
   if (input.control) check(workers.length === input.expected && input.entered && receipt.complete && receipt.pids.length === input.expected, "timeout control did not reach every owned blocking command");
   if (workers.length === 0) {
-    const expired = evidence.some(row => Number.isFinite(row.remainingUs) && (
+    // #362 (task 237): the post-metadata pre-spawn guard (`late_check`) returning after its deadline is the same zero-child
+    // branch as `deadline_skip`, but only with this invocation's earlier precheck and a measured negative remainder.
+    const precheck = evidence.findIndex(row => row.phase === "precheck" && Number.isFinite(row.remainingUs));
+    const expired = evidence.some((row, index) => Number.isFinite(row.remainingUs) && (
       row.phase === "deadline_skip" && row.host === 0 && row.remainingUs! < 5000
-      || row.phase === "session-native-deadline-skip" && row.remainingUs! <= 1000));
+      || row.phase === "session-native-deadline-skip" && row.remainingUs! <= 1000
+      || row.phase === "late_check" && row.remainingUs! < 0 && precheck >= 0 && precheck < index
+        && evidence.filter(other => other.phase === "late_check").length === 1));
     check(!input.control && expired && life.length === 0 && !input.entered && receipt.pids.length === 0, "timeout pre-admission guard evidence unavailable");
     return "pre-admission";
   }
@@ -181,19 +216,24 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
     }
     let descendantReceiptAdvisory = false;
     if (!receipt.complete && branch === "admitted-blocked" && workers.length === expected) {
-      check(!functional && receipt.incomplete && Number.isFinite(metric.wallMs) && metric.wallMs! >= 0
-        && metric.rssScope === "owned-images" && validRssSources(metric.rssSources), "invalid owned descendant receipt");
+      const refusal = (predicate: string) => {
+        // #362: bounded numeric fields only; the refusal itself is unchanged.
+        console.log(JSON.stringify(timeoutDescendantRefusal({ event, predicate, branch, control: functional, expected, workers: workers.length, receipt, metric, advisoryEligible: predicate === "advisory-refused" })));
+        return "invalid owned descendant receipt";
+      };
+      const predicate = timeoutDescendantPrerequisite({ control: functional, receipt, metric });
+      check(predicate === undefined, predicate === undefined ? "" : refusal(predicate));
       descendantReceiptAdvisory = reportBudgetAdvisory("owned-descendant-receipt", `timeout ${event}`, {
         telemetryValid: true, survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren, receiptIncomplete: true,
       });
-      check(descendantReceiptAdvisory, "invalid owned descendant receipt");
+      if (!descendantReceiptAdvisory) check(false, refusal("advisory-refused"));
     }
     const rss = functional || branch !== "admitted-blocked" || workers.length !== expected ? measuredHookRss(metric, cliRssMB)
       : measuredBudgetHookRss(metric, cliRssMB, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `timeout ${event}`);
     // Every invocation reports coverage, including legitimate refusals before fixture entry.
     console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, parentPid: result.pid, control: functional, branch,
       observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0 }));
-    return { event, branch, wallMs, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
+    return { event, branch, wallMs, metricWallMs: metric.wallMs!, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
   } finally {
     // Only a fresh PID/group/command match from this probe can be signalled on failure.
     for (const nativePid of nativePids.filter(alive)) {
