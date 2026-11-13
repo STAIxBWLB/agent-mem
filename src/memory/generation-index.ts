@@ -374,9 +374,13 @@ export class GenerationIndex {
           readInspectionRow(source.source.file, source.location, source.source.stamp)))));
       } catch (error) {
         // A visitor may append through another writer. Preserve the final-check API without retaining stale row bodies.
+        identities.clear(); files.clear();
         return () => { throw error; };
       }
-      if (row.id !== id || hashJSON(row) !== source.hash) return () => unavailable();
+      if (row.id !== id || hashJSON(row) !== source.hash) {
+        identities.clear(); files.clear();
+        return () => unavailable();
+      }
       visit(row as unknown as Record<string, unknown>);
     }
     identities.clear(); // Final revalidation needs source proofs only, not canonical row identities across overlays.
