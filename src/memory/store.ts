@@ -1746,7 +1746,7 @@ export class MemoryStore {
   }
 
   /** Canonical generation outbound sources only; no refresh, rebind or derived-state write.
-   * Call the returned bounded recheck after visiting all opened targets, before declaring completeness.
+   * maxBytes bounds metadata, not streamed source bodies. Call the source recheck after all opened targets.
    */
   inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
     if (!this.generationIndex) throw Object.assign(new Error("outbound generation input unavailable"), { code: "input-unavailable" });

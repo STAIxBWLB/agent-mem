@@ -6,10 +6,13 @@ import { isDeepStrictEqual } from "node:util";
 import { memoryGitArgv, memoryGitEnv, realPath } from "./platform.ts";
 import { canonicalJSON, fsyncDirectory, readProfileJSON, writeProfileJSON } from "./generation.ts";
 import { OP_CONTRACTS } from "./ops-contract.ts";
+import type { InspectionBound } from "./inspection-bound.ts";
 import { entryId, type Entry } from "./store.ts";
 
 export interface LegacyCheckpoint { source: string; path: string; offset: number; hash: string; commit?: string; tailBytes?: number; stamp?: string }
 export interface LegacySegment extends LegacyCheckpoint { bytes: Buffer; local: boolean; tailBytes: number; start?: number }
+/** A readonly body visitor returns pinned metadata only; source bytes are never retained by the bridge. */
+export type LegacySegmentInspector = (file: string, context: { source: string; path: string; local: boolean; commit?: string }, prior?: LegacyCheckpoint) => LegacySegment;
 export interface LegacySnapshotOptions {
   generation?: string;
   commit?: string;
@@ -40,7 +43,7 @@ function directory(path: string, optional = false): boolean {
 
 export class SegmentReadBudgetError extends Error {
   readonly code = "retained_read_budget";
-  constructor() { super("retained history unavailable within the read byte budget"); this.name = "SegmentReadBudgetError"; }
+  constructor(readonly bound?: InspectionBound) { super("retained history unavailable within the read byte budget"); this.name = "SegmentReadBudgetError"; }
 }
 export interface SegmentReadMetrics { bytesRead: number; bytesHashed: number; coldChanged: number }
 interface PrefixState { offset: number; hash: string; hasher: Hash; bytes: Buffer }
@@ -73,7 +76,8 @@ export class SegmentReader {
    * Upgrade with a separately budgeted catalog proof if valid profiles need a larger metadata frontier.
    */
   reserveSourceFiles(count: number): void {
-    if (!Number.isSafeInteger(count) || count < 0 || count > this.remainingFiles) throw new SegmentReadBudgetError();
+    if (!Number.isSafeInteger(count) || count < 0) failure();
+    if (count > this.remainingFiles) throw new SegmentReadBudgetError({ kind: "source-files", limit: this.sourceFileLimit!, observed: this.sourceFileLimit! - this.remainingFiles + count });
     this.remainingFiles -= count;
   }
   listFiles(dir: string): string[] {
@@ -92,7 +96,7 @@ export class SegmentReader {
     const stamp = statStamp(before), size = Number(before.size);
     if (prior && size < prior.offset) failure();
     if (!full && prior?.stamp === stamp) return { bytes: Buffer.alloc(0), start: prior.offset, offset: prior.offset, hash: prior.hash, tailBytes: size - prior.offset, stamp };
-    if (size > this.remainingSourceBytes) throw new SegmentReadBudgetError();
+    if (size > this.remainingSourceBytes) throw new SegmentReadBudgetError({ kind: "bytes", limit: this.sourceByteLimit!, observed: this.sourceBytes + size });
     this.remainingSourceBytes -= size; this.sourceBytes += size;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
@@ -109,7 +113,7 @@ export class SegmentReader {
       if (!read(end).equals(bytes) || fstatSync(fd, { bigint: true }).size < opened.size) failure();
       // Count physical nonblank source rows before any canonical source map can grow.
       if (this.remainingRows !== Infinity) for (const line of completeLines(bytes)) if (line.toString("utf8").trim()) {
-        if (this.remainingRows < 1) throw new SegmentReadBudgetError();
+        if (this.remainingRows < 1) throw new SegmentReadBudgetError({ kind: "rows", limit: this.sourceRows, observed: this.sourceRows + 1 });
         this.remainingRows--; this.sourceRows++;
       }
       const after = lstatSync(path, { bigint: true });
@@ -211,10 +215,17 @@ export function legacyEntries(segments: readonly LegacySegment[], options: { str
   return [...rows.values()];
 }
 
+function inspectArchivedSegment(inspect: LegacySegmentInspector, file: string, context: { source: string; path: string; local: boolean; commit: string }, prior: LegacyCheckpoint | undefined, expected: { offset: number; hash: string; tailBytes: number }): LegacySegment {
+  const data = inspect(file, context, prior);
+  if (data.offset !== expected.offset || data.hash !== expected.hash || data.tailBytes || expected.tailBytes) failure();
+  return data;
+}
+
 /** Raw authoritative inputs only: never constructs a legacy store, opens its index or performs network I/O. */
-function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[] {
+function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: LegacySegmentInspector): LegacySegment[] {
   const root = realPath(homeM);
   directory(root);
+  if (inspect && (options.incremental || options.limits)) failure();
   const checkpoints = checkpointMap(options.checkpoints), limits = options.limits === undefined ? undefined : checkpointMap(options.limits);
   const result: LegacySegment[] = [];
   const accept = (source: string, path: string, complete: Buffer, commit?: string, tailBytes = 0, stamp?: string) => {
@@ -242,6 +253,10 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
       const path = `${folder}/${name}`;
       if (!segmentPath(path)) failure();
       if (folder === "local" && name !== `${machineId}.jsonl`) continue;
+      if (inspect) {
+        result.push(inspect(join(dir, name), { source: diskSource, path, local: folder === "local" }, checkpoints.get(`${diskSource}:${path}`)));
+        continue;
+      }
       const reader = options.reader ?? new SegmentReader();
       const incremental = options.incremental && !limits;
       const data = reader.read(join(dir, name), incremental ? checkpoints.get(`${diskSource}:${path}`) : undefined, !incremental);
@@ -258,6 +273,11 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
       directory(join(archiveDir(root, options.generation, commit), "log"));
       for (const prior of new Set([...(options.previousCommit ? [options.previousCommit] : []), ...[...checkpoints.values()].filter(row => row.source === remoteSource).map(row => row.commit!)])) if (!archivedAncestor(root, options.generation, prior, commit, options.reader?.sourceByteLimit)) failure();
       for (const segment of manifest.segments) {
+        if (inspect) {
+          result.push(inspectArchivedSegment(inspect, join(archiveDir(root, options.generation, commit), segment.path),
+            { source: remoteSource, path: segment.path, local: false, commit }, checkpoints.get(`${remoteSource}:${segment.path}`), segment));
+          continue;
+        }
         const reader = options.reader ?? new SegmentReader(), incremental = options.incremental && !limits;
         const data = reader.read(join(archiveDir(root, options.generation, commit), segment.path), incremental ? checkpoints.get(`${remoteSource}:${segment.path}`) : undefined, !incremental, true);
         if (data.offset !== segment.offset || data.hash !== segment.hash || data.tailBytes) failure();
@@ -268,6 +288,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions): LegacySegment[
   }
   const returned = new Set(result.map(key));
   for (const receipt of [...checkpoints.values(), ...(limits?.values() ?? [])]) if (!returned.has(key(receipt))) failure();
+  if (inspect) return result; // The visitor strictly validates each complete row and every checkpoint prefix while streaming.
   // Checkpointed complete prefixes were already validated; their full hashes prove unchanged bytes.
   // Only newly completed suffixes need parsing on an incremental read.
   const suffixes = result.map(segment => {
@@ -285,7 +306,7 @@ function capturedIdentity(path: string, maximum?: number): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
-    if (maximum !== undefined && (before.size > maximum || stat.size > maximum)) throw new SegmentReadBudgetError();
+    if (maximum !== undefined && (before.size > maximum || stat.size > maximum)) throw new SegmentReadBudgetError({ kind: "metadata-bytes", limit: maximum, observed: Math.max(before.size, stat.size) });
     if (stat.dev !== before.dev || stat.ino !== before.ino || stat.size > (maximum ?? 4096)) failure();
     if (maximum !== undefined && (stat.size !== before.size || stat.mtimeMs !== before.mtimeMs || stat.ctimeMs !== before.ctimeMs)) failure();
     const bytes = Buffer.alloc(stat.size);
@@ -327,6 +348,10 @@ function head(homeM: string, generation: string, maximumArchiveBytes?: number, m
 export function readLegacySnapshot(homeM: string, options: LegacySnapshotOptions = {}): LegacySegment[] {
   try { return snapshot(homeM, options); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
+/** Read-only enumeration reuses the legacy frontier checks without retaining source bodies or refreshing an index. */
+export function inspectLegacySnapshot(homeM: string, options: LegacySnapshotOptions, inspect: LegacySegmentInspector): LegacySegment[] {
+  return snapshot(homeM, options, inspect);
+}
 export function legacyHead(homeM: string, generation: string, maximumArchiveBytes?: number, maximumArchiveSegments?: number): string | undefined {
   try { return head(homeM, generation, maximumArchiveBytes, maximumArchiveSegments); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
@@ -351,7 +376,7 @@ function archived(root: string, generation: string, commit: string, maximumBytes
   const file = join(archiveDir(root, generation, commit), "snapshot.json");
   const value = (maximumBytes === undefined ? readProfileJSON(file, 32 * 1024 * 1024) : JSON.parse(capturedIdentity(file, Math.min(maximumBytes, 32 * 1024 * 1024)))) as LegacyArchive | undefined;
   if (!value || value.schema !== "agent-mem.legacy-snapshot/v1" || value.generation !== generation || value.commit !== commit || value.previousCommit !== undefined && !commitId(value.previousCommit) || !Array.isArray(value.segments)) failure();
-  if (maximumSegments !== undefined && value.segments.length > maximumSegments) throw new SegmentReadBudgetError();
+  if (maximumSegments !== undefined && value.segments.length > maximumSegments) throw new SegmentReadBudgetError({ kind: "source-files", limit: maximumSegments, observed: value.segments.length });
   const paths = new Set<string>();
   for (const segment of value.segments) {
     if (!segment || !segmentPath(segment.path) || !segment.path.startsWith("log/") || paths.has(segment.path) || !Number.isSafeInteger(segment.offset) || segment.offset < 0 || !/^[a-f0-9]{64}$/.test(segment.hash) || !Number.isSafeInteger(segment.tailBytes) || segment.tailBytes < 0) failure();

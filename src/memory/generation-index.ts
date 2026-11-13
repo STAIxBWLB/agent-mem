@@ -7,9 +7,11 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevision, writeProfileJSON, type BoundProfile, generationDescriptor, readSelector, validateVaultLinkRow, type VaultLink, rebindPublicPruneProfile } from "./generation.ts";
-import { checkedEntry, completeLines, legacyEntries, legacyHead, readLegacySnapshot, SegmentReader, SegmentReadBudgetError, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
+import { checkedEntry, completeLines, legacyEntries, legacyHead, inspectLegacySnapshot, type LegacySegmentInspector, readLegacySnapshot, SegmentReader, SegmentReadBudgetError, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
+import { InspectionBoundError, type InspectionBound } from "./inspection-bound.ts";
+import { InspectionStreamError, readInspectionRow, visitInspectionFile, type InspectionLocation } from "./inspection-stream.ts";
 
 const FOREIGN_TABLES = ["generation_foreign_inputs", "generation_foreign_rows", "generation_foreign_targets"] as const;
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -51,15 +53,47 @@ export function explicitExpirySnapshot(rows: readonly PruneSourceRow[]): PruneSn
 }
 
 /** Exact source-presence reducer shared by indexing and migration proof validation. */
-export function coalesceGenerationSource(prior: PruneSourceRow | undefined, row: Entry, source: { source: string; local: boolean }): PruneSourceRow {
-  if (prior && canonicalJSON(prior.row) !== canonicalJSON(row)) return fail();
+type GenerationPresence = Omit<PruneSourceRow, "row">;
+/** Full identity is checked by the caller; placement/origin reduction stays single-sourced. */
+function coalesceGenerationPresence(prior: GenerationPresence | undefined, row: { op: Entry["op"]; tier?: string }, source: { source: string; local: boolean }): GenerationPresence {
   const local = source.local || row.op === "settle" || row.op === "note" && row.tier === "short";
   const publicWitness = !local && source.source !== "legacy-local";
   const own = source.source === "generation";
-  return { row, placement: local && (!prior || prior.placement === "local") ? "local" : "synced",
+  return { placement: local && (!prior || prior.placement === "local") ? "local" : "synced",
     publicWitness: !!prior?.publicWitness || publicWitness,
     own: prior ? row.op === "note" ? prior.own === true && own : prior.own === true || own : own,
     legacy: !!prior?.legacy || !own };
+}
+export function coalesceGenerationSource(prior: PruneSourceRow | undefined, row: Entry, source: { source: string; local: boolean }): PruneSourceRow {
+  if (prior && canonicalJSON(prior.row) !== canonicalJSON(row)) return fail();
+  return { row, ...coalesceGenerationPresence(prior, row, source) };
+}
+
+function decodeInspectionEntry(bytes: Buffer, context: { source: string; path: string; local: boolean }, generation: string): Entry | undefined {
+  if (!bytes.length) return undefined;
+  const line = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  if (!line.trim()) { if (context.source === "generation") fail(); return undefined; }
+  const parsed: unknown = JSON.parse(line);
+  const op = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { op?: unknown }).op : undefined;
+  if (context.source === "generation" && op === "prune") {
+    const row = validatePruneRow(parsed, generation, context.local ? "local" : "synced");
+    if (context.path !== `${context.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
+    return undefined;
+  }
+  if (context.source === "generation" && op === "vault_link") {
+    const row = validateVaultLinkRow(parsed, generation, context.local ? "local" : "synced");
+    if (context.path !== `local/${row.machine}.jsonl`) fail();
+    return undefined;
+  }
+  return checkedEntry(parsed);
+}
+
+const INSPECTION_SOURCE_FILES = 20_000;
+/** Bound checkpoint metadata before materializing it; ordinary refresh/recovery keeps its existing query. */
+function sourceMetadataRows<T>(db: Database, sql: string, inspection: boolean): T[] {
+  const rows = db.query(sql + (inspection ? " LIMIT ?" : "")).all(...(inspection ? [INSPECTION_SOURCE_FILES + 1] : [])) as T[];
+  if (inspection && rows.length > INSPECTION_SOURCE_FILES) throw new InspectionBoundError({ kind: "source-files", limit: INSPECTION_SOURCE_FILES, observed: rows.length });
+  return rows;
 }
 
 /** Generation-owned derived state. Legacy files are inputs, never opened as a MemoryStore. */
@@ -90,16 +124,19 @@ export class GenerationIndex {
     if (!(db.query("PRAGMA table_info(generation_segments)").all() as { name: string }[]).some(row => row.name === "stamp")) db.run("ALTER TABLE generation_segments ADD COLUMN stamp TEXT");
     db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
-  private ownSegments(reader: SegmentReader = this.reader, full = this.fullCapture): LegacySegment[] {
-    const prior = this.options.db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'").all() as (LegacyCheckpoint & { stamp: string | null })[];
+  private ownSegments(reader: SegmentReader = this.reader, full = this.fullCapture, inspect?: LegacySegmentInspector): LegacySegment[] {
+    const prior = sourceMetadataRows<LegacyCheckpoint & { stamp: string | null }>(this.options.db, "SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'", !!inspect);
     return ["log", "local"].flatMap(folder => {
       const dir = join(this.profile.dir, folder);
       if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) return fail();
       return reader.listFiles(dir).filter(name => name.endsWith(".jsonl")).map(name => {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) return fail();
         const path = `${folder}/${name}`, checkpoint = prior.find(row => row.path === path);
-        const data = reader.read(join(dir, name), checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined, full);
-        return { ...data, source: "generation", path, local: folder === "local" };
+        const priorCheckpoint = checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined;
+        const context = { source: "generation", path, local: folder === "local" };
+        if (inspect) return inspect(join(dir, name), context, priorCheckpoint);
+        const data = reader.read(join(dir, name), priorCheckpoint, full);
+        return { ...data, ...context };
       });
     });
   }
@@ -115,10 +152,10 @@ export class GenerationIndex {
     }
     return fail();
   }
-  private capture(reader: SegmentReader = this.reader, readOnly = false): { segments: LegacySegment[]; commit?: string } {
+  private capture(reader: SegmentReader = this.reader, readOnly = false, inspect?: LegacySegmentInspector): { segments: LegacySegment[]; commit?: string } {
     const shardBefore = this.shardFrontier(readOnly), full = this.fullCapture || readOnly;
     const db = this.options.db;
-    const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
+    const previous = sourceMetadataRows<LegacyCheckpoint & { commit_id: string | null; stamp: string | null }>(db, "SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'", !!inspect);
     const initial = readProfileJSON(join(this.profile.dir, "migration-sources.json")) as { sources?: LegacyCheckpoint[]; legacyCommit?: string } | undefined;
     const bySource = new Map((initial?.sources ?? []).map(row => [`${row.source}:${row.path}`, row]));
     for (const { commit_id, stamp, ...row } of previous) bySource.set(`${row.source}:${row.path}`, { ...row, ...(stamp ? { stamp } : {}), ...(commit_id ? { commit: commit_id } : {}) });
@@ -133,11 +170,14 @@ export class GenerationIndex {
     // ponytail: read-only inspection accepts the indexed archived frontier only, without an ancestry walk.
     // Reopen after ordinary refresh, or add a bounded read-only ancestry witness to support a newer frontier.
     if (readOnly && (commit !== indexedCommit || checkpoints.some(row => row.source === "legacy-main" && row.commit !== commit))) return fail();
-    const legacy = this.profile.sharded
-      ? readShardLegacySnapshot(this.profile, { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !full && !this.options.limits && completeFrontier })
-      : readLegacySnapshot(legacyHome, { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints, ...(generation && prior ? { previousCommit: prior } : {}), ...(this.options.limits ? { limits: this.options.limits } : {}), reader, incremental: !full && !this.options.limits && completeFrontier });
-    const own = this.ownSegments(reader, full);
-    for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
+    const legacyOptions = { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}),
+      reader, incremental: !full && !this.options.limits && completeFrontier };
+    const generationOptions = { ...legacyOptions, ...(generation ? { generation } : {}), ...(commit ? { commit } : {}),
+      ...(generation && prior ? { previousCommit: prior } : {}) };
+    const legacy = this.profile.sharded ? readShardLegacySnapshot(this.profile, legacyOptions, inspect)
+      : inspect ? inspectLegacySnapshot(legacyHome, generationOptions, inspect) : readLegacySnapshot(legacyHome, generationOptions);
+    const own = this.ownSegments(reader, full, inspect);
+    for (const old of sourceMetadataRows<{ path: string; offset: number; hash: string }>(db, "SELECT path,offset,hash FROM generation_segments WHERE source='generation'", !!inspect)) {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
     }
@@ -260,13 +300,17 @@ export class GenerationIndex {
   }
   /** Inspect canonical outbound sources without refreshing/rebinding the derived index.
    * The returned check must run before the caller declares the whole opened-target inspection complete.
-   * Each capture accepts <=8MiB source bytes, <=20000 physical nonblank rows and <=16MiB segment reads.
-   * A fresh final capture verifies the same source again (<=32MiB segment verification I/O over both captures).
+   * Physical sources are streamed with no total byte/I/O or physical-row ceiling; canonical outbound rows
+   * are capped per target. Named single-row, retained-identity and metadata guards bound memory.
+   * A fresh final source capture rechecks every prefix/full hash after policy callbacks.
    */
   inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
-    const unavailable = (budget = false): never => { throw Object.assign(new Error("outbound generation input unavailable"), { code: budget ? "input-bound" : "input-unavailable" }); };
+    const unavailable = (budget = false, bound?: InspectionBound): never => {
+      throw Object.assign(new Error("outbound generation input unavailable"), { code: budget ? "input-bound" : "input-unavailable", ...(bound ? { bound } : {}) });
+    };
+    // maxBytes bounds metadata only; physical source bodies have no aggregate byte/I/O ceiling.
     if (!Number.isSafeInteger(limits.maxBytes) || limits.maxBytes < 0 || limits.maxBytes > 8 * 1024 * 1024
-      || !Number.isSafeInteger(limits.maxRows) || limits.maxRows < 0 || limits.maxRows > 20_000) return unavailable(true);
+      || !Number.isSafeInteger(limits.maxRows) || limits.maxRows < 0 || limits.maxRows > 20_000) return unavailable();
     if (this.profile.kind !== "generation" || !this.profile.generation || this.options.limits !== undefined) return unavailable();
     const profile = canonicalJSON(this.profile);
     const stamp = (file: string): string | undefined => {
@@ -292,43 +336,63 @@ export class GenerationIndex {
       }) });
     };
     const protectedRead = <T>(read: () => T): T => {
-      try { return read(); } catch (error) { return unavailable(error instanceof SegmentReadBudgetError); }
+      try { return read(); } catch (error) {
+        if (error instanceof SegmentReadBudgetError || error instanceof InspectionBoundError) return unavailable(true, error.bound);
+        if (error instanceof InspectionStreamError) return unavailable(error.code === "input-bound", error.bound);
+        return unavailable();
+      }
     };
     const before = protectedRead(epoch);
-    const capture = () => {
+    type Source = { file: string; stamp: string };
+    type Identity = { hash: string; presence: GenerationPresence; source: Source; location: InspectionLocation };
+    const identities = new Map<string, Identity>(), files = new Map<string, Source>();
+    // ponytail: retain bounded identity metadata, not row bodies; larger histories need a bounded proof format.
+    const maxIdentities = 65_536, maxSourceFiles = INSPECTION_SOURCE_FILES;
+    let selected = 0;
+    const outbound = (presence?: GenerationPresence) => presence?.placement === "synced" && (presence.own || presence.legacy) ? 1 : 0;
+    const capture = (collect: boolean) => {
       if (epoch() !== before) return fail();
-      const reader = new SegmentReader(2 * limits.maxBytes, { maxSourceBytes: limits.maxBytes, maxRows: limits.maxRows });
-      const input = this.capture(reader, true);
+      const reader = new SegmentReader(Infinity, { maxSourceBytes: limits.maxBytes, maxRows: maxSourceFiles });
+      const inspect: LegacySegmentInspector = (file, context, prior) => {
+        const source = files.get(file) ?? { file, stamp: "" };
+        const data = visitInspectionFile(file, prior ? [prior] : [], (bytes, location) => {
+          if (!collect) return;
+          const row = decodeInspectionEntry(bytes, context, this.profile.generation!); if (!row) return;
+          const hash = hashJSON(row), previous = identities.get(row.id);
+          if (previous && previous.hash !== hash) return fail();
+          if (!previous && identities.size >= maxIdentities) throw new InspectionBoundError({ kind: "retained-identities", limit: maxIdentities, observed: identities.size + 1 });
+          const presence = coalesceGenerationPresence(previous?.presence, row, context);
+          selected += outbound(presence) - outbound(previous?.presence);
+          if (selected > limits.maxRows) throw new InspectionBoundError({ kind: "rows", limit: limits.maxRows, observed: selected });
+          identities.set(row.id, { hash, presence, source: previous?.source ?? source, location: previous?.location ?? location });
+        });
+        if (source.stamp && source.stamp !== data.stamp) return fail();
+        source.stamp = data.stamp; files.set(file, source);
+        return { ...context, ...data, bytes: Buffer.alloc(0) };
+      };
+      const input = this.capture(reader, true, inspect);
       if (input.segments.some(segment => segment.tailBytes !== 0) || epoch() !== before) return fail();
-      const identity = canonicalJSON({ commit: input.commit, segments: input.segments.map(({ bytes: _bytes, local, ...segment }) => ({ ...segment, local })), metrics: reader.inspectionMetrics() });
-      return { input, identity };
+      return canonicalJSON({ commit: input.commit, segments: input.segments.map(({ bytes: _bytes, ...segment }) => segment) });
     };
-    const captured = protectedRead(capture);
-    const rows = protectedRead(() => {
-      const rows = new Map<string, PruneSourceRow>();
-      for (const segment of captured.input.segments) for (const bytes of completeLines(segment.bytes)) {
-        if (!bytes.length) continue;
-        const line = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-        if (!line.trim()) { if (segment.source === "generation") return fail(); continue; }
-        const parsed: unknown = JSON.parse(line);
-        const op = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { op?: unknown }).op : undefined;
-        if (segment.source === "generation" && op === "prune") {
-          const row = validatePruneRow(parsed, this.profile.generation!, segment.local ? "local" : "synced");
-          if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) return fail();
-          continue;
-        }
-        if (segment.source === "generation" && op === "vault_link") {
-          const row = validateVaultLinkRow(parsed, this.profile.generation!, segment.local ? "local" : "synced");
-          if (segment.path !== `local/${row.machine}.jsonl`) return fail();
-          continue;
-        }
-        const row = checkedEntry(parsed);
-        rows.set(row.id, coalesceGenerationSource(rows.get(row.id), row, segment));
+    const captured = protectedRead(() => capture(true));
+    for (const [id, source] of [...identities].filter(([, value]) => outbound(value.presence)).sort(([left], [right]) => left.localeCompare(right))) {
+      let row: Entry;
+      try {
+        row = protectedRead(() => checkedEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          readInspectionRow(source.source.file, source.location, source.source.stamp)))));
+      } catch (error) {
+        // A visitor may append through another writer. Preserve the final-check API without retaining stale row bodies.
+        identities.clear(); files.clear();
+        return () => { throw error; };
       }
-      return [...rows.values()].filter(row => row.placement === "synced" && (row.own || row.legacy)).sort((left, right) => left.row.id.localeCompare(right.row.id));
-    });
-    for (const source of rows) visit(structuredClone(source.row) as unknown as Record<string, unknown>);
-    return () => { protectedRead(() => { if (capture().identity !== captured.identity) return fail(); }); };
+      if (row.id !== id || hashJSON(row) !== source.hash) {
+        identities.clear(); files.clear();
+        return () => unavailable();
+      }
+      visit(row as unknown as Record<string, unknown>);
+    }
+    identities.clear(); // Final revalidation needs source proofs only, not canonical row identities across overlays.
+    return () => { protectedRead(() => { if (capture(false) !== captured) return fail(); }); };
   }
 
   vaultWitnesses(ids: readonly string[]): Map<string, string> {

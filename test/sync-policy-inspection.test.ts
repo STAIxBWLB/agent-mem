@@ -19,6 +19,23 @@ function fixture() {
   let closed = false; const close = () => { if (!closed) { store.close(); closed = true; } }; cleanup.push(close);
   return { store, close, home: store.profile.home, own: join(store.dir, "log", `${store.machine.id}.jsonl`) };
 }
+async function migratedFixture(profile: "generation" | "sharded" = "generation") {
+  const f = fixture(), generation = "8".repeat(32); f.close();
+  if (profile === "generation") await migrate({ memoryDir: f.home, generation, mode: "apply", authorizedPerson: true, tty: true });
+  else await migrateShards({ memoryDir: f.home, generation, mode: "apply", authorizedPerson: true, tty: true });
+  const store = profile === "generation" ? new MemoryStore({ memoryDir: f.home, profile: { generation }, deferPromotions: true })
+    : openShardStore({ memoryDir: f.home, project: "example.test/team/public", deferPromotions: true });
+  cleanup.push(() => store.close());
+  return { ...f, store };
+}
+function appendFixtureRow(store: MemoryStore, index: number, extra: Record<string, unknown> = {}, folder = "log") {
+  const body = { schema: "agent-hub.memory/v1", op: "note", at: "2026-11-13T00:00:00.000Z", machine: store.machine.id,
+    project: "example.test/team/public", scope: "project", tier: "long", kind: "finding", peer: "fixture", source: "person",
+    text: `ordinary bound fixture ${index}`, about: [], ...extra };
+  const id = entryId(body as never), file = join(store.dir, folder, `${store.machine.id}.jsonl`);
+  appendFileSync(file, JSON.stringify({ ...body, id }) + "\n");
+  return { id, file };
+}
 const note = (store: MemoryStore, text: string, scope: "project" | "shared" = "project") => store.note({ op: "note", project: "example.test/team/public", scope, tier: "long", kind: "finding", peer: "fixture", source: "person", text, about: [] });
 function tree(root: string): unknown {
   return readdirSync(root, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).map(item => {
@@ -79,6 +96,62 @@ for (const profile of ["shared-v1", "generation", "sharded", "sharded-v2"] as co
   expect(await actualDeclines(store)).toEqual(result.declined.map(row => row.id));
 });
 
+for (const profile of ["generation", "sharded"] as const) test(`${profile} inspection explains a completed sync refusal above 8 MiB and below the outbound row cap`, async () => {
+  const f = await migratedFixture(profile), { id, file } = appendFixtureRow(f.store, 0, { future: "x".repeat(9 * 1024 * 1024) });
+  expect(lstatSync(file).size).toBeGreaterThan(8 * 1024 * 1024);
+  let visibilityChecks = 0;
+  const actual = await syncMemory(f.store, { remote: "https://example.invalid/private.git", screen: () => false,
+    visibility: async () => { visibilityChecks++; return "private"; } });
+  expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("declines 1") });
+  expect(visibilityChecks).toBe(0);
+  const result = inspectSyncPolicy(f.store, { screen: () => false });
+  expect(result.complete).toBe(true);
+  if (result.complete) expect(result.declined.map(row => row.id)).toEqual([id]);
+});
+
+test("generation inspection does not confuse duplicated physical rows with canonical outbound rows", async () => {
+  const f = await migratedFixture(), { id, file } = appendFixtureRow(f.store, 0);
+  const row = readFileSync(file, "utf8"); writeFileSync(file, row.repeat(20_001));
+  const actual = await syncMemory(f.store, { remote: "https://example.invalid/private.git", screen: () => false });
+  expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("declines 1") });
+  expect(inspectSyncPolicy(f.store, { screen: () => false })).toMatchObject({ complete: true, counts: { scanned: 1, declined: 1 }, declined: [{ id }] });
+});
+
+// These fixtures cross the real 20000-row contract; the allowance covers bulk indexing, not a production latency gate.
+test("canonical outbound row admission is per target rather than global across project and user", async () => {
+  const f = await migratedFixture("sharded"), targets = f.store.openedSyncTargets();
+  expect(targets).toHaveLength(2);
+  for (const target of targets) {
+    const lines: string[] = [];
+    for (let index = 0; index < 10_001; index++) {
+      const body = { schema: "agent-hub.memory/v1", op: "note", at: "2026-11-13T00:00:00.000Z", machine: target.machine.id,
+        project: target.profile.shardUser ? "example.test/team/user" : "example.test/team/public", scope: target.profile.shardUser ? "shared" : "project",
+        tier: "long", kind: "finding", peer: "fixture", source: "person", text: `canonical bound fixture ${index}`, about: [] };
+      lines.push(JSON.stringify({ ...body, id: entryId(body as never) }));
+    }
+    appendFileSync(join(target.dir, "log", `${target.machine.id}.jsonl`), lines.join("\n") + "\n");
+  }
+  const actual = await syncMemory(f.store, { remote: "https://example.invalid/private.git", screen: () => false });
+  expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("declines 10001") });
+  const result = inspectSyncPolicy(f.store, { screen: () => false });
+  expect(result).toMatchObject({ complete: true, counts: { scanned: 20_002, declined: 20_002 } });
+}, 120_000);
+
+test("a generation above the canonical row limit reports the same named row bound as sync", async () => {
+  const f = await migratedFixture(), lines: string[] = [];
+  for (let index = 0; index < 20_001; index++) {
+    const body = { schema: "agent-hub.memory/v1", op: "note", at: "2026-11-13T00:00:00.000Z", machine: f.store.machine.id,
+      project: "example.test/team/public", scope: "project", tier: "long", kind: "finding", peer: "fixture", source: "person", text: `canonical row ${index}`, about: [] };
+    lines.push(JSON.stringify({ ...body, id: entryId(body as never) }));
+  }
+  appendFileSync(join(f.store.dir, "log", `${f.store.machine.id}.jsonl`), lines.join("\n") + "\n");
+  const actual = await syncMemory(f.store, { remote: "https://example.invalid/private.git", screen: () => false });
+  expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("more than 20000") });
+  const result = inspectSyncPolicy(f.store);
+  expect(result).toMatchObject({ complete: false, reason: "input-bound", bound: { kind: "rows", limit: 20_000, observed: 20_001, nextStep: expect.any(String) } });
+  expect(result).not.toHaveProperty("declined"); expect(result).not.toHaveProperty("fingerprint");
+}, 120_000);
+
 test("full declined set beyond eight IDs and stable sorted fingerprint are not truncated", () => {
   const f = fixture(), ids = Array.from({ length: 12 }, (_, index) => note(f.store, `private-word row ${index}`));
   writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["private-word"] }));
@@ -129,7 +202,9 @@ for (const suffix of ['{"id":', JSON.stringify({ id: "b".repeat(32), text: "torn
 
 test("8 MiB source bound is checked before body read and no partial declined set is returned", () => {
   const f = fixture(); note(f.store, "private-word"); truncateSync(f.own, 8 * 1024 * 1024 + 1);
-  expect(inspectSyncPolicy(f.store)).toEqual({ complete: false, reason: "input-bound" });
+  expect(inspectSyncPolicy(f.store)).toMatchObject({ complete: false, reason: "input-bound", bound: {
+    kind: "bytes", limit: 8 * 1024 * 1024, observed: 8 * 1024 * 1024 + 1, nextStep: expect.any(String),
+  } });
 });
 
 test("20000-row bound refuses before parsing the next row or constructing a complete set", () => {
@@ -137,7 +212,9 @@ test("20000-row bound refuses before parsing the next row or constructing a comp
   note(f.store, "ordinary");
   const row = readFileSync(f.own, "utf8");
   writeFileSync(f.own, row.repeat(20_001));
-  expect(inspectSyncPolicy(f.store)).toEqual({ complete: false, reason: "input-bound" });
+  expect(inspectSyncPolicy(f.store)).toMatchObject({ complete: false, reason: "input-bound", bound: {
+    kind: "rows", limit: 20_000, observed: 20_001, nextStep: expect.any(String),
+  } });
 });
 
 test("host-side input or policy drift makes the entire inspection incomplete", () => {

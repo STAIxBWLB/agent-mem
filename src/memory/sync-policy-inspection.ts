@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { types } from "node:util";
 import { join } from "node:path";
 import { SegmentReadBudgetError } from "./bridge.ts";
+import { inspectionBoundReceipt, type InspectionBoundReceipt } from "./inspection-bound.ts";
 import { DENY_NAMES, DENY_SEGMENTS } from "./platform.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { loadAmemConfig } from "./config.ts";
@@ -26,7 +27,7 @@ export type SyncPolicyInspection = {
   counts: { scanned: number; declined: number; byCategory: Record<SyncPolicyCategory, number> };
   /** SHA-256 over the sorted complete declined IDs/categories, never over private content or policy patterns. */
   fingerprint: string;
-} | { complete: false; reason: "input-unavailable" | "input-bound" | "input-changed" | "binding-changed" | "policy-unavailable" };
+} | { complete: false; reason: "input-unavailable" | "input-bound" | "input-changed" | "binding-changed" | "policy-unavailable"; bound?: InspectionBoundReceipt };
 
 const hash = (value: unknown) => createHash("sha256").update(canonicalJSON(value)).digest("hex");
 
@@ -82,8 +83,7 @@ export function inspectSyncPolicy(store: MemoryStore, options: SyncPolicyInspect
     const ids = new Map<string, { hash: string; categories: Set<SyncPolicyCategory> }>();
     let scanned = 0;
     const visit = (row: Record<string, unknown>) => {
-      failure = "input-bound";
-      if (++scanned > SYNC_SCREEN_MAX_ROWS) throw new Error("row bound");
+      scanned++; // Admission is per target, matching actual generation/shard screening.
       failure = "input-unavailable";
       if (typeof row.id !== "string" || !/^[a-f0-9]{32}$/.test(row.id)) throw new Error("row id unavailable");
       const rowHash = hash(row), prior = ids.get(row.id);
@@ -121,6 +121,7 @@ export function inspectSyncPolicy(store: MemoryStore, options: SyncPolicyInspect
         else if (error instanceof SegmentReadBudgetError) reason = "input-bound";
       }
     } catch { /* An exotic caller exception cannot escape as a data-bearing error. */ }
-    return { complete: false, reason };
+    const bound = reason === "input-bound" ? inspectionBoundReceipt(error) : undefined;
+    return { complete: false, reason, ...(bound ? { bound } : {}) };
   }
 }
