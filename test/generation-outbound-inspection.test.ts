@@ -108,7 +108,7 @@ test("explicitly bounded SegmentReader retains its8MiB allocation and16MiB verif
 
 
 test("checkpoint metadata is capped before its result array grows beyond the source inventory guard", async () => {
-  const f = await fixture(), db = new Database(join(f.store.dir, indexFileName(true)));
+  const f = await fixture(), db = new Database(join(f.store.dir, indexFileName(!!f.store.profile.foreignPruneFormat)));
   try {
     const insert = db.query("INSERT OR REPLACE INTO generation_segments (source,path,offset,hash,commit_id,stamp) VALUES ('legacy-local',?,0,?,NULL,NULL)");
     db.transaction(() => { for (let index = 0; index < 20_001; index++) insert.run(`log/metadata-${index}.jsonl`, "0".repeat(64)); })();
