@@ -104,7 +104,7 @@ export function screenOutboundRows(store: MemoryStore, pass: RowScreen): SyncScr
 }
 
 export class SyncScreenInputError extends Error {
-  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed", readonly bound?: "bytes" | "rows") { super(code); }
+  constructor(readonly code: "input-unavailable" | "input-bound" | "input-changed", readonly bound?: "bytes" | "rows", readonly limit?: number, readonly observed?: number) { super(code); }
 }
 const sameStat = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
@@ -129,7 +129,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n) throw new SyncScreenInputError("input-unavailable");
-    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound", "bytes");
+    if (stat.size > BigInt(MAX_BYTES)) throw new SyncScreenInputError("input-bound", "bytes", MAX_BYTES, Number(stat.size));
     const check = () => {
       checkParent();
       const named = lstatSync(file, { bigint: true });
@@ -148,7 +148,7 @@ export function visitOwnSegment(dir: string, machineId: string, visit: (row: Rec
       if (start === end) { start = end + 1; continue; }
       const line = decoder.decode(bytes.subarray(start, end)); start = end + 1;
       if (!line.trim()) continue;
-      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound", "rows");
+      if (++rows > MAX_ROWS) throw new SyncScreenInputError("input-bound", "rows", MAX_ROWS, rows);
       let row: unknown;
       try { row = checkedEntry(JSON.parse(line)); } catch { throw new SyncScreenInputError("input-unavailable"); }
       visit(row as Record<string, unknown>);

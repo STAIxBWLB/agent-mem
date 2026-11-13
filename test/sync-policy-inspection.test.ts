@@ -151,7 +151,9 @@ for (const suffix of ['{"id":', JSON.stringify({ id: "b".repeat(32), text: "torn
 
 test("8 MiB source bound is checked before body read and no partial declined set is returned", () => {
   const f = fixture(); note(f.store, "private-word"); truncateSync(f.own, 8 * 1024 * 1024 + 1);
-  expect(inspectSyncPolicy(f.store)).toEqual({ complete: false, reason: "input-bound" });
+  expect(inspectSyncPolicy(f.store)).toMatchObject({ complete: false, reason: "input-bound", bound: {
+    kind: "bytes", limit: 8 * 1024 * 1024, observed: 8 * 1024 * 1024 + 1, nextStep: expect.any(String),
+  } });
 });
 
 test("20000-row bound refuses before parsing the next row or constructing a complete set", () => {
@@ -159,7 +161,9 @@ test("20000-row bound refuses before parsing the next row or constructing a comp
   note(f.store, "ordinary");
   const row = readFileSync(f.own, "utf8");
   writeFileSync(f.own, row.repeat(20_001));
-  expect(inspectSyncPolicy(f.store)).toEqual({ complete: false, reason: "input-bound" });
+  expect(inspectSyncPolicy(f.store)).toMatchObject({ complete: false, reason: "input-bound", bound: {
+    kind: "rows", limit: 20_000, observed: 20_001, nextStep: expect.any(String),
+  } });
 });
 
 test("host-side input or policy drift makes the entire inspection incomplete", () => {
