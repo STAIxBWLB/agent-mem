@@ -19,7 +19,8 @@ import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts
 import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
 import { hookTimeoutProbe, timeoutWallStallValues } from "../test/fakes/hooks-timeout-probe.ts";
-import { deferralPendingEligible, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
+import { deferralPendingEligible, plainDeferralRecord, verifyHookProcessObservation, verifyPlainHookDeferrals } from "./hook-process-check.ts";
+import { probeRunnerSpeed, runnerIsSlow, RUNNER_BASELINES } from "./runner-probe.ts";
 import { singleAttemptTiming, workloadBudget, reportBudgetAdvisory } from "./hook-timing-check.ts";
 
 const RUNS = { plain: 40, contention: 15, sessionStart: 20, jcode: 40, jcodeJournal: 40 }, WALL_MS = 150, RSS_MB = R2_RSS_CEILING_MB;
@@ -41,6 +42,8 @@ let contendedDrainAdvisory: DrainAccounting | undefined;
 const ownedGroups = new Set<number>(), ownedWorkers = new Map<number, boolean>();
 const deferredWorkers = { plain: 0, spoolAndExit: 0, drain: 0, sessionStart: 0, sessionStartRepoLog: 0, jcode: 0, jcodeJournal: 0 }, MAX_PLAIN_DEFERRED = Math.floor(RUNS.plain / 4);
 const R1_POST_EXIT_WINDOW_MS = 2000;
+// #367 option A: the slow flag from a runner probe taken just before the plain group; null when the probe is unavailable.
+let deferralSlow: boolean | null = null;
 let r1Lingering = 0, r1MaxSurvivalMs = 0;
 let invocations = 0, countedRetirements = 0, leftoverProcesses = 0, checkedWorkers = 0, checkedBunWorkers = 0, checkedNativeSupervisors = 0;
 let normalAccounting: { invocations: number; recorded: number; pending: number; pendingOnly: number; countedRetirements: number; retiredInvocations: number[] } | undefined;
@@ -119,7 +122,11 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     const observation = verifyHookProcessObservation(event, workers, evidence, pending);
     if (observation.deferred) {
       deferredWorkers[group]++;
-      if (group === "plain") verifyPlainHookDeferrals(deferredWorkers.plain, RUNS.plain);
+      if (group === "plain") {
+        // #367 option A: diagnostics only; logged before the unchanged cap check so the failing call is recorded too.
+        console.log(JSON.stringify(plainDeferralRecord({ event, invocation: invocations, evidence, wallMs, metricWallMs: readMetrics(f.base).filter(row => row.kind === "hook").at(-1)?.wallMs, slow: deferralSlow })));
+        verifyPlainHookDeferrals(deferredWorkers.plain, RUNS.plain);
+      }
     }
   } catch (error) {
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
@@ -246,6 +253,8 @@ try {
   if (!("id" in summary)) throw new Error("R2 cache fixture summary did not commit");
   await buildCaptureBriefCache(capture, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: summary.id });
   const dir = capture.dir, baseline = capture.stats().rows; capture.close();
+  // #367 option A: one runner probe before the plain group, outside every timed sample, for the deferral records' slow flag.
+  try { const probe = await probeRunnerSpeed(); deferralSlow = runnerIsSlow(probe, probe, RUNNER_BASELINES[process.platform]!); } catch { deferralSlow = null; }
   const plain = await samples("plain", RUNS.plain, () => invoke("PostToolUse", "plain"));
   const holder = new Database(join(dir, "capture.db"));
   let contended: Sample[];
