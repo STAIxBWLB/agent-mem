@@ -90,7 +90,7 @@ export const plugin = {
     api: 1 as const, tool: "amem", version: VERSION, title: "Memory", icon: "memory", pollMs: 15_000,
     panels: [
       { id: "review", title: "Review", order: 1 },
-      { id: "recap", title: "Recap", order: 2 },
+      { id: "recap", title: "Recap", order: 2, maxAgeMs: 2_000 },
       { id: "find", title: "Search", order: 3 },
       { id: "timeline", title: "Timeline", order: 4 },
       { id: "work", title: "Work lists", order: 5 },
@@ -101,7 +101,7 @@ export const plugin = {
       { id: "gc", title: "Evict expired capture rows", hint: "amem gc", action: "gc" },
       { id: "capacity-apply", title: "Apply the capture capacity proposal", hint: "amem capacity apply", action: "capacity_apply" },
     ],
-    capabilities: { actions: ACTIONS, confirm: true, multiProject: true, inbox: true, search: true },
+    capabilities: { actions: ACTIONS, confirm: true, multiProject: true, inbox: true, inboxMaxAgeMs: 2_000, search: true },
   },
   async open(ctx: { home: string; log(line: string): void }): Promise<Provider> {
     const base = memoryHome({ ...process.env, AGENTHUB_HOME: ctx.home });
