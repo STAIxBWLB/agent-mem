@@ -124,10 +124,10 @@ export class GenerationIndex {
       return reader.listFiles(dir).filter(name => name.endsWith(".jsonl")).map(name => {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) return fail();
         const path = `${folder}/${name}`, checkpoint = prior.find(row => row.path === path);
-        const prior = checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined;
+        const priorCheckpoint = checkpoint ? { ...checkpoint, stamp: checkpoint.stamp ?? undefined } : undefined;
         const context = { source: "generation", path, local: folder === "local" };
-        if (inspect) return inspect(join(dir, name), context, prior);
-        const data = reader.read(join(dir, name), prior, full);
+        if (inspect) return inspect(join(dir, name), context, priorCheckpoint);
+        const data = reader.read(join(dir, name), priorCheckpoint, full);
         return { ...data, ...context };
       });
     });
