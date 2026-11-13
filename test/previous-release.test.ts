@@ -144,7 +144,7 @@ console.log(JSON.stringify(appended));`)) as string[];
       for (const value of staged) expect(readFileSync(join(spool(f.base), value.record.name))).toEqual(value.bytes);
     }
     const rows = await drain(f);
-    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect(rows.filter(value => value === `${agent}:${line}`)).toHaveLength(1);
+    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect([...appended, ...rows].filter(value => value === `${agent}:${line}`)).toHaveLength(1);
     expect(pending(f.base)).toEqual([]);
     // AMEM_PREV_ROOT may point explicitly at published 0.24.0 for this upgrade proof;
     // ordinary CI still resolves its actual N-1. Never relabel the old package or current manifest.
