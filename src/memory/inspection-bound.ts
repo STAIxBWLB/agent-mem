@@ -1,13 +1,13 @@
 import { types } from "node:util";
 
-export type InspectionBoundKind = "bytes" | "rows" | "source-files" | "metadata-bytes" | "read-bytes" | "row-bytes" | "retained-identities";
+export type InspectionBoundKind = "bytes" | "rows" | "source-files" | "metadata-bytes" | "row-bytes" | "retained-identities";
 export interface InspectionBound { kind: InspectionBoundKind; limit: number; observed: number }
 export interface InspectionBoundReceipt extends InspectionBound { nextStep: string }
 export class InspectionBoundError extends Error {
   readonly code = "input-bound";
   constructor(readonly bound: InspectionBound) { super("inspection memory or row bound exceeded"); }
 }
-const kinds = new Set<string>(["bytes", "rows", "source-files", "metadata-bytes", "read-bytes", "row-bytes", "retained-identities"]);
+const kinds = new Set<string>(["bytes", "rows", "source-files", "metadata-bytes", "row-bytes", "retained-identities"]);
 /** Only allowlisted own data properties cross an incomplete receipt; caller exceptions are untrusted. */
 export function inspectionBoundReceipt(error: unknown): InspectionBoundReceipt | undefined {
   try {
