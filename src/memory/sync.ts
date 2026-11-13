@@ -254,11 +254,13 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return (await import("./sync-placement-transport.ts")).syncPlacementMemory(store, opts);
   if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
-  try {
-    const error = await missingSyncRemote(store, opts);
-    if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
-    if (error) return { ok: false, pushed: false, entries: 0, error };
-  } catch { return { ok: false, pushed: false, entries: 0, error: "sync remote configuration unavailable" }; }
+  if (!opts.remote) {
+    try {
+      const error = await missingSyncRemote(store, opts);
+      if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
+      if (error) return { ok: false, pushed: false, entries: 0, error };
+    } catch { return { ok: false, pushed: false, entries: 0, error: "sync remote configuration unavailable" }; }
+  }
   if (store.profile.sharded) {
     try {
       // Refresh only through the existing proved monotone profile rebind before pinning this attempt.
