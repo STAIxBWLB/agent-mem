@@ -38,7 +38,7 @@ async function actualDeclines(store: MemoryStore, screen?: (row: Record<string, 
     const pass = real(home, extra);
     return row => { const accepted = pass(row); if (!accepted.ok) declined.add(row.id as string); return accepted; };
   });
-  try { expect((await syncMemory(store, { screen })).ok).toBe(false); return [...declined].sort(); }
+  try { expect((await syncMemory(store, { screen, remote: "https://example.invalid/private.git" })).ok).toBe(false); return [...declined].sort(); }
   finally { observer.mockRestore(); }
 }
 
