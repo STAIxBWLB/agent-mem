@@ -10,7 +10,7 @@ import { canonicalJSON, hashJSON, fsyncDirectory, readProfileJSON, selectorRevis
 import { checkedEntry, completeLines, legacyEntries, legacyHead, inspectLegacySnapshot, type LegacySegmentInspector, readLegacySnapshot, SegmentReader, SegmentReadBudgetError, type LegacyCheckpoint, type LegacySegment } from "./bridge.ts";
 import { reducePruneRows, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow, type PruneStorePort } from "./prune.ts";
 import { PROMOTED_KINDS, type Entry } from "./store.ts";
-import { InspectionBoundError } from "./inspection-bound.ts";
+import { InspectionBoundError, type InspectionBound } from "./inspection-bound.ts";
 import { InspectionStreamError, readInspectionRow, visitInspectionFile, type InspectionLocation } from "./inspection-stream.ts";
 
 const FOREIGN_TABLES = ["generation_foreign_inputs", "generation_foreign_rows", "generation_foreign_targets"] as const;
@@ -297,7 +297,9 @@ export class GenerationIndex {
    * A fresh final source capture rechecks every prefix/full hash after policy callbacks.
    */
   inspectOutboundRows(visit: (row: Record<string, unknown>) => void, limits: { maxBytes: number; maxRows: number }): () => void {
-    const unavailable = (): never => { throw Object.assign(new Error("outbound generation input unavailable"), { code: "input-unavailable" }); };
+    const unavailable = (budget = false, bound?: InspectionBound): never => {
+      throw Object.assign(new Error("outbound generation input unavailable"), { code: budget ? "input-bound" : "input-unavailable", ...(bound ? { bound } : {}) });
+    };
     // maxBytes bounds metadata only; physical source bodies have no aggregate byte/I/O ceiling.
     if (!Number.isSafeInteger(limits.maxBytes) || limits.maxBytes < 0 || limits.maxBytes > 8 * 1024 * 1024
       || !Number.isSafeInteger(limits.maxRows) || limits.maxRows < 0 || limits.maxRows > 20_000) return unavailable();
@@ -327,7 +329,8 @@ export class GenerationIndex {
     };
     const protectedRead = <T>(read: () => T): T => {
       try { return read(); } catch (error) {
-        if (error instanceof SegmentReadBudgetError || error instanceof InspectionBoundError || error instanceof InspectionStreamError) throw error;
+        if (error instanceof SegmentReadBudgetError || error instanceof InspectionBoundError) return unavailable(true, error.bound);
+        if (error instanceof InspectionStreamError) return unavailable(error.code === "input-bound", error.bound);
         return unavailable();
       }
     };
@@ -365,9 +368,15 @@ export class GenerationIndex {
     };
     const captured = protectedRead(() => capture(true));
     for (const [id, source] of [...identities].filter(([, value]) => outbound(value.presence)).sort(([left], [right]) => left.localeCompare(right))) {
-      const row = protectedRead(() => checkedEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        readInspectionRow(source.source.file, source.location, source.source.stamp)))));
-      if (row.id !== id || hashJSON(row) !== source.hash) return unavailable();
+      let row: Entry;
+      try {
+        row = protectedRead(() => checkedEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          readInspectionRow(source.source.file, source.location, source.source.stamp)))));
+      } catch (error) {
+        // A visitor may append through another writer. Preserve the final-check API without retaining stale row bodies.
+        return () => { throw error; };
+      }
+      if (row.id !== id || hashJSON(row) !== source.hash) return () => unavailable();
       visit(row as unknown as Record<string, unknown>);
     }
     identities.clear(); // Final revalidation needs source proofs only, not canonical row identities across overlays.

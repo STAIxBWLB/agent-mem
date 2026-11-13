@@ -81,13 +81,13 @@ for (const tail of ["{malformed}\n", "{unfinished"]) test("outbound malformed/to
   expect(visited).toBe(0);
 });
 
-test("outbound physical row budget refuses before exposing a coalesced subset", async () => {
+test("outbound canonical row budget refuses before exposing a coalesced subset", async () => {
   const f = await fixture(); let visited = 0;
   expect(errorCode(() => f.store.inspectOutboundRows(() => visited++, { ...limits, maxRows: 1 }))).toBe("input-bound");
   expect(visited).toBe(0);
 });
 
-test("inspection SegmentReader caps source allocation at8MiB and keeps the16MiB physical verification budget", () => {
+test("explicitly bounded SegmentReader retains its8MiB allocation and16MiB verification contract", () => {
   const root = mkdtempSync(join(tmpdir(), "amem-source-read-bound-")), file = join(root, "source.jsonl");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(file, ""); truncateSync(file, limits.maxBytes + 1);
