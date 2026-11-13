@@ -815,7 +815,7 @@ function publishCapture(event: string, capture: NormalizedCaptureFields, options
       // #385 AC3: a repository cwd's summary first retires non-project rows that fill the shared caps.
       // ponytail: one bounded maintenance pass (32 files); a cap of repository rows still refuses. Upgrade: a reserved non-project tier.
       if (!withinShare(inventory, MAX_FILES) || nonProjectCwd(cwd)) throw new HookSpoolFull();
-      const freed = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, budget);
+      const freed = retireUnresolved(base, cwd, inventory, incomingBytes, false, false, maintenanceBudget());
       inventory = inventory.filter(row => !freed.has(row.name));
       if (overCap(inventory)) throw new HookSpoolFull();
     }
@@ -885,22 +885,34 @@ export async function drainHookCaptures(options: Options & { project: string; ex
   const reserve = entries(base, true), active = entries(base), ownNonProject = nonProjectCwd(cwd);
   const own = [...matching(reserve, true), ...matching(active, false)]
     .sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name)).map(row => ({ ...row, foreign: false }));
-  // #385 route A: newest other-cwd rows after this cwd's own; each inspection takes a replay slot.
-  // ponytail: at most 32 newest foreign rows are inspected per hook. Upgrade: an owned session cursor over the spool.
+  // #385 route A: other-cwd rows after this cwd's own. Eligibility is decided before the loop and never spends a replay slot:
+  // one bounded decode per cwd group proves the cwd is non-project, so repository cwds' rows are skipped for free.
+  // ponytail: at most 32 newest foreign rows and 8 group probes per hook. Upgrade: an owned session cursor over the spool.
+  const groupNonProject = new Map<string, boolean>();
+  const eligibleGroup = (row: { name: string; capacity: boolean }, group: string): boolean => {
+    const known = groupNonProject.get(group); if (known !== undefined) return known;
+    if (groupNonProject.size >= 8) return false;
+    let probe: OwnedFile | undefined, ok = false;
+    try { probe = openOwned(join(row.capacity ? join(dir, ".capacity") : dir, row.name)); const value = decoded(probe)?.value; ok = !!value && hash(value.cwd) === group && nonProjectCwd(value.cwd); }
+    catch { /* Unreadable evidence is not eligible. */ } finally { if (probe) closeSync(probe.fd); }
+    groupNonProject.set(group, ok); return ok;
+  };
   const foreign = options.session === undefined || ownNonProject ? [] : [...reserve.map(row => ({ ...row, capacity: true })), ...active.map(row => ({ ...row, capacity: false }))]
     .filter(row => { const m = namePattern.exec(row.name); return m && m[2] !== hash(cwd); })
-    .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name)).slice(0, DRAIN_FILES).map(row => ({ ...row, foreign: true }));
+    .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name))
+    .filter(row => eligibleGroup(row, namePattern.exec(row.name)![2]!)).slice(0, DRAIN_FILES).map(row => ({ ...row, foreign: true }));
   const rows = [...own, ...foreign];
   const identity = (row: typeof rows[number]) => `${namePattern.exec(row.name)![1]}:${row.dev}:${row.ino}`;
   let remaining = budget.bytes, blocked = 0;
-  for (const row of rows.filter(row => !budget.seen.has(identity(row))).slice(0, budget.files)) {
+  for (const row of [...own.filter(row => !budget.seen.has(identity(row))).slice(0, budget.files), ...foreign.filter(row => !budget.seen.has(identity(row)))]) {
     if (options.timeRemaining && options.timeRemaining() < 8 || row.size <= RECORD_BYTES && row.size > remaining) break;
     const match = namePattern.exec(row.name)!, name = match[1]!;
-    budget.files--; budget.seen.add(identity(row));
+    // A foreign row is charged a replay slot only once it is proven attributable below (#385).
+    if (!row.foreign) { budget.files--; budget.seen.add(identity(row)); }
     let file: OwnedFile | undefined;
     try {
       file = openOwned(join(row.capacity ? join(dir, ".capacity") : dir, row.name));
-      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) { blocked++; continue; }
+      if (file.initial.size !== row.size || file.initial.mtimeMs !== row.modified) { if (!row.foreign) blocked++; continue; }
       let foreignCwd: string | undefined;
       if (row.foreign) {
         // Attribute only an exact session match from a non-project cwd whose recorded scope still holds; never claim another row.
@@ -909,6 +921,8 @@ export async function drainHookCaptures(options: Options & { project: string; ex
         if (!probe || probe.scope === null || hash(probe.cwd) !== match[2] || probe.capture.session === undefined || probe.capture.session !== options.session
           || !nonProjectCwd(probe.cwd) || hookCaptureScope(probe.cwd, base) !== probe.scope) continue;
         foreignCwd = probe.cwd;
+        if (budget.files <= 0) break;
+        budget.files--; budget.seen.add(identity(row));
       }
       const claim = claimOwned(base, row.name, file);
       if (!claim) { blocked++; continue; }
