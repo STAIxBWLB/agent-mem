@@ -217,3 +217,24 @@ test("broadening the existing since filter keeps ordinary capture backfill but n
   const broader = await f.run(); expect(broader.imported).toBe(1); expect(broader.records!.found).toBe(0);
   expect(f.rows().filter(row => row.event === "Record")).toHaveLength(0);
 });
+
+test("#369 N1: a stored Record re-staged in one turn and drained by a later turn counts as duplicatesSkipped, not staged", async () => {
+  const f = fixture("codex"), first = f.message(valid); f.write(...first); await f.run();
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(1);
+  // Lose the source cursor so the same stored Record is re-staged, and add a second, new Record in a later turn.
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project }), dir = join(store.dir, "ingest"); store.close();
+  for (const name of readdirSync(dir)) if (name.endsWith(".db")) rmSync(join(dir, name));
+  const other = valid.replace("stale cache", "second cache");
+  f.write(...first, ...f.message(other));
+  // The first turn's drain does not run, so its per-turn receipt map is gone when the second turn drains both.
+  const originalDrain = spool.drainHookCaptures; let drains = 0;
+  const delayed = spyOn(spool, "drainHookCaptures").mockImplementation(async (...args) => ++drains === 1 ? { captured: [], blocked: 0 } : originalDrain(...args));
+  let result;
+  try { result = await f.run(); } finally { delayed.mockRestore(); }
+  expect(drains).toBe(2);
+  expect(result.records).toMatchObject({ found: 2, staged: 1, duplicatesSkipped: 1 });
+  const records = f.rows().filter(row => row.event === "Record");
+  expect(records).toHaveLength(2); expect(records.map(row => row.excerpt).sort()).toEqual([other, valid].sort());
+  // A later call stages nothing and reports nothing.
+  expect((await f.run()).records).toMatchObject({ found: 0, staged: 0, duplicatesSkipped: 0 });
+});

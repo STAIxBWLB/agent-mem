@@ -404,6 +404,8 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
           }
           return mainHeader;
         };
+        // #369 N1: receipts this call counted as `staged` and has not yet seen drained; bounded by this call's Records.
+        const freshThisCall = new Set<string>();
         const intakeRecords = async (turns: NativeRecordTurn[]) => {
           for (const turn of turns) {
             const stagedReceipts = new Map<string, { fresh: boolean; checked: boolean; current: () => void }>();
@@ -438,15 +440,22 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
               // duplicate; the exact-duplicate witness is the only signal that this call added nothing.
               if (pending.duplicate) recordCounts.duplicatesSkipped++; else recordCounts.staged++;
               if (!stagedReceipts.has(pending.receipt)) stagedReceipts.set(pending.receipt, { fresh: !pending.duplicate, checked: false, current });
+              if (!pending.duplicate) freshThisCall.add(pending.receipt);
             }
             if (stagedReceipts.size) await drainHookCaptures({ cwd, base, project, policy: options.policy }, (input, receipt) => {
               const staged = stagedReceipts.get(receipt);
               staged?.current();
               const appended = capture!.append(input, { receipt });
-              if (staged && !staged.checked && staged.fresh && "already" in appended && appended.already) {
+              const already = "already" in appended && appended.already;
+              if (staged && !staged.checked && staged.fresh && already) {
                 recordCounts.staged--; recordCounts.duplicatesSkipped++;
+              } else if (!staged && already && input.event === "Record" && input.agent === kind) {
+                // #369 N1: a Record re-staged by an earlier turn of this call, or by an earlier call, and drained here was already
+                // stored. The append result is the witness, so no second store read. Only this call's own fresh count moves.
+                if (freshThisCall.delete(receipt)) recordCounts.staged--;
+                recordCounts.duplicatesSkipped++;
               }
-              if (staged) staged.checked = true;
+              if (staged) { staged.checked = true; freshThisCall.delete(receipt); }
               return appended;
             });
           }
