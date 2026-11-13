@@ -143,11 +143,12 @@ export class GenerationIndex {
     // ponytail: read-only inspection accepts the indexed archived frontier only, without an ancestry walk.
     // Reopen after ordinary refresh, or add a bounded read-only ancestry witness to support a newer frontier.
     if (readOnly && (commit !== indexedCommit || checkpoints.some(row => row.source === "legacy-main" && row.commit !== commit))) return fail();
-    const legacyOptions = { ...(generation ? { generation } : {}), ...(commit ? { commit } : {}), checkpoints,
-      ...(this.options.limits ? { limits: this.options.limits } : {}), ...(generation && prior ? { previousCommit: prior } : {}),
+    const legacyOptions = { checkpoints, ...(this.options.limits ? { limits: this.options.limits } : {}),
       reader, incremental: !full && !this.options.limits && completeFrontier };
+    const generationOptions = { ...legacyOptions, ...(generation ? { generation } : {}), ...(commit ? { commit } : {}),
+      ...(generation && prior ? { previousCommit: prior } : {}) };
     const legacy = this.profile.sharded ? readShardLegacySnapshot(this.profile, legacyOptions, inspect)
-      : inspect ? inspectLegacySnapshot(legacyHome, legacyOptions, inspect) : readLegacySnapshot(legacyHome, legacyOptions);
+      : inspect ? inspectLegacySnapshot(legacyHome, generationOptions, inspect) : readLegacySnapshot(legacyHome, generationOptions);
     const own = this.ownSegments(reader, full, inspect);
     for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
       const segment = own.find(s => s.path === old.path);
