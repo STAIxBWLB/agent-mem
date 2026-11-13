@@ -505,3 +505,17 @@ test("#365: only hosted macOS StopBurst selects the evidenced CPU baseline, with
   expect(r2Verdict("transcript:StopBurst", samples(103.2), { env: mac, baseline: { schema: baseline.schema, runners: baseline.runners }, cpuModel: "Apple M2 Pro (Virtual)" }).regression.baselineMB).toBe(93.58);
   expect(r2Verdict("transcript:StopBurst", samples(90), { env: mac, baseline: { ...baseline, hardwareClasses: { "hosted-macos": { "apple-m2-pro": { "transcript:StopBurst": 0 } } } }, cpuModel: "Apple M2 Pro (Virtual)" }).pass).toBe(false);
 });
+
+test("#367: only hosted macOS Apple M1 selects the transcript wall p95 class limit; unknown and other CPUs keep 150 ms", async () => {
+  const { transcriptWallLimit, TRANSCRIPT_WALL_P95_MS, TRANSCRIPT_WALL_P95_M1_MS } = await import("../scripts/budget-attempt.ts");
+  const mac = { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" };
+  expect(TRANSCRIPT_WALL_P95_MS).toBe(150);
+  expect(TRANSCRIPT_WALL_P95_M1_MS).toBe(181);
+  for (const model of ["Apple M1", " Apple M1 (Virtual) "])
+    expect(transcriptWallLimit({ env: mac, cpuModel: model })).toEqual({ limitMs: 181, cpuModel: model.trim(), hardwareClass: "apple-m1", limitSource: "hardware-class" });
+  expect(transcriptWallLimit({ env: mac, cpuModel: "Apple M2 Pro (Virtual)" })).toEqual({ limitMs: 150, cpuModel: "Apple M2 Pro (Virtual)", hardwareClass: "apple-m2-pro", limitSource: "default" });
+  for (const model of ["", "unknown", "Apple M1 Pro", "Apple M1 Max", "Apple M3", "Apple M1 (Virtual) extra"])
+    expect(transcriptWallLimit({ env: mac, cpuModel: model })).toMatchObject({ limitMs: 150, hardwareClass: "unknown", limitSource: "default" });
+  for (const env of [{ GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" }, { AMEM_RUNNER: "dgx02" }, {}])
+    expect(transcriptWallLimit({ env, cpuModel: "Apple M1 (Virtual)" })).toEqual({ limitMs: 150, cpuModel: null, hardwareClass: null, limitSource: "default" });
+});

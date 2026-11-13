@@ -10,7 +10,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { stallAdvisory, budgetFailureAdvisory, reportBudgetAdvisory } from "./hook-timing-check.ts";
-import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED } from "./budget-attempt.ts";
+import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED, transcriptWallLimit } from "./budget-attempt.ts";
 
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 /** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
@@ -188,6 +188,8 @@ async function measure() {
       }
       await verifyReplay(f, digest, expected);
     }
+    // #367 option C: the wall p95 limit is keyed by hosted-macos CPU class; the receipt names model, class, source and limit.
+    const wallLimit = transcriptWallLimit();
     const groups = ["Stop", "SessionEnd", "StopBurst"].map(event => {
       const rows = samples.filter(row => row.event === event), wallP95Ms = p95(rows.map(row => row.wallMs)), firstInvocationWallP95Ms = p95(rows.filter(row => row.followUp === 0).map(row => row.wallMs)), peakRssMB = Math.max(...rows.map(row => row.rssMB));
       const rss = rows.map(row => row.rssMB).sort((a, b) => a - b), medianRssMB = (rss[Math.floor((rss.length - 1) / 2)]! + rss[Math.floor(rss.length / 2)]!) / 2;
@@ -203,7 +205,7 @@ async function measure() {
       if (rssGate.wallMax.overMax && !wallMaxAdvisory) console.warn(`::warning title=R2 300 ms maximum (enforced)::transcript ${event}: ${rssGate.wallMax.overMax} invocation(s), max ${rssGate.wallMax.maxMs} ms`);
       return { event, incompleteRuns: incompleteRuns[event] ?? 0, rssCoverageComplete: rows.every(row => row.rssProvenanceKnown), rssProvenanceAdvisories: rows.filter(row => !row.rssProvenanceKnown).length, wallMaxAdvisory, wallMaxPass: rssGate.wallMax.pass || wallMaxAdvisory, logicalRuns: RUNS, runs: rows.length, followUpInvocations: rows.filter(row => row.followUp > 0).length,
         maxFollowUps: MAX_FOLLOW_UPS, maxFollowUpsObserved: Math.max(...rows.map(row => row.followUp)), firstInvocationWallP95Ms, summariesPerCall: { min: Math.min(...rows.map(row => row.newSummaries)), max: Math.max(...rows.map(row => row.newSummaries)), total: rows.reduce((n, row) => n + row.newSummaries, 0) },
-        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallPass: wallP95Ms < 150 && firstInvocationWallP95Ms < 150, rssGate, rssPass: rssGate.ceiling.pass && rssGate.regression.pass };
+        maxReasonOnlyStreak: Math.max(...rows.map(row => row.reasonOnlyStreak)), wallP95Ms, medianRssMB, peakRssMB, wallLimit, wallPass: wallP95Ms < wallLimit.limitMs && firstInvocationWallP95Ms < wallLimit.limitMs, rssGate, rssPass: rssGate.ceiling.pass && rssGate.regression.pass };
     });
     return { groups, samples };
   } finally {
