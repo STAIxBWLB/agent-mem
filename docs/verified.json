@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "adadef2154cc412f84806b98e6ad905adff5a557",
+      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "adadef2154cc412f84806b98e6ad905adff5a557",
+      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
       "paths": [
         "package.json",
         "bin/",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "adadef2154cc412f84806b98e6ad905adff5a557",
+      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
@@ -64,7 +64,7 @@
       ]
     },
     "docs/jcode.md": {
-      "verifiedAgainst": "adadef2154cc412f84806b98e6ad905adff5a557",
+      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
       "paths": [
         "src/hook-jcode.ts",
         "src/hooks.ts",
@@ -97,7 +97,7 @@
       ]
     },
     "docs/qwen-code.md": {
-      "verifiedAgainst": "adadef2154cc412f84806b98e6ad905adff5a557",
+      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
       "paths": [
         "src/ingest.ts",
         "src/setup.ts",
