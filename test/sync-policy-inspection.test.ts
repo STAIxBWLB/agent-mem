@@ -117,6 +117,7 @@ test("generation inspection does not confuse duplicated physical rows with canon
   expect(inspectSyncPolicy(f.store, { screen: () => false })).toMatchObject({ complete: true, counts: { scanned: 1, declined: 1 }, declined: [{ id }] });
 });
 
+// These fixtures cross the real 20000-row contract; the allowance covers bulk indexing, not a production latency gate.
 test("canonical outbound row admission is per target rather than global across project and user", async () => {
   const f = await migratedFixture("sharded"), targets = f.store.openedSyncTargets();
   expect(targets).toHaveLength(2);
@@ -134,7 +135,7 @@ test("canonical outbound row admission is per target rather than global across p
   expect(actual).toMatchObject({ ok: false, error: expect.stringContaining("declines 10001") });
   const result = inspectSyncPolicy(f.store, { screen: () => false });
   expect(result).toMatchObject({ complete: true, counts: { scanned: 20_002, declined: 20_002 } });
-});
+}, 60_000);
 
 test("a generation above the canonical row limit reports the same named row bound as sync", async () => {
   const f = await migratedFixture(), lines: string[] = [];
@@ -149,7 +150,7 @@ test("a generation above the canonical row limit reports the same named row boun
   const result = inspectSyncPolicy(f.store);
   expect(result).toMatchObject({ complete: false, reason: "input-bound", bound: { kind: "rows", limit: 20_000, observed: 20_001, nextStep: expect.any(String) } });
   expect(result).not.toHaveProperty("declined"); expect(result).not.toHaveProperty("fingerprint");
-});
+}, 60_000);
 
 test("full declined set beyond eight IDs and stable sorted fingerprint are not truncated", () => {
   const f = fixture(), ids = Array.from({ length: 12 }, (_, index) => note(f.store, `private-word row ${index}`));
