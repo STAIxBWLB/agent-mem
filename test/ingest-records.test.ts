@@ -238,3 +238,22 @@ test("#369 N1: a stored Record re-staged in one turn and drained by a later turn
   // A later call stages nothing and reports nothing.
   expect((await f.run()).records).toMatchObject({ found: 0, staged: 0, duplicatesSkipped: 0 });
 });
+
+test("#369 N1 review: a later call that drains an earlier call's stored Record counts nothing it did not find", async () => {
+  const { isHookTranscriptProgress } = await import("../src/hook-contract.ts");
+  const f = fixture("codex"), first = f.message(valid); f.write(...first); await f.run();
+  // Re-stage the same stored Record in one call without draining it.
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project }), dir = join(store.dir, "ingest"); store.close();
+  for (const name of readdirSync(dir)) if (name.endsWith(".db")) rmSync(join(dir, name));
+  const skip = spyOn(spool, "drainHookCaptures").mockImplementation(async () => ({ captured: [], blocked: 0 }));
+  let staging;
+  try { staging = await f.run(); } finally { skip.mockRestore(); }
+  expect(staging.records).toMatchObject({ found: 1, staged: 1, duplicatesSkipped: 0 });
+  // A second call finds one new Record and drains both; the earlier receipt is reported already.
+  const other = valid.replace("stale cache", "third cache");
+  appendFileSync(f.file, f.message(other).map(line).join(""));
+  const later = await f.run();
+  expect(later.records).toMatchObject({ found: 1, staged: 1, duplicatesSkipped: 0 });
+  expect(isHookTranscriptProgress({ offset: 0, records: later.records })).toBe(true);
+  expect(f.rows().filter(row => row.event === "Record")).toHaveLength(2);
+});

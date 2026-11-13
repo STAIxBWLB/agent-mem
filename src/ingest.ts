@@ -449,11 +449,10 @@ export async function ingestTranscript(kind: IngestKind, options: IngestOptions)
               const already = "already" in appended && appended.already;
               if (staged && !staged.checked && staged.fresh && already) {
                 recordCounts.staged--; recordCounts.duplicatesSkipped++;
-              } else if (!staged && already && input.event === "Record" && input.agent === kind) {
-                // #369 N1: a Record re-staged by an earlier turn of this call, or by an earlier call, and drained here was already
-                // stored. The append result is the witness, so no second store read. Only this call's own fresh count moves.
-                if (freshThisCall.delete(receipt)) recordCounts.staged--;
-                recordCounts.duplicatesSkipped++;
+              } else if (!staged && already && freshThisCall.delete(receipt)) {
+                // #369 N1: a Record this call counted as staged in an earlier turn, drained here, was already stored. The append
+                // result is the witness, so no second store read. A Record this call never found leaves its counts unchanged.
+                recordCounts.staged--; recordCounts.duplicatesSkipped++;
               }
               if (staged) { staged.checked = true; freshThisCall.delete(receipt); }
               return appended;
