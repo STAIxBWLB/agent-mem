@@ -111,6 +111,14 @@ console.log(JSON.stringify(appended));`)) as string[];
   });
 
   const previousVersion = root ? (JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { version: string }).version : "not configured";
+  const previousAtLeast = (minimum: string) => {
+    const reader = previousVersion.split(".").map(Number), floor = minimum.split(".").map(Number);
+    if (reader.length !== 3 || floor.length !== 3 || ![...reader, ...floor].every(value => Number.isSafeInteger(value) && value >= 0)) throw Error("N-1 capability checks require plain published versions");
+    for (let index = 0; index < 3; index++) if (reader[index] !== floor[index]) return reader[index]! > floor[index]!;
+    return true;
+  };
+  const nativeRecordsSupported = !!root && previousAtLeast("0.25.0");
+  const preferenceSupported = !!root && previousAtLeast(PREFERENCE_MIN_READER);
   test(`hook-v4: previous ${previousVersion} maintenance/drain preserves non-Claude Records and still drains v2/v3`, async () => {
     const f = fixture(), line = "amem: decision | src/a.ts | retain native transport proof";
     const staged = [];
@@ -127,11 +135,16 @@ console.log(JSON.stringify(appended));`)) as string[];
     expect(appended).toContain("claude:v2 native control");
     expect(appended).toContain("claude:v3 summary control");
     expect(appended).toContain("jcode:v3 jcode control");
-    expect(appended.some(value => value.includes(line))).toBe(false);
-    expect(pending(f.base)).toEqual(staged.map(value => value.record.name).sort());
-    for (const value of staged) expect(readFileSync(join(spool(f.base), value.record.name))).toEqual(value.bytes);
+    if (nativeRecordsSupported) {
+      for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect(appended).toContain(`${agent}:${line}`);
+      expect(pending(f.base)).toEqual([]);
+    } else {
+      expect(appended.some(value => value.includes(line))).toBe(false);
+      expect(pending(f.base)).toEqual(staged.map(value => value.record.name).sort());
+      for (const value of staged) expect(readFileSync(join(spool(f.base), value.record.name))).toEqual(value.bytes);
+    }
     const rows = await drain(f);
-    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect(rows).toContain(`${agent}:${line}`);
+    for (const agent of ["codex", "kimi", "pi", "qwen", "jcode"]) expect(rows.filter(value => value === `${agent}:${line}`)).toHaveLength(1);
     expect(pending(f.base)).toEqual([]);
     // AMEM_PREV_ROOT may point explicitly at published 0.24.0 for this upgrade proof;
     // ordinary CI still resolves its actual N-1. Never relabel the old package or current manifest.
@@ -178,9 +191,9 @@ try { console.log(JSON.stringify({ ids: s.list({ project: ${JSON.stringify(f.pro
     try { expect(mine.list({ project: f.project }).map(candidate => candidate.id)).toEqual([id!]); expect(mine.skippedUnknownKinds).toBe(1); } finally { mine.close(); }
   });
 
-  // #370 AC4: the previous release meets the new kind. The row is written by the introducing release's own writer — a copy of this build's
-  // `src` whose manifest is PREFERENCE_MIN_READER, the shipping configuration once this branch releases — because this build's opener
-  // refuses a floor above its own version by design (formats.ts).
+  // #370 AC4: compare the published reader's capability with the introducing release. Keep the0.24 refusal proof
+  // available through AMEM_PREV_ROOT, while0.25+ must read/sync preferences and accept the introducing floor.
+  // The writer uses the introducing version's manifest; the authored row/format must not depend on this release's version.
   const preferenceWriter = (f: ReturnType<typeof fixture>, text: string) => {
     const isolated = mkdtempSync(join(tmpdir(), "amem-n1-preference-"));
     try {
@@ -209,16 +222,19 @@ const store = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)} });
 try { const result = await syncMemory(store, { remote: ${JSON.stringify(remote)}, visibility: async () => "private" });
   console.log(JSON.stringify({ ok: result.ok, pushed: result.pushed, entries: result.entries, error: result.error ?? null })); } finally { store.close(); }`)) as { ok: boolean; pushed: boolean; entries: number; error: string | null };
 
-  test("#370 (a): one preference row in this machine's own segment makes the previous release's sync refuse, and a home without one publishes", async () => {
+  test("#370 (a): previous sync follows its preference capability, and an ordinary control publishes", async () => {
     const f = fixture(), remote = createInspectionRemote(f.root, "n1-preference-sync.git");
     ordinaryNote(f, "a rule the person keeps");
     preferenceWriter(f, "always answer in Korean");
     // The refusal under test is the own-segment screen, so this arm drops the person's floor record: what is left is a home this older
     // release would otherwise publish.
     rmSync(join(f.base, "formats.json"));
-    const refused = prevSync(f, remote);
-    expect(refused).toMatchObject({ ok: false, pushed: false, entries: 0 });
-    expect(refused.error).toContain("not readable as complete valid rows");
+    const observed = prevSync(f, remote);
+    if (preferenceSupported) expect(observed).toMatchObject({ ok: true, pushed: true, entries: 2, error: null });
+    else {
+      expect(observed).toMatchObject({ ok: false, pushed: false, entries: 0 });
+      expect(observed.error).toContain("not readable as complete valid rows");
+    }
     // Control: the same home shape carrying only the ordinary note publishes, so the refusal is the preference row's.
     const control = fixture();
     ordinaryNote(control, "a rule the person keeps");
@@ -226,7 +242,7 @@ try { const result = await syncMemory(store, { remote: ${JSON.stringify(remote)}
     expect(published.ok).toBe(true); expect(published.error).toBeNull(); expect(published.entries).toBeGreaterThan(0);
   });
 
-  test("#370 (b): the kind's floor makes the previous release refuse at store open with format_floor, not at sync", () => {
+  test("#370 (b): the introducing preference floor is accepted exactly by capable previous readers", () => {
     const f = fixture();
     ordinaryNote(f, "a rule the person keeps");
     preferenceWriter(f, "always answer in Korean");
@@ -234,12 +250,15 @@ try { const result = await syncMemory(store, { remote: ${JSON.stringify(remote)}
 let error = null;
 try { new MemoryStore({ memoryDir: ${JSON.stringify(f.base)} }).close(); } catch (caught) { error = { code: caught.code ?? null, message: String(caught.message) }; }
 console.log(JSON.stringify({ error }));`)) as { error: { code: string | null; message: string } | null };
-    expect(observed.error?.code).toBe("format_floor");
-    expect(observed.error?.message).toContain(PREFERENCE_MIN_READER);
+    if (preferenceSupported) expect(observed.error).toBeNull();
+    else {
+      expect(observed.error?.code).toBe("format_floor");
+      expect(observed.error?.message).toContain(PREFERENCE_MIN_READER);
+    }
   });
 
-  test("#370 (c): the previous release's incremental index equals a rebuild and a rebuild from a deleted index, all dropping the preference row", () => {
-    const f = fixture(), expected = ["an ordinary decision", "another ordinary decision"];
+  test("#370 (c): previous incremental and rebuilt indexes agree with its preference capability", () => {
+    const f = fixture(), expected = ["an ordinary decision", "another ordinary decision", ...(preferenceSupported ? ["always answer in Korean"] : [])].sort();
     ordinaryNote(f, "an ordinary decision"); ordinaryNote(f, "another ordinary decision");
     preferenceWriter(f, "always answer in Korean");
     rmSync(join(f.base, "formats.json"));
@@ -249,15 +268,17 @@ try { const incremental = store.list({ project: ${JSON.stringify(f.project)} }).
   store.rebuild();
   console.log(JSON.stringify({ incremental, rebuilt: store.list({ project: ${JSON.stringify(f.project)} }).map(view => view.text) })); } finally { store.close(); }`)) as { incremental: string[]; rebuilt: string[] };
     const first = listed();
-    // The unknown kind is dropped from the view, and the incremental index agrees with a full rebuild of the same segment.
+    // Capable readers retain the rule; older readers drop it. Both must agree with a full rebuild.
     expect([...first.incremental].sort()).toEqual(expected);
     expect([...first.rebuilt].sort()).toEqual(expected);
     // A rebuild from a deleted index returns the same rows: every state is folded from the segments, never from the index.
-    rmSync(join(f.base, indexFileName(false, 3)));
+    const previousIndex = run(f, `const { indexFileName } = await import(${JSON.stringify(prev("src/memory/index-file.ts"))}); console.log(indexFileName(false));`);
+    expect(previousIndex).toMatch(/^index(?:-[a-z0-9-]+)?[.]db$/);
+    rmSync(join(f.base, previousIndex));
     expect([...listed().incremental].sort()).toEqual(expected);
     // The index read the whole segment and stopped at its size, preference line included.
     const machine = (JSON.parse(readFileSync(join(f.base, "machine.json"), "utf8")) as { id: string }).id;
-    const db = new Database(join(f.base, indexFileName(false, 3)), { readonly: true });
+    const db = new Database(join(f.base, previousIndex), { readonly: true });
     try {
       const offset = (db.query("SELECT offset FROM segments WHERE file = ?").get(`log/${machine}.jsonl`) as { offset: number } | null)?.offset;
       expect(offset).toBe(statSync(join(f.base, "log", `${machine}.jsonl`)).size);
