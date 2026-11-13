@@ -87,11 +87,20 @@ export function visitInspectionFile(
       }
       offset += count;
     }
+    const capturedHash = hash.digest("hex"), verified = createHash("sha256");
+    let verifiedAt = 0;
+    // Same-inode/size rewrites can share a filesystem time token. Recheck bytes, as SegmentReader does.
+    while (verifiedAt < size) {
+      const count = filesystem(() => readSync(fd, chunk, 0, Math.min(chunk.length, size - verifiedAt), verifiedAt));
+      if (!count) throw new InspectionStreamError("input-changed");
+      verified.update(chunk.subarray(0, count)); verifiedAt += count;
+    }
+    if (verified.digest("hex") !== capturedHash) throw new InspectionStreamError("input-changed");
     const current = filesystem(() => fstatSync(fd, { bigint: true }), "input-changed");
     const named = filesystem(() => lstatSync(file, { bigint: true }), "input-changed");
     if (!current.isFile() || !named.isFile() || named.isSymbolicLink() || stampOf(current) !== stamp || stampOf(named) !== stamp) throw new InspectionStreamError("input-changed");
     if (lineOffset !== size || nextPrefix !== expected.length) throw new InspectionStreamError("input-unavailable");
-    const result = { offset: size, hash: hash.digest("hex"), tailBytes: 0, stamp, start: 0 };
+    const result = { offset: size, hash: capturedHash, tailBytes: 0, stamp, start: 0 };
     completed = true;
     return result;
   } finally {
