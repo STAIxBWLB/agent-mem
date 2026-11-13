@@ -4,7 +4,7 @@ import { assertFormatFloor } from "./formats.ts";
 import { closeSync, constants, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { rebindPublicPruneProfile } from "./generation.ts";
-import { memoryGitArgv, memoryGitEnv, processLiveness, processSignature } from "./platform.ts";
+import { memoryGitArgv, memoryGitEnv, memoryGitSync, processLiveness, processSignature } from "./platform.ts";
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
@@ -233,11 +233,35 @@ export interface SyncOptions {
 
 export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
 
+const NO_SYNC_REMOTE = "no sync remote: a person sets one with `amem sync --remote <private git url>`";
+
+/** Configuration-only preflight: an unconfigured transport has no outbound rows to screen. */
+function missingSyncRemote(store: MemoryStore): string | undefined {
+  const sharded = store.profile.sharded, generation = store.profile.kind === "generation";
+  const dir = sharded ? join(store.profile.home, "shard-sync") : store.dir;
+  const repository = sharded ? join(dir, "objects.git") : join(dir, ".git");
+  const reason = sharded ? "no shard sync remote configured" : generation ? "no generation sync remote configured" : NO_SYNC_REMOTE;
+  if (!existsSync(repository)) return reason;
+  const args = [...(sharded ? ["--git-dir", repository] : []), "remote", "get-url", "origin"];
+  // Admission below must remain synchronous until it acquires the mutation lock.
+  const remote = memoryGitSync(["-C", dir, ...args], { encoding: "utf8", timeout: STEP_MS,
+    env: memoryGitEnv(process.env, { repositoryIsolation: generation }) });
+  return remote.status === 0 && remote.stdout.trim() ? undefined : reason;
+}
+
 export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Promise<SyncResult> {
   assertFormatFloor(store.profile.home, "sync");
   const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
   if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return (await import("./sync-placement-transport.ts")).syncPlacementMemory(store, opts);
+  if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
+  if (!opts.remote) {
+    try {
+      const error = missingSyncRemote(store);
+      if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
+      if (error) return { ok: false, pushed: false, entries: 0, error };
+    } catch { return { ok: false, pushed: false, entries: 0, error: "sync remote configuration unavailable" }; }
+  }
   if (store.profile.sharded) {
     try {
       // Refresh only through the existing proved monotone profile rebind before pinning this attempt.
@@ -270,8 +294,6 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   const dir = store.dir;
   const fail = (error: string): SyncResult => ({ ok: false, pushed: false, entries: 0, error });
   if (opts.signal?.aborted) return fail("stopped");
-  const noRemote = "no sync remote: a person sets one with `amem sync --remote <private git url>`";
-  if (!opts.remote && !existsSync(join(dir, ".git"))) return fail(noRemote); // never set up: nothing to do, nothing created
   const release = lock(dir);
   if (!release) return fail("another sync is running on this machine");
   let releaseMutation: (() => void) | undefined, releaseCurated: (() => void) | undefined;
@@ -295,7 +317,7 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
     }
     const url = (await git(dir, ["remote", "get-url", "origin"], opts.signal)).out;
     if (opts.signal?.aborted) return fail("stopped");
-    if (!url) return fail(noRemote);
+    if (!url) return fail(NO_SYNC_REMOTE);
     // Long-term entries hold note text: a public remote would publish them.
     const visibility = await (opts.visibility ?? remoteVisibility)(url);
     if (visibility === "public") return fail("the sync remote is public; memory syncs only to a private remote");
