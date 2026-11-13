@@ -88,6 +88,14 @@ function decodeInspectionEntry(bytes: Buffer, context: { source: string; path: s
   return checkedEntry(parsed);
 }
 
+const INSPECTION_SOURCE_FILES = 20_000;
+/** Bound checkpoint metadata before materializing it; ordinary refresh/recovery keeps its existing query. */
+function sourceMetadataRows<T>(db: Database, sql: string, inspection: boolean): T[] {
+  const rows = db.query(sql + (inspection ? " LIMIT ?" : "")).all(...(inspection ? [INSPECTION_SOURCE_FILES + 1] : [])) as T[];
+  if (inspection && rows.length > INSPECTION_SOURCE_FILES) throw new InspectionBoundError({ kind: "source-files", limit: INSPECTION_SOURCE_FILES, observed: rows.length });
+  return rows;
+}
+
 /** Generation-owned derived state. Legacy files are inputs, never opened as a MemoryStore. */
 export class GenerationIndex {
   readonly profile: BoundProfile;
@@ -117,7 +125,7 @@ export class GenerationIndex {
     db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
   private ownSegments(reader: SegmentReader = this.reader, full = this.fullCapture, inspect?: LegacySegmentInspector): LegacySegment[] {
-    const prior = this.options.db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'").all() as (LegacyCheckpoint & { stamp: string | null })[];
+    const prior = sourceMetadataRows<LegacyCheckpoint & { stamp: string | null }>(this.options.db, "SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'", !!inspect);
     return ["log", "local"].flatMap(folder => {
       const dir = join(this.profile.dir, folder);
       if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory()) return fail();
@@ -147,7 +155,7 @@ export class GenerationIndex {
   private capture(reader: SegmentReader = this.reader, readOnly = false, inspect?: LegacySegmentInspector): { segments: LegacySegment[]; commit?: string } {
     const shardBefore = this.shardFrontier(readOnly), full = this.fullCapture || readOnly;
     const db = this.options.db;
-    const previous = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'").all() as (LegacyCheckpoint & { commit_id: string | null; stamp: string | null })[];
+    const previous = sourceMetadataRows<LegacyCheckpoint & { commit_id: string | null; stamp: string | null }>(db, "SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source != 'generation'", !!inspect);
     const initial = readProfileJSON(join(this.profile.dir, "migration-sources.json")) as { sources?: LegacyCheckpoint[]; legacyCommit?: string } | undefined;
     const bySource = new Map((initial?.sources ?? []).map(row => [`${row.source}:${row.path}`, row]));
     for (const { commit_id, stamp, ...row } of previous) bySource.set(`${row.source}:${row.path}`, { ...row, ...(stamp ? { stamp } : {}), ...(commit_id ? { commit: commit_id } : {}) });
@@ -169,7 +177,7 @@ export class GenerationIndex {
     const legacy = this.profile.sharded ? readShardLegacySnapshot(this.profile, legacyOptions, inspect)
       : inspect ? inspectLegacySnapshot(legacyHome, generationOptions, inspect) : readLegacySnapshot(legacyHome, generationOptions);
     const own = this.ownSegments(reader, full, inspect);
-    for (const old of db.query("SELECT path,offset,hash FROM generation_segments WHERE source='generation'").all() as { path: string; offset: number; hash: string }[]) {
+    for (const old of sourceMetadataRows<{ path: string; offset: number; hash: string }>(db, "SELECT path,offset,hash FROM generation_segments WHERE source='generation'", !!inspect)) {
       const segment = own.find(s => s.path === old.path);
       if (!segment || segment.offset < old.offset) fail();
     }
@@ -339,7 +347,7 @@ export class GenerationIndex {
     type Identity = { hash: string; presence: GenerationPresence; source: Source; location: InspectionLocation };
     const identities = new Map<string, Identity>(), files = new Map<string, Source>();
     // ponytail: retain bounded identity metadata, not row bodies; larger histories need a bounded proof format.
-    const maxIdentities = 65_536, maxSourceFiles = 20_000;
+    const maxIdentities = 65_536, maxSourceFiles = INSPECTION_SOURCE_FILES;
     let selected = 0;
     const outbound = (presence?: GenerationPresence) => presence?.placement === "synced" && (presence.own || presence.legacy) ? 1 : 0;
     const capture = (collect: boolean) => {

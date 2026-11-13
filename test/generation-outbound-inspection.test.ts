@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { indexFileName } from "../src/memory/index-file.ts";
+import { inspectSyncPolicy } from "../src/memory/sync-policy-inspection.ts";
 import { appendFileSync, closeSync, constants, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -101,4 +104,18 @@ test("explicitly bounded SegmentReader retains its8MiB allocation and16MiB verif
   expect(bounded.metrics().bytesRead).toBe(2 * limits.maxBytes);
   expect(bounded.inspectionMetrics()).toEqual({ sourceBytes: limits.maxBytes, rows: 1 });
   expect(() => bounded.read(file, undefined, true)).toThrow(SegmentReadBudgetError);
+});
+
+
+test("checkpoint metadata is capped before its result array grows beyond the source inventory guard", async () => {
+  const f = await fixture(), db = new Database(join(f.store.dir, indexFileName(true)));
+  try {
+    const insert = db.query("INSERT OR REPLACE INTO generation_segments (source,path,offset,hash,commit_id,stamp) VALUES ('legacy-local',?,0,?,NULL,NULL)");
+    db.transaction(() => { for (let index = 0; index < 20_001; index++) insert.run(`log/metadata-${index}.jsonl`, "0".repeat(64)); })();
+    const before = db.query("SELECT count(*) AS n FROM generation_segments").get();
+    expect(inspectSyncPolicy(f.store)).toMatchObject({ complete: false, reason: "input-bound", bound: {
+      kind: "source-files", limit: 20_000, observed: 20_001, nextStep: expect.any(String),
+    } });
+    expect(db.query("SELECT count(*) AS n FROM generation_segments").get()).toEqual(before);
+  } finally { db.close(); }
 });
