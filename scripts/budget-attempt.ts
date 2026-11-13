@@ -32,6 +32,23 @@ export function macosHardwareClass(cpuModel: string): MacosHardwareClass {
     default: return "unknown";
   }
 }
+/** Group wall p95 limit for every runner, CPU class and unknown CPU. */
+export const TRANSCRIPT_WALL_P95_MS = 150;
+/** #367 owner ruling (2026-11-13, option C): hosted-macos Apple M1 transcript-hooks wall p95 limit. Derivation: the maximum of the
+ * all-invocation and first-invocation group p95 over every retained hosted M1 `measure (macos-latest)` job since 6f9ade6 (27 jobs,
+ * 129 group values, every outcome kept) is 172.20 ms; plus a 5% margin, rounded up: ceil(172.20 * 1.05) = 181 ms. The person
+ * confirms this number at review. ponytail: a single hardware-class constant; retire it after a product fix brings hosted M1
+ * under 150 ms for ten consecutive main runs, or by a later person ruling. */
+export const TRANSCRIPT_WALL_P95_M1_MS = 181;
+export interface TranscriptWallLimit { limitMs: number; cpuModel: string | null; hardwareClass: MacosHardwareClass | null; limitSource: "hardware-class" | "default" }
+/** Only hosted-macos runs whose CPU brand is Apple M1 select the M1 limit; unknown CPUs, M2 Pro, Linux, dgx02 and local keep 150 ms. */
+export function transcriptWallLimit(options: { env?: NodeJS.ProcessEnv; cpuModel?: string } = {}): TranscriptWallLimit {
+  if (runnerKind(options.env) !== "hosted-macos") return { limitMs: TRANSCRIPT_WALL_P95_MS, cpuModel: null, hardwareClass: null, limitSource: "default" };
+  const cpuModel = (options.cpuModel ?? cpus()[0]?.model ?? "unknown").trim(), hardwareClass = macosHardwareClass(cpuModel);
+  return hardwareClass === "apple-m1"
+    ? { limitMs: TRANSCRIPT_WALL_P95_M1_MS, cpuModel, hardwareClass, limitSource: "hardware-class" }
+    : { limitMs: TRANSCRIPT_WALL_P95_MS, cpuModel, hardwareClass, limitSource: "default" };
+}
 export interface R2Baseline {
   schema: "agent-mem.r2-baseline/v1";
   runners: Partial<Record<RunnerKind, Record<string, number>>>;

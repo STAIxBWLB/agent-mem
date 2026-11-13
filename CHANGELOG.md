@@ -4,6 +4,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+- Select the hosted macOS `transcript-hooks` wall p95 limit by CPU hardware class: Apple M1 uses 181 ms (the maximum group p95 over every retained hosted M1 measure job since 6f9ade6, 172.20 ms, plus 5%), while unknown CPUs, Apple M2 Pro and every other runner keep 150 ms. Group receipts name the CPU model, class, limit source and applied limit. The 300 ms handler maximum, RSS gates, retry and advisory policy are unchanged. Retire after ten consecutive hosted M1 main runs below 150 ms following a product fix, or a later person ruling. Refs #367.
+
 ## 0.25.0
 
 - Add the person-owned `preference` note kind (`amem note add --kind preference`, `amem_remember` with `kind: "preference"`): a standing instruction that is long-term, project or `shared` scope, superseded and forgotten like any note, and never inferred or merged by `amem consolidate`. Briefs show it by its own slot instead of path- or intent-ranked rows: `amem_brief` reserves at most half its budget for up to five current preferences (this project's plus every `shared` one, newest first) and emits whole lines of at most 240 bytes, dropping one that does not fit and reporting `truncated` rather than clipping a rule in half; the SessionStart hook carries the same slot from its own prebuilt sidecar `brief-preferences.json`, written beside `brief-curated.json` under the same profile binding, 24-hour freshness and 32 KiB cap, at most 480 bytes, before the curated rows. A preference never takes a curated row, so one is never shown twice. Refs #370.
