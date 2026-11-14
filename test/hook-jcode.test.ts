@@ -120,3 +120,16 @@ test("the jcode mapping reads only the environment contract and never a prompt",
   expect(tool.event).toBe("PostToolUse"); expect(tool.input.prompt).toBeUndefined();
   expect(Object.keys(tool.input).sort()).toEqual(["cwd", "hook_event_name", "session_id", "tool_input", "tool_name", "tool_response"]);
 });
+
+test("#399: jcode shell input reaches capture only with answer values withheld", () => {
+  const f = fixture();
+  const command = 'ahub answer qs-1 q=a --instructed "person-quote-canary" --other="free-text-canary"';
+  const result = runJcode(f, postTool(f.cwd, { JCODE_HOOK_TOOL_NAME: "Bash", JCODE_HOOK_TOOL_INPUT: JSON.stringify({ command }), JCODE_HOOK_TOUCHED_PATHS: "" }));
+  expect(result.exitCode).toBe(0);
+  settle(f, f.cwd, f.project, rows => rows.some(row => row.tool === "Bash"));
+  const rows = rowsOf(f, f.project).filter(row => row.tool === "Bash");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.excerpt).toBe('ahub answer qs-1 q=a --instructed [withheld] --other=[withheld]');
+  expect(JSON.stringify(rows)).not.toContain("person-quote-canary");
+  expect(JSON.stringify(rows)).not.toContain("free-text-canary");
+});

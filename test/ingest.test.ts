@@ -272,3 +272,17 @@ test("#136: a declined Kimi message under a stored unsupported protocol reports 
   const receipt = await ingestTranscript("kimi",{...f,files:[file],policy});
   expect(receipt.reason).not.toBe("unsupported_version"); expect(receipt.version).toBeUndefined(); expect(receipt.imported).toBe(0);
 });
+
+test("#399: Codex transcript tool arguments withhold answer values and retain unrelated bytes", async () => {
+  const f = fixture();
+  const args = JSON.stringify({ cmd: 'ahub answer qs-1 q=a --instructed "person-quote-canary" --other q="free-text-canary"' });
+  const ordinary = '{ "cmd" : "echo --instructed hi" }';
+  const call = (argumentsText: string) => ({ timestamp: at, type: "response_item", payload: { type: "function_call", name: "exec_command", arguments: argumentsText } });
+  writeFileSync(f.file, line(codexHeader(f.cwd)) + line(call(args)) + line(call(ordinary)));
+  expect((await ingestTranscript("codex", { ...f, files: [f.file] })).imported).toBe(2);
+  const captured = rows(f).map(row => row.excerpt);
+  expect(captured).toContain(JSON.stringify({ cmd: 'ahub answer qs-1 q=a --instructed [withheld] --other [withheld]' }));
+  expect(captured).toContain(ordinary);
+  expect(captured.join("\n")).not.toContain("person-quote-canary");
+  expect(captured.join("\n")).not.toContain("free-text-canary");
+});
