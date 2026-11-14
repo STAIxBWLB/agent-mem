@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Resolve `..` after symlinks physically in `realPath`, including roots containing a literal backslash, while continuing to refuse missing paths and dangling symlinks. Paths without parent segments retain the native fast path and existing backslash fallback. Refs #403.
+
 ## 0.26.0
 
 - Select the hosted macOS `transcript-hooks` wall p95 limit by CPU hardware class: Apple M1 uses 181 ms (the maximum group p95 over every retained hosted M1 measure job since 6f9ade6, 172.20 ms, plus 5%), while unknown CPUs, Apple M2 Pro and every other runner keep 150 ms. Group receipts name the CPU model, class, limit source and applied limit. The 300 ms handler maximum, RSS gates, retry and advisory policy are unchanged. Retire after ten consecutive hosted M1 main runs below 150 ms following a product fix, or a later person ruling. Refs #367, #390.
