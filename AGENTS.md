@@ -29,7 +29,7 @@
 
 ## Pull requests
 
-- Open every PR as a draft with `gh pr create --draft`. A draft PR runs Ubuntu only; `check (macos-latest)` fails with `macOS deferred` until the PR is ready, so a draft is never merge-ready. Owner decision 2026-11-14, #402.
+- Open every PR as a draft with `gh pr create --draft`.
 - Run `gh pr ready` just before `hub_task_done`; the `ready_for_review` run adds macOS. While iterating on a small fix after review, `gh pr ready --undo` is allowed; mark it ready again before reporting.
 
 ## Merging

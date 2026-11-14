@@ -68,7 +68,7 @@ export function aggregate(needs: unknown, os: string): string[] {
   if (decision?.result !== 'success' || (runFull !== 'true' && runFull !== 'false')) {
     errors.push(`${describe('decision', decision)}; inspect the job and rerun.`);
   }
-  for (const [name, job] of [['test', test], ['measure', measure]] as const) {
+  for (const [name, job] of [[macos ? 'test-macos' : 'test', test], [macos ? 'measure-macos' : 'measure', measure]] as const) {
     const expected = runFull === 'true' ? 'success' : runFull === 'false' ? 'skipped' : undefined;
     if (job?.result !== expected) errors.push(`${describe(name, job)}; inspect that job and rerun.`);
   }
