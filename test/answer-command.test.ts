@@ -36,7 +36,7 @@ test("serialized tool argument shaping covers shell strings and argv arrays with
     expect(shaped).not.toContain("free-text-canary");
     expect(() => JSON.parse(shaped)).not.toThrow();
   }
-  for (const original of ['{ "cmd" : "echo --instructed hi", "other": [1, true] }', '{"command":["ahub","status","--other","value"]}', 'not JSON', '{ "cmd": "echo --other value']) {
+  for (const original of ['{ "cmd" : "echo --instructed hi", "other": [1, true] }', '{"command":["ahub","status","--other","value"]}', 'not JSON', '{ "cmd": "echo --other value', JSON.stringify({ cmd: "echo 'ahub answer --instructed ordinary'" }), JSON.stringify({ cmd: "git commit -m 'ahub answer --instructed ordinary'" })]) {
     expect(withholdToolArguments(original)).toBe(original);
   }
   expect(withholdToolArguments('{ "cmd": "ahub answer qs-1 q=a --instructed \"private')).toBe("[withheld]");
@@ -62,6 +62,7 @@ test("duplicate JSON keys never retain shadowed answer commands or argv values",
     '{"cmd":"ahub answer qs-1 q=a --instructed person-quote-canary","cmd":"echo ok"}',
     '{"nested":{"command":"ahub answer qs-1 q=a --other free-text-canary","command":"echo ok"}}',
     '{"command":["ahub","answer","qs-1","--instructed","person-quote-canary"],"command":["echo","ok"]}',
+    '{"command":["FOO=1","ahub","answer","qs-1","--instructed","person-quote-canary"],"command":["echo","ok"]}',
   ]) {
     const captured = withholdToolArguments(raw);
     expect(captured).toBe("[withheld]");
@@ -70,4 +71,20 @@ test("duplicate JSON keys never retain shadowed answer commands or argv values",
   }
   const ordinary = '{"cmd":"echo first","cmd":"echo second"}';
   expect(withholdToolArguments(ordinary)).toBe(ordinary);
+});
+
+test("leading environment assignments do not become the program name", () => {
+  for (const start of ["FOO=1 ", "FOO='x y' BAR=2 ", "cd /x && FOO=1 ", 'FOO="$VALUE" ']) {
+    const command = `${start}ahub answer qs-1 q=a --instructed "person-quote-canary"`;
+    expect(toolInputLine({ command })).toBe(`${start}ahub answer qs-1 q=a --instructed [withheld]`);
+  }
+  const argv = { command: ["FOO=1", "BAR=2", "ahub", "answer", "qs-1", "q=a", "--instructed", "person-quote-canary"] };
+  expect(withholdToolArguments(JSON.stringify(argv))).toBe(JSON.stringify({ command: ["FOO=1", "BAR=2", "ahub", "answer", "qs-1", "q=a", "--instructed", "[withheld]"] }));
+  for (const command of ['"FOO=1" ahub answer qs-1 --other text', 'echo FOO=1 ahub answer qs-1 --instructed text', "FOO=1 ahub status --other text"]) {
+    expect(toolInputLine({ command })).toBe(command);
+  }
+});
+
+test("unparseable tool arguments containing ahub answer are withheld as a whole", () => {
+  expect(withholdToolArguments('{"command": ahub answer qs-1 q=a --instructed person-quote-canary}')).toBe("[withheld]");
 });

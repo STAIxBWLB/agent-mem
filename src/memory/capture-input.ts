@@ -54,6 +54,7 @@ export function clipCaptureUtf8(text: string, maximumBytes: number): string {
 
 interface CommandWord { end: number; text: string; complete: boolean; dynamic: boolean }
 const commandBreak = (c: string): boolean => /[\s;&|()<>]/.test(c);
+const assignmentWord = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /** Read one literal shell word without executing expansions; offsets refer to the unchanged input. */
 function commandWord(command: string, start: number): CommandWord {
@@ -93,6 +94,7 @@ export function withholdAnswerCommand(command: string): string {
     }
     const start = i, word = commandWord(command, i); i = word.end;
     if (state === "answer" && (!word.complete || word.dynamic)) return answerPrefix + " [withheld]";
+    if (state === "program" && word.complete && assignmentWord.test(command.slice(start, i))) continue;
     if (state === "program") { state = word.complete && !word.dynamic && /^(?:.*\/)?ahub$/.test(word.text) ? "subcommand" : "other"; continue; }
     if (state === "subcommand") {
       state = word.complete && !word.dynamic && word.text === "answer" ? "answer" : "other";
@@ -143,7 +145,7 @@ function withholdUnparsedArguments(text: string): string {
       const value: unknown = JSON.parse(raw);
       if (typeof value === "string") {
         if (withholdAnswerCommand(value) !== value) return "[withheld]";
-        if (containers[top] === "program") containers[top] = /^(?:.*\/)?ahub$/.test(value) ? "subcommand" : "other";
+        if (containers[top] === "program" && !assignmentWord.test(value)) containers[top] = /^(?:.*\/)?ahub$/.test(value) ? "subcommand" : "other";
         else if (containers[top] === "subcommand") containers[top] = value === "answer" ? "answer" : "other";
         else if (containers[top] === "answer" && /^--(?:instructed|other)(?:=|$)/.test(value)) return "[withheld]";
       }
@@ -154,11 +156,36 @@ function withholdUnparsedArguments(text: string): string {
   return text;
 }
 
+/** Shape one explicit argv vector inside a freshly parsed argument envelope. */
+function withholdAnswerArgv(argv: unknown[]): boolean {
+  let program = 0;
+  while (program < argv.length) {
+    const word = argv[program];
+    if (typeof word !== "string" || !assignmentWord.test(word)) break;
+    program++;
+  }
+  const executable = argv[program];
+  if (typeof executable !== "string" || !/^(?:.*\/)?ahub$/.test(executable) || argv[program + 1] !== "answer") return false;
+  let changed = false;
+  for (let i = program + 2; i < argv.length; i++) {
+    const word = argv[i], flag = typeof word === "string" ? /^(--(?:instructed|other))(=|$)/.exec(word) : null;
+    if (!flag) continue;
+    changed = true;
+    if (flag[2] === "=") argv[i] = `${flag[1]}=[withheld]`;
+    else {
+      const next = argv[i + 1];
+      if (typeof next === "string" && next.startsWith("--")) { argv.splice(program + 2, argv.length - program - 2, "[withheld]"); break; }
+      argv[++i] = "[withheld]";
+    }
+  }
+  return changed;
+}
+
 /** Shape serialized transcript tool arguments without reserializing any unaffected input. */
 export function withholdToolArguments(argumentsText: string): string {
   let parsed: unknown;
   try { parsed = JSON.parse(argumentsText); }
-  catch { return withholdUnparsedArguments(argumentsText); }
+  catch { return argumentsText.includes("ahub answer") ? "[withheld]" : withholdUnparsedArguments(argumentsText); }
   const holder: Record<string, unknown> = { value: parsed };
   const stack = [{ parent: holder, key: "value" }];
   let changed = false;
@@ -168,16 +195,7 @@ export function withholdToolArguments(argumentsText: string): string {
       const shaped = withholdAnswerCommand(value);
       if (shaped !== value) { parent[key] = shaped; changed = true; }
     } else if (value && typeof value === "object") {
-      if (Array.isArray(value) && typeof value[0] === "string" && /^(?:.*\/)?ahub$/.test(value[0]) && value[1] === "answer") {
-        for (let i = 2; i < value.length; i++) {
-          const flag = typeof value[i] === "string" ? /^(--(?:instructed|other))(=|$)/.exec(value[i]) : null;
-          if (!flag) continue;
-          changed = true;
-          if (flag[2] === "=") value[i] = `${flag[1]}=[withheld]`;
-          else if (typeof value[i + 1] === "string" && value[i + 1].startsWith("--")) { value.splice(2, value.length - 2, "[withheld]"); break; }
-          else value[++i] = "[withheld]";
-        }
-      }
+      if (Array.isArray(value) && withholdAnswerArgv(value)) changed = true;
       for (const child of Object.keys(value)) stack.push({ parent: value as Record<string, unknown>, key: child });
     }
   }
