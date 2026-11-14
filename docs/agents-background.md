@@ -9,3 +9,4 @@ Draft PRs defer macOS tests and measurements to the ready-for-review run. The re
 ## 변경 이력
 
 - 2026-11-14: Added the draft-first PR flow and ready-for-review handoff in #402.
+- 2026-11-14: The dgx02 remote slot cap now points to `dot remote status` `max_runs` (5 at the time) instead of a fixed 3, which had held back a verification in tasks 251/252.

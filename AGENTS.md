@@ -5,7 +5,7 @@
 - Install with `bun install` (Bun 1.4.4, `.bun-version`).
 - Before reporting completion, run `bun x tsc --noEmit`, `bun scripts/check-boundary.ts`, `bun test` and `npm pack --dry-run`; report their results. Boundary success prints `boundary: OK`.
 - Run one focused file with `bun test test/<name>.test.ts`.
-- On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 follow the workspace `remote_dev.py` limits (one per worktree, up to 3 host-wide); announce the slot in an unmarked hub message before starting one.
+- On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 (`dot remote run|verify`) take one slot per worktree, up to the `max_runs` that `dot remote status` reports; announce the slot in an unmarked hub message before starting one.
 
 ## Conventions and structure
 
