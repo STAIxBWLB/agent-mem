@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
+      "verifiedAgainst": "0b0813329a7fa0e81f66f9a83aafdc0dbf6b3503",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
+      "verifiedAgainst": "0b0813329a7fa0e81f66f9a83aafdc0dbf6b3503",
       "paths": [
         "package.json",
         "bin/",
@@ -97,7 +97,7 @@
       ]
     },
     "docs/qwen-code.md": {
-      "verifiedAgainst": "f0bcc90d9285d93d6024ddfdaaf7707db22df160",
+      "verifiedAgainst": "0b0813329a7fa0e81f66f9a83aafdc0dbf6b3503",
       "paths": [
         "src/ingest.ts",
         "src/setup.ts",
