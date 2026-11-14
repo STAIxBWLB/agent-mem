@@ -8,7 +8,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Withhold `ahub answer` command-line `--instructed` and `--other` values before tool-input clipping and capture publication in native hooks and existing transcript tool imports, including quoted values, leading environment assignments and shell lists. Ambiguous answer tails are withheld; unrelated command shaping is unchanged. Refs #399.
 
-- Resolve `..` after symlinks physically in `realPath`, including roots containing a literal backslash, while continuing to refuse missing paths and dangling symlinks. Paths without parent segments retain the native fast path and existing backslash fallback. Refs #403.
+- Resolve `..` after symlinks physically in `realPath`, including roots containing a literal backslash, while continuing to refuse missing paths and dangling symlinks. Paths without parent segments retain the native fast path and existing backslash fallback. Regression coverage includes absolute and relative link targets and input spellings. Refs #403, #406.
 
 ## 0.26.0
 
