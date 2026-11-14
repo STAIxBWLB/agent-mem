@@ -55,3 +55,19 @@ test("malformed tool JSON cannot evade shaping through whitespace, shell lists o
   const other = JSON.stringify({ cmd: "echo --instructed ordinary" }).slice(0, -2);
   expect(withholdToolArguments(other)).toBe(other);
 });
+
+
+test("duplicate JSON keys never retain shadowed answer commands or argv values", () => {
+  for (const raw of [
+    '{"cmd":"ahub answer qs-1 q=a --instructed person-quote-canary","cmd":"echo ok"}',
+    '{"nested":{"command":"ahub answer qs-1 q=a --other free-text-canary","command":"echo ok"}}',
+    '{"command":["ahub","answer","qs-1","--instructed","person-quote-canary"],"command":["echo","ok"]}',
+  ]) {
+    const captured = withholdToolArguments(raw);
+    expect(captured).toBe("[withheld]");
+    expect(captured).not.toContain("person-quote-canary");
+    expect(captured).not.toContain("free-text-canary");
+  }
+  const ordinary = '{"cmd":"echo first","cmd":"echo second"}';
+  expect(withholdToolArguments(ordinary)).toBe(ordinary);
+});

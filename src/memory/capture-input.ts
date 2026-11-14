@@ -113,14 +113,23 @@ export function withholdAnswerCommand(command: string): string {
 }
 
 /** Recover only JSON string boundaries in a truncated argument envelope; never execute or trust its structure. */
-function malformedToolArguments(text: string): string {
+function withholdUnparsedArguments(text: string): string {
   const direct = withholdAnswerCommand(text);
   if (direct !== text) return direct;
   if (!/^\s*[\[{]/.test(text)) return text;
-  // A direct argv prefix already identifies the command even if its later JSON value is cut short.
-  if (/\[\s*"(?:[^"\\]*\/)?ahub"\s*,\s*"answer"/.test(text)) return "[withheld]";
+  const containers: ("program" | "subcommand" | "answer" | "other" | null)[] = [];
   for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '"') continue;
+    const c = text[i]!;
+    const top = containers.length - 1;
+    if (c === "[" || c === "{") {
+      if (containers[top] === "program" || containers[top] === "subcommand") containers[top] = "other";
+      containers.push(c === "[" ? "program" : null); continue;
+    }
+    if (c === "]" || c === "}") { containers.pop(); continue; }
+    if (c !== '"') {
+      if (!/[\s,:]/.test(c) && (containers[top] === "program" || containers[top] === "subcommand")) containers[top] = "other";
+      continue;
+    }
     const start = i++;
     let escaped = false;
     for (; i < text.length; i++) {
@@ -132,7 +141,12 @@ function malformedToolArguments(text: string): string {
     const raw = text.slice(start, closed ? i + 1 : escaped ? i - 1 : i) + (closed ? "" : '"');
     try {
       const value: unknown = JSON.parse(raw);
-      if (typeof value === "string" && withholdAnswerCommand(value) !== value) return "[withheld]";
+      if (typeof value === "string") {
+        if (withholdAnswerCommand(value) !== value) return "[withheld]";
+        if (containers[top] === "program") containers[top] = /^(?:.*\/)?ahub$/.test(value) ? "subcommand" : "other";
+        else if (containers[top] === "subcommand") containers[top] = value === "answer" ? "answer" : "other";
+        else if (containers[top] === "answer" && /^--(?:instructed|other)(?:=|$)/.test(value)) return "[withheld]";
+      }
     } catch {
       if (/\bahub\s+answer\b/.test(raw)) return "[withheld]";
     }
@@ -144,7 +158,7 @@ function malformedToolArguments(text: string): string {
 export function withholdToolArguments(argumentsText: string): string {
   let parsed: unknown;
   try { parsed = JSON.parse(argumentsText); }
-  catch { return malformedToolArguments(argumentsText); }
+  catch { return withholdUnparsedArguments(argumentsText); }
   const holder: Record<string, unknown> = { value: parsed };
   const stack = [{ parent: holder, key: "value" }];
   let changed = false;
@@ -167,7 +181,8 @@ export function withholdToolArguments(argumentsText: string): string {
       for (const child of Object.keys(value)) stack.push({ parent: value as Record<string, unknown>, key: child });
     }
   }
-  return changed ? JSON.stringify(holder.value) : argumentsText;
+  // Parsing drops duplicate keys. Inspect all serialized literals before preserving an unchanged original.
+  return changed ? JSON.stringify(holder.value) : withholdUnparsedArguments(argumentsText);
 }
 
 /** Deterministic, value-only summary of Claude tool_input. Strip private spans before clipping. */
