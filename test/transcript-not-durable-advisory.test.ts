@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { budgetFailureAdvisory, reportBudgetAdvisory, type BudgetFailureEvidence } from "../scripts/hook-timing-check.ts";
+import { budgetFailureAdvisory, reportBudgetAdvisory, notDurableFailureReceipt, type BudgetFailureEvidence } from "../scripts/hook-timing-check.ts";
 
 const hostedLinux = { CI: "true", GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" };
 const evidence: BudgetFailureEvidence = { telemetryValid: true, logicalRunTelemetryValid: true, survivors: 0,
@@ -66,4 +66,54 @@ test("#357 emits the existing receipt and annotation, requires a summary and nev
     expect(body).toContain('"durableScannedSummaries":90');
     expect(() => reportBudgetAdvisory("not-durable", "StopBurst:1", evidence, hostedLinux)).toThrow("step summary is unavailable");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#412 fatal measurement branch emits one bounded receipt naming false conjuncts before throwing", () => {
+  const source = readFileSync(resolve(import.meta.dir, "../scripts/measure-transcript-budget.ts"), "utf8");
+  const start = source.indexOf("      if (!complete) {"), end = source.indexOf("      await verifyReplay", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const branch = source.slice(start, end);
+  const module = resolve(import.meta.dir, "../scripts/hook-timing-check.ts");
+  const run = (complete: boolean) => Bun.spawnSync([process.execPath, "-e", `
+    import { reportBudgetAdvisory, notDurableFailureReceipt } from ${JSON.stringify(module)};
+    const event = 'StopBurst', logicalRun = 1, MAX_FOLLOW_UPS = 64, complete = ${complete};
+    const samples = [{ event, logicalRun, wallMs: 1, rssMB: 20, offsetSource: 'cursor', offset: 10, stopReason: 'deadline' }];
+    const summaryEnds = new Map([['scanned', 5], ['pending', 20]]), previousAvailable = new Set(['scanned']), incompleteRuns = {};
+    for (let once = 0; once < 1; once++) { ${branch} }
+  `], { env: { ...process.env, ...hostedLinux }, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  const failed = run(false), output = failed.stdout.toString().trim().split("\n");
+  expect(failed.exitCode).not.toBe(0);
+  expect(failed.stderr.toString()).toContain("transcript summaries not durable within 64 follow-up invocations");
+  expect(output).toHaveLength(1);
+  expect(Buffer.byteLength(output[0]!)).toBeLessThan(2500);
+  const receipt = JSON.parse(output[0]!);
+  expect(receipt.diagnostic).toBe("transcript-not-durable-receipt");
+  expect(receipt.event).toBe("StopBurst"); expect(receipt.logicalRun).toBe(1);
+  expect(receipt.evidence.spoolFullStops).toBe(0);
+  expect(Object.entries(receipt.failedConjuncts).filter(([, failed]) => failed).map(([key]) => key)).toEqual(["spoolFullStopsPositive"]);
+  const allowed = new Set(["transcript-not-durable-receipt", "StopBurst", "Linux", "cursor"]);
+  const safe = (value: unknown): boolean => typeof value === "number" ? Number.isFinite(value)
+    : typeof value === "boolean" || typeof value === "string" && allowed.has(value)
+      || value !== null && typeof value === "object" && Object.values(value).every(safe);
+  expect(safe(receipt)).toBe(true);
+  const passing = run(true);
+  expect(passing.exitCode).toBe(0); expect(passing.stdout.length).toBe(0);
+});
+
+
+test("#412 failure bitmap agrees with unchanged advisory across scopes and invalid evidence", () => {
+  const patches: Partial<BudgetFailureEvidence>[] = [{}, { telemetryValid: false }, { survivors: 1 }, { survivors: Number.NaN },
+    { abandonedOwnedWorkers: -1 }, { unavailableRssSources: 0.5 }, { receiptIncomplete: "private-path" as unknown as boolean }, { wallMs: -1 },
+    { transcriptEvent: "private-excerpt" }, { logicalRunTelemetryValid: false }, { cursorSource: "private-path" }, { spoolFullStops: 0 },
+    { cursorOffset: Number.NaN }, { summaryPrefixEnd: Number.POSITIVE_INFINITY }, { scannedSummaries: 0 }, { durableScannedSummaries: 89 }];
+  for (const env of [hostedLinux, { ...hostedLinux, RUNNER_OS: "macOS" }, {}]) {
+    for (const patch of patches) {
+      const value = { ...evidence, ...patch }, receipt = notDurableFailureReceipt("StopBurst", 1, value, env);
+      expect(Object.values(receipt.failedConjuncts).some(Boolean)).toBe(!budgetFailureAdvisory("not-durable", value, env));
+      const line = JSON.stringify(receipt);
+      expect(Buffer.byteLength(line)).toBeLessThan(2500);
+      expect(line).not.toContain("private-");
+      expect(line).not.toContain("null");
+    }
+  }
 });

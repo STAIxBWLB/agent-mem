@@ -394,9 +394,11 @@ const spawn=Bun.spawn.bind(Bun);Bun.spawn=(argv,options)=>Array.isArray(argv)&&a
     expect(pending(f).filter(row => row.event === "Recap" || row.event === "Compact")).toHaveLength(0);
     expect(f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
     expect(f.runFunctional("Stop", { transcript_path: transcript }).exitCode).toBe(0);
-    const rows = f.rows();
-    expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap)).toHaveLength(1);
-    expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact)).toHaveLength(1);
+    const rows = f.rows(), pendingRows = pending(f);
+    const counts = (items: readonly { event: string }[]) => Object.fromEntries(["Title", "Recap", "Compact", "Stop", "SessionEnd", "PostToolUse"].map(event => [event, items.filter(row => row.event === event).length]));
+    const recoverySnapshot = JSON.stringify({ cursor: cursor() ?? null, pendingByEvent: counts(pendingRows), rowsByEvent: counts(rows) });
+    expect(rows.filter(row => row.event === "Recap" && row.excerpt === summary.recap), recoverySnapshot).toHaveLength(1);
+    expect(rows.filter(row => row.event === "Compact" && row.excerpt === summary.compact), recoverySnapshot).toHaveLength(1);
   } finally { f.close(); }
 });
 

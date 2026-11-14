@@ -105,6 +105,37 @@ export function budgetFailureAdvisory(kind: string, evidence: BudgetFailureEvide
     : Number.isSafeInteger(evidence.unavailableRssSources) && evidence.unavailableRssSources! > 0);
 }
 
+/** Diagnostic only: mirror the not-durable terms without changing the advisory classifier.
+ * Inapplicable Linux terms are not failures; absent/nonfinite numeric evidence is represented by -1. */
+export function notDurableFailureReceipt(event: string, logicalRun: number, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env) {
+  const runner = hostedTimingRunner(env), linuxTermsApply = runner === "Linux";
+  const number = (value: number | undefined) => typeof value === "number" && Number.isFinite(value) ? value : -1;
+  const optionalCount = (value: number | undefined) => value === undefined || Number.isSafeInteger(value) && value >= 0;
+  const failedConjuncts = {
+    hostedRunner: runner === undefined,
+    telemetryValid: evidence.telemetryValid !== true,
+    survivorsSafeInteger: !Number.isSafeInteger(evidence.survivors), survivorsZero: evidence.survivors !== 0,
+    abandonedOwnedWorkersValid: !optionalCount(evidence.abandonedOwnedWorkers), unavailableRssSourcesValid: !optionalCount(evidence.unavailableRssSources),
+    receiptIncompleteValid: evidence.receiptIncomplete !== undefined && typeof evidence.receiptIncomplete !== "boolean",
+    wallMsValid: evidence.wallMs !== undefined && (!Number.isFinite(evidence.wallMs) || evidence.wallMs < 0),
+    transcriptEventStopBurst: linuxTermsApply && evidence.transcriptEvent !== "StopBurst",
+    logicalRunTelemetryValid: linuxTermsApply && evidence.logicalRunTelemetryValid !== true,
+    cursorSourceCursor: linuxTermsApply && evidence.cursorSource !== "cursor",
+    spoolFullStopsSafeInteger: linuxTermsApply && !Number.isSafeInteger(evidence.spoolFullStops), spoolFullStopsPositive: linuxTermsApply && !(evidence.spoolFullStops! > 0),
+    cursorOffsetSafeInteger: linuxTermsApply && !Number.isSafeInteger(evidence.cursorOffset), cursorOffsetPositive: linuxTermsApply && !(evidence.cursorOffset! > 0),
+    summaryPrefixEndSafeInteger: linuxTermsApply && !Number.isSafeInteger(evidence.summaryPrefixEnd), summaryPrefixEndAfterCursor: linuxTermsApply && !(evidence.summaryPrefixEnd! > evidence.cursorOffset!),
+    scannedSummariesSafeInteger: linuxTermsApply && !Number.isSafeInteger(evidence.scannedSummaries), scannedSummariesPositive: linuxTermsApply && !(evidence.scannedSummaries! > 0),
+    durableScannedSummariesSafeInteger: linuxTermsApply && !Number.isSafeInteger(evidence.durableScannedSummaries), durableScannedSummariesEqual: linuxTermsApply && evidence.durableScannedSummaries !== evidence.scannedSummaries,
+  };
+  const safeEvent = (value: string | undefined) => value === "Stop" || value === "SessionEnd" || value === "StopBurst" ? value : "unknown";
+  return { diagnostic: "transcript-not-durable-receipt", event: safeEvent(event), logicalRun: number(logicalRun), runner: runner ?? "other",
+    evidence: { telemetryValid: evidence.telemetryValid === true, survivors: number(evidence.survivors),
+      logicalRunTelemetryValid: evidence.logicalRunTelemetryValid === true, transcriptEvent: safeEvent(evidence.transcriptEvent),
+      spoolFullStops: number(evidence.spoolFullStops), cursorSource: ["cursor", "uncreated", "rollback_pending"].includes(evidence.cursorSource ?? "") ? evidence.cursorSource as "cursor" | "uncreated" | "rollback_pending" : "unknown",
+      cursorOffset: number(evidence.cursorOffset), summaryPrefixEnd: number(evidence.summaryPrefixEnd), scannedSummaries: number(evidence.scannedSummaries), durableScannedSummaries: number(evidence.durableScannedSummaries) },
+    failedConjuncts };
+}
+
 /** Report an already classified exception without altering process.exitCode or any hard verdict. */
 export function reportBudgetAdvisory(kind: string, check: string, evidence: BudgetFailureEvidence, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!budgetFailureAdvisory(kind, evidence, env)) return false;
