@@ -6,7 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
-- Resolve `..` after symlinks physically in `realPath`, including roots containing a literal backslash, while continuing to refuse missing paths and dangling symlinks. Paths without parent segments retain the native fast path and existing backslash fallback. Refs #403.
+- Resolve `..` after symlinks physically in `realPath`, including roots containing a literal backslash, while continuing to refuse missing paths and dangling symlinks. Paths without parent segments retain the native fast path and existing backslash fallback. Regression coverage includes absolute and relative link targets and input spellings. Refs #403, #406.
 
 ## 0.26.0
 
