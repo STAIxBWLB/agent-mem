@@ -203,3 +203,14 @@ test("#136: a Qwen version the current policy declines is never reported", async
   const receipt = await ingestTranscript("qwen", { ...f, files: [f.file] });
   expect(receipt.reason).toBe("schema_or_time"); expect(receipt.version).toBeUndefined(); expect(JSON.stringify(receipt)).not.toContain("internal");
 });
+
+test("#399: Qwen transcript function-call arguments withhold answer values", async () => {
+  const f = fixture();
+  const args = { command: 'cd /x && FOO=1 ahub answer qs-1 q=a --instructed="person-quote-canary" --other q="free-text-canary"' };
+  writeFileSync(f.file, line(message(f.cwd, "", { message: { role: "model", parts: [{ functionCall: { id: "answer-call", name: "run_shell_command", args } }] } })));
+  expect((await ingestTranscript("qwen", { ...f, files: [f.file] })).imported).toBe(1);
+  const captured = rows(f);
+  expect(captured[0]!.excerpt).toBe(JSON.stringify({ functionCall: { name: "run_shell_command", id: "answer-call", args: { command: 'cd /x && FOO=1 ahub answer qs-1 q=a --instructed=[withheld] --other [withheld]' } } }));
+  expect(JSON.stringify(captured)).not.toContain("person-quote-canary");
+  expect(JSON.stringify(captured)).not.toContain("free-text-canary");
+});

@@ -52,6 +52,157 @@ export function clipCaptureUtf8(text: string, maximumBytes: number): string {
   return out;
 }
 
+interface CommandWord { end: number; text: string; complete: boolean; dynamic: boolean }
+const commandBreak = (c: string): boolean => /[\s;&|()<>]/.test(c);
+const assignmentWord = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Read one literal shell word without executing expansions; offsets refer to the unchanged input. */
+function commandWord(command: string, start: number): CommandWord {
+  let i = start, text = "", quote = "", dynamic = false;
+  for (; i < command.length; i++) {
+    const c = command[i]!;
+    if (!quote && commandBreak(c)) break;
+    if (c === quote) { quote = ""; continue; }
+    if (!quote && (c === "'" || c === '"')) { quote = c; continue; }
+    if (c === "\\" && quote !== "'") {
+      const next = command[i + 1];
+      if (next === undefined) return { end: command.length, text, complete: false, dynamic };
+      if (!quote || /["\\$`\n]/.test(next)) { i++; if (next !== "\n") text += next; continue; }
+    }
+    if (quote !== "'" && (c === "$" || c === "`")) dynamic = true;
+    text += c;
+  }
+  return { end: i, text, complete: !quote, dynamic };
+}
+
+/**
+ * Withhold ahub answer provenance before any capture cap. Only literal command words are interpreted, never a shell.
+ * ponytail: direct commands and shell lists only; computed program names/wrapper scripts need a shell parser contract.
+ * Once an answer is recognized, ambiguous quoting, expansions or redirection withhold its entire remaining tail.
+ */
+export function withholdAnswerCommand(command: string): string {
+  let i = 0, copied = 0, out = "", state: "program" | "subcommand" | "answer" | "other" = "program", answerPrefix = "";
+  const replace = (start: number, end: number, value: string) => { out += command.slice(copied, start) + value; copied = end; };
+  while (i < command.length) {
+    const c = command[i]!;
+    if (c === "\n" || /[;&|()]/.test(c)) { state = "program"; i++; continue; }
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === "#") { const end = command.indexOf("\n", i); i = end < 0 ? command.length : end; continue; }
+    if (c === "<" || c === ">") {
+      if (state === "answer") return answerPrefix + " [withheld]";
+      state = "other"; i++; continue;
+    }
+    const start = i, word = commandWord(command, i); i = word.end;
+    if (state === "answer" && (!word.complete || word.dynamic)) return answerPrefix + " [withheld]";
+    if (state === "program" && word.complete && assignmentWord.test(command.slice(start, i))) continue;
+    if (state === "program") { state = word.complete && !word.dynamic && /^(?:.*\/)?ahub$/.test(word.text) ? "subcommand" : "other"; continue; }
+    if (state === "subcommand") {
+      state = word.complete && !word.dynamic && word.text === "answer" ? "answer" : "other";
+      if (state === "answer") answerPrefix = out + command.slice(copied, i);
+      continue;
+    }
+    if (state !== "answer") continue;
+    const flag = /^(--(?:instructed|other))(=|$)/.exec(word.text);
+    if (!flag) continue;
+    if (flag[2] === "=") { replace(start, i, `${flag[1]}=[withheld]`); continue; }
+    while (i < command.length && /[^\S\n]/.test(command[i]!)) i++;
+    if (i === command.length || commandBreak(command[i]!) || command[i] === "#") return answerPrefix + " [withheld]";
+    const value = commandWord(command, i);
+    if (!value.complete || value.dynamic || value.text.startsWith("--")) return answerPrefix + " [withheld]";
+    replace(i, value.end, "[withheld]"); i = value.end;
+  }
+  return out + command.slice(copied);
+}
+
+/** Recover only JSON string boundaries in a truncated argument envelope; never execute or trust its structure. */
+function withholdUnparsedArguments(text: string): string {
+  const direct = withholdAnswerCommand(text);
+  if (direct !== text) return direct;
+  if (!/^\s*[\[{]/.test(text)) return text;
+  const containers: ("program" | "subcommand" | "answer" | "other" | null)[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    const top = containers.length - 1;
+    if (c === "[" || c === "{") {
+      if (containers[top] === "program" || containers[top] === "subcommand") containers[top] = "other";
+      containers.push(c === "[" ? "program" : null); continue;
+    }
+    if (c === "]" || c === "}") { containers.pop(); continue; }
+    if (c !== '"') {
+      if (!/[\s,:]/.test(c) && (containers[top] === "program" || containers[top] === "subcommand")) containers[top] = "other";
+      continue;
+    }
+    const start = i++;
+    let escaped = false;
+    for (; i < text.length; i++) {
+      if (!escaped && text[i] === '"') break;
+      if (!escaped && text[i] === "\\") escaped = true; else escaped = false;
+    }
+    const closed = i < text.length;
+    // A dangling JSON escape cannot be part of a complete command value.
+    const raw = text.slice(start, closed ? i + 1 : escaped ? i - 1 : i) + (closed ? "" : '"');
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (typeof value === "string") {
+        if (withholdAnswerCommand(value) !== value) return "[withheld]";
+        if (containers[top] === "program" && !assignmentWord.test(value)) containers[top] = /^(?:.*\/)?ahub$/.test(value) ? "subcommand" : "other";
+        else if (containers[top] === "subcommand") containers[top] = value === "answer" ? "answer" : "other";
+        else if (containers[top] === "answer" && /^--(?:instructed|other)(?:=|$)/.test(value)) return "[withheld]";
+      }
+    } catch {
+      if (/\bahub\s+answer\b/.test(raw)) return "[withheld]";
+    }
+  }
+  return text;
+}
+
+/** Shape one explicit argv vector inside a freshly parsed argument envelope. */
+function withholdAnswerArgv(argv: unknown[]): boolean {
+  let program = 0;
+  while (program < argv.length) {
+    const word = argv[program];
+    if (typeof word !== "string" || !assignmentWord.test(word)) break;
+    program++;
+  }
+  const executable = argv[program];
+  if (typeof executable !== "string" || !/^(?:.*\/)?ahub$/.test(executable) || argv[program + 1] !== "answer") return false;
+  let changed = false;
+  for (let i = program + 2; i < argv.length; i++) {
+    const word = argv[i], flag = typeof word === "string" ? /^(--(?:instructed|other))(=|$)/.exec(word) : null;
+    if (!flag) continue;
+    changed = true;
+    if (flag[2] === "=") argv[i] = `${flag[1]}=[withheld]`;
+    else {
+      const next = argv[i + 1];
+      if (typeof next === "string" && next.startsWith("--")) { argv.splice(program + 2, argv.length - program - 2, "[withheld]"); break; }
+      argv[++i] = "[withheld]";
+    }
+  }
+  return changed;
+}
+
+/** Shape serialized transcript tool arguments without reserializing any unaffected input. */
+export function withholdToolArguments(argumentsText: string): string {
+  let parsed: unknown;
+  try { parsed = JSON.parse(argumentsText); }
+  catch { return argumentsText.includes("ahub answer") ? "[withheld]" : withholdUnparsedArguments(argumentsText); }
+  const holder: Record<string, unknown> = { value: parsed };
+  const stack = [{ parent: holder, key: "value" }];
+  let changed = false;
+  while (stack.length) {
+    const { parent, key } = stack.pop()!, value = parent[key];
+    if (typeof value === "string") {
+      const shaped = withholdAnswerCommand(value);
+      if (shaped !== value) { parent[key] = shaped; changed = true; }
+    } else if (value && typeof value === "object") {
+      if (Array.isArray(value) && withholdAnswerArgv(value)) changed = true;
+      for (const child of Object.keys(value)) stack.push({ parent: value as Record<string, unknown>, key: child });
+    }
+  }
+  // Parsing drops duplicate keys. Inspect all serialized literals before preserving an unchanged original.
+  return changed ? JSON.stringify(holder.value) : withholdUnparsedArguments(argumentsText);
+}
+
 /** Deterministic, value-only summary of Claude tool_input. Strip private spans before clipping. */
 export function toolInputLine(input: unknown): string {
   if (!input || typeof input !== "object" || Array.isArray(input)) return "";
@@ -61,7 +212,7 @@ export function toolInputLine(input: unknown): string {
   const known = TOOL_INPUT_ORDER.filter(key => byKey.has(key));
   const other = fields.map(([key]) => key).filter(key => !(TOOL_INPUT_ORDER as readonly string[]).includes(key)).sort();
   const values = [...known, ...other].map(key => clipCaptureUtf8(
-    stripPrivateSpans(byKey.get(key) as string).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " "), TOOL_INPUT_LINE_BYTES,
+    withholdAnswerCommand(stripPrivateSpans(byKey.get(key) as string)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " "), TOOL_INPUT_LINE_BYTES,
   )).filter(Boolean);
   return clipCaptureUtf8(values.join(" | "), TOOL_INPUT_LINE_BYTES).trimEnd();
 }

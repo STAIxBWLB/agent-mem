@@ -8,7 +8,7 @@ import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
-import { captureSessionKey } from "./memory/capture-input.ts";
+import { captureSessionKey, withholdToolArguments } from "./memory/capture-input.ts";
 import { drainHookCaptures, stageTranscriptCapture } from "./hook-spool.ts";
 import { recordIntakeCounts, recordRefusal, type RecordIntakeCounts, type RecordDropReason } from "./hook-record.ts";
 import { IngestRecordReader, recordMainHeader, type NativeRecordTurn } from "./ingest-records.ts";
@@ -243,7 +243,7 @@ function extractQwen(raw: Record<string, any>, project: string): CaptureInput | 
     if (typeof part.text === "string") { if (part.text) { excerpts.push(part.text); events.push("message"); } }
     else if (object(part.functionCall)) {
       const call = part.functionCall;
-      excerpts.push(JSON.stringify({ functionCall: { name: call.name, ...(call.id !== undefined ? { id: call.id } : {}), ...(call.args !== undefined ? { args: call.args } : {}) } }));
+      excerpts.push(withholdToolArguments(JSON.stringify({ functionCall: { name: call.name, ...(call.id !== undefined ? { id: call.id } : {}), ...(call.args !== undefined ? { args: call.args } : {}) } })));
       tools.push(call.name); events.push("function_call");
     } else if (object(part.functionResponse)) {
       const response = part.functionResponse;
@@ -263,7 +263,7 @@ function extract(kind: IngestKind, raw: Record<string, any>, project: string): C
       : kind === "kimi" && raw.type === "context.append_message" ? raw.message : undefined;
   if (!object(message)) return undefined;
   if (kind === "codex" && ["function_call", "function_call_output"].includes(message.type)) {
-    const excerpt = typeof message.arguments === "string" ? message.arguments : typeof message.output === "string" ? message.output : "";
+    const excerpt = typeof message.arguments === "string" ? withholdToolArguments(message.arguments) : typeof message.output === "string" ? message.output : "";
     return { project, agent: kind, event: message.type, ...(typeof message.name === "string" ? { tool: message.name.slice(0, 64) } : {}), excerpt: excerpt.slice(0, 2000) };
   }
   if (!["assistant", "user", "tool", "toolResult"].includes(message.role)) return undefined;

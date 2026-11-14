@@ -373,3 +373,11 @@ test("task 110: slow setup does not eat the scan's work budget; the budget count
   const h = fixture(); h.add({ type: "system", subtype: "away_summary", content: "hard recap", timestamp: at });
   expect((await scanHookTranscriptTail(h.input, { cwd: h.cwd, base: h.base, deadline: performance.now() - 1, workBudgetMs: 60 }))?.stopReason).toBe("deadline");
 });
+
+test("#399: native transcript scanning does not introduce capture of tool-input command lines", async () => {
+  const f = fixture();
+  f.add({ type: "assistant", timestamp: at, message: { role: "assistant", content: [{ type: "tool_use", id: "answer-call", name: "Bash",
+    input: { command: 'ahub answer qs-1 q=a --instructed "person-quote-canary" --other="free-text-canary"' } }] } });
+  await f.scan();
+  expect(await f.drain()).toEqual([]);
+});

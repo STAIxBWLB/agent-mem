@@ -93,3 +93,14 @@ test("the normalizer retains its configured screen if policy tightens after the 
     expect(pending(f)).toEqual([]);
   } finally { change.mockRestore(); }
 });
+
+test("#399: Claude capture withholds instructed/other values before durable spool publication", async () => {
+  const f = fixture();
+  const command = 'cd /x && ahub answer qs-1 q=a --instructed "person-quote-canary" --other q="free-text-canary"';
+  const staged = await stageHookCapture("PostToolUse", { cwd: f.cwd, tool_name: "Bash", tool_input: { command }, tool_response: "ok" }, { cwd: f.cwd, base: f.base });
+  expect(staged).toBeDefined();
+  const row = pending(f).find(row => row.name === staged!.name)!;
+  expect(row.value.capture.excerpt).toBe('cd /x && ahub answer qs-1 q=a --instructed [withheld] --other [withheld]\nok');
+  expect(JSON.stringify(row.value)).not.toContain("person-quote-canary");
+  expect(JSON.stringify(row.value)).not.toContain("free-text-canary");
+});
