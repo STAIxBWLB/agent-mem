@@ -517,7 +517,7 @@ bun test
 npm pack --dry-run
 ```
 
-CI runs the typecheck, boundary check, README facts and documentation stamp checks and tests on Ubuntu and macOS with Bun 1.4.2. Tests use synthetic fixtures and isolated homes, not personal memory stores.
+CI runs the typecheck, boundary check, README facts and documentation stamp checks and tests on Ubuntu and macOS with Bun 1.4.4. Tests use synthetic fixtures and isolated homes, not personal memory stores.
 
 ## Publishing
 
