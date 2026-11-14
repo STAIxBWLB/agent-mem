@@ -24,24 +24,27 @@ export function canonicalPath(path: string): string {
 }
 
 /**
- * realpathSync, except that Bun (1.3.14, and 1.4.2 still: #121) throws ENOENT for an existing path containing a
- * backslash (issue #26). Such a path goes to the system realpath, which handles it and returns every component as
- * stored on disk: guardPath checks names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise
- * pass for another file. A missing path or a dangling symlink still throws, which guardPath relies on. Other paths take
- * realpathSync's answer unchanged.
+ * Resolve existing paths physically. Bun folds `..` after symlinks lexically (#403), so parent segments use the
+ * system realpath. Bun versions that reject literal backslashes also use that fallback (#26, #121). It returns
+ * names as stored on disk for guardPath's name checks and refuses missing paths and dangling symlinks.
  */
 export function realPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if (!resolve(path).includes("\\")) throw error; // a relative path can sit under a backslash directory too
-    // The path as given: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a dangling last
-    // component unless told -e; the BSD one on macOS refuses it by default.
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = childProcess().spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
-    return r.stdout.slice(0, -1);
+  const hasParent = path.split(sep).includes("..");
+  let error: unknown;
+  if (!hasParent) {
+    try {
+      return realpathSync(path);
+    } catch (caught) {
+      if (!resolve(path).includes("\\")) throw caught; // a relative path can sit under a backslash directory too
+      error = caught;
+    }
   }
+  // Keep the original spelling: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a
+  // dangling last component unless told -e; the BSD one on macOS refuses it by default.
+  const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
+  const r = childProcess().spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
+  if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error ?? new Error(`Cannot resolve existing path: ${path}`);
+  return r.stdout.slice(0, -1);
 }
 
 /** One denylist for core extraction, hub path guards, sandbox rules and capture. */
