@@ -3,7 +3,9 @@ name: check
 on:
   push:
     branches: [main]
+  # ready_for_review starts the run that includes macOS once a draft PR is marked ready (#402).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,6 +21,7 @@ jobs:
       pull-requests: read
     outputs:
       run_full: ${{ steps.scope.outputs.run_full }}
+      macos_deferred: ${{ steps.draft.outputs.macos_deferred }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,6 +47,10 @@ jobs:
           else
             echo 'run_full=true' >> "$GITHUB_OUTPUT"
           fi
+      # A draft PR defers macOS (#402); only an explicit draft flag defers, anything else runs full.
+      - name: Classify draft state (unknown runs macOS)
+        id: draft
+        run: bun scripts/ci-scope.ts draft "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
   test:
     needs: decision
     if: needs.decision.outputs.run_full != 'false'
@@ -51,10 +58,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        shard: [1, 2]
+        os: [ubuntu-latest]
+        shard: [1, 2, 3, 4]
+        total: [4]
     runs-on: ${{ matrix.os }}
-    steps:
+    steps: &test-steps
       - uses: actions/checkout@v7
       - name: Fetch only the frozen test runtime commits
         run: git fetch --no-tags --depth=1 origin 6d557ad6c9df158d25e312f9f751b37fc0d2499a 80764b5ad609f7c873bdd3f7490b974cc71b808b 265f509557b1aca4f08f015724595c94641de47e
@@ -67,10 +75,22 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
-      # Seeded from macOS full-suite groups in run 42120864196 (whole-file milliseconds).
-      # ponytail: cached weights only balance two shards; new files use Bun's median.
+      # Whole-file milliseconds from a dgx02 Linux full-suite run, balancing Ubuntu's four shards and macOS's two (#402).
+      # ponytail: one weight set serves both layouts and new files use Bun's median; split per OS if a shard drifts past 1.5x the mean.
       # Refresh on dgx02: bun test --timings=test/ci-timings.json --update-timings
-      - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/2 --timings=test/ci-timings.json
+      - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/${{ matrix.total }} --timings=test/ci-timings.json
+  test-macos:
+    needs: decision
+    if: needs.decision.outputs.run_full != 'false' && needs.decision.outputs.macos_deferred != 'true'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        shard: [1, 2]
+        total: [2]
+    runs-on: ${{ matrix.os }}
+    steps: *test-steps
   measure:
     needs: decision
     if: needs.decision.outputs.run_full != 'false'
@@ -78,9 +98,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    steps:
+    steps: &measure-steps
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -175,9 +195,19 @@ jobs:
       - name: package.json needs no npm auto-correction
         if: always() && !cancelled()
         run: npx -y npm@11.20.0 pkg fix && git diff --exit-code package.json
+  measure-macos:
+    needs: decision
+    if: needs.decision.outputs.run_full != 'false' && needs.decision.outputs.macos_deferred != 'true'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps: *measure-steps
   # Preserve both required names and validate planned skips in both directions.
   check:
-    needs: [decision, test, measure]
+    needs: [decision, test, test-macos, measure, measure-macos]
     if: always()
     timeout-minutes: 30
     strategy:
@@ -193,6 +223,7 @@ jobs:
       - name: Require exactly the planned test and measurement results
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_OS: ${{ matrix.os }}
         run: bun scripts/ci-scope.ts aggregate
       - name: Fetch ancestry for light documentation checks
         if: needs.decision.outputs.run_full == 'false'

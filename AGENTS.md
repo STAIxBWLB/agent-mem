@@ -27,6 +27,11 @@
 - The person runs `ahub init` and `ahub up` in a terminal outside any agent session; the CLI refuses agent shells.
 - Work assigned on the agent-hub board runs from an agent-hub session (`../agent-hub`) under that repo's `AGENTS.md` §agent-hub, including when a pull-only session reads `hub_inbox`.
 
+## Pull requests
+
+- Open every PR as a draft with `gh pr create --draft`. A draft PR runs Ubuntu only; `check (macos-latest)` fails with `macOS deferred` until the PR is ready, so a draft is never merge-ready. Owner decision 2026-11-14, #402.
+- Run `gh pr ready` just before `hub_task_done`; the `ready_for_review` run adds macOS. While iterating on a small fix after review, `gh pr ready --undo` is allowed; mark it ready again before reporting.
+
 ## Merging
 
 - The reviewer that approves a PR with `hub_review` at its head merges it with `gh pr merge <pr> --squash --match-head-commit <head>` once `check (ubuntu-latest)` and `check (macos-latest)` pass on that head, no review thread is unresolved, no bot review (codex-connector included) is pending or running and no change request is pending; it then deletes the remote branch (`delete_branch_on_merge` is off here) and removes the worktree. If a gate is open, it names the gate instead of merging. Never `--admin`. Owner decision 2026-10-25, agent-hub#786.
