@@ -17,7 +17,7 @@ export const CURATED_CACHE_MIN_READER = "0.24.0";
 export function readCuratedBriefCache(options: { base: string; project: string; profile: string; supportingRelease: string; deferredReason: string; now: number }): { cache?: BriefCache; reason?: string } {
   try {
     assertFormatFloor(options.base, "curated");
-    if (!formatFloorAtLeast(options.base, "curated", options.supportingRelease)) return { reason: options.deferredReason };
+    if (!formatFloorAtLeast(options.base, "curated", options.supportingRelease)) return { reason: `curated floor below ${options.supportingRelease}; person: upgrade and restart all writers, then raise floor` };
     let machine: unknown;
     try { machine = JSON.parse(readFileSync(join(options.base, "machine.json"), "utf8")).id; } catch { /* No machine means no prebuilt section. */ }
     if (typeof machine !== "string" || !/^[a-f0-9]{16}$/.test(machine)) return { reason: "curated cache missing" };

@@ -13,7 +13,7 @@ test("functional SessionStart returns known work without starting a second Bun w
     expect(result.exitCode).toBe(0); expect(result.stdout.length).toBeGreaterThan(0);
     const context = JSON.parse(result.stdout.toString()).hookSpecificOutput.additionalContext;
     expect(context).toContain(workMarker);
-    expect(context).toContain("curated=unavailable"); expect(context).toContain("curated refresh deferred");
+    expect(context).toContain("curated=unavailable"); expect(context).toContain("curated floor below 0.24.0"); expect(context).toContain("person: upgrade and restart all writers, then raise floor");
     expect(Buffer.byteLength(context)).toBeLessThanOrEqual(1200); expect(existsSync(marker)).toBe(false);
   } finally { f.close(); }
 });

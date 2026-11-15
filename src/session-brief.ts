@@ -17,6 +17,7 @@ import { pendingLine, pendingSummary } from "./memory/candidate-pending.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
+import { briefFailureReason } from "./memory/brief-metrics.ts";
 import { aliasedKeys, captureShardDir, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
@@ -130,7 +131,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
     // Reserve the longest possible fixed header before selecting data; later coverage changes cannot overrun it.
-    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted", curated: "generation refresh deferred", capture: "capture cache missing" } : {}));
+    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted; use amem_work_state_read", curated: `curated floor below ${CURATED_CACHE_MIN_READER}; person: upgrade and restart all writers, then raise floor; use amem_brief`, capture: "capture history deferred; use amem_search", ...(coverage.repo ? { repo: "repo log is not a plain file; inspect repo log" } : {}) } : {}));
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
@@ -155,7 +156,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       const deferredReason = sharded || readSelector(base).selector?.kind === "generation" ? "generation refresh deferred" : "curated refresh deferred";
       const prepared = readCuratedBriefCache({ base, project, profile: curatedProfileBinding(base, project),
         supportingRelease: CURATED_CACHE_MIN_READER, deferredReason, now: (options.now ?? Date.now)() });
-      if (!prepared.cache) { coverage.curated = "unavailable"; reasons.curated = prepared.reason!; }
+      if (!prepared.cache) { coverage.curated = "unavailable"; reasons.curated = `${prepared.reason!}; use amem_brief`; }
       else {
         coverage.curated = prepared.cache.partial ? "partial" : "complete";
         for (const row of prepared.cache.rows) {
@@ -189,8 +190,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       if (!floorReason) try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no cache */ }
       const cache = !floorReason && typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine)
         ? readBriefCache({ directory: captureShardDir(base, project, machine), project, section: "capture" }) : undefined;
-      if (floorReason) { coverage.capture = "unavailable"; reasons.capture = floorReason; }
-      else if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing"; }
+      if (floorReason) { coverage.capture = "unavailable"; reasons.capture = `${floorReason}; use amem_search`; }
+      else if (!cache) { coverage.capture = "unavailable"; reasons.capture = "capture cache missing; use amem_search"; }
       else {
         coverage.capture = cache.partial ? "partial" : "complete";
         for (const row of cache.rows) {
@@ -250,13 +251,16 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         guard();
         // ponytail: reserve cold-store variance plus cleanup/serialization before optional work.
         // A future paged deadline port can refine this section-level cutoff; the parent remains the hard stop.
-        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 80)) { coverage[section] = "unavailable"; if (options.nativeSession) reasons[section] = "deadline exhausted"; return; }
+        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 80)) { coverage[section] = "unavailable"; if (options.nativeSession) reasons[section] = `deadline exhausted; use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`; return; }
         await work(); guard();
       }
       catch (error) {
         if (error instanceof BindingChanged || drifted) throw new BindingChanged();
         lines.splice(firstLine); remaining = priorRemaining; coverage[section] = "unavailable";
-        if (options.nativeSession) reasons[section] = section === "capture" ? "capture history deferred" : "deadline exhausted";
+        if (options.nativeSession) {
+          const cause = briefFailureReason(error, options.timeRemaining);
+          reasons[section] = `${cause}; use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`;
+        }
       }
     };
     if (remaining < 0) {
@@ -324,10 +328,10 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       });
       if (coverage.repo) await run("repo", async () => {
         const scoped = repoReadPolicy(repoRoot!, configuredPolicyOptions(base, cwd, options.policy));
-        if ("reason" in scoped) { coverage.repo = "unavailable"; reasons.repo = "repo policy unreadable"; return; }
+        if ("reason" in scoped) { coverage.repo = "unavailable"; reasons.repo = "repo policy unreadable; inspect repo policy"; return; }
         // The newest few rows only, and never past the caller's deadline: the read stops (partial) when less than the reserve is left, so a 1 MiB log cannot spend the hook's budget.
         const repo = await readRepoScope(repoRoot, scoped.policy, { limit: SECTION_RECORDS + 1, ...(options.timeRemaining ? { remainingMs: options.timeRemaining, reserveMs: 20 } : {}) }); guard();
-        if (repo.state === "unsafe") { coverage.repo = "unavailable"; reasons.repo = "repo log is not a plain file"; return; }
+        if (repo.state === "unsafe") { coverage.repo = "unavailable"; reasons.repo = "repo log is not a plain file; inspect repo log"; return; }
         if (repo.partial || repo.skipped.withheld) coverage.repo = "partial";
         let shownRepo = 0; // not `selected`: scripts/measure-hook-stages.ts anchors on that exact line once
         for (const view of repo.views) {
