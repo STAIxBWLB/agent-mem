@@ -8,8 +8,12 @@ import { memoryGitArgv, memoryGitEnv, memoryGitSync, processLiveness, processSig
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
+import { loadAmemConfig } from "./config.ts";
+import { memoryHome } from "./home.ts";
 import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
+import type { PlacementSyncBound } from "./sync-placement-bound.ts";
+import type { SyncProgress } from "./sync-progress.ts";
 
 /**
  * #258 phase 2: hub memory between a person's machines through a git remote they configure. The memory directory is a
@@ -19,7 +23,9 @@ import { shardSyncBinding } from "./sync-binding.ts";
 export type Visibility = "public" | "private" | "unknown";
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
-    lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean };
+    lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean;
+    /** #419: an expected size refusal before any publication attempt; numbers only. */
+    bound?: PlacementSyncBound };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
 }
 
@@ -179,10 +185,13 @@ export function githubRepoOf(url: string): string | undefined {
   return match && match[2] !== "." && match[2] !== ".." ? `${match[1]}/${match[2]}` : undefined;
 }
 
-/** GitHub remotes are asked through `gh`, pinned to github.com; any other host, or a `gh` that cannot answer, is unknown. */
+/**
+ * GitHub remotes are asked through `gh`, pinned to github.com. Any other URL is private only when it exactly matches the home's
+ * person-attested `privateRemotes` (#420); otherwise, or when `gh` cannot answer or the policy is unreadable, it is unknown.
+ */
 export async function remoteVisibility(url: string): Promise<Visibility> {
   const repo = githubRepoOf(url);
-  if (!repo) return "unknown";
+  if (!repo) { try { return loadAmemConfig(memoryHome()).config.privateRemotes?.includes(url) ? "private" : "unknown"; } catch { return "unknown"; } }
   try {
     // GH_HOST (and the enterprise token variables) would send `gh repo view` to a different server: pin it, so the answer is about github.com's repository.
     const env: Record<string, string | undefined> = { ...process.env, GH_HOST: "github.com" };
@@ -220,6 +229,8 @@ function lock(dir: string): (() => void) | undefined {
 export interface SyncOptions {
   /** Fresh compatibility facts for an already activated v3 profile; never activates a legacy profile or bypasses policy. */
   placementAttestation?: PlacementCapturePort["attest"];
+  /** #418: advisory placement-sync progress reporter; never authority, and a failing sink cannot fail the sync. */
+  progress?: SyncProgress;
   /** Set (or replace) the remote first: a person's choice. */
   remote?: string;
   visibility?: (url: string) => Promise<Visibility>;

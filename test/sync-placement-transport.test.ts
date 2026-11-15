@@ -650,3 +650,95 @@ for (const kind of ["missing", "incompatible", "throwing"] as const) test(`actua
   expect(result).toMatchObject({ ok: false, pushed: false }); expect(JSON.stringify(result)).not.toContain("NEVER_PUBLIC_ATTESTATION_FAILURE");
   expect(existsSync(cache)).toBe(false); expect(refs(remote)).toEqual([]); expect(authoredBytes(f.home)).toEqual(physical); expect(f.plans()).toEqual(plans);
 });
+
+// #417 proof scope, #418 progress, #419 size contract. A frozen proof clock makes complete-proof counts deterministic.
+const frozen = () => 0;
+function counted(f: Awaited<ReturnType<typeof fixture>>, remote: string, extra: Partial<SyncOptions> = {}) {
+  const tally = { attest: 0, screen: 0 };
+  const options: SyncOptions = { ...f.opts(remote), placementAttestation: () => { tally.attest++; return f.port.attest(); }, ...extra };
+  return { tally, options };
+}
+const many = (store: MemoryStore, count: number) => { const ids: string[] = []; for (let index = 0; index < count; index++) ids.push(store.note(note(`bounded proof row ${index}`))); return { first: ids[0]! }; };
+
+test("#417: complete writer attestations per first sync do not grow with row count inside a proof scope", async () => {
+  const counts: number[] = [];
+  for (const rows of [5, 60]) {
+    const remote = bare(), f = await fixture({ seed: store => many(store, rows) }), run = counted(f, remote);
+    const result = await syncPlacementMemory(f.store, run.options, undefined, undefined, frozen);
+    expect(result).toMatchObject({ ok: true, placementPublication: { outcome: "committed" } });
+    expect(verifiedPublicRows(remote).size).toBeGreaterThanOrEqual(rows);
+    counts.push(run.tally.attest);
+  }
+  expect(counts[1]).toBe(counts[0]!); expect(counts[0]!).toBeLessThan(40);
+}, 120_000);
+
+test("#417: a policy change made by a host callback inside the reuse window refuses before any plan or remote effect", async () => {
+  const remote = bare(), f = await fixture({ seed: store => many(store, 12) });
+  let calls = 0; const run = counted(f, remote, { screen: () => { if (++calls === 3) f.changePolicyEpoch(); return true; } });
+  const before = authoredBytes(f.home), result = await syncPlacementMemory(f.store, run.options, undefined, undefined, frozen);
+  expect(result.ok).toBe(false); expect(result.placementPublication?.outcome).toBe("not-needed");
+  expect(calls).toBeGreaterThanOrEqual(3); expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]); expect(authoredBytes(f.home)).toEqual(before);
+}, 120_000);
+
+test("#417: a concurrent writer-install change during row evaluation refuses before any plan or remote effect", async () => {
+  const remote = bare(), f = await fixture({ seed: store => many(store, 12) });
+  let evaluated = 0, changed = false;
+  const options: SyncOptions = { ...f.opts(remote), screen: () => { if (++evaluated === 4) changed = true; return true; },
+    placementAttestation: () => { const value = f.port.attest(); return changed ? { ...value, writers: value.writers.map(writer => ({ ...writer, pin: "3".repeat(64) })) } : value; } };
+  const result = await syncPlacementMemory(f.store, options, undefined, undefined, frozen);
+  expect(result.ok).toBe(false); expect(changed).toBe(true); expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]);
+}, 120_000);
+
+test("#418: progress reports truthful phases, monotonic row counters and success only after the receipt, without row data", async () => {
+  const { SyncProgress } = await import("../src/memory/sync-progress.ts");
+  const remote = bare(), f = await fixture({ seed: store => ({ ...many(store, 9), declined: store.note(note("NEVER_PUBLIC_PROGRESS")) }) });
+  const seen: import("../src/memory/sync-progress.ts").SyncProgressSnapshot[] = [];
+  const progress = new SyncProgress({ sink: snapshot => seen.push(snapshot), intervalMs: 0 });
+  const result = await syncPlacementMemory(f.store, { ...f.opts(remote), progress }, undefined, undefined, frozen); expect(result.ok).toBe(true);
+  const phases = [...new Set(seen.map(s => s.phase))];
+  expect(phases.slice(0, 5)).toEqual(["writer-verification", "remote-verification", "source-capture", "policy-evaluation", "dependency-decisions"]);
+  for (const phase of ["publication-plan", "journal", "artifact-construction", "publication", "acknowledgment", "import", "receipt"] as const) expect(phases).toContain(phase);
+  const rows = seen.filter(s => s.phase === "policy-evaluation"); expect(rows[0]).toMatchObject({ unit: "rows", completed: 0 });
+  const total = rows[0]!.total!; expect(total).toBeGreaterThanOrEqual(10); expect(rows.at(-1)!.completed).toBe(total);
+  for (let index = 1; index < rows.length; index++) expect(rows[index]!.completed!).toBeGreaterThanOrEqual(rows[index - 1]!.completed!);
+  expect(seen.filter(s => s.state !== "running")).toHaveLength(1); expect(seen.at(-1)).toMatchObject({ state: "succeeded", phase: "receipt" });
+  expect(seen.at(-1)!.counts!.permitted).toBeGreaterThan(0); expect(seen.at(-1)!.counts!.declined).toBeGreaterThan(0);
+  const text = JSON.stringify(seen); expect(text).not.toContain("NEVER_PUBLIC_PROGRESS"); expect(text).not.toContain(f.ids.first!); expect(text).not.toContain(remote); expect(text).not.toContain(PROJECT);
+}, 120_000);
+
+test("#418: a failed placement sync never reports success", async () => {
+  const { SyncProgress } = await import("../src/memory/sync-progress.ts");
+  const remote = bare(), f = await fixture(), seen: string[] = [];
+  const progress = new SyncProgress({ sink: snapshot => seen.push(snapshot.state), intervalMs: 0 });
+  const result = await syncPlacementMemory(f.store, { ...f.opts(remote), visibility: async () => "public", progress });
+  expect(result.ok).toBe(false); expect(seen).not.toContain("succeeded"); expect(seen.at(-1)).toBe("failed");
+}, 120_000);
+
+test("#419: an expected materialization bound keeps phase, kind, limit and observed size and changes nothing", async () => {
+  const materialize = await import("../src/memory/sync-placement-materialize.ts"), { PlacementSyncBoundError } = await import("../src/memory/sync-placement-bound.ts");
+  const remote = bare(), f = await fixture({ seed: store => ({ declined: store.note(note("NEVER_PUBLIC_BOUND")) }) });
+  const before = authoredBytes(f.home), journal = readdirSync(join(f.home, "sync-placement", "epochs", f.epochHash)).sort();
+  const spy = spyOn(materialize, "materializePlacementRows").mockImplementation(async () => { throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-bytes", limit: 67108864, observed: 70000000 }); });
+  try {
+    const result = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(result).toMatchObject({ ok: false, pushed: false, placementPublication: { outcome: "not-needed", bound: { phase: "materialization", kind: "source-bytes", limit: 67108864, observed: 70000000 } } });
+    expect(result.error).toContain("materialization exceeds its supported source-bytes bound (observed 70000000, limit 67108864)");
+    expect(result.error).not.toContain("verify the active epoch"); expect(JSON.stringify(result)).not.toContain("NEVER_PUBLIC_BOUND");
+  } finally { spy.mockRestore(); }
+  expect(authoredBytes(f.home)).toEqual(before); expect(readdirSync(join(f.home, "sync-placement", "epochs", f.epochHash)).sort()).toEqual(journal);
+  expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]);
+}, 120_000);
+
+// The reported home was 5,154 rows/about 12 MB; the size envelope is what #419 fixes, so 760 rows of 3-byte text cross the old bound (#420 measures row scaling).
+test("#419: first sync of a selected project above 8 MiB (about 8.9 MB) publishes every permitted row", async () => {
+  const remote = bare(), body = "가".repeat(3900);
+  const f = await fixture({ seed: store => { const ids: string[] = []; for (let index = 0; index < 760; index++) ids.push(store.note(note(`${index % 25 === 0 ? "NEVER_PUBLIC_" : "large"} ${index} ${body}`))); return { first: ids[1]! }; } });
+  const sourceBytes = [...f.capture().rows.values()].reduce((sum, row) => sum + Buffer.byteLength(canonicalJSON(row.row)), 0);
+  expect(sourceBytes).toBeGreaterThan(8 * 1024 * 1024);
+  const result = await syncPlacementMemory(f.store, f.opts(remote), undefined, error => console.error("large first-sync diagnostic", error), frozen);
+  expect(result, result.error).toMatchObject({ ok: true, placementPublication: { outcome: "committed" } });
+  expect(result.placementPublication!.withheld).toBeGreaterThanOrEqual(760 / 25);
+  expect(verifiedPublicRows(remote).size).toBe(result.placementPublication!.exported);
+  expect(result.placementPublication!.exported + result.placementPublication!.withheld).toBe(760);
+  assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_"]);
+}, 600_000);

@@ -9,6 +9,7 @@ export const PLACEMENT_PUBLICATION_PLAN_SCHEMA = "agent-mem.sync-placement-publi
 export const PLACEMENT_PUBLICATION_CHUNK_SCHEMA = "agent-mem.sync-placement-publication-chunk/v1";
 export const PLACEMENT_PUBLICATION_FACT_SCHEMA = "agent-mem.sync-placement-publication-fact/v1";
 /** Closed hold/outcome events fit this bound; reserve future journal capacity before any publication effect. */
+import { PLACEMENT_SOURCE_MAX_BYTES } from "./sync-placement-bound.ts";
 export const PLACEMENT_PUBLICATION_RECORD_MAX_BYTES = 2048;
 export interface PlacementPublicationSource {
   realm: PlacementRealm; source: "generation" | "legacy-local" | "legacy-main"; pathHash: string;
@@ -66,7 +67,7 @@ function bounded<T>(value: T, maximum: number): T { if (publicationBytes(value).
 function item(kind: PlacementPublicationChunkKind, input: unknown): PlacementPublicationSource | PlacementPublicationDecision | PlacementPublicationObject {
   if (kind === "sources") {
     const v = object(input, ["realm", "source", "pathHash", "dev", "ino", "byteLength", "hash", "mtimeNs", "ctimeNs"]);
-    if (!["generation", "legacy-local", "legacy-main"].includes(v.source as string) || !hex(v.pathHash) || !hex(v.hash) || !number(v.byteLength, 8 * 1024 * 1024)
+    if (!["generation", "legacy-local", "legacy-main"].includes(v.source as string) || !hex(v.pathHash) || !hex(v.hash) || !number(v.byteLength, PLACEMENT_SOURCE_MAX_BYTES)
       || ![v.dev, v.ino].every(x => typeof x === "string" && !/[\r\n]/.test(x) && /^(?:0|[1-9][0-9]{0,31})$/.test(x))
       || ![v.mtimeNs, v.ctimeNs].every(x => typeof x === "string" && !/[\r\n]/.test(x) && /^-?(?:0|[1-9][0-9]{0,31})$/.test(x))) return fail();
     return { realm: realm(v.realm), source: v.source as PlacementPublicationSource["source"], pathHash: v.pathHash, dev: v.dev as string, ino: v.ino as string, byteLength: v.byteLength, hash: v.hash, mtimeNs: v.mtimeNs as string, ctimeNs: v.ctimeNs as string };
@@ -142,7 +143,8 @@ export function validatePlacementPublicationBundle(input: unknown): PlacementPub
       const key = chunk.kind + identity; if (seen.has(key)) return fail(); seen.add(key);
     }
   }
-  if (sourceBytes > 8 * 1024 * 1024) return fail("bound");
+  // The selected prefixes are a subset of what capture admitted under the same ceiling (#419); 8 MiB before 0.26.3.
+  if (sourceBytes > PLACEMENT_SOURCE_MAX_BYTES) return fail("bound");
   return { root, chunks };
 }
 export function planPlacementPublication(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | "seal">, items: {
