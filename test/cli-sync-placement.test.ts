@@ -77,7 +77,7 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const {remote,url}=localCliRemote(f),progressed=run(f,["sync","--remote",url,"--json","--progress","json"]),sent=success(progressed);
   expect(sent.ok,JSON.stringify(sent)).toBe(true);expect(sent.placementPublication).toMatchObject({exported:1,withheld:1});expect(reachableInspectionRowIds(remote)).toEqual([f.allowed]);
   // #418: versioned stderr events, one final stdout document, and a read-only status from another invocation.
-  const events=progressed.stderr.toString().split("\n").filter(line=>line.startsWith("{")).map(line=>JSON.parse(line) as {schema:string;state:string;phase:string;operationId:string});
+  const events=progressed.stderr.toString().split("\n").filter(line=>line.startsWith("{")).map(line=>JSON.parse(line) as {schema:string;state:string;phase:string;operationId:string;diagnostic?:string}).filter(event=>event.diagnostic===undefined); // the cadence probe writes its own diagnostic lines
   expect(events.length).toBeGreaterThan(5);expect(events.every(event=>event.schema==="agent-mem.sync-progress/v1"&&event.operationId===events[0]!.operationId)).toBe(true);
   expect(events.map(event=>event.phase)).toContain("policy-evaluation");expect(events.at(-1)).toMatchObject({state:"succeeded",phase:"receipt"});
   expect(progressed.stderr.toString()).not.toContain("NEVER_PUBLIC");expect(progressed.stderr.toString()).not.toContain(url);
