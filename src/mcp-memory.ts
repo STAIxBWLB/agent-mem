@@ -25,6 +25,9 @@ import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, readRepoScope, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
+import { groupByTask } from "./memory/task-group.ts";
+/** #423: how many ranked hits per requested slot a grouped search reads, so folded same-task hits do not empty the page. */
+const TASK_GROUP_WINDOW = 4;
 import { WorkListStore, type WorkListFields } from "./memory/work-lists.ts";
 
 // Graph retains its complete-corpus ceiling; search/timeline/show page matching bodies instead.
@@ -190,8 +193,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         } finally { index.close(); }
       },
       async amem_search(args) {
-        bound(args, ["query", "limit", "since", "includeCapture", "explain"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
+        bound(args, ["query", "limit", "since", "includeCapture", "explain", "ungrouped"]); const query = textOf(args, "query")!, limit = limitOf(args), since = sinceOf(args);
         if (args.includeCapture !== undefined && typeof args.includeCapture !== "boolean") unavailable();
+        if (args.ungrouped !== undefined && typeof args.ungrouped !== "boolean") unavailable();
         if (args.explain !== undefined && typeof args.explain !== "boolean") unavailable();
         if (!await currentPolicy().screen({ query })) unavailable();
         // ponytail: scan all matches into private disposable disk state, keeping one body page in JS.
@@ -224,7 +228,11 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const repoNotes = (await repoRows()).filter(view => (!since || Date.parse(view.at) >= Date.parse(since)) && (useFts || words.every(word => `${view.title ?? ""}\n${view.text}\n${view.about.join(" ")}`.toLowerCase().includes(word))));
           for (const view of repoNotes) append({ source: "repo", evidence: false, view });
           if (batch.length) index.append(batch);
-          const now = store.readNow(), baseline = index.best(query, limit, now, useFts, args.explain === true);
+          const now = store.readNow(), ranked = index.best(query, args.ungrouped === true ? limit : limit * TASK_GROUP_WINDOW, now, useFts, args.explain === true);
+          // #423: fold curated hits of one task into the best one. ponytail: the fold count covers the ranked window
+          // (limit x TASK_GROUP_WINDOW), not the whole match set; page `best` if a task folds more than that.
+          const baseline = args.ungrouped === true ? ranked : groupByTask(ranked, hit => hit.value.source === "curated" ? hit.value.view : undefined).slice(0, limit)
+            .map(({ item, folded }) => folded ? { ...item, value: { ...item.value, folded } } : item);
           const captureSlots = baseline.filter(hit => hit.value.source === "capture").length;
           const weightedCapture = captureSlots ? index.bestCaptureGroups(query, captureSlots, now, useFts, args.explain === true) : [];
           let captureIndex = 0;

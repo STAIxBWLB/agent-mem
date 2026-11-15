@@ -29,6 +29,13 @@ test("shared call budget and cache are bounded; policy tightening suppresses cac
   const invalid = createRecallStalenessProbe({ cwd: root(), maxProbes: NaN, probe: () => { reads++; return stat(); } }); expect(invalid({ at, about: ["path:a.ts"] })).toBeUndefined(); expect(reads).toBe(2);
 });
 
+test("#423: one changed path among several unchanged ones no longer marks a note stale", () => {
+  const probe = createRecallStalenessProbe({ cwd: root(), rootConfirmed: true, probe: path => path.endsWith("gone.ts") ? (() => { throw Object.assign(Error(), { code: "ENOENT" }); })() : stat(path.endsWith("changed.ts") ? time + 1 : time) });
+  expect(probe({ at, about: ["path:changed.ts", "path:same.ts"] })).toBe(false);
+  expect(probe({ at, about: ["path:changed.ts", "path:other-changed.ts"] })).toBe(true);
+  expect(probe({ at, about: ["path:same.ts", "path:gone.ts"] })).toBe(true);
+});
+
 test("a missing path without a confirmed root stays unknown", () => {
   const probe = createRecallStalenessProbe({ cwd: root(), probe: () => { throw Object.assign(Error(), { code: "ENOENT" }); } });
   expect(probe({ at, about: ["path:unbound.ts"] })).toBeUndefined();
