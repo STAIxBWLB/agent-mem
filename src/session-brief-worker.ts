@@ -135,6 +135,8 @@ if (import.meta.main) {
           const { scanHookTranscriptTail } = await import("./hook-transcript.ts");
           const scanned = await scanHookTranscriptTail(scan.transcript, {
             cwd: scan.cwd, base: scan.base, policy: scan.policy, workBudgetMs: 60, deadline: performance.now() + (scanEnd - now()),
+            // ponytail: four durable summaries per replay opportunity; tune only from measured bounded burst evidence.
+            ...(scanEvent === "Stop" ? { summaryBatchSize: 4 } : {}),
             // Same existing oldest-first drain and one shared budget, never a new 32-file allowance per publication.
             // SessionEnd stages its bounded tail first; pressure and the final replay keep the same allowance.
             onPublication: scanEvent === "SessionEnd" ? undefined : async () => { await replay(scanEnd, false); },

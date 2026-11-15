@@ -185,6 +185,80 @@ test("rotation and truncation replays share content receipts", async () => {
   writeFileSync(f.transcript, ""); await f.scan(); f.add(row); await f.scan(); expect(await f.drain()).toHaveLength(1);
 });
 
+test("summary batches count only staged public rows and leave the partial batch durable", async () => {
+  const f = fixture(), callbacks: number[] = [];
+  for (let i = 0; i < 9; i++) f.add({ type: "system", subtype: "away_summary", timestamp: at, content: `public batch ${i}` });
+  f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "alice@example.com" });
+  const options = { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, summaryBatchSize: 4,
+    onPublication: async () => { callbacks.push(readdirSync(join(f.base, "hook-spool")).filter(name => name.endsWith(".json")).length); } };
+  const result = await scanHookTranscriptTail(f.input, options);
+  expect(result?.offset).toBe(Buffer.byteLength(readFileSync(f.transcript)));
+  expect(callbacks).toEqual([4, 8]);
+  expect((await f.drain()).filter(row => row.event === "Recap").map(row => row.excerpt).sort()).toEqual(Array.from({ length: 9 }, (_, i) => `public batch ${i}`));
+  await scanHookTranscriptTail(f.input, options);
+  expect((await f.drain()).filter(row => row.event === "Recap")).toHaveLength(9);
+});
+
+test("backpressure replays immediately within a partial summary batch", async () => {
+  const f = fixture();
+  for (let i = 0; i < 3; i++) f.add({ type: "system", subtype: "away_summary", timestamp: at, content: `backpressure batch ${i}` });
+  const original = spool.stageTranscriptCapture; let calls = 0, backpressure = 0, callbacks = 0;
+  const stage = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args: Parameters<typeof original>) => {
+    if (++calls === 3) throw new spool.HookSpoolFull();
+    return original(...args);
+  });
+  try {
+    const result = await scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, summaryBatchSize: 4,
+      onPublication: async () => { callbacks++; }, onBackpressure: async () => { backpressure++; return true; } });
+    expect(result?.offset).toBe(Buffer.byteLength(readFileSync(f.transcript)));
+    expect(backpressure).toBe(1); expect(callbacks).toBe(0); expect(calls).toBe(4);
+  } finally { stage.mockRestore(); }
+  expect((await f.drain()).filter(row => row.event === "Recap")).toHaveLength(3);
+});
+
+test("Record publication keeps its immediate callback inside a summary batch", async () => {
+  const f = fixture();
+  for (let i = 0; i < 3; i++) f.add({ type: "system", subtype: "away_summary", timestamp: at, content: `mixed summary ${i}` });
+  f.add(recordAssistant("mixed-record", "amem: decision | - | keep the mixed record"));
+  f.add({ type: "system", subtype: "away_summary", timestamp: at, content: "mixed summary 3" });
+  let callbacks = 0;
+  await scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, summaryBatchSize: 4,
+    onPublication: async () => { callbacks++; } });
+  expect(callbacks).toBe(2);
+  const rows = await f.drain(); expect(rows.filter(row => row.event === "Record")).toHaveLength(1); expect(rows.filter(row => row.event === "Recap")).toHaveLength(4);
+});
+
+test("an interrupted partial batch keeps the staged prefix and resumes exactly once", async () => {
+  const f = fixture(), first = { type: "system", subtype: "away_summary", timestamp: at, content: "partial batch first" };
+  f.add(first, { type: "system", subtype: "away_summary", timestamp: at, content: "partial batch second" });
+  const options = { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, summaryBatchSize: 4 }, original = spool.stageTranscriptCapture;
+  const stage = spyOn(spool, "stageTranscriptCapture").mockImplementation(async (...args: Parameters<typeof original>) => {
+    const value = await original(...args); options.deadline = -1; return value;
+  });
+  try { expect(await scanHookTranscriptTail(f.input, options)).toMatchObject({ offset: Buffer.byteLength(JSON.stringify(first) + "\n"), stopReason: "deadline" }); }
+  finally { stage.mockRestore(); }
+  expect((await f.drain()).filter(row => row.event === "Recap")).toHaveLength(1);
+  await f.scan(); await f.scan();
+  expect((await f.drain()).filter(row => row.event === "Recap").map(row => row.excerpt).sort()).toEqual(["partial batch first", "partial batch second"]);
+});
+
+test("batch size rejects zero, fractions and values above the bounded ceiling", async () => {
+  const f = fixture();
+  for (const summaryBatchSize of [0, 1.5, 33]) await expect(scanHookTranscriptTail(f.input, { cwd: f.cwd, base: f.base, deadline: performance.now() + 2000, summaryBatchSize })).rejects.toThrow("invalid transcript summary batch size");
+  expect(existsSync(join(f.base, "hook-transcripts"))).toBe(false);
+});
+
+test("native Stop batches a burst and resumes without duplicate summaries", async () => {
+  const f = fixture();
+  for (let i = 0; i < 12; i++) f.add({ type: "system", subtype: "away_summary", timestamp: at, content: `native batch ${i}` });
+  for (let i = 0; i < 2; i++) {
+    const result = f.runFunctional("Stop", { ...f.input });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+  }
+  const rows = (await f.drain()).filter(row => row.event === "Recap");
+  expect(rows.map(row => row.excerpt).sort()).toEqual(Array.from({ length: 12 }, (_, i) => `native batch ${i}`).sort());
+});
+
 test("a deadline after one summary commits its prefix and resumes the remaining kinds", async () => {
   const f = fixture(), title = { type: "ai-title", aiTitle: "partial title", timestamp: at };
   f.add(title, { type: "system", subtype: "away_summary", content: "partial recap", timestamp: at },

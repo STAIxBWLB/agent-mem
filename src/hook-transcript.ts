@@ -23,6 +23,8 @@ interface Options { cwd: string; base: string; deadline: number; workBudgetMs?: 
   /** Worker-local replay opportunities; no text crosses these callbacks. */
   onPublication?: (pending: PendingHookCapture) => Promise<void>;
   onBackpressure?: () => Promise<boolean>;
+  /** Summary publications per callback. Other callers retain the single-publication default. */
+  summaryBatchSize?: number;
 }
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const timestamp = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
@@ -117,6 +119,8 @@ export function cursorDatabase(file: string, dev: string, ino: string, size: num
 
 /** Private per-session transaction serializes screens and cursor advancement. No path or raw id is persisted. */
 export async function scanHookTranscriptTail(input: unknown, options: Options): Promise<HookTranscriptProgress | undefined> {
+  const summaryBatchSize = options.summaryBatchSize ?? 1;
+  if (!Number.isSafeInteger(summaryBatchSize) || summaryBatchSize < 1 || summaryBatchSize > 32) throw new Error("invalid transcript summary batch size");
   const value = object(input);
   if (!value || options.policy?.host || typeof value.transcript_path !== "string" || typeof value.session_id !== "string" || !value.session_id || value.session_id.length > 256) return;
   if (performance.now() >= options.deadline) return { stopReason: "deadline" };
@@ -156,7 +160,7 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
     const length = readSync(fd, bytes, 0, bytes.length, cursor.offset);
     const after = fstatSync(fd), live = lstatSync(value.transcript_path);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(value.transcript_path) !== transcript) return;
-    let start = 0, stopReason: HookTranscriptProgress["stopReason"];
+    let start = 0, stopReason: HookTranscriptProgress["stopReason"], stagedSummaries = 0;
     const recordMetrics = { recordValidRecords: 0, recordBasisRecords: 0, recordUnverifiedRecords: 0 };
     // ponytail: the two-record cap is per native message.id within this scan only; no durable count.
     // A crash after staging but before cursor save has the summaries' duplicate window.
@@ -246,7 +250,10 @@ export async function scanHookTranscriptTail(input: unknown, options: Options): 
               staged = await publish(); // Same line/receipt, no second read or cursor advance on backpressure.
             }
             if (staged && title) cursor.title = title;
-            if (staged) await options.onPublication?.(staged);
+            if (staged && options.onPublication && ++stagedSummaries >= summaryBatchSize) {
+              stagedSummaries = 0;
+              await options.onPublication(staged);
+            }
           } catch (error) {
             // Advance only through durable/refused rows; a full spool retries this line
             // after the ordinary hook worker drains earlier publications.
