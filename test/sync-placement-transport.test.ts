@@ -785,3 +785,14 @@ test("#426: an unknown error keeps the generic message with category other and i
     expect(final.category).toBe("other");
   } finally { spy.mockRestore(); }
 }, 120_000);
+test("#426: an unclassified throw in source capture is category other, never a guessed cause", async () => {
+  const capture = await import("../src/memory/sync-placement-capture.ts");
+  // Mocked only after the fixture is built: the fixture itself captures a context.
+  const { result, final } = await refusal((f, remote) => f.opts(remote), () => {
+    const spy = spyOn(capture, "captureSyncPlacementContext").mockImplementation(() => { throw new Error("/secret/capture NEVER_PUBLIC_REFUSAL"); });
+    return () => spy.mockRestore();
+  });
+  expect(result.placementPublication?.refusal).toEqual({ category: "other", phase: "source-capture" });
+  expect(result.error).toContain("Placement sync is unavailable (category other, phase source capture)"); expect(result.error).not.toContain("/secret/capture");
+  expect(final.category).toBe("other");
+}, 120_000);

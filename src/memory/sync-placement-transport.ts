@@ -521,7 +521,7 @@ class PlacementTransport {
       }
       this.enter("source-capture");
       try { this.preflight();for(const target of this.targets)if(existsSync(join(target.store.dir,"local",`publisher-boundary-${this.machineId}.json`)))assertPublisherBoundary(target.store.profile,target.mutation!);this.startCapture(); }
-      catch(error) { if(retained)return await this.terminalUnknown(retained);if(placementSyncBoundReceipt(error))throw error;throw new PlacementSyncRefusal(placementRefusalCategoryOf(error)??classifyPlacementError(error)??"source-selection"); }
+      catch(error) { if(retained)return await this.terminalUnknown(retained);if(placementSyncBoundReceipt(error))throw error;throw new PlacementSyncRefusal(placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other"); }
       if(retained){
         const root=retained.bundle.root;
         const stable=root.contextHash===placementCaptureContextHash(this.capture!)&&root.markerHash===this.capture!.markerHash&&root.sourceHash===this.capture!.context.sourceHash
