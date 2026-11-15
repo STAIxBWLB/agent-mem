@@ -23,7 +23,7 @@ function fixture() {
 }
 for (const surface of ["home", "curated"]) test(`${surface} floor admission never refreshes missing or stale caches`, () => {
   const f = fixture();
-  expect(readCuratedBriefCache(f.options).reason).toBe("curated refresh deferred");
+  expect(readCuratedBriefCache(f.options).reason).toBe(`curated floor below ${f.options.supportingRelease}; person: upgrade and restart all writers, then raise floor`);
   f.admit(surface);
   expect(readCuratedBriefCache(f.options).reason).toBe("curated cache missing");
   f.publish(); expect(readCuratedBriefCache(f.options).cache?.rows).toEqual([]);
