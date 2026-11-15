@@ -17,7 +17,7 @@ import { pendingLine, pendingSummary } from "./memory/candidate-pending.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
-import { briefFailureReason } from "./memory/brief-metrics.ts";
+import { briefFailureReason } from "./memory/metrics.ts";
 import { aliasedKeys, captureShardDir, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
@@ -130,8 +130,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
-    // Reserve the longest possible fixed header before selecting data; later coverage changes cannot overrun it.
-    let remaining = maximum - Buffer.byteLength(header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) }, options.nativeSession ? { work: "deadline exhausted; use amem_work_state_read", curated: `curated floor below ${CURATED_CACHE_MIN_READER}; person: upgrade and restart all writers, then raise floor; use amem_brief`, capture: "capture history deferred; use amem_search", ...(coverage.repo ? { repo: "repo log is not a plain file; inspect repo log" } : {}) } : {}));
+    // Reserve the minimum header now; final reason text is accounted for by dropping trailing data if necessary.
+    let remaining = maximum - Buffer.byteLength(header(coverage));
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
@@ -369,8 +369,18 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
       }
       guard();
-      const context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
-      result = { context, tokens: Buffer.byteLength(context), partial: Object.values(coverage).some(value => value !== "complete"), coverage };
+      let context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
+      while (Buffer.byteLength(context) > maximum && lines.length) {
+        const removed = JSON.parse(lines.pop()!) as { section?: Section };
+        if (removed.section && coverage[removed.section] === "complete") coverage[removed.section] = "partial";
+        context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
+      }
+      if (Buffer.byteLength(context) > maximum && candidateLine) {
+        candidateLine = undefined;
+        context = [header(coverage, reasons), ...lines].join("\n");
+      }
+      if (Buffer.byteLength(context) > maximum) result = unavailable();
+      else result = { context, tokens: Buffer.byteLength(context), partial: Object.values(coverage).some(value => value !== "complete"), coverage };
     }
   } catch { result = unavailable(); }
   finally {

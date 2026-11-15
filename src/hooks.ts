@@ -10,8 +10,7 @@ import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
-import { appendMetrics, captureDropSummary, type RecordVariantMetric } from "./memory/metrics.ts";
-import { briefObservation, type BriefObservation } from "./memory/brief-metrics.ts";
+import { appendMetrics, briefObservation, captureDropSummary, type BriefObservation, type RecordVariantMetric } from "./memory/metrics.ts";
 import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
 import { jcodeHookCapture, jcodeJournalTarget } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
@@ -391,7 +390,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
   let childSources = emptyRssSources();
   let transcriptProgress: HookTranscriptProgress | undefined;
   let emittedCost = instructionCost("");
-  let brief: BriefObservation | undefined = event === "SessionStart" && sessionSource(input) !== "resume" ? { work: "unknown", curated: "unknown", capture: "unknown" } : undefined;
+  let brief: BriefObservation | undefined = event === "SessionStart" && metricInputString(input, "source") !== "resume" ? { work: "unknown", curated: "unknown", capture: "unknown" } : undefined;
   let recordMetric: RecordVariantMetric = recordMetricUnits(event, input);
   try {
     base = canonicalPath(options.base ?? memoryHome());
@@ -461,7 +460,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       chunks.push(next.value); length += next.value.byteLength;
     }
     const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-    if (args[0] === "SessionStart" && sessionSource(input) !== "resume") brief = { work: "unknown", curated: "unknown", capture: "unknown" };
+    if (args[0] === "SessionStart" && metricInputString(input, "source") !== "resume") brief = { work: "unknown", curated: "unknown", capture: "unknown" };
     if ((HOOK_EVENTS as readonly string[]).includes(args[0]!)) {
       const base = canonicalPath(memoryHome());
       recordMetric = recordMetricUnits(args[0]!, input);
