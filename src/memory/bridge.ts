@@ -62,11 +62,13 @@ export class SegmentReader {
   /** Optional inspection limits do not change ordinary incremental-reader semantics. */
   readonly sourceByteLimit?: number;
   readonly sourceFileLimit?: number;
+  private readonly sourceRowLimit?: number;
   constructor(private remainingBytes = Infinity, limits: { maxSourceBytes?: number; maxRows?: number } = {}) {
     for (const value of [remainingBytes, limits.maxSourceBytes ?? Infinity, limits.maxRows ?? Infinity]) if (value !== Infinity && (!Number.isSafeInteger(value) || value < 0)) failure();
     this.sourceByteLimit = limits.maxSourceBytes;
     this.remainingSourceBytes = limits.maxSourceBytes ?? Infinity;
     this.remainingRows = limits.maxRows ?? Infinity;
+    this.sourceRowLimit = limits.maxRows;
     this.sourceFileLimit = limits.maxRows;
     this.remainingFiles = limits.maxRows ?? Infinity;
   }
@@ -113,7 +115,7 @@ export class SegmentReader {
       if (!read(end).equals(bytes) || fstatSync(fd, { bigint: true }).size < opened.size) failure();
       // Count physical nonblank source rows before any canonical source map can grow.
       if (this.remainingRows !== Infinity) for (const line of completeLines(bytes)) if (line.toString("utf8").trim()) {
-        if (this.remainingRows < 1) throw new SegmentReadBudgetError({ kind: "rows", limit: this.sourceRows, observed: this.sourceRows + 1 });
+        if (this.remainingRows < 1) throw new SegmentReadBudgetError({ kind: "rows", limit: this.sourceRowLimit!, observed: this.sourceRows + 1 });
         this.remainingRows--; this.sourceRows++;
       }
       const after = lstatSync(path, { bigint: true });

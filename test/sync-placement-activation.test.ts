@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import * as writerContextModule from "../src/sync-placement-writer-context.ts";
@@ -8,6 +8,8 @@ import { realPath } from "../src/memory/platform.ts";
 import { PLACEMENT_FORMAT } from "../src/memory/sync-placement-format.ts";
 import type { SyncPlacementWriterAttestation } from "../src/memory/sync-placement-plan.ts";
 import { activateSyncPlacement, PlacementActivationError, PlacementActivationInputError } from "../src/memory/sync-placement-activation.ts";
+import { PlacementSourceBoundError } from "../src/memory/sync-placement-capture.ts";
+import { SegmentReader, SegmentReadBudgetError } from "../src/memory/bridge.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { syncMemory } from "../src/memory/sync.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
@@ -35,6 +37,30 @@ test("initial placement dry-run is authority-free and byte/mtime read-only; appl
     expect(readPlacementProjection(f.base,profile.placementHead).states.find(row=>row.key.id===f.declined)?.held).toBe(true);
   }finally{store.close();}
 },60_000);
+
+test("#414: initial activation captures a home above the old 8 MiB aggregate with every source file below 8 MiB",async()=>{
+  const f=await placementActivationFixture(10_248);cleanup.push(f.close);
+  const files:number[]=[];const walk=(dir:string):void=>{for(const e of readdirSync(dir,{withFileTypes:true})){const p=join(dir,e.name);if(e.isDirectory())walk(p);else if(e.name.endsWith(".jsonl"))files.push(statSync(p).size);}};
+  // Placement sources live in realm directories; the retained pre-shard root log is not a placement source.
+  for(const realm of ["projects","user"])if(existsSync(join(f.base,realm)))walk(join(f.base,realm));
+  expect(files.reduce((a,b)=>a+b,0)).toBeGreaterThan(22*1024*1024);expect(Math.max(...files)).toBeLessThan(8*1024*1024);
+  const before=inspectionFilesystemSnapshot(f.base),preview=await activateSyncPlacement(f.options("dry-run"));
+  expect(preview).toMatchObject({active:false,source:{declined:1,policyPermittedOriginals:10_249}});
+  expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+  expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
+},300_000);
+
+test("#414: a capture bound refusal names the phase and bound and leaves the home unchanged",async()=>{
+  const f=await fixture(),before=inspectionFilesystemSnapshot(f.base);
+  const error=new SegmentReadBudgetError({kind:"bytes",limit:64,observed:65}),spy=spyOn(SegmentReader.prototype,"read").mockImplementation(()=>{throw error;});
+  try{
+    const refusal=await activateSyncPlacement(f.options("dry-run")).then(()=>undefined,(e:unknown)=>e);
+    expect(refusal).toBeInstanceOf(PlacementSourceBoundError);expect((refusal as PlacementSourceBoundError).code).toBe("bound");
+    expect(String((refusal as Error).message)).toContain("source capture exceeds its supported bytes bound (observed 65, limit 64)");
+    expect(String((refusal as Error).message)).not.toContain("epoch transition");
+  }finally{spy.mockRestore();}
+  expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
+});
 
 test("already-active apply requires the renewal floor without changing the epoch or evidence",async()=>{
   const f=await fixture();await activateSyncPlacement(f.options("apply"));const before=inspectionFilesystemSnapshot(f.base);
