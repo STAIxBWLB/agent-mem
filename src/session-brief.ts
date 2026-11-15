@@ -130,8 +130,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     if (repoLogPresent(repoRoot)) coverage.repo = "complete";
     const lines: string[] = [];
     const reasons: Partial<Record<Section, string>> = {};
-    // Reserve the minimum header now; final reason text is accounted for by dropping trailing data if necessary.
-    let remaining = maximum - Buffer.byteLength(header(coverage));
+    // Native reasons are accounted for after selection; ordinary briefs keep their existing conservative reservation.
+    const reservedHeader = options.nativeSession ? header(coverage) : header({ work: "unavailable", curated: "unavailable", capture: "unavailable", ...(coverage.repo ? { repo: "unavailable" as const } : {}) });
+    let remaining = maximum - Buffer.byteLength(reservedHeader);
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
