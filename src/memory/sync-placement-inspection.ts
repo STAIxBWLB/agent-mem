@@ -64,7 +64,7 @@ const remedies: Record<SyncPlacementInspectionIncompleteReason, string> = {
   "placement-not-active": "Placement is not active; complete the person-reviewed shard/public-prune migrations and separately authorized placement activation before inspecting placement.",
   "binding-changed": "Selected placement bindings changed; inspect the retained activation to restore matching markers when required, then reopen the selected project/user handles and inspect again.",
   "input-unavailable": "Selected source or placement-context inputs are unreadable, incomplete or unsupported; inspect retained source metadata and any recorded partial request, verify compatible writer pins, then inspect again.",
-  "input-bound": "Placement inspection exceeds its supported 8 MiB/20000-row or retained-evidence bounds; request a person-reviewed bounded epoch transition before inspecting again.",
+  "input-bound": "Placement inspection exceeds its supported 64 MiB/20000-row source-capture or retained-evidence bounds; request a person-reviewed bounded epoch transition before inspecting again.",
   "input-changed": "The selected placement inspection context changed; wait for stable source, journal and policy bindings, then inspect again.",
   "journal-unavailable": "The retained placement journal is incomplete or inconsistent; preserve it and resume its exact recorded request with a compatible runtime before inspecting again.",
   "policy-unavailable": "The policy callback/version or configured/default-deny epoch is unavailable or changed; restore a stable policy and policyVersion before inspecting again.",
